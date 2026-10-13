@@ -91,11 +91,16 @@ calls, the input lengths or the constraint counts change.
 - **Default:** the proof field is BabyBear (prime 2^31 - 2^27 + 1), with a
   degree-5 extension field for challenges, in Plonky3's STARK stack with FRI
   as the polynomial commitment scheme.
-- A digest is 8 field elements (about 248 bits).
+- For candidate A, a digest is 8 field elements (about 248 bits). For
+  candidate B, a digest is the full 256-bit Keccak output, held as 32 bytes
+  (256 bits in the trace) and carried as 256 bits in the public inputs. It is
+  never reduced into field elements, because that would lose bits. Every size
+  below given in "elements" is for A; B uses 32 bytes for the same item.
 - **Default:** an amount is 96 bits, held as four limbs of 24 bits, each limb
   range-checked. This holds about 7.9 x 10^10 whole GHOST at 18 decimals,
   well above the 21 million main emission plus any tail.
-- Secrets and blinding values are 8 field elements each.
+- Secrets and blinding values are 8 field elements each for A and 32 bytes
+  each for B.
 
 ### Hash used inside the statement
 
@@ -142,6 +147,11 @@ public inputs cost transcript work and proof size.
 ### Witness (private inputs)
 
 - Secret `s`, reveal secret `r`, blinding `b` of the commitment being opened.
+- Secret `s'` and reveal secret `r'` of the remainder commitment. By default
+  of the outline these equal `s` and `r`, but the statement must also allow
+  new, independent values so that a claim to a new key is possible. The
+  statement does not require them to be equal. The benchmark runs both cases;
+  the cost is the same.
 - The commitment's version and type, content fingerprint, rule field, and
   amount `v` (four limbs).
 - A Merkle path: 32 sibling digests and 32 direction bits.
@@ -162,12 +172,13 @@ public inputs cost transcript work and proof size.
    elements for A (1 permutation), 65 bytes for B (1 permutation). Which
    values feed the marker is the lifecycle specification's decision; what is
    fixed here is that the marker costs one short hash and is different for the
-   remainder commitment, which reuses `s` and `r` with a fresh blinding.
+   remainder commitment, which has its own blinding (and, by default, the same `s` and `r`).
 4. **Remainder commitment.** The public remainder commitment equals the tagged
-   hash of `(s, r, b', version and type, fingerprint, rule, v')`. The version
-   and type, fingerprint and rule are constrained to equal those of the input,
-   and `s` and `r` are the same values as in the opening (the default of the
-   outline: the same Phantom Key controls the remainder). 3 permutations for A,
+   hash of `(s', r', b', version and type, fingerprint, rule, v')`. The
+   version and type, fingerprint and rule are constrained to equal those of
+   the input. `s'` and `r'` are free witness values: equal to `s` and `r` when
+   the same Phantom Key keeps control of the remainder (the outline's default),
+   and new values for a claim to a new key. 3 permutations for A,
    2 for B.
 5. **Conservation.** `v = out + v' + fee`, limb by limb with carries, with all
    amounts range-checked to 96 bits. Because `v'` cannot be negative, the fee
@@ -199,15 +210,23 @@ counts.
 
 ## Security level and zero-knowledge mode
 
-- **Default target:** 128 bits of security for soundness, counted under the
-  standard FRI conjecture for the chosen code rate and the extension field
-  size, with the extension degree chosen so that the challenge field gives
-  more than 128 bits (hence degree 5 above).
-- Required: the proof-of-work grinding step is allowed up to 16 bits, and
-  the rest comes from FRI queries. For a code rate of 2^-k, each query is
-  counted as k bits, so the number of queries is at least `(128 - grinding)
-  / k`. The harness computes this from the parameters; it does not use a
-  hard-coded count.
+- **Default target:** 128 bits of security for soundness, for the complete
+  configuration actually used, counted under the library's conjectured
+  security estimate.
+- The estimate must come from the library's own security analysis (the
+  security estimator that ships with the pinned revision), applied to the
+  actual parameters, and must account for all of: the FRI queries and folding,
+  the grinding bits, the opening batching, the composition of the constraints
+  (the number and degree of the constraints and the size of the challenge
+  field), and the collision resistance of the commitment hash. A configuration
+  whose total estimate is below 128 bits is rejected before any timing is
+  recorded. The simple rule of counting each query of a code of rate 2^-k as k
+  bits is only a starting point for choosing the number of queries; it is not
+  accepted as evidence of the level.
+- Grinding is allowed up to 16 bits. The harness computes the number of
+  queries from the estimate and does not use a hard-coded count. The extension
+  degree is chosen so that the challenge field is large enough for the target
+  (degree 5 above is the default).
 - The primary run uses a blowup of 2^1 (rate 1/2). The harness also runs
   blowups of 2^2 and 2^3 as a sweep, because a higher blowup needs fewer
   queries (smaller proof, slower prover) and the best trade is a result, not an
