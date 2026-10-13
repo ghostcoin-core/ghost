@@ -1,0 +1,59 @@
+name: Commit messages
+
+# This workflow runs from the base branch (pull_request_target), so a pull
+# request cannot change or switch off the check that is applied to it. It
+# never checks out or runs code from the pull request: it only fetches the
+# pull request's commits and reads their messages.
+
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: commit-messages-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  commit-messages:
+    name: commit-messages
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Checks out the base branch for a pull request, never the pull request.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check commit messages
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+            git fetch --quiet --no-tags "$REPO_URL" "refs/pull/$PR_NUMBER/head"
+            git cat-file -e "$PR_HEAD^{commit}"
+            range="$PR_BASE..$PR_HEAD"
+          elif [ -n "$PUSH_BEFORE" ] && git cat-file -e "$PUSH_BEFORE^{commit}" 2>/dev/null; then
+            range="$PUSH_BEFORE..$PUSH_AFTER"
+          else
+            range="$PUSH_AFTER"
+          fi
+          scripts/check-commit-range.sh "$range"
+      - name: Check pull request title and description
+        if: github.event_name == 'pull_request_target'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n\n%s\n' "$PR_TITLE" "$PR_BODY" \
+            | scripts/check-commit-message.sh "pull request title and description"

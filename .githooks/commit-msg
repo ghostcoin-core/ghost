@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Local commit message check. Turn it on with:
+#   git config core.hooksPath .githooks
+set -u
+
+root="$(git rev-parse --show-toplevel)"
+
+# Drop what git itself will drop: everything from the scissors line down, and
+# comment lines.
+sed -e '/^# -\{24\} >8 -\{24\}$/,$d' -e '/^#/d' "$1" \
+  | "$root/scripts/check-commit-message.sh" "commit message"
