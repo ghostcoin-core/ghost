@@ -1,0 +1,16 @@
+[package]
+name = "ghost-verify-ffi"
+version = "0.1.0"
+description = "C interface to the benchmark verifier, for calling it from Go through cgo"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[features]
+parallel = ["ghost-bench/parallel"]
+
+[dependencies]
+ghost-bench = { path = "../prover" }

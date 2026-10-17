@@ -34,3 +34,7 @@ rand.workspace = true
 [[bin]]
 name = "ghost-bench-native"
 path = "src/bin/ghost-bench-native.rs"
+
+[[bin]]
+name = "ghost-bench-verify"
+path = "src/bin/ghost-bench-verify.rs"
