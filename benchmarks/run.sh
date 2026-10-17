@@ -9,10 +9,13 @@
 #   3. run a short native reference (context only, never counted);
 #   4. print the summary of every record found.
 #
-# Usage: benchmarks/run.sh [--web] [--native-warm N] [--no-native] [RECORDS...]
+# Usage: benchmarks/run.sh [--web] [--reveal] [--native-warm N] [--no-native] [RECORDS...]
 #
 #   --web            also produce the browser bundle in web/pkg with a pinned
 #                    wasm-bindgen, installed into benchmarks/.tools on first use
+#   --reveal         also build the real coin reveal prover (benchmarks/reveal)
+#                    into web/reveal-pkg for reveal.html, and run its tests;
+#                    no bindings generator is needed
 #   --native-warm N  warm runs per configuration in the native reference (2)
 #   --no-native      skip the native reference
 #   RECORDS          record files or directories to summarize
@@ -27,6 +30,7 @@ out_dir="$here/out"
 bindgen_version="0.2.105"
 
 web=0
+reveal=0
 native=1
 native_warm=2
 records=()
@@ -35,7 +39,8 @@ while [ "$#" -gt 0 ]; do
     --web) web=1 ;;
     --no-native) native=0 ;;
     --native-warm) shift; native_warm="$1" ;;
-    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
+    --reveal) reveal=1 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) records+=("$1") ;;
   esac
   shift
@@ -66,6 +71,19 @@ if [ "$web" -eq 1 ]; then
   fi
   "$bindgen" --target web --out-dir "$here/web/pkg" "$wasm"
   echo "serve with: python3 $here/web/serve.py"
+fi
+
+if [ "$reveal" -eq 1 ]; then
+  reveal_manifest="$here/reveal/Cargo.toml"
+  step "build: real coin reveal prover (wasm32-unknown-unknown, SIMD)"
+  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-C target-feature=+simd128" \
+    cargo build --release --locked --target wasm32-unknown-unknown --manifest-path "$reveal_manifest" --lib
+  mkdir -p "$here/web/reveal-pkg"
+  cp "$here/reveal/target/wasm32-unknown-unknown/release/ghost_reveal_bench.wasm" "$here/web/reveal-pkg/"
+  step "build and test: native verifier of the browser proofs"
+  cargo test --release --locked --manifest-path "$reveal_manifest"
+  cargo build --release --locked --manifest-path "$reveal_manifest" --bin ghost-reveal-verify
+  echo "serve with: python3 $here/web/serve.py, then open http://localhost:8000/reveal.html"
 fi
 
 step "correctness checks"

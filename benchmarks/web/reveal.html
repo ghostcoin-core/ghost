@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ghost coin reveal benchmark</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font: 15px/1.45 system-ui, sans-serif; margin: 2rem auto; max-width: 64rem; padding: 0 1rem; color: #1b1b1b; }
+  fieldset { border: 1px solid #c8c8c8; margin: 0 0 1rem; padding: 0.75rem 1rem; }
+  label { display: inline-block; margin: 0 1.25rem 0.5rem 0; }
+  button { font: inherit; padding: 0.35rem 0.9rem; margin-right: 0.5rem; }
+  pre { background: #f4f4f4; padding: 0.75rem; overflow: auto; max-height: 24rem; font-size: 12px; }
+  .warn { color: #8a3b00; }
+  .ok { color: #1f6b2a; }
+  table { border-collapse: collapse; font-size: 13px; }
+  td, th { border: 1px solid #ddd; padding: 0.2rem 0.5rem; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+</style>
+</head>
+<body>
+<h1>Coin reveal proving benchmark</h1>
+<p>
+  One session per tab: open a fresh tab on this page, run one session, download
+  the records, close the tab. The first proof of a session is the cold run; the
+  rest are warm runs in the same worker. Proving and verification are timed in
+  the worker with <code>performance.now()</code>.
+</p>
+<p>
+  The prover is the real coin reveal statement of <code>ghost-proofs</code> in
+  its shipped configuration (Keccak-256, blowup 2^2, zero-knowledge on), built
+  from <code>benchmarks/reveal</code>. Download the proofs as well as the
+  records to verify them natively with <code>ghost-reveal-verify</code>.
+</p>
+
+<fieldset>
+  <legend>Session</legend>
+  <label>Device
+    <select id="device">
+      <option value="mac-studio">Mac Studio</option>
+      <option value="emulated-phone">Emulated mid-range phone, not a real device (DevTools CPU throttling 4x)</option>
+    </select>
+  </label>
+  <br>
+  <label>Session number <input id="session" type="number" min="0" value="0" size="4"></label>
+  <label>Warm runs <input id="warm" type="number" min="0" value="10" size="4"></label>
+  <label>Witness seed <input id="seed" type="number" min="0" max="4294967295" size="12"></label>
+  <label><input id="newkey" type="checkbox"> Remainder to a new key</label>
+  <br>
+  <label>Repository commit <input id="commit" size="44" placeholder="git rev-parse HEAD"></label>
+  <br>
+  <button id="run">Run session</button>
+  <button id="download" disabled>Download records</button>
+  <button id="download-proofs" disabled>Download proofs</button>
+  <span id="status"></span>
+</fieldset>
+
+<fieldset>
+  <legend>After the session</legend>
+  <label>Process peak memory of the renderer (macOS <code>footprint</code>, MiB)
+    <input id="footprint" type="number" min="0" step="0.1" size="8">
+  </label>
+  <p>Entered before downloading; it is written into every record of the session.</p>
+</fieldset>
+
+<h2>Environment</h2>
+<pre id="env">collecting…</pre>
+
+<h2>Runs</h2>
+<table id="runs">
+  <thead><tr><th>Run</th><th>Outcome</th><th>Proving</th><th>Verification</th><th>Proof bytes</th><th>WASM memory</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<h2>Records</h2>
+<pre id="records"></pre>
+
+<script type="module" src="reveal-main.js"></script>
+</body>
+</html>
