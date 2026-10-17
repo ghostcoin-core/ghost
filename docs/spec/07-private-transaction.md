@@ -195,7 +195,10 @@ for every typed transaction. A private transaction has no sender: the base
 client's sender recovery, nonce check and balance check are not run for type
 `0x50`, and no account is touched except those spec 03, section 7, step 13
 writes. Its receipt is a typed receipt of type `0x50` whose cumulative gas used
-counts `G_PRIV`; the rest of its layout is not fixed here (section 9).
+counts `G_PRIV`; the rest of its layout is not fixed here (section 9), except
+that it must carry the marker, the remainder with its tree index and position,
+and the note bytes, so that wallets can check notes and marker status against
+`receiptsRoot` (spec 05, section 8, item 5; review 01, F3 and F4).
 
 **Data reveals.** Version 1 has no field for a type tag or a purpose, so it
 cannot carry a data reveal. A data reveal has no encoding and is rejected,
@@ -469,7 +472,13 @@ ever be in a block (spec 03, section 7, step 8).
 **Recheck.** On every new head, whether from a new block or a reorganisation,
 the node rechecks every pending private transaction with steps 2 to 6 and 9
 against the new head, in pool order, and drops each that fails (spec 05,
-section 7, items 3 and 4). At a window change this drops every transaction
+section 7, items 3 and 4). In the recheck, step 6 looks only at the other
+transactions still in the pool, never at the transaction being rechecked
+itself, so a pending reveal is not dropped for finding its own marker (review
+01, F8); since admission already keeps one transaction per marker, the
+recheck never finds a second one. A transaction that is not includable in the
+next block only because of the one-tree-index rule (spec 05, section 3) passes
+the recheck and stays in the pool unchanged. At a window change this drops every transaction
 whose fee lapsed. A transaction from a disconnected block re-enters through
 steps 1 to 9 as a new arrival. The proof is verified again in the recheck; at
 the caps above that is at most 16 verifications, about 150 ms per block.

@@ -34,7 +34,7 @@ section 13.
 | One-time reveal | Publishes one marker and a node-computed binding digest; publishes no data, key, fingerprint or commitment; mints nothing | Outline; contents **Proposed** |
 | Remainder on a data reveal | None | **Proposed** (question 3) |
 | Fee of a data reveal | Not settled; every data reveal is rejected at the fee check until it is | **Proposed** (fail closed, question 1) |
-| Revocation | A one-time reveal by the holder with the revoke purpose; afterwards every proof of holding fails | Outline (second milestone 6); purpose tag **Proposed** (question 4) |
+| Revocation | A one-time reveal by the holder with the revoke purpose; afterwards every proof of holding that opens the revoked commitment against marker status that includes the revocation fails | Outline (second milestone 6); purpose tag **Proposed** (question 4) |
 | Restore | The digits alone give the note key, the data key and the commitment; the wallet finds its note by bulk trial decryption | Outline; method **Proposed** |
 | Lost host | The bytes are lost unless a copy exists; the commitment, marker status and proofs of holding still work | Outline ("Data storage") |
 | Owner, pause switch, upgrade key | None, over any part of this | Outline ("Reference: old Specter code") |
@@ -200,7 +200,8 @@ and exact-length format, no final commitment and no type field, canonical
 3. **Compute and apply, all or nothing.** The node computes
    `C = H(tag_data_commitment, DATA, F_d)` and, in one state change, appends
    `C` to the data tree, stores the note with it and writes the receipt (leaf
-   `C`, position). The new data-tree root goes into the block header (outline,
+   `C`, tree index and position, and the note bytes; spec 05, section 8,
+   item 5). The new data-tree root goes into the block header (outline,
    "Core protocol" 6).
 
 ## 5. Proof of holding
@@ -252,9 +253,14 @@ that they concern one commitment.
    a challenge the verifier did not issue, or one it already accepted, is
    rejected.
 4. The verifier identity is the verifier's own.
-5. Both roots are taken from one block header on the chain the verifier
-   trusts, at a height the verifier accepts as current. A root seen only on a
-   discarded branch is rejected (outline, "Core protocol" 9).
+5. The spent-marker-set root is taken from a block header on the chain the
+   verifier trusts, at a height the verifier accepts as current. The data-tree
+   root is taken from a header of the same chain at or below that height: the
+   wallet's epoch root, or the final root of a full tree once the next tree has
+   started (spec 02, section 8). The two need not come from one header, so a
+   commitment in a full tree can still be checked against current revocation
+   status (review 01, N2). A root seen only on a discarded branch is rejected
+   (outline, "Core protocol" 9).
 6. The verifier computes the binding digest and checks the proof against it.
 
 **Header-only verifiers.** The outline puts tree states in every header ("Core
@@ -266,9 +272,16 @@ spent-marker-set root it cannot take from a header it trusts; a bare answer
 from a node or endpoint is never enough (question 2).
 
 **What it claims.** A proof of holding says "the prover held an unrevealed
-`DATA` commitment as of the tree state used, on the chain the verifier trusts",
-and nothing more. It does not say the data was never viewed, never copied, or
-still available.
+`DATA` commitment, unrevealed as of the spent-marker-set state used, on the
+chain the verifier trusts", and nothing more. It does not say which commitment
+or which content: anyone can make a data commitment of their own and prove
+holding of it, and the content fingerprint is a field the committer chooses,
+which no proof checks against content in version 1. So in version 1 a proof of
+holding is not a capability for a particular resource; binding it to a
+resource that the prover cannot make for itself belongs to the later layers of
+granting access and delegation (outline, "Core protocol" 12; threat model,
+section 6, item 11; review 01, F5 and N1). It does not say the data was never
+viewed, never copied, or still available.
 
 ## 6. One-time reveal
 
@@ -309,7 +322,8 @@ value to carry (question 3).
    reveal is an old-design mistake (outline, "Reference: old Specter code").
 7. **Binding digest.** The node computes it from the transaction's fields and
    uses its own value as the public input, never one taken from the sender.
-8. **Root.** The data-tree root of a block on the node's canonical chain. A
+8. **Root.** The data-tree root of an ancestor of the including block, which on
+   the node's canonical chain is a block of that chain (spec 05, section 5). A
    coin-tree root, or a root seen only on a discarded branch, is rejected.
 9. **Marker unused.** The marker is not in the data spent-marker set of the
    canonical chain, and no earlier transaction in the same block uses it.
@@ -321,7 +335,9 @@ value to carry (question 3).
     binding digest is the one in the public inputs.
 11. **Apply, all or nothing.** In one state change: add the marker to the data
     spent-marker set, settle the fee as question 1 decides, and write the
-    receipt (marker, purpose, verifier or recipient field). Nothing is minted,
+    receipt (marker, purpose, verifier or recipient field; the marker is what
+    wallets take status from, spec 05, section 8). It carries no leaf and no
+    note, because nothing is appended, and never the spent commitment `C`. Nothing is minted,
     nothing is appended to either tree, and spec 03's running totals do not
     change. A reorganisation that removes the block makes the marker unspent
     again.
@@ -334,7 +350,10 @@ degree that the chain is (threat model, section 6 item 3).
 ## 7. Revocation
 
 Revocation is how the holder uses a data commitment up so that proofs of
-holding fail afterwards (outline, second milestone 6).
+holding that open it fail afterwards, against any marker status that includes
+the revocation (outline, second milestone 6). A proof of holding names no
+particular commitment (section 5, "What it claims"), so another unspent
+commitment still proves holding of itself.
 
 - **What it is.** A one-time reveal (section 6) by the holder with the revoke
   purpose in the binding digest. **Proposed:** revoke is its own purpose tag,
@@ -403,8 +422,9 @@ a copy exists elsewhere. The chain does not guarantee the file stays available
 The linkage test for data (outline, second milestone 5; core requirement 3)
 pulls the raw commit transaction, every proof of holding and the reveal or
 revocation of one data commitment and asserts that no value appears in more
-than one of them, apart from a whitelisted shared tree state and the chain
-constants (chain identifier, version, type and purpose tags). The commit
+than one of them, apart from a whitelisted shared tree state, the chain
+constants (chain identifier, version, type and purpose tags) and the values
+each verifier chose (its identity and challenge). The commit
 publishes `C`, `F_d` and the note; a reveal publishes the marker and the
 binding digest; a proof of holding publishes neither. A wallet proves against a
 recent, widely shared tree state, never the one its own commit created
@@ -423,8 +443,8 @@ storage"; threat model, C7 and C32) and are the only claims made for data.
   copied; the key does not control the bytes after that.
 - Availability is not guaranteed. The chain does not keep the data and does not
   promise the file stays available.
-- Revocation is "used up", not "erased". It ends proofs of holding; it does not
-  remove a copy anywhere.
+- Revocation is "used up", not "erased". It ends proofs of holding that open
+  the revoked commitment; it does not remove a copy anywhere.
 - "Not revealed" holds as of the tree state used, on the chain the verifier
   trusts, and only to the degree that chain is final.
 - The data is protected by the digits' strength alone once its ciphertext is
@@ -445,13 +465,18 @@ in which question 1 is settled.
   commit payload with an extra field to carry a key is rejected at the
   exact-length check (spec 03, section 6, step 2). The wallet's rule that
   writes nothing that unlocks data (section 4) is what this checks.
-- **CR-D2. A proof for one commitment is not a proof for another.** A valid
-  proof of holding for commitment A, after A is revoked, is presented while an
-  unrelated commitment B (the prover's own) is unspent: it fails at verifier
-  check 6, because the non-membership in section 5, item 2 concerns the marker
-  of the commitment opened in the proof. A proof that opens B but uses A's
-  marker for the non-membership check cannot be made (the marker is derived
-  inside the proof).
+- **CR-D2. A proof for one commitment is not a proof for another.** After
+  commitment A is revoked, while an unrelated commitment B (the prover's own)
+  is unspent: A's earlier proof presented again is rejected at verifier check
+  3 (its challenge was answered) or check 5 (its marker-set root is not
+  current), and a new proof that opens A against a marker-set root that
+  includes the revocation cannot be made, because the non-membership in
+  section 5, item 2 concerns the marker of the commitment opened in the proof.
+  A proof that opens B but uses A's marker for the non-membership check cannot
+  be made (the marker is derived inside the proof). A new proof that opens B
+  does verify, because a proof of holding names no particular commitment
+  (section 5, "What it claims"); this test checks only that A's own proof and
+  A's marker can no longer be used.
 - **CR-D3. Verifier binding.** A proof of holding made for verifier X is
   presented to verifier Y with the same challenge value: Y rejects it at
   verifier check 4, and at check 6 if Y's identity is substituted.
@@ -504,7 +529,9 @@ in which question 1 is settled.
   applied in section 4; nothing is written.
 - **CR-D15. Linkage.** The test of section 9 passes over commit, two proofs of
   holding and a revocation, and fails against a deliberately linked design
-  whose reveal publishes `C` or whose proofs of holding share a value.
+  whose reveal publishes `C` or whose proofs of holding share a value other
+  than the shared tree state, the chain constants and the verifiers' own
+  choices.
 - **CR-D16. Chain and purpose binding.** A proof of holding from a chain with
   another identifier or version is rejected at verifier check 2. A data reveal
   made with the reveal purpose and submitted as a revocation, or the other way

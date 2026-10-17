@@ -32,7 +32,7 @@ specification. Section 14 holds test vectors, and
 | Checksum | The tagged SHA3-256 of the digits before it, reduced modulo 10,000 | Front desk decision (author's choice); **Proposed** |
 | What the key holds | Only the secret digits and the checksum: no amount, tree position or extra secret | Outline ("Do not carry over") |
 | Derivation | Each secret is the tagged SHA3-256 of the key bytes, one tag per secret | Outline ("Technical starting picks"); layout **Proposed** |
-| Remainder blinding | Derived from the digits and a counter that never repeats for the key | Outline ("Coin rules"; "Do not carry over"); counter **Proposed** |
+| Remainder blinding | Derived from the digits and the commitment's hop number, used once per key on any one chain (section 8) | Outline ("Coin rules"; "Do not carry over"); counter **Proposed** |
 | Finding the current remainder | Bulk trial decryption of the notes, then the marker of each found commitment against the spent-marker set | Threat model, section 6 item 8; method **Proposed** |
 | Encrypted note | 156 bytes on the chain: random nonce, ChaCha20-Poly1305 ciphertext of a fixed 128-byte plaintext, tag | Outline ("Core protocol" 11); scheme and layout **Proposed** |
 | Versions | Version suffix on every tag, a version byte in every type tag, a key format code, a note version and a scheme ID | Outline ("Extension points" 1 and 4); values **Proposed** |
@@ -355,34 +355,48 @@ over" list.
 **Fresh blinding on every commitment (Proposed).** The commitments a key makes
 are numbered `i = 0, 1, 2, ...`. Number 0 is the key's first commitment: the
 commit, or the remainder of a claim into a new key. Commitment number `i` uses
-the blinding `b_i` of section 7. Every reveal under the key creates its
-remainder with the next unused number:
+the blinding `b_i` of section 7. A reveal under the key creates its remainder
+with the number one above the commitment it spends (review 01, F2 and N3):
 
 ```text
-i_next = 1 + the highest number this key has used
+i_next = 1 + the number of the commitment being spent
 ```
 
-where "used" counts every number found in the key's notes on the chain
-(spent or not) and every number in a transaction this wallet has broadcast,
-included or not. A retry after a dropped or reorganised reveal therefore takes
-a new number too. Numbers may have gaps; restore does not need them to be
-consecutive.
+So a key's numbers count its hops: number `k` is always the remainder of a
+reveal of number `k - 1`. A retry after a dropped or reorganised reveal of the
+same input takes the same number again, and numbers have no gaps.
 
-- **Never the same value twice.** Distinct numbers give distinct `b_i` (the
-  collision resistance of SHA3-256), so every remainder has a commitment and a
-  marker that differ from every earlier one in its sequence (threat model,
-  C26). No two published values of the sequence are equal.
+- **Never the same value twice on one chain.** Distinct numbers give distinct
+  `b_i` (the collision resistance of SHA3-256), so every remainder has a
+  commitment and a marker that differ from every earlier one in its sequence on
+  the same chain (threat model, C26). A key's commitments on one chain form a
+  single line, because each one after number 0 is made by spending the key's
+  one unspent commitment, so the numbers on one chain are 0, 1, 2, ... once
+  each. Two included reveals that made the same number `k` would both spend the
+  key's number `k - 1` on that chain, publish the same input marker, and only
+  one of them is included.
+- **Equal numbers mean the same input marker, on every branch.** A
+  commitment's marker `K(tag, r, b_i)` depends only on the key and the number,
+  not on the amount or the branch. So any two remainders numbered `k`, made on
+  one chain, on two branches, by two devices or by a retry, come from reveals
+  that publish the same input marker, the marker of number `k - 1`. Two such
+  remainders share their blinding, and if their amounts are equal their
+  commitments are equal, but that only repeats what the shared input marker
+  already shows: the same commitment of the key was revealed in both places.
+  When they are revealed in turn they publish the same marker, which again only
+  shows the same number of the same key revealed in both places, as a fork that
+  replays a reveal does (threat model T4). It never ties a reveal to another
+  number of the key, and it cannot double anything, because one chain accepts
+  one reveal per marker. A rule of "one above the highest number used", with
+  gaps, would not have this property: after a reorganisation a clean device
+  could give one number to remainders of two different inputs and so link two
+  reveals with different input markers.
 - **Same key by default.** By default the remainder keeps `s` and `r`, so the
   same key controls it. A claim uses a newly generated key, whose own
   commitment number 0 holds the remainder (outline, "Coin rules").
-- **If a number is reused anyway.** A wallet on a second device that has not
-  seen a pending reveal of the first can pick the same number. Both reveals
-  spend the same input, so they publish the same input marker and at most one is
-  included ([spec 03](03-coin-rules.md), section 8: two competing reveals), so
-  only one of the two remainders ever exists on a chain. The two remainders
-  would also share a marker, so neither could be revealed twice. Reuse links
-  nothing the shared input marker did not already link and cannot double
-  anything, but the wallet still avoids it as above.
+- **A key used for two first commitments.** Both are number 0 and share a
+  marker, so only one can ever be revealed; the wallet never does this
+  (section 5, "Generation").
 - **Data commitments** have no remainder in version 1
   ([spec 04](04-data-commitments.md), question 3), so a data key uses only
   `b_0`.
@@ -402,13 +416,16 @@ C41):
    the leaf the note is stored with, discard that note and report it; never
    trust a note's contents without this check.
 5. Compute each found commitment's marker and look it up in the coin
-   spent-marker set, also fetched in bulk.
+   spent-marker set, also fetched in bulk. Notes and markers count only once
+   checked against the block receipts and their headers' `receiptsRoot`
+   ([spec 05](05-trees-and-headers.md), section 8, item 5 and "Marker
+   status"); until then the result is "unknown" (review 01, F3 and F4).
 6. The current remainder is the found commitment whose marker is unspent. Its
    tree position is the position of its leaf, read from the chain, never
    guessed. If none is unspent, the key's value has been fully revealed or
    claimed away. If more than one is unspent (only possible if a key was
    wrongly used for two first commitments), the wallet shows each.
-7. The next number to use is one more than the highest `i` found.
+7. The next number to use is one more than the current remainder's `i`.
 
 Every note ciphertext uses a fresh random nonce, every marker is a hash of a
 different `b_i`, and no request names a single value, so restore publishes and
@@ -500,6 +517,16 @@ ChaCha20-Poly1305 for notes; the key formats of section 5.
   to a new scheme means revealing it and creating the remainder under the new
   one, which the proof-statement and upgrade specifications must allow (see
   section 12, item 7).
+- **Survival is the defined path (review 01, F9).** No upgrade removes or
+  disables the verification of a scheme the chain has accepted, and no upgrade
+  makes an unrevealed commitment of that scheme unrevealable, unless the same
+  upgrade, or an earlier one, already provides a tested reveal that opens a
+  commitment of the old scheme and creates its remainder under a new one
+  (migration). Until such a migration exists, every commitment of scheme 1
+  stays revealable under scheme 1 on every later version of the chain, so it
+  survives without any action by its holder (threat model C47). A scheme that
+  is at risk may be restricted only to reveals into a newer scheme, never cut
+  off.
 - A new key format (for example a different group count) gets a new format
   code. A new checksum rule gets a new check tag, so a wallet can tell versions
   apart by which checksum the digits pass.
