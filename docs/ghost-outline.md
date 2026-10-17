@@ -25,6 +25,8 @@ Claims we make, and claims we never make:
 - A Phantom Key controls authority and access. Data that has been shown can be copied; the key does not control the bytes after that.
 - On Vanish, coins are removed from supply and replaced by a bearer authorization to mint them again. Public accounting still tracks value entering and leaving the hidden set, so "removed from supply" is the claim, not "gone from existence".
 
+**Current focus: build the core technology** (founder, 2026-10-17). That means the commit and reveal proof statements, the trees and tree states in headers, the native private transaction, Phantom Key derivation, and their integration into the proof-of-work node, proven by the coin lifecycle (first milestone) and the data lifecycle (second milestone). Nothing outside the core is built until both milestones pass: no mining pool, no web app beyond a minimal demo, no ecosystem tooling, and no new features. Anyone may build such things on top of Ghost themselves.
+
 Directions examined and set aside on 2026-10-17, with reasons in [decision 0002](decisions/0002-core-value-proposition.md): delegation trees as the core, unforkable agents, digital originals, self-acting data (research only, no launch dependency), one-way bridges from other chains, and sealed audit reports.
 
 ## Positioning
@@ -191,14 +193,14 @@ The same lifecycle with a data commitment, using the same commitment format, tre
 - Built-in rules on GHOST.
 - Sending hidden GHOST to someone not present.
 - Combining keys.
-- Further data applications (for example prepaid, revocable access keys for AI services).
+- Further data applications.
 - Swaps with Bitcoin.
 
 ## Launch
 - Code, mining software and launch date are published in advance, with a sensible starting difficulty.
 - **No public test network period.** The main network is where the public finds bugs, and it is labelled experimental at launch. Internal test networks are used during development only.
 - **Mining software for non-technical people:** one copy-and-paste command gets a basic computer mining in about a minute.
-- **Solo mining and an operator-free pool** both work before launch day.
+- **Solo mining** works before launch day. Ghost builds no mining pool; anyone may run their own (founder decision, 2026-10-17).
 - There is no premine, no treasury and no founder allocation.
 - The founder mines alongside everyone else, with real miners lined up before launch day.
 - **Proof of no early mining:** the first block embeds the hash of a recent Bitcoin block.
