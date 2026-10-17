@@ -42,3 +42,65 @@ jobs:
         with:
           persist-credentials: false
       - run: shellcheck scripts/*.sh .githooks/commit-msg
+
+  # One job per Rust crate: release tests, then a library check for the
+  # browser target. Both run on the GitHub-hosted image like the jobs above:
+  # this repository is public, and public repositories never get the
+  # self-hosted runners. The toolchain is pinned to an exact version.
+  rust-proofs:
+    name: rust-proofs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUST_TOOLCHAIN: 1.99.1
+      CRATE: proofs
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            proofs/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-${{ hashFiles('proofs/Cargo.lock') }}
+      - name: Test (release)
+        run: cargo test --release --locked --manifest-path "$CRATE/Cargo.toml"
+      - name: Check wasm32-unknown-unknown
+        run: cargo check --locked --manifest-path "$CRATE/Cargo.toml" --lib --target wasm32-unknown-unknown
+
+  rust-client:
+    name: rust-client
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUST_TOOLCHAIN: 1.99.1
+      CRATE: client
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            client/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-client-${{ hashFiles('client/Cargo.lock') }}
+      - name: Test (release)
+        run: cargo test --release --locked --manifest-path "$CRATE/Cargo.toml"
+      - name: Check wasm32-unknown-unknown
+        run: cargo check --locked --manifest-path "$CRATE/Cargo.toml" --lib --target wasm32-unknown-unknown
