@@ -239,16 +239,24 @@ The outline keeps historical tree states on the canonical chain valid for
 showing membership ("Core protocol" 9). The rule (front desk decision):
 
 1. **Eligible roots.** A root `R` presented with a reveal of type `T` in an
-   including block at height `H` is eligible if and only if there is a block at
-   a height `h < H` on the node's canonical chain whose header's root field for
-   type `T` equals `R`. There is no age limit (spec 03, question 4, default).
-2. **Canonical, not seen.** The lookup is against the canonical chain as it is
-   when the check runs, never against a cache of roots seen, imported, gossiped
-   or once canonical. A root that appeared only in a block of a discarded
-   branch is rejected, even if the node imported that block, accepted proofs
-   against it, or saw it canonical before a reorganisation. A root that appears
-   both on a discarded branch and on the canonical chain (for example in a block
-   that added no leaf of that type) is eligible because of the canonical block.
+   including block `B` at height `H` is eligible if and only if there is a block
+   at a height `h < H` among the ancestors of `B` (the chain from `B`'s parent
+   back to genesis) whose header's root field for type `T` equals `R`. There is
+   no age limit (spec 03, question 4, default). The answer depends only on `B`'s
+   own ancestry, never on which branch the validating node follows at the
+   time, so every node that validates `B` gets the same answer, including a
+   node that validates `B` on a side branch during a reorganisation (review 01,
+   F6). For pool admission, which has no including block yet, `B` is the next
+   block on the node's canonical head, so the ancestors are the canonical chain
+   up to the head.
+2. **Ancestry, not seen.** The lookup is against `B`'s ancestors, never against
+   a cache of roots seen, imported, gossiped or once canonical. A root that
+   appears only in a block outside `B`'s ancestry, such as a block of a
+   discarded branch, is rejected, even if the node imported that block,
+   accepted proofs against it, or saw it canonical before a reorganisation. A
+   root that appears both on a discarded branch and among `B`'s ancestors (for
+   example in a block that added no leaf of that type) is eligible because of
+   the ancestor.
 3. **Earlier blocks only.** A reveal may use only roots of blocks before its
    including block. The including block's own root is never eligible (it does
    not exist when the proof is made, and spec 02, section 8 forbids the root of
@@ -267,8 +275,11 @@ showing membership ("Core protocol" 9). The rule (front desk decision):
 **How a node looks it up (Proposed).** The node keeps an index from each
 (type, root) to the canonical heights whose header carries it. It updates the
 index in the same step as its canonical-chain pointers, so that a reorganisation
-changes both at once (section 7). An implementation may look roots up any other
-way that gives the same answer on every chain.
+changes both at once (section 7). When it validates a block whose parent is not
+its canonical head (a side branch, or the new branch of a reorganisation before
+the switch), it answers from the canonical index below the fork point and walks
+the branch's own headers above it. An implementation may look roots up any
+other way that gives the same answer for the same block's ancestry.
 
 **The shared epoch.** Which eligible root a wallet uses is the wallet's rule:
 the epoch root of spec 02, section 8, unchanged. The node accepts any eligible
@@ -285,7 +296,12 @@ this gap and its default.
 - **TH-9. A discarded branch is rejected even if seen.** The node imports a
   side branch, then the canonical branch overtakes it. A reveal against a coin
   root that appears only on the side branch. Expected: rejected at step 7, at
-  pool admission and in a block, although the node imported the root.
+  pool admission and in a block, although the node imported the root. In
+  reverse: a node following branch A receives a heavier branch B whose blocks
+  hold a commit and then a reveal against a coin root of B's own earlier
+  block. Expected: the reveal passes step 7 while B is validated, the node
+  switches to B, and a node that followed B from the start ends in the same
+  state (review 01, F6).
 - **TH-10. Own block, later block or wrong type.** A reveal whose root is the
   coin root of its own including block, of a block above it, or a data root.
   Expected: rejected at step 7.
@@ -365,7 +381,11 @@ depends on how deep the reorganisation is.
 2. **Roots leave at once.** The roots in the headers of disconnected blocks
    leave the eligible set in the same step as the canonical-chain pointers
    change, before any transaction is admitted or any block is validated on the
-   new head. The roots of the new branch join it in the same step.
+   new head. The roots of the new branch join it in the same step. While the
+   new branch is executed (step 1), each of its blocks is validated against its
+   own ancestry (section 5, item 1) and the state of its own parent, not
+   against the old head, so the switch cannot depend on the order in which the
+   node learned of the branches.
 3. **Transactions return to the pool.** Transactions of disconnected blocks that
    are not in the new branch go back to the pool and are fully rechecked
    against the new head: every check of spec 03, sections 6 and 7, and spec 04,
@@ -375,7 +395,7 @@ depends on how deep the reorganisation is.
 4. **In-flight proofs.** Every pending reveal in the pool is rechecked in the
    same way, whether it came from a disconnected block or not. A proof against a
    root that is no longer canonical is rejected; the wallet must build a new
-   reveal against a canonical root, with a new remainder number (spec 01,
+   reveal against a canonical root, with the same remainder number (spec 01,
    section 8).
 5. **Positions may change.** A commit re-included on the new branch may land at
    a different position or in a different tree index. Receipts of the new
@@ -447,6 +467,27 @@ response. Pages above the list are empty; their root is `Z_12`.
    siblings from the leaves of its page, 20 from the page-root list.
 4. Any mismatch, missing page or disagreement rejects the data from that
    endpoint; the wallet asks another. It never fills a gap with a guess.
+5. **Notes are authenticated separately (review 01, F3).** The page root covers
+   the leaves only, not the notes stored with them, so a page whose leaves
+   match can still carry altered notes; an altered note of the wallet's own
+   simply fails to decrypt and would be passed over as someone else's. The
+   wallet therefore treats the notes of a page as unchecked until it has
+   compared every one of them, byte for byte, with the note in the receipt of
+   the transaction that appended the leaf, taken from the block receipts of
+   the page's blocks and checked against each block's `receiptsRoot` in its
+   own header chain. Receipts are fetched in bulk for every block from the
+   scan start, whatever the wallet expects in them, so the fetch names no
+   commitment. So the receipt of every transaction that appends a leaf (a coin
+   commit, a data commit, a coin reveal's remainder) carries the appended leaf,
+   its tree index and position, and its note bytes, and the receipt of every
+   reveal, coin or data, carries its marker (spec 03, section 6, step 10 and
+   section 7, step 13; spec 04, section 4 and section 6, step 11). A data
+   reveal appends nothing, so its receipt carries no leaf and no note, and no
+   receipt ever carries a spent commitment (review 01, N4). The receipt layout
+   fixes where (section 12, item 5). Receipts are fetched by block range, never
+   by transaction, commitment or marker. A restore result, "found"
+   or "nothing found", is final only once every note it read is checked this
+   way; until then the wallet reports it as unchecked.
 
 **The scan start.** A clean restore starts at page 0 of tree 0 of each type. A
 wallet that is up to date starts at the first page it has not yet stored whole,
@@ -465,13 +506,18 @@ which found commitment is unspent (spec 01, section 8, step 5). **Proposed:**
 they are served the same way, as marker pages of 4,096 markers of one set in the
 order their reveals were included, as of an anchor. These pages are not
 checkable against a header root (no spent-marker-set root is in the header,
-section 6). A lying endpoint can only make a commitment look spent (the wallet
-shows it as unavailable) or unspent (the reveal is rejected by every node and
-nothing is lost). **Proposed:** the wallet compares the marker pages of two
-unrelated peers and treats any disagreement as unknown, never as unspent. A
-wallet that wants authenticated status downloads the block bodies instead and
-reads the markers from the reveal transactions, checked against each header's
-transactions root; this also names no marker.
+section 6), so they are hints only (review 01, F4). A lying endpoint, or
+several that agree, can make a commitment look spent or unspent, and agreement
+between peers proves nothing against an attacker that runs many of them
+(threat model T8). **Rule:** the wallet takes marker status only from the
+markers in the reveal receipts of every block from its scan start, checked
+against each block's `receiptsRoot` (item 5 above), in the same bulk fetch as
+the notes; this names no marker. A marker page may let it show a provisional
+answer sooner, marked as unchecked, and a page that disagrees with the
+receipts is rejected with its endpoint. A status that is not yet checked is
+"unknown", never "unspent" or "spent". A wrong status can never make the chain
+accept a bad reveal (every node checks the marker itself), but it can mislead
+the holder, which is what this rule prevents.
 
 **Why 4,096 (Proposed).** Every wallet downloads every page from its scan start,
 so the page size does not change what an endpoint learns; it sets the size of
@@ -507,8 +553,8 @@ section 6 item 8).
 
 | Node class | Keeps | Serves |
 |---|---|---|
-| Full node, including an archive node | Every leaf and note of every tree index of both types, every page root, every spent marker; no pruning of these in version 1, whatever the base client prunes of old state | Pages, page-root lists and marker pages to any peer |
-| Snap-synced node | State first, then the history above, downloaded from peers | Only pages it has checked against canonical headers |
+| Full node, including an archive node | Every leaf and note of every tree index of both types, every page root, every spent marker, and the receipts of every block (review 01, N5); no pruning of these in version 1, whatever the base client prunes of old state or history | Pages, page-root lists, marker pages and block receipts by block range to any peer |
+| Snap-synced node | State first, then the history above, including every block's receipts, downloaded from peers | Only pages and receipts it has checked against canonical headers |
 | Header-only client (light verifier, wallet) | None of it, beyond the pages a wallet keeps for its own keys | Nothing |
 | Project-run indexer | Whatever it chooses | A convenience only, never required; a wallet checks its answers as any peer's |
 
@@ -516,8 +562,10 @@ section 6 item 8).
 and notes from block bodies and receipts as it executes them. A snap-synced node
 gets the state, including the tree states, then downloads the history pages of
 every tree index of both types from peers. It checks each page-root list against
-the root in the canonical header of its anchor and each page against its page
-root, exactly as a wallet does (section 8), and serves a page only after that.
+the root in the canonical header of its anchor, each page against its page
+root, and each note and marker against the receipts checked against their
+headers' `receiptsRoot`, exactly as a wallet does (section 8, items 5 and
+"Marker status"), and serves a page or a marker page only after that.
 Until its history is complete it says so and serves nothing it has not checked.
 It never needs a project-run indexer.
 
@@ -576,9 +624,14 @@ floor until then. No project-run indexer is reachable during any step.
   verifier (as in spec 03, CR-12), because the proofs are made for depth 32.
   Expected: both are accepted at the root check, and in Part A the real proof
   verifies.
-- **RT-9. A lying peer.** One full node serves a page with one changed leaf and
-  marker pages missing one marker. Expected: the wallet rejects the page and
-  takes it from another peer, and reports the marker disagreement as unknown.
+- **RT-9. A lying peer.** One full node serves a page with one changed leaf, a
+  page whose leaves are right but whose note of key A's remainder is replaced
+  by random bytes of the same length, and marker pages missing one marker; in a
+  second run three peers serve the same altered marker pages. Expected: the
+  wallet rejects the page with the changed leaf, finds the altered note by its
+  receipt check and takes the page from another peer, still restores key A's
+  remainder, and takes every status from checked receipts, never from the
+  agreeing marker pages.
 - **RT-10. Snap-synced node.** The node that joined last serves history after
   its own checks. Expected: before they finish it serves no page; afterwards its
   pages are byte-identical to the others', and the wallet can restore from it
@@ -588,12 +641,14 @@ floor until then. No project-run indexer is reachable during any step.
   (section 7, step 7) and ends with the state of the new branch.
 - **RT-12. Cost.** Record the bytes downloaded, the time to restore and each
   full node's history storage. Expected: the bytes downloaded are at least 188
-  per leaf plus 32 per page root, and the recorded figures replace the computed
-  floor of this section.
+  per leaf plus 32 per page root, plus the block receipts from the scan start
+  that authenticate notes and markers (section 8, item 5), and the recorded
+  figures, receipts included, replace the computed floor of this section.
 
 - **TH-21. Full nodes keep everything.** A full node run with the base client's
   most aggressive pruning setting. Expected: it still serves every page of
-  every tree index of both types.
+  every tree index of both types, and the receipts of every block from
+  genesis, each matching its header's `receiptsRoot`.
 - **TH-22. No unchecked page.** A snap-synced node is fed one altered page by a
   peer. Expected: it rejects the page, fetches it again elsewhere, and never
   serves the altered one.
@@ -945,10 +1000,17 @@ Each point rejects until the founder or a later specification settles it.
    phase. Any message that returns tree data for a single commitment, position,
    marker, note or transaction is refused.
 4. **Marker page integrity.** Marker pages are not checkable against a header
-   (section 8); a disagreement is "unknown", never "unspent".
+   (section 8); they are hints, and status is taken only from receipts checked
+   against `receiptsRoot` (review 01, F4). Until checked, status is "unknown",
+   never "unspent" or "spent".
 5. **Indexed logs.** If the transaction-format specification gives commit or
    reveal receipts logs, no leaf, marker or note may be an indexed topic, so
-   that a log filter cannot become a per-commitment lookup.
+   that a log filter cannot become a per-commitment lookup. Whatever layout it
+   picks, the receipt of a transaction that appends a leaf must carry the
+   leaf, its tree index and position and its note bytes, and the receipt of
+   every reveal its marker, so that `receiptsRoot` authenticates them; a data
+   reveal's receipt carries no leaf or note, and no receipt carries a spent
+   commitment (section 8, item 5).
 
 ## 13. Conflicts with other chapters
 
@@ -973,9 +1035,12 @@ difference is listed here for the founder's review.
    of the next tree and do not contain its leaves. Default here: a leaf in a
    full tree is proven against that tree's final root, which every holder of a
    leaf in it shares. Leaves added in the block that filled the tree have only
-   that block's root, the root of their own block, so their reveal names the
-   block of their commit; at most one block per 2^32 leaves is affected
-   (question 5).
+   that block's root, the root of their own block. Review 01 (F1) settles how
+   they use it: they wait until the next tree has started, and then prove
+   against the final root like every other leaf of the tree, so the reveal says
+   only "a leaf of this tree" and does not name the block of their commit
+   (spec 02, section 8, "A leaf of a full tree"). Question 5 asks whether that
+   default should change.
 5. **Any canonical height.** Spec 03, section 7, step 7 accepts "any canonical
    height". This document narrows it to heights below the including block
    (section 5), which no valid proof could break.
@@ -989,8 +1054,9 @@ difference is listed here for the founder's review.
 8. **Bulk marker set.** [Spec 01](01-commitments-and-keys.md), section 8, step
    5 and spec 04, section 8, step 4 fetch the spent-marker set in bulk and
    treat the answer as authoritative. This document serves it as marker pages
-   that a header cannot authenticate, and treats a disagreement as unknown
-   (section 8).
+   that a header cannot authenticate; after review 01 (F4) they are hints only,
+   and status is taken from receipts checked against `receiptsRoot` (section
+   8).
 
 ## 14. Questions for the founder
 
@@ -1008,8 +1074,9 @@ Each has a default that this document already applies.
    a full tree. Any shortcut that skips pages tells an endpoint where to look.
    Default: the full scan from page 0, with the computed cost stated.
 5. **Leaves of the filling block.** Their only root is their own block's (section
-   13, item 4). Default: accept the limit and document it; the wallet warns the
-   holder of such a leaf.
+   13, item 4). Default (review 01, F1): the wallet waits until the next tree
+   has started and proves against the final root, which every leaf of the full
+   tree shares, so nothing names their block.
 
 ## 15. Checking this document
 

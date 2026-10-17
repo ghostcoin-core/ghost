@@ -210,7 +210,9 @@ in this order and stops at the first failure.
 10. **Apply, all or nothing.** In one state change: debit `v` from the sender
     and credit it to nobody; append `C` to the coin tree; store the note with
     it; add `v` to the running total in (section 9); record the commit in the
-    receipt (leaf `C`, position, `v`). If any part fails, none applies and the
+    receipt (leaf `C`, tree index and position, `v`, and the note bytes, which
+    wallets check notes against; spec 05, section 8, item 5). If any part
+    fails, none applies and the
     transaction is rejected. The new coin-tree root goes into the block header
     (outline, "Core protocol" 6).
 
@@ -253,8 +255,10 @@ chain, and step 13 is the only step that writes.
    and domain tag, and uses its own value as the public input. It never takes
    a digest from the sender. A proof made for a different recipient, fee,
    amount, chain or purpose therefore fails at step 10.
-7. **Root.** The tree root is the coin-tree root in the header of a block on
-   the node's canonical chain (outline, "Core protocol" 9). A data-tree root,
+7. **Root.** The tree root is the coin-tree root in the header of an ancestor
+   of the including block, which on the node's canonical chain is a block of
+   that chain (outline, "Core protocol" 9; [spec 05](05-trees-and-headers.md),
+   section 5, which makes the rule exact for side branches, review 01, F6). A data-tree root,
    or a root seen only on a discarded branch, is rejected. **Proposed:** any
    canonical height is accepted, with no window.
 8. **Marker unused.** The marker is not in the spent-marker set of the
@@ -287,7 +291,8 @@ chain, and step 13 is the only step that writes.
     the chain's mint (section 4); burn the base-fee part of the fee and pay the
     tip to the block finder; append the remainder commitment and its note to
     the coin tree; update the running totals of section 9; write the receipt
-    (marker, remainder commitment and position, recipient, `out`). If any part
+    (marker, remainder commitment with its tree index and position, its note
+    bytes, recipient, `out`; spec 05, section 8, item 5). If any part
     fails, none applies. A reorganisation that removes the block reverts all of
     it together, so a marker never stays spent without its remainder, and a mint
     never stays without its marker.
@@ -307,9 +312,10 @@ never publishes (outline, core requirement 3).
   zero remainder is a valid leaf that can only produce a reveal whose fee it
   cannot pay, so in practice it is never revealed.
 - **Fresh blinding.** Each remainder uses blinding that differs from every
-  earlier one in its sequence, so its commitment and its marker differ
-  (threat model C26). How the wallet derives it from the digits is for the key
-  derivation specification.
+  earlier one in its sequence on the same chain, so its commitment and its
+  marker differ (threat model C26). The wallet derives it from the digits and
+  the commitment number ([spec 01](01-commitments-and-keys.md), section 8,
+  which also covers a number picked again after a reorganisation).
 - **Same key by default.** By default `s' = s` and `r' = r`: the same Phantom
   Key controls the remainder (outline, "Phantom Keys").
 - **New key as an option (claim).** A claim uses new, independent `s'` and
