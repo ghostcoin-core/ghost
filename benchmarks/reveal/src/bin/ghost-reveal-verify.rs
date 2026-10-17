@@ -7,7 +7,8 @@
 //! and one JSON line is printed per proof:
 //! `{"label":"...","native_verified":true}`.
 //!
-//! Exits 1 if any proof does not verify or a line cannot be read.
+//! Exits 1 if any proof does not verify, a line cannot be read, or a file
+//! holds no proof at all.
 //!
 //! Usage: ghost-reveal-verify FILE...
 
@@ -53,7 +54,9 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         };
+        let mut checked = 0usize;
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            checked += 1;
             let (label, result) = check(line);
             let label = label.replace('\\', "\\\\").replace('"', "\\\"");
             match result {
@@ -64,6 +67,10 @@ fn main() -> ExitCode {
                     println!("{{\"label\":\"{label}\",\"native_verified\":false,\"reason\":\"{reason}\"}}");
                 }
             }
+        }
+        if checked == 0 {
+            eprintln!("{file}: no proofs");
+            ok = false;
         }
     }
     if ok { ExitCode::SUCCESS } else { ExitCode::from(1) }

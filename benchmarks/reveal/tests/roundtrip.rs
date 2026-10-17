@@ -45,3 +45,18 @@ fn revision_matches_the_prover_crate() {
     assert!(manifest.contains(&format!("rev = \"{PLONKY3_REVISION}\"")));
     assert!(!manifest.lines().any(|l| l.contains("rev = ") && !l.contains(PLONKY3_REVISION)));
 }
+
+#[test]
+fn the_native_verifier_fails_on_a_file_without_proofs() {
+    let dir = std::env::temp_dir().join(format!("ghost-reveal-verify-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let empty = dir.join("empty.proofs");
+    std::fs::write(&empty, "\n  \n").unwrap();
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_ghost-reveal-verify"))
+        .arg(&empty)
+        .output()
+        .unwrap()
+        .status;
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(status.code(), Some(1));
+}
