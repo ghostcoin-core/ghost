@@ -48,8 +48,9 @@ recommendation is out of scope because the outline requires hash-based proofs.
   lines, has no tests, has had only follow-up edits for SDK-wide refactors since
   2024, and is used by no live chain I could verify. The one real user, Kulupu, copied the crate into
   its own tree in 2021, last released in October 2022, and is a volunteer side
-  project. A pure proof-of-work chain on Substrate also never finalises a block,
-  which has real costs for storage, pruning and sync (question 1).
+  project. A pure proof-of-work chain on Substrate also never finalises a block.
+  State pruning still works, but the storage layer quietly sets a reorg limit of
+  4,096 blocks, and new nodes cannot fast-sync (question 1).
 - Frontier is good enough for MetaMask-style use but is not Ethereum. It is
   built on a different EVM (SputnikVM, not revm), emulates Ethereum block
   headers instead of using them, uses its own base fee formula, returns zero for
@@ -164,43 +165,63 @@ by the proof of work.
 
 ### Pure proof of work leaves genesis as the only finalised block
 
-Substrate's storage and sync code assume blocks get finalised. A pure
-proof-of-work chain never calls finalise, so the finalised block stays at
-genesis. What I verified:
+A pure proof-of-work chain never calls finalise, so the finalised block stays at
+genesis. Substrate copes with that better than I first expected, but with a
+hidden depth limit. What I verified:
 
-- **State storage.** The database layer keeps state of unfinalised blocks in a
-  separate overlay (`substrate/client/state-db/src/noncanonical.rs`, at most 32
-  sibling blocks per height, line 32). Nothing is pruned until a block is
-  finalised. In "archive" mode (`state-db/src/lib.rs:328-346`) state is written
-  immediately, and old state is never deleted. So every node is either an
-  archive node with ever-growing state, or holds the whole unfinalised
-  history in the overlay, which is an in-memory structure with a database
-  journal (`noncanonical.rs:35-39`; I did not measure its growth). At 30-second blocks that is 1,051,200 blocks a year.
+- **State pruning works without finality, on a delay.** The database layer
+  force-canonicalises state a fixed number of blocks behind the best block
+  "regardless of finality" (`substrate/client/db/src/lib.rs:1580-1624` and the
+  call at `:1840-1842`). The delay is a constant, 4,096 blocks
+  (`substrate/client/service/src/builder.rs:389-397`), about 34 hours at 30-second
+  blocks. State older than that is eligible for pruning under the normal
+  pruning setting (`substrate/client/state-db/src/lib.rs:349-365`). Only archive
+  mode (`state-db/src/lib.rs:328-346`) keeps everything. Younger state sits in an
+  overlay (`state-db/src/noncanonical.rs:35-39`) that allows at most 32 sibling
+  blocks per height (line 32), so it is bounded.
+- **That delay is a hidden reorg limit.** Setting a head more than the delay
+  below the current best block returns `SetHeadTooOld`
+  (`db/src/lib.rs:1472-1475`, with a test at `:5454`), and a fork that branches
+  from a block whose state has already been canonicalised and pruned cannot be
+  executed. I did not test the fork-point case, but the effect is that a reorg
+  deeper than about 4,096 blocks is not applied by nodes with default settings,
+  which makes the storage layer, not the specification, the place where deep
+  reorgs are refused. A node that has pruned older state and one that is an
+  archive node would behave differently on such a fork, which is a split risk.
+  Ghost should set this depth deliberately and write it into the specification.
+- **Block history.** Pruning of block bodies is keyed to the finalised block
+  number (`db/src/lib.rs:2104-2135`), so with finality stuck at genesis nothing
+  is pruned. I did not check the default setting. Nodes that serve sync keep full
+  history anyway.
 - **Fast sync.** Warp sync exists only through GRANDPA proofs: the only real
   `WarpSyncProvider` is in `substrate/client/consensus/grandpa/src/warp_proof.rs:356`.
-  A new node must therefore download and execute every block from genesis.
-  Every historical Reveal proof is verified again during that replay.
-- **Reorg depth.** With nothing finalised, a reorg of any depth is accepted.
-  Kulupu added a "weak subjectivity" wrapper that refuses deep reorgs unless
-  they carry a lot more work (`kulupu: pow/src/weak_sub.rs`, wired in at
-  `src/service.rs:207-211` with parameters 30 and 1.1).
+  A new node must therefore download and execute every block from genesis, at
+  1,051,200 blocks a year at 30-second blocks. Every historical Reveal proof is
+  verified again during that replay.
+- **No explicit reorg rule.** Beyond the storage limit above, the proof-of-work
+  import accepts any fork with more total difficulty. Kulupu added a "weak
+  subjectivity" wrapper that refuses deep reorgs unless they carry far more work
+  (`kulupu: pow/src/weak_sub.rs`, wired in at `src/service.rs:207-211` with
+  parameters 30 and 1.1).
 - **Fork-choice storage.** Total difficulty lives only in each node's own
   auxiliary storage (`POW_AUX_PREFIX`, lines 131-147), not in the header. A
   node that imports a block without its parent's entry restarts the count from
   zero, which is one more reason fast sync cannot be bolted on without work.
 
-The workable fixes are a depth-based finaliser in the node (finalise the block
-N behind the best, so state can be pruned) and a matching refusal of deeper
-reorgs, or the later GRANDPA layer (question 10). Both turn a depth into a
-consensus rule. The outline lists "behaviour when mining power drops" and
-settlement as open, so this is a specification decision for Ghost either way.
+So pruning does not need a new finality rule. What Ghost needs is an explicit
+reorg-depth rule that matches what the storage layer enforces, which could be
+the 4,096-block default made official, a weak-subjectivity check like Kulupu's,
+or a depth finaliser in the node, or later GRANDPA (question 10). Each turns a
+depth into a consensus rule. The outline lists "behaviour when mining power
+drops" and settlement as open, so this is a specification decision for Ghost
+either way.
 
 ### Verdict for question 1
 
 The engine is real but small. It saves the seal-checking import path, the
 cumulative-work fork choice and the mining worker loop, which the Reth survey
 puts at the larger share of its proof-of-work cost. It does not save the
-difficulty rule, the timestamp rule, mining RPC, finality and pruning policy,
+difficulty rule, the timestamp rule, mining RPC, reorg-depth and pruning policy,
 or sync by work. Estimate in the effort table below.
 
 ## 2. Adding a RandomX mining module
@@ -757,12 +778,13 @@ surveys exclude the proof system.
   They are replaced by a question of what happens if the voters stall or are
   captured: the chain keeps producing blocks, but finality stops.
 - It would make warp sync possible (`warp_proof.rs:356`), and let nodes prune
-  state, which pure proof of work does not.
+  block history, which pure proof of work does not.
 - The outline puts "Stake and finality layers" out of scope and calls settlement
   probabilistic, so this stays a later option.
 
 **A lighter alternative.** A depth finaliser in the node (finalise the block N
-behind the best, refuse deeper reorgs) gives pruning without a voter set. It is
+behind the best, refuse deeper reorgs) gives an explicit reorg limit and block
+history pruning without a voter set. It is
 a consensus rule, so every miner and node must apply the same N. Kulupu used a
 related idea, a weak-subjectivity check that refuses deep reorgs unless the new
 chain has far more work.
@@ -770,7 +792,7 @@ chain has far more work.
 **Effort.** Low confidence. A fixed voter set: 6 to 10 engineer-weeks including
 tests. A miner-derived or other open set: 10 to 16 or more, mostly design and
 adversarial testing. A depth finaliser: 1 to 2 weeks, already counted in the
-sync row below because Ghost needs a pruning decision from day one.
+sync row below because Ghost needs an explicit reorg-depth decision from day one.
 
 ## Effort estimate
 
@@ -789,7 +811,7 @@ upstream. Ranges, not promises.
 | Ramp-up on Substrate and Frontier; node and runtime skeleton from the solochain template on one SDK stable and its Frontier branch; remove Aura and GRANDPA; CI | 3 to 4 | Medium |
 | Proof-of-work core: `PowAlgorithm`, difficulty pallet and runtime API, difficulty and cumulative work in the digest, miner address in the pre-runtime digest, `FindAuthor`, timestamp rule, reward pallet, mining thread, work request and submit interface | 4 to 6 | Medium; Kulupu is a design reference only |
 | RandomX: native binding and build, key-block rule held in runtime storage, caches, light verification | 3 to 5 | Medium; the Ethereum Classic survey budgets 4 to 6 for its equivalent |
-| Sync and reorg policy: sync by work, depth finaliser and pruning, deep-reorg rule, tests of partitions and long forks | 4 to 7 | Low; nothing to copy and no tests upstream |
+| Sync and reorg policy: sync by work, explicit reorg-depth rule and pruning settings, tests of partitions and long forks | 4 to 7 | Low; nothing to copy and no tests upstream |
 | Frontier on a proof-of-work chain: EVM block context (difficulty), Ethereum header builder, base fee, 18 decimals, precompile set, Cumulus coupling, EVM feature selection | 3 to 5 | Medium; patches an upstream that is behind |
 | Tree pallets, root digests, header check, runtime API and RPC for header-only verification | 3 to 5 | Medium; the digest check is built in |
 | Sender-less Reveal and Commit: bare extrinsic validation, marker tags, fixed-fee path, pool limits, burn and mint, Commit precompile, Ethereum-side visibility | 4 to 6 | Medium |
@@ -828,14 +850,14 @@ maintenance excluded), the figures are:
 | Burn on commit | Stateful precompile; atomicity to verify | Native state change | Precompile; atomicity from storage transactions, read not run |
 | Node licence | MIT and Apache | GPL-3.0 node, LGPL-3.0 libraries | Apache-2.0 runtime; GPL-3.0 with Classpath exception for node crates |
 | Upstream pace | A release every 2 to 4 weeks | One backport round every few months | Stable every 3 months, supported 1 year; Frontier one or two stables behind |
-| Finality and pruning | Choice for Ghost; untested for long runs | Standard for proof of work | Choice for Ghost; none by default |
+| Finality and reorg limit | Choice for Ghost; untested for long runs | Standard for proof of work | Choice for Ghost; no finality, and an implicit 4,096-block storage limit |
 
 Reading it fairly: Core-Geth is cheapest to build and most expensive to keep
 alive. Reth and Substrate cost about the same to build on the normalised scope,
 and Substrate's range is a few weeks lower. Substrate is not much cheaper
 than the "proof-of-work engine exists" premise suggests because the engine
 covers only the import and fork-choice path, which is part of Reth's
-proof-of-work rows, while Substrate adds a ramp-up, the finality and pruning
+proof-of-work rows, while Substrate adds a ramp-up, the reorg-depth and pruning
 decision, and the Frontier patching. The choice should not rest on effort.
 
 ## Risks
@@ -845,11 +867,13 @@ decision, and the Frontier patching. The choice should not rest on effort.
    Ghost would become its real maintainer. Mitigation: build the sync, reorg and
    key-boundary tests first on a private test network, and plan to vendor the
    crate as Kulupu did.
-2. **No finality.** Genesis stays the only finalised block. Storage grows without
-   pruning, new nodes cannot fast-sync, and any reorg depth is accepted until
-   Ghost adds a rule. A depth rule is a consensus rule that splits the network if
-   a reorg beyond it is ever honest. Mitigation: decide it in the specification
-   before writing the fork-choice code, as the Reth survey also says.
+2. **No finality, and a hidden reorg limit.** Genesis stays the only finalised
+   block. New nodes cannot fast-sync. State pruning works, but the default
+   4,096-block canonicalisation delay acts as a reorg limit that archive and
+   pruned nodes may apply differently. A depth rule is a consensus rule that
+   splits the network if a reorg beyond it is ever honest. Mitigation: decide it
+   in the specification before writing the fork-choice code, as the Reth survey
+   also says, and test a reorg at and beyond the limit.
 3. **Sync ranks peers by height.** There is no accumulated work in the sync
    code. Possible abuse by a high chain with little work depends on the
    difficulty rule; untested. Mitigation: a seal-checking header phase and an
@@ -906,7 +930,7 @@ decision, and the Frontier patching. The choice should not rest on effort.
    be patched and decided about finality (Substrate).
 2. If Substrate is chosen, make the first engineering task a minimal node: the
    solochain template with Aura and GRANDPA removed, `sc_consensus_pow` with a
-   dummy hash, a difficulty pallet, a depth finaliser, and a three-node test
+   dummy hash, a difficulty pallet, an explicit reorg-depth rule, and a three-node test
    network that survives a deep reorg and a partition. That retires risks 1 to 4
    cheaply, before anything else depends on them.
 3. In parallel, run a hands-on Frontier pass: deploy a contract with Foundry,
