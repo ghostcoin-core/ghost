@@ -20,6 +20,8 @@ are built at all; speed decides among those.
 | `verify-ffi/` | Package `ghost-verify-ffi`: a C interface to the verifier, and a Go program in `verify-ffi/go/` that calls it through cgo |
 | `wasm/` | Package `ghost-bench-wasm`: WebAssembly exports to prove and verify in a worker |
 | `web/` | The page (`index.html`, `main.js`), the worker (`worker.js`) and `serve.py`, which serves them cross-origin isolated |
+| `reveal/` | Package `ghost-reveal-bench`, its own workspace: the real coin reveal prover of `../proofs`, unchanged, as plain WebAssembly exports for a worker, and `ghost-reveal-verify`, which verifies natively the proofs made in the browser |
+| `web/reveal.html`, `web/reveal-main.js`, `web/reveal-worker.js` | The page and worker for the real prover, served by the same `serve.py` |
 | `summarize.py` | Reads records and prints the table and the verdict |
 | `tests/` | Tests for `summarize.py` and `serve.py`, with a small fixture |
 | `run.sh` | The one command: build, correctness checks, native reference, summary |
@@ -29,6 +31,7 @@ are built at all; speed decides among those.
 ```sh
 benchmarks/run.sh            # build, correctness checks, native reference, summary
 benchmarks/run.sh --web      # also build the browser bundle into web/pkg
+benchmarks/run.sh --reveal   # also build the real reveal prover into web/reveal-pkg
 ```
 
 `--web` installs the pinned `wasm-bindgen` command-line tool into
@@ -69,6 +72,20 @@ The page records the Chrome build, the logical cores, whether threads and
 SIMD were available and used, the module start-up time on the cold run, the
 WebAssembly memory after each proof, and the CPU pressure state when Chrome
 reports it.
+
+## The real reveal prover
+
+`reveal.html` measures the real coin reveal statement of `ghost-proofs` in
+its shipped configuration (decision 0003), not the benchmark statement. Its
+results are in [reveal-results.md](../docs/benchmarks/reveal-results.md).
+
+1. Build: `benchmarks/run.sh --reveal --no-native`. The module needs no
+   bindings generator: the worker loads it with `WebAssembly.instantiate`.
+2. Serve with `python3 benchmarks/web/serve.py` and open
+   `http://localhost:8000/reveal.html`. A session is run as above.
+3. Download the records and the proofs. Verify every proof natively:
+   `benchmarks/reveal/target/release/ghost-reveal-verify <file>.proofs`
+   prints one line per proof and exits 1 if any does not verify.
 
 ## Builds
 
