@@ -1,0 +1,155 @@
+# Threat model
+
+Status: first version, written before the lifecycle specification. It covers the design in the [outline](ghost-outline.md) and the [base client decision](decisions/0001-base-client.md). It must be updated whenever the outline changes a claim, and checked again against the lifecycle specification when that is written.
+
+The main network is labelled experimental at launch. All review so far is done with AI models, with no outside audit and no paid review. This document says what we think the design protects, what it does not, and what each protection depends on. It is a statement of intent to be tested, not a proof.
+
+## How to read this document
+
+- **Attackers** (T1 to T12) are the parties we design against, with what each can do.
+- **Assumptions** (A1 to A11) are the things that must be true for a protection to hold. If one fails, every claim that lists it fails with it.
+- **Claims** (C1 to C47) are the privacy and security claims the outline makes, each mapped to the attackers it defends against and the assumptions it rests on.
+- Section 6 lists claims that cannot be defended as the outline words them today, with the wording we can defend.
+
+## 1. What is protected
+
+Five properties are the core. Everything else in the claims table is a part of one of them.
+
+1. **No counterfeit coins.** Coin value in the hidden set can only come from burned public GHOST, from authorised issuance, or from a value-conserving reveal of an existing coin commitment. A data commitment can never create money.
+2. **No double reveal.** A commitment can be used up once. A second one-time reveal of the same commitment is rejected on the canonical chain. This is settled probabilistically (see A4).
+3. **No link between a commitment and its reveal.** The reveal does not publish the commitment it spends, and no value appears in both the commit and the reveal transactions apart from a shared, widely used tree state. The linkage test checks this for coins and for data.
+4. **Holder-only control.** Whoever holds the digits (the Phantom Key) controls the commitment and its remainder. Nobody without the digits can reveal it, take it, or stop it from being valid. No administrator, committee, contract owner or time-lock exists that could.
+5. **Each proof is bound to its purpose.** A reveal proof commits to the recipient, the revealed amount, the remainder commitment, the one-time marker, the rules, the fee, the chain, the protocol version and a domain tag. A proof of holding is bound to the verifier, the chain and a challenge the verifier chooses. A copied proof cannot be used for anything else.
+
+## 2. What is not protected
+
+Stated plainly, so nobody relies on it by mistake.
+
+- **Destinations, amounts, timing and network data can correlate.** A commit shows its sender and the amount burned. A reveal shows its recipient and any public amount. A commit and a reveal of the same unusual amount, close in time, or sent from the same network address, can be matched by anyone watching. The design removes the cryptographic link, not the statistical one.
+- **A small crowd is a weak shield.** Privacy depends on how many unrevealed commitments look alike. Early in the chain's life that number is small.
+- **Ordinary accounts start only as safe as Ethereum's.** They use elliptic-curve signatures. A quantum attacker who can break them can spend from public balances. A post-quantum migration is planned, not built.
+- **A bearer key has no recovery.** Lose the digits and the value or data is gone. Show the digits to someone and they hold full control; the first to reveal wins. There is no administrator to appeal to.
+- **The chain can prove a commitment has not been revealed (as of a block). It can never prove nobody has viewed its contents.** The author, and anyone the digits are shown to, can read them.
+- **Data that has been shown can be copied.** The key controls authority and access, not the bytes after they have been seen. The chain does not keep the data and does not promise the file stays available.
+- **Removed from supply is not gone from existence.** When coins are committed they leave the public supply and become claims. Public accounting still tracks value entering and leaving the hidden set. The claim is "removed from supply", not "destroyed".
+- **Settlement is probabilistic.** A reveal can be undone by a reorganisation. Waiting longer lowers the chance, and never makes it zero.
+- **Software can be wrong.** The custom parts are new and have had only model-based review. A bug in them is not covered by any claim here.
+- **Availability is not promised.** A miner or majority can delay or censor transactions. The chain can stall if most mining power leaves.
+
+## 3. Attackers and their powers
+
+| ID | Attacker | What it can do | What it cannot do |
+|---|---|---|---|
+| T1 | **Chain observer** | Reads every block, header, transaction, state value, marker and encrypted note, forever. Builds indexes. Joins chain data with outside data such as an exchange account that funded a commit. | See inside a commitment, tell which commitment a marker belongs to, or read a note without the digits. |
+| T2 | **Network observer** | Sees which network address sent or fetched what, and when: an internet provider, a node or endpoint operator, many hostile peers, a hosting provider. Can first-see a transaction at its entry point. | Read proofs' hidden inputs, or forge a transaction. Learns nothing about the digits from the traffic. |
+| T3 | **Malicious miner** (less than half of mining power) | Chooses which transactions to include and in what order, delays or omits a reveal, sees the pending pool, bends timestamps within the allowed range, withholds blocks (selfish mining), mines a short private fork. Sees the first sender address of anything sent directly to it. | Mint outside the rules, include an invalid proof (other nodes reject the block), redirect a proof to another recipient, or reveal a commitment without the digits. |
+| T4 | **Majority miner** (more than half) | Everything T3 can do, plus rewrite recent history, censor any transaction indefinitely, and reverse settlement. Can make a reveal vanish so the same commitment can be revealed again elsewhere (a double spend against a recipient). Can pick the heaviest chain at will. | Create a valid proof for a statement that is false, mint outside the rules (full nodes still reject it), reveal a commitment it holds no digits for, or change rules on nodes that do not upgrade. |
+| T5 | **Malicious web host or endpoint** | Serves altered app code that steals digits or shows a wrong amount. Runs a node endpoint that lies about the chain, shows stale or forked tree states, withholds history, or logs which commitments and witnesses a wallet asks for. | Break the proof system, or alter what is on the canonical chain. |
+| T6 | **Anyone shown a Phantom Key** | Reveals first, sweeps the remainder, reads the encrypted note, derives the data key and decrypts the off-chain data, copies shown data. Includes the sender who keeps a copy, a backup service, someone who photographs the screen. | Be stopped by the chain once they hold the digits. |
+| T7 | **Future quantum attacker** | Forges elliptic-curve signatures (ordinary accounts, peer identity, web certificates). Runs Grover-style search at roughly square-root cost against hashes and keys, and a quantum collision search with some further saving. May mine faster if quantum speedups apply to the work function. | Break a well-chosen hash by more than the square-root effect, or the zero-knowledge and soundness of a hash-based proof in the quantum random oracle model (see A1 and A2). |
+| T8 | **Hostile peer** | Floods headers with valid structure and bad seals, sends malformed or maximum-size proofs and Reveal transactions, fills pools, squats markers with invalid reveals, withholds history, runs many nodes to eclipse a victim (Sybil). | Cause an invalid block to be accepted, if the node limits and checks hold. |
+| T9 | **Private-fork attacker** | Mines a secret chain with a valid proof of work and shows it to a victim or to an off-chain verifier. Cost is mining power, not proof forgery. Combined with T8 it can eclipse a verifier who sees only headers. | Make a private fork heavier than the honest chain without more work. |
+| T10 | **Malicious dependency, build or release channel** | Ships altered code through a compromised library, build tool, release signer, mirror, installer host or app store. | Change the chain's rules by software alone: nodes enforce them, and a bad release only affects those who run it. |
+| T11 | **Commitment spammer** | Creates many commitments to fill the tree, bloat state, and shrink other users' anonymity set (the attacker knows which commitments are theirs, so the crowd really is smaller). Floods dust amounts. | Spend anyone else's commitment. |
+| T12 | **Malicious verifier** (proof of holding) | Collects proofs, relays a challenge between a prover and another verifier, records which commitments a prover can show, tries to reuse a proof elsewhere. | Reuse a proof for another verifier, chain or challenge, or turn a proof of holding into a reveal. |
+
+The founder and maintainers are not a separate attacker class on the chain: they have no power over it (outline, Maintenance). They are covered by T10, because they can publish software.
+
+## 4. Assumptions
+
+| ID | Assumption | If it fails |
+|---|---|---|
+| A1 | **Hash security.** The hash used inside proofs and trees, and the standard hash used for derivation, resist collision, preimage and second-preimage attacks at the stated level, with every use separately tagged. Standard authenticated encryption is secure. Against a quantum attacker, preimage search costs about the square root of the classical effort, so levels are stated after that reduction. | Fake membership, links or forged commitments become possible. |
+| A2 | **Proof-system soundness.** The hash-based proof system is sound at a stated security level, including in the quantum random oracle model, and the library implementing it is correct. Soundness comes before browser speed in the choice. | A false statement can be proved: counterfeit coins, theft. |
+| A3 | **Zero knowledge.** The proof system's privacy mode is on in the shipped configuration, and proof size, shape and timing leak nothing about the hidden inputs. | A proof can reveal which commitment it spends. |
+| A4 | **Honest-majority hashrate, probabilistic settlement.** Honest miners hold the majority of mining power, and a reveal is treated as final only after enough blocks. The work function has no large special-hardware, rented-hashrate or quantum advantage for one party. | Reorganisations and double reveals become cheap. |
+| A5 | **Correct custom code.** The commit and reveal statements, the coin accounting and origin rule, the private transaction and fee formula, key derivation from the digits, header encoding and the RandomX integration do what the specification says. The review behind this is model-based, with different models writing and reviewing, adversarial tests and written properties. There is no outside audit. | Any claim can fail in ways nothing else here covers. |
+| A6 | **Secure randomness.** Every Phantom Key is generated by the app from a secure random source on an uncompromised device. | Keys can be guessed. |
+| A7 | **Holder custody.** The holder keeps the digits secret, shows them only to someone they would trust with full control, and the device and screen they use are not compromised. | Bearer control is lost. |
+| A8 | **Honest build and distribution.** The software a user runs is the published code: pinned and licence-checked dependencies, signed and rebuildable releases, mirrors, and a way for the user to check them out of band. | Keys and funds leak through the app or the node. |
+| A9 | **History and connectivity.** At least one honest node keeps and serves commitment and note history, and each verifier or wallet can reach at least one honest peer and is not eclipsed. | Old keys cannot be restored, and a verifier can be shown a false chain. |
+| A10 | **Crowd and behaviour.** Enough similar unrevealed commitments exist, and users do not tie their own transactions together by repeating amounts, timing or network address. | Privacy is nominal. |
+| A11 | **Verifier identity.** For off-chain proofs of holding, the prover knows who the verifier is, and the verifier checks a recent header chain and the marker status itself. | A relayed or stale proof is accepted. |
+
+## 5. Claims, attackers and assumptions
+
+Every claim comes from the [outline](ghost-outline.md); the section named in brackets is where it appears. "Defends against" lists the attackers whose powers the claim has to survive. A claim marked **limit** only holds in the scope given; see section 6.
+
+| ID | Claim | Defends against | Rests on | Notes |
+|---|---|---|---|---|
+| C1 | Only the holder can act. No administrator, miner, committee or time-lock can reveal or take a commitment (core, requirement 1; Phantom Keys). | T3, T4, T10 | A1, A2, A5, A7 | **Limit.** Holds for revealing and taking. Miners can still delay or censor a reveal; T4 can do so without limit. "Holder" means whoever has the digits (T6). |
+| C2 | Quantum-safe throughout. Hash-based proofs only, never wrapped in elliptic-curve proofs (core, requirement 2; Cryptography; Positioning). | T7 | A1, A2, A5, A6 | **Limit.** Holds for commitments, proofs, trees and notes. Not for ordinary accounts, peer identity or web transport (C35). The digit count gives about half its bits against a quantum search (C20). |
+| C3 | No link between commit and reveal, shown by the linkage test (core, requirement 3; Transactions and fees). | T1, T2, T5 | A1, A3, A5, A10 | **Limit.** No cryptographic link. Amounts, timing and network data can still correlate (C31). The test finds shared values, not statistical matching. |
+| C4 | Two kinds of reveal: a one-time reveal that uses the commitment up, and a repeatable proof of holding (core, requirement 4). | T4, T12 | A2, A4, A5, A11 | Reuse of the one-time kind is blocked by the marker (C16, C19). |
+| C5 | Rules fixed at commit, such as time windows or destinations, are enforced on reveal (core, requirement 5; Coin rules). | T3, T4, T6 | A2, A4, A5 | A time rule depends on the block timestamp, which a miner can bend within the allowed range. The range of that error must be stated in the rule's specification. First milestone has no rules on GHOST. |
+| C6 | The chain can prove a commitment has not been revealed (core, claims). | T4, T9, T5 | A4, A5, A9, A11 | **Limit.** Holds as of a block height and on the canonical chain. A header-only verifier needs the marker status as well as the tree state (section 6, item 2). |
+| C7 | The chain can never prove nobody has viewed the contents; shown data can be copied; the key does not control the bytes after that (core, claims). | T6 | none (this is a disclaimer) | Stated limit, not a defence. Listed so it stays in public wording. |
+| C8 | On Vanish, coins are removed from supply and replaced by a bearer authorization to mint them again; public accounting still tracks value entering and leaving the hidden set (core, claims; Coin rules). | T1, T3 | A2, A5 | "Removed from supply" is the claim; the value still exists as claims. |
+| C9 | Launched by open proof of work with no allocation to anyone; no premine, no treasury, no founder allocation (Positioning; Launch). | T10, T3 | A4, A8 | Covered in C44. Not a privacy claim. |
+| C10 | Designed for post-quantum security within a defined threat model (Positioning). | T7 | A1, A2 | This document is the defined threat model. Same limit as C2. |
+| C11 | The chain is the root of trust; agents verify proofs between themselves at machine speed against block headers, with no transaction (Positioning; Agent readiness). | T9, T8, T12 | A2, A4, A9, A11 | **Limit.** A verifier trusts the heaviest header chain it can see. An eclipsed verifier can be shown a private fork (T9). Cost to the attacker is mining power, so the verifier should demand work and depth proportional to the value at stake. |
+| C12 | No new cryptography is invented; nothing custom where a proven implementation exists; dependencies are pinned and licence-checked (Design principles; Foundation). | T10, T7 | A1, A2, A8 | The custom statements still combine standard parts in a new way. That is a reason for A5, not an exception to it. |
+| C13 | Tree states are in every block header, so a proof can be verified from headers alone without a full node (Core protocol 6). | T9, T5 | A4, A9 | Shows tree membership only. It does not show the commitment is unused (C6). |
+| C14 | Showing contents happens off the chain, without giving the other party the ability to reveal (Core protocol 7). | T6, T12 | A1, A5, A7 | Holds if the value shown is derived one way from the digits and is not enough to produce the reveal secret. The viewer can still copy what they see. |
+| C15 | Historical tree states on the canonical chain stay valid for showing membership; a one-time reveal also checks the commitment is unused, its rule allows it, and the fee is current (Core protocol 9). | T4, T8, T9 | A4, A5 | A root from a discarded branch is rejected. Reorg tests cover marker rollback and orphan roots. |
+| C16 | Proofs are bound to their purpose, so a captured proof cannot be replayed; a proof of holding is bound to the verifier, the chain and a challenge; every hash use carries its own tag (Core protocol 10). | T3, T4, T12, T5 | A1, A2, A5, A11 | A reveal binds recipient, amount, remainder, marker, rules, fee, chain, version and domain. Adversarial vectors: recipient and fee substitution, cross-chain replay, type confusion, double marker use, overflow. |
+| C17 | A wallet proves against a recent, widely shared tree state, never the one its own commit created (Core protocol 10). | T1 | A3, A10 | Only protects while many wallets share that state. Needs enough recent traffic. |
+| C18 | The encrypted note lets the key recover its own details and is encrypted with a key derived from the digits (Core protocol 11). | T1, T6 | A1, A6 | Notes must have identical length, or the length is a fingerprint. Anyone with the digits reads it (T6). |
+| C19 | A Phantom Key is a bearer object: whoever holds the digits controls it fully, the first to reveal wins, and there is no recovery and no admin override (Phantom Keys). | T6, T3 | A7 | A statement of how it works. The "first" is decided by miners (T3), not by who is quickest. |
+| C20 | Twelve groups of four digits with a checksum, about 146 bits of secret; generated by the app from a secure random source (Phantom Keys). | T6, T7 | A1, A6 | **Limit.** Against a quantum search 146 bits gives about 73, less when an attacker targets any one of billions of public commitments. The 24-group option is about 292 bits. State both figures. |
+| C21 | The digits are all you need; everything else is derived; no master number and no receiving address (Phantom Keys; First milestone 4). | T1, T5 | A1, A5, A6 | Restore must find the remainder without querying one commitment at a time (section 6, item 8). |
+| C22 | Coin commitments arise only from authorized issuance, conversion of public balances, or value-conserving reveal; a data commitment can never create money (Coin rules). | T3, T4, T8 | A2, A5 | Type tags are in the commitment and in the hash tag. Type confusion is a named test vector. |
+| C23 | Public GHOST is burned on commit and minted on reveal; no custodian holds a reserve (Coin rules). | T3, T4, T10 | A2, A5 | |
+| C24 | The amount burned is tied to the amount inside the commitment by the chain itself: the node computes the final commitment from a fingerprint and the public amount (Coin rules; base client plan 7.3). | T6, T8 | A1, A5 | Test: nobody can make a commitment that opens to more than was burned. |
+| C25 | No contract address is ever authorized to mint; only the chain's own reveal rule mints (Coin rules; Extension points 3). | T10, T4 | A5 | The general proof checker can never stand in for the coin's checks. |
+| C26 | Any amount up to the balance after fees can be revealed, any number of times; each reveal makes a fresh commitment for the remainder with fresh blinding; conservation is proven on every reveal (Coin rules). | T1, T6 | A2, A3, A5 | Reusing blinding links reveals. That was an old-design mistake and is a named test. |
+| C27 | Public accounting tracks value entering and leaving the hidden set; it is a backstop, not a detector of counterfeits inside the set (Coin rules). | T4, T10 | A5 | **Limit.** A proof-system failure would be visible only as the pool running short. See section 6, item 5. |
+| C28 | The reveal is a native private transaction with no account; the proof is the authorization; ordinary accounts can never authorize a reveal (Transactions and fees; Cryptography). | T3, T8, T10 | A2, A5 | |
+| C29 | Fee privacy: the base fee and tip come from the commitment inside the proof, not from the user; every private transaction has identical size and shape (Transactions and fees). | T1, T2, T3 | A3, A5 | **Limit.** Proof size and encoding must be fixed or padded. Public parts (recipient, any public amount) still differ. |
+| C30 | Public transfers are ordinary EVM transfers; public transactions keep Ethereum's tip (Transactions and fees). | T3 | A4, A5 | Same exposure to miner ordering as Ethereum. Ordinary accounts follow C35. |
+| C31 | Privacy claim: the chain does not expose links between a commitment and its reveal; destinations, amounts, timing and network data can still correlate (Transactions and fees). | T1, T2, T11 | A3, A10 | The "can still correlate" half is the honest scope. See section 2. |
+| C32 | The chain holds only commitments and the small encrypted note; data lives where the user chooses; nothing that unlocks data is written to the chain; availability is not guaranteed (Data storage; Second milestone 1). | T1, T6, T5 | A1, A5, A7 | The chain cannot erase what was shown. Off-chain ciphertext is public to its host, so the digits' strength (C20) is its only protection. |
+| C33 | Proofs are hash-based zero-knowledge, with no trusted setup and no proving-key download; privacy mode confirmed on (Cryptography). | T1, T7, T10 | A2, A3 | Removes the setup attacker. Privacy mode is a test, not a promise. |
+| C34 | Speed: 10 seconds or less in a browser on named hardware (Cryptography). | none | none | Not a security claim, but a slow prover pushes users to hosted proving, which would send them to T5. Listed for completeness. |
+| C35 | Ordinary accounts start as safe as Ethereum's, with a post-quantum migration planned (Cryptography). | T7, T4 | A4 | Ethereum-grade only. Quantum exposure is stated, not defended. |
+| C36 | Off-chain proof of holding is usable as a capability (permissions, budgets, credentials); a one-time reveal is a single-use ticket (Agent readiness). | T12, T9, T6 | A2, A7, A11 | Single use holds only on the canonical chain (C19, C42). |
+| C37 | A general proof checker for developer-written statements can never stand in for the coin's checks (Extension points). | T10, T8 | A5 | Needs separate resource limits so one statement cannot crowd out reveals. |
+| C38 | Plain proof of work from block one, RandomX with a unique configuration, settlement probabilistic, whole reward to the miner (Consensus and mining). | T3, T4, T8, T9 | A4, A5 | The outage when mining power leaves is a known availability risk, with a stated wait table in the base client plan. |
+| C39 | Emission follows the fixed schedule: 21 million on a smooth decline, then a tail; starting supply zero; never described as a cap (Supply and emission). | T4, T10 | A5 | The exact reward function and its rounding are specified first, as the outline's figures are not yet reconciled. |
+| C40 | The app creates and displays a key and does not store it; proofs are made in the browser; the user re-types a few groups before a commit is sent; a verifiable build is available (First product). | T5, T10, T6 | A6, A7, A8 | **Limit.** A web host serving altered code defeats every property here (T5). Only the verifiable self-run build defends against it. |
+| C41 | Restore from the digits alone on a clean device, without leaking a value that ties the sequence together (First milestone 4; Second milestone 4). | T1, T2, T5 | A1, A5, A9, A10 | See section 6, item 8. |
+| C42 | A second reveal is rejected, and recovery works after a reorganisation (First milestone 5, 6). | T4, T3, T8 | A4, A5 | **Limit.** Per canonical chain. See section 6, item 3. |
+| C43 | Revoke: the holder uses the commitment up, after which proofs of holding fail (Second milestone 6). | T12, T9 | A4, A5, A11 | **Limit.** See section 6, item 2. |
+| C44 | No premine or allocation; the founder mines alongside others; the first block embeds a recent Bitcoin block hash as proof of no early mining; at least 30 days notice, software frozen at least two weeks ahead (Launch). | T3, T4, T10 | A4, A8 | The embedded hash must belong to a Bitcoin block that did not exist when the software was frozen. The rule goes in the specification. |
+| C45 | Miner safety: the installer verifies a signature on what it downloads, and a normal downloadable app is the alternative (Launch). | T10 | A8 | **Limit.** See section 6, item 6. |
+| C46 | Maintainers can publish software but have no power over the chain; every release is signed and rebuildable; the code is mirrored in more than one place (Maintenance). | T10 | A8 | A maintainer compromise is a T10 event. Users who run the new software are the ones affected. |
+| C47 | A change takes effect only at a set block height if miners and node operators run the new software; vulnerabilities are reported privately and disclosed once most of the network has upgraded; existing commitments have a defined path to survive or migrate (Upgrades and incidents). | T4, T7, T10 | A4, A5, A8 | A migration that needs holder action opens a window in which an unmigrated commitment depends on the old scheme. The path should not require action before the old scheme is at risk. |
+
+## 6. Claims that cannot be defended as written
+
+These are places where the outline's wording promises more than this model supports. Each gets the wording we can defend. The outline is not changed by this document; a follow-up edit should adopt the wording.
+
+1. **"Quantum-safe throughout" (C2).** Ordinary accounts, peer identity in the network handshake, and web transport are elliptic-curve or certificate based. A quantum attacker breaks all of them. Say: "The commitments, proofs, trees and notes use only hash-based and symmetric primitives." Also state the effective search cost of the digits against a quantum attacker (C20).
+2. **Revoke, and "has not been revealed", for header-only verifiers (C6, C11, C13, C43).** Block headers carry tree states. The outline does not say they carry the one-time markers. A verifier that checks headers alone can show membership but cannot tell that the commitment has been used up, so "proofs of holding fail after revoke" would not hold for it. Either put the marker set's root in the header, or say a verifier must query a node for marker status, and that the answer is "unrevealed as of height h".
+3. **"Reject a second reveal" (C42).** True on one canonical chain. A holder who reveals to a merchant can reveal the same commitment elsewhere on a competing fork. Say: "no marker is used twice on the same chain; a reveal is final to the degree that the chain is."
+4. **"No link between commit and reveal" (C3).** Commit shows a public amount and sender. Reveal shows a public recipient and amount. The honest wording is "no cryptographic link; statistical links remain", and the linkage test does not look for them. A second, separate measurement of matching by amount and time against realistic traffic should be run, and the result published.
+5. **"Public accounting is a backstop" (C27).** As written, it is not said whether a reveal that would take the hidden pool below zero is rejected. It should be a consensus rule. Then a proof-system break can drain the pool, but not mint beyond what was burned in, and the damage is bounded and visible.
+6. **Installer signature check (C45).** A one-command installer fetched from a host verifies a signature that the same host supplies. That does not protect against a compromised host. The command itself should carry a hash or key fingerprint, so a user can check it against a second source. State that it protects against bad mirrors, not against the first-fetch host.
+7. **"Paying with a key" (First product).** Showing the digits gives the recipient full control, but the sender keeps it too until the recipient claims to a new key. It is not payment finality, and the remainder sits in the same position. The app must say so, and Claim must be the step that completes a payment.
+8. **Restore and witness fetching (C21, C41).** A wallet that asks an endpoint for one commitment at a time tells the endpoint which commitment is its. Restore must scan the note history in bulk, or the privacy claim does not hold against T5. The specification must say which nodes serve that bulk history (A9).
+9. **"First to reveal wins" (C19).** In practice miners decide which of two competing reveals goes first, and the fixed tip means a holder cannot outbid another. Say "the first to be included wins".
+10. **"Only the holder can act" (C1).** Add: "Anyone controlling block inclusion can delay or censor a reveal, without being able to redirect or take it."
+
+## 7. Attackers outside the model
+
+- **A holder acting against themselves**: losing or leaking the digits.
+- **Legal and regulatory action** against the project, miners, or users. The founder skipped legal review knowingly, and this document does not model it.
+- **Side channels on the user's own device**: screen capture, malware, a hostile browser extension. They are A7 failures.
+- **A break in the proof system, hash or encryption that the whole field misses.** A1 to A3 are assumptions, not claims.
+
+## 8. What this model needs next
+
+- Update this document when the lifecycle specification fixes the commitment layout, the marker, and the proof statements. Each statement should list its public inputs against C16.
+- Run the claims table against the linkage test and the adversarial vectors named in C16, C22, C24 and C26, and record which row each test covers.
+- Add the stall scenario and the invalid-header flood to the first-milestone tests, with the limits in the base client plan.
+- Re-read this model before each release, and before any launch date is announced.
