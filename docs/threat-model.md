@@ -6,9 +6,9 @@ The main network is labelled experimental at launch. All review so far is done w
 
 ## How to read this document
 
-- **Attackers** (T1 to T12) are the parties we design against, with what each can do.
+- **Attackers** (T1 to T13) are the parties we design against, with what each can do.
 - **Assumptions** (A1 to A11) are the things that must be true for a protection to hold. If one fails, every claim that lists it fails with it.
-- **Claims** (C1 to C47) are the privacy and security claims the outline makes, each mapped to the attackers it defends against and the assumptions it rests on.
+- **Claims** (C1 to C48) are the privacy and security claims the outline makes, each mapped to the attackers it defends against and the assumptions it rests on.
 - Section 6 lists claims that cannot be defended as the outline words them today, with the wording we can defend.
 
 ## 1. What is protected
@@ -53,6 +53,8 @@ Stated plainly, so nobody relies on it by mistake.
 | T11 | **Commitment spammer** | Creates many commitments to fill the tree, bloat state, and shrink other users' anonymity set (the attacker knows which commitments are theirs, so the crowd really is smaller). Floods dust amounts. | Spend anyone else's commitment. |
 | T12 | **Malicious verifier** (proof of holding) | Collects proofs, relays a challenge between a prover and another verifier, records which commitments a prover can show, tries to reuse a proof elsewhere. | Reuse a proof for another verifier, chain or challenge, or turn a proof of holding into a reveal. |
 
+| T13 | **Malicious delegate or statement author** | Holds a delegated, scoped capability, or writes a developer-defined statement for the general proof checker. Tries to act beyond scope, budget or expiry, to pass off a delegated proof as a coin reveal, or to exhaust verification resources. | Use the general proof checker in place of the coin's checks, or act without a valid proof. |
+
 The founder and maintainers are not a separate attacker class on the chain: they have no power over it (outline, Maintenance). They are covered by T10, because they can publish software.
 
 ## 4. Assumptions
@@ -82,7 +84,7 @@ Every claim comes from the [outline](ghost-outline.md); the section named in bra
 | C3 | No link between commit and reveal, shown by the linkage test (core, requirement 3; Transactions and fees). | T1, T2, T5 | A1, A3, A5, A10 | **Limit.** No cryptographic link. Amounts, timing and network data can still correlate (C31). The test finds shared values, not statistical matching. |
 | C4 | Two kinds of reveal: a one-time reveal that uses the commitment up, and a repeatable proof of holding (core, requirement 4). | T4, T12 | A2, A4, A5, A11 | Reuse of the one-time kind is blocked by the marker (C16, C19). |
 | C5 | Rules fixed at commit, such as time windows or destinations, are enforced on reveal (core, requirement 5; Coin rules). | T3, T4, T6 | A2, A4, A5 | A time rule depends on the block timestamp, which a miner can bend within the allowed range. The range of that error must be stated in the rule's specification. First milestone has no rules on GHOST. |
-| C6 | The chain can prove a commitment has not been revealed (core, claims). | T4, T9, T5 | A4, A5, A9, A11 | **Limit.** Holds as of a block height and on the canonical chain. A header-only verifier needs the marker status as well as the tree state (section 6, item 2). |
+| C6 | The chain can prove a commitment has not been revealed (core, claims). | T4, T9, T5 | A4, A5, A9, A11 | **Limit.** Holds as of a block height and on the canonical chain. A header-only verifier needs authenticated marker non-membership as well as the tree state (section 6, item 2). |
 | C7 | The chain can never prove nobody has viewed the contents; shown data can be copied; the key does not control the bytes after that (core, claims). | T6 | none (this is a disclaimer) | Stated limit, not a defence. Listed so it stays in public wording. |
 | C8 | On Vanish, coins are removed from supply and replaced by a bearer authorization to mint them again; public accounting still tracks value entering and leaving the hidden set (core, claims; Coin rules). | T1, T3 | A2, A5 | "Removed from supply" is the claim; the value still exists as claims. |
 | C9 | Launched by open proof of work with no allocation to anyone; no premine, no treasury, no founder allocation (Positioning; Launch). | T10, T3 | A4, A8 | Covered in C44. Not a privacy claim. |
@@ -124,13 +126,14 @@ Every claim comes from the [outline](ghost-outline.md); the section named in bra
 | C45 | Miner safety: the installer verifies a signature on what it downloads, and a normal downloadable app is the alternative (Launch). | T10 | A8 | **Limit.** See section 6, item 6. |
 | C46 | Maintainers can publish software but have no power over the chain; every release is signed and rebuildable; the code is mirrored in more than one place (Maintenance). | T10 | A8 | A maintainer compromise is a T10 event. Users who run the new software are the ones affected. |
 | C47 | A change takes effect only at a set block height if miners and node operators run the new software; vulnerabilities are reported privately and disclosed once most of the network has upgraded; existing commitments have a defined path to survive or migrate (Upgrades and incidents). | T4, T7, T10 | A4, A5, A8 | A migration that needs holder action opens a window in which an unmigrated commitment depends on the old scheme. The path should not require action before the old scheme is at risk. |
+| C48 | Delegated, scoped authority is to be demonstrated through the general proof checker (Agent readiness; Later). | T13, T6, T12 | A2, A5, A11 | **Limit.** Not defended in this version. Scope, budget, expiry and revocation of a delegation are properties of the developer's statement, not of the chain, and no delegation guarantee is made until a specification defines them. The only chain-level guarantee is C37: such a statement cannot mint or reveal coins. |
 
 ## 6. Claims that cannot be defended as written
 
 These are places where the outline's wording promises more than this model supports. Each gets the wording we can defend. The outline is not changed by this document; a follow-up edit should adopt the wording.
 
 1. **"Quantum-safe throughout" (C2).** Ordinary accounts, peer identity in the network handshake, and web transport are elliptic-curve or certificate based. A quantum attacker breaks all of them. Say: "The commitments, proofs, trees and notes use only hash-based and symmetric primitives." Also state the effective search cost of the digits against a quantum attacker (C20).
-2. **Revoke, and "has not been revealed", for header-only verifiers (C6, C11, C13, C43).** Block headers carry tree states. The outline does not say they carry the one-time markers. A verifier that checks headers alone can show membership but cannot tell that the commitment has been used up, so "proofs of holding fail after revoke" would not hold for it. Either put the marker set's root in the header, or say a verifier must query a node for marker status, and that the answer is "unrevealed as of height h".
+2. **Revoke, and "has not been revealed", for header-only verifiers (C6, C11, C13, C43).** Block headers carry tree states. The outline does not say they carry the one-time markers. A verifier that checks headers alone can show membership but cannot tell that the commitment has been used up, so "proofs of holding fail after revoke" would not hold for it. Either put the marker set's root in the header, so non-membership of the marker can be proved against a header the verifier already trusts, or require authenticated non-membership evidence bound to the proved commitment and a recent canonical state. A bare answer from a node or endpoint is not enough, because a malicious endpoint (T5) can call a spent commitment unused; if a status provider is trusted instead, that trust is stated as an assumption. The defensible claim is "unrevealed as of height h, on the chain the verifier trusts".
 3. **"Reject a second reveal" (C42).** True on one canonical chain. A holder who reveals to a merchant can reveal the same commitment elsewhere on a competing fork. Say: "no marker is used twice on the same chain; a reveal is final to the degree that the chain is."
 4. **"No link between commit and reveal" (C3).** Commit shows a public amount and sender. Reveal shows a public recipient and amount. The honest wording is "no cryptographic link; statistical links remain", and the linkage test does not look for them. A second, separate measurement of matching by amount and time against realistic traffic should be run, and the result published.
 5. **"Public accounting is a backstop" (C27).** As written, it is not said whether a reveal that would take the hidden pool below zero is rejected. It should be a consensus rule. Then a proof-system break can drain the pool, but not mint beyond what was burned in, and the damage is bounded and visible.
