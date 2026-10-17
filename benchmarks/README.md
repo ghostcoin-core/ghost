@@ -16,6 +16,8 @@ are built at all; speed decides among those.
 | `Cargo.toml`, `Cargo.lock` | Workspace; every Plonky3 crate pinned to one revision |
 | `prover/` | Package `ghost-bench`: the statement for both hash candidates, the zero-knowledge configurations, the security gate, the native runner |
 | `prover/tests/correctness.rs` | The correctness checks of the plan's Method step 1 |
+| `prover/src/bin/ghost-bench-verify.rs` | Verification time and memory for a valid proof and worst-case invalid ones ([verification path](../docs/benchmarks/verification-path.md)) |
+| `verify-ffi/` | Package `ghost-verify-ffi`: a C interface to the verifier, and a Go program in `verify-ffi/go/` that calls it through cgo |
 | `wasm/` | Package `ghost-bench-wasm`: WebAssembly exports to prove and verify in a worker |
 | `web/` | The page (`index.html`, `main.js`), the worker (`worker.js`) and `serve.py`, which serves them cross-origin isolated |
 | `summarize.py` | Reads records and prints the table and the verdict |
