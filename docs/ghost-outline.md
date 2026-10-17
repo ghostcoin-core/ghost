@@ -202,13 +202,13 @@ These are starting points. Each is confirmed or changed by the work named beside
 
 | Detail | Starting pick | Settled by |
 |---|---|---|
-| Base client | Reth with a mining module | Reading both candidate codebases |
+| Base client | Settled: a maintained fork of Go Ethereum's proof-of-work code from Core-Geth at a pinned commit, with RandomX replacing Etchash. See [decision 0001](decisions/0001-base-client.md). | Decision 0001 |
 | Proof library | Plonky3 | Browser benchmark against the 10-second target |
 | Hash inside proofs | A fast proof-friendly hash | The same benchmark |
 | Private transaction | A new transaction type alongside Ethereum's existing ones | The specification |
 | Key derivation | Every secret derived from the digits with standard hashing | The specification |
 | Difficulty adjustment | Per-block adjustment using a proven design | Simulation on a private test network |
-| EVM features | Ethereum's current stable feature set, minus the proof-of-stake parts | The base client survey |
+| EVM features | Settled: Frontier through Shanghai (no withdrawals), London's burned base fee, and Cancun's execution parts. See [decision 0001](decisions/0001-base-client.md). | Decision 0001 |
 | Decimals and addresses | 18 decimals, standard `0x` addresses | No work needed |
 
 ## Starting point
@@ -253,7 +253,7 @@ The old Specter code is not part of this repository. File paths below are relati
 
 ## Licence
 - **Our own code** (proof statements, web app, SDK, mining tools): dual MIT and Apache 2.0.
-- **Node:** follows the chosen base. That is MIT and Apache if Reth, or LGPL and GPL if an Ethereum Classic-family client.
+- **Node:** follows the chosen base, a fork of Core-Geth, so it is LGPL and GPL, kept in a separate node repository. See [decision 0001](decisions/0001-base-client.md).
 
 ## Before any launch date
 1. The lifecycle specification and first milestone.
