@@ -114,8 +114,8 @@ To keep the project's own licence clean:
 - RandomX is BSD-3-Clause and fits under both. Its Go binding is part of the
   node and so is GPL and LGPL.
 
-This is a reading of the licences, not legal advice. Legal review remains an
-open decision in the outline.
+This is a reading of the licences, not legal advice. The founder knowingly
+skipped legal review.
 
 ## Fork point
 

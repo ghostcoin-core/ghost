@@ -241,9 +241,9 @@ The old Specter code is not part of this repository. File paths below are relati
 
 **Old proving speed:** no measurements exist. The app's own text said "10 to 30 seconds," and the August plan recorded about 28 seconds.
 
-## Open decisions for the founder
-- **Public identity:** real name or pseudonym. This is irreversible and must be decided before the first public post.
-- **Legal review:** paid, free consultation, or knowingly skipped.
+## Founder decisions
+- **Public identity:** decided. The founder will appear under a pseudonym.
+- **Legal review:** decided. The founder knowingly skipped it.
 
 ## Scope of work order
 1. Base client survey and choice.
@@ -260,7 +260,7 @@ The old Specter code is not part of this repository. File paths below are relati
 2. A threat model.
 3. Measurements of proving time, verification cost, chain growth and mining behaviour.
 4. An AI review of the custom parts by a model other than the one that wrote them.
-5. A legal review (open: see the question on whether this is paid for or skipped).
+5. Legal review: knowingly skipped by the founder decision.
 
 ## Out of scope
 - Phantom Swarm.
