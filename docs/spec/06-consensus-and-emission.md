@@ -415,13 +415,19 @@ required difficulty of that block.
 3. **A forward-dated block does not harm the next miner.** The next block must
    exceed it, which at most pushes its stamp up to 30 seconds ahead of the
    clock, and a later stamp only eases it.
-4. **A hidden fork gains nothing from timestamps.** Fork choice is total
-   difficulty, and each block's difficulty equals the expected hashes needed to
-   find it. A fork stamped later has lower difficulty per block and so less
-   weight for the same work. A private chain cannot be stamped later than the
-   real time at which it is published plus 30 seconds, so its blocks cannot
-   require less work than the honest chain's blocks at the same height and
-   time, apart from the 0.58% in item 1.
+4. **A hidden fork gains no weight from timestamps, only a few extra blocks.**
+   Fork choice sums difficulty, and a block's difficulty equals the expected
+   hashes needed to find it, so a fork's weight tracks the work spent on it
+   whatever timestamps it carries. A withheld fork can stamp all its blocks near
+   its publication time (at most the clock plus 30 seconds, one second apart),
+   which makes its early blocks easier and so lighter. To outweigh the honest
+   chain it must still spend more work than the honest chain did, which is a
+   majority attack. The one thing it gains is block count: an attacker who
+   replaces one day of honest chain mines about 17% more blocks than the honest
+   chain had in that time (about 25% for one hour, 4% for 20,000 blocks), and
+   so collects that much more reward. The absolute schedule then raises
+   difficulty until the block count is back on schedule. A majority attacker
+   has stronger attacks already, and this gain is bounded.
 5. **A majority miner can set any timestamp in the allowed range.** Stamping at
    the lower bound for many blocks makes the chain look fast, which raises
    difficulty and slows the real chain; stamping forward lowers difficulty by at
@@ -662,8 +668,8 @@ The claim it supports is worded exactly:
 
 > No Ghost block was mined before Bitcoin block B was found.
 
-It does not say that nobody mined between B and launch, or that nobody holds
-Ghost coins before launch day. Ghost's rules allow no allocation, so the claim
+It does not say that nobody mined between B and launch (section 8.4 states the
+head start that remains), or that nobody holds Ghost coins before launch day. Ghost's rules allow no allocation, so the claim
 about holding follows from "no premine", which is a property of the genesis
 allocation (empty) and of the absence of any other mint path, not of the Bitcoin
 hash. Embedding a hash of an unpredictable block shows that the chain was not
@@ -676,6 +682,7 @@ earlier.
 |---|---|
 | `T_L` | The launch time, Unix seconds, announced at least 30 days ahead and fixed in the frozen release at least two weeks ahead |
 | `CONFIRMATIONS` | 6 |
+| `GENESIS_OFFSET` | 6,000 seconds |
 
 ### 8.3 The rule
 
@@ -687,12 +694,13 @@ past: the median of the header timestamps of block `b` and its 10 predecessors.
    (Median time past never decreases along a chain, so the lowest such block is
    well defined, and a block's own timestamp, which a miner can push forward by
    hours, does not decide it.)
-2. **Confirmation.** The derivation is made only when the best chain's tip is at
-   height `h(B) + 5` or higher, so that `B` has 6 confirmations counting itself.
-3. **Confirmation block.** `C` is the block at height `h(B) + 5` on the same
-   chain.
-4. **Genesis fields.**
-   - `timestamp` = the header timestamp of `C`.
+2. **Confirmation gate.** `B` is the canonical selection only once the best
+   chain's tip is at height `h(B) + 5` or higher, so that `B` has 6
+   confirmations counting itself.
+3. **Genesis fields.** Every Bitcoin-dependent field is a function of `B` alone,
+   so it does not change if blocks above `B` are replaced by a shallow
+   reorganisation (the hash of `B` commits to all its ancestors).
+   - `timestamp` = `MTP(B) + GENESIS_OFFSET`.
    - `extraData` = the 32 bytes of `B`'s hash, in the byte order of the 64
      hexadecimal characters Bitcoin Core prints for it (`getblockhash`).
    - `difficulty` = `D_START`.
@@ -702,42 +710,57 @@ past: the median of the header timestamps of block `b` and its 10 predecessors.
    - Every other header field is a constant of the frozen chain configuration,
      defined in the header specification, with no operator input.
 
-The genesis timestamp is that of `C`, not `B`, so that the difficulty schedule
-starts when mining can actually start. Block 1 can only be mined after `C`
-exists, because that is when the genesis hash exists.
+`GENESIS_OFFSET` is the typical gap between `MTP(B)` and the moment `B` has 6
+confirmations (median time past trails `B`'s own time by about five blocks, and
+five more Bitcoin blocks follow it: about 6,000 seconds in all). It puts the
+genesis timestamp near the moment mining is expected to start, so that the
+difficulty schedule starts level. If mining starts later, difficulty eases for
+the delay (section 5.3); if it starts earlier, block 1 waits for its timestamp
+to come within 30 seconds of the clock. The offset is a constant, so the genesis
+is the same for everyone.
 
-The expected time from `T_L` to a derivable genesis is one to two hours (median
-time past trails real time by about an hour, and `C` follows `B` by five blocks).
+The expected time from `T_L` to a canonical genesis is one to two hours.
 Miners run their software ahead of `T_L` and start when the tool reports a
-genesis.
+canonical genesis.
 
 ### 8.4 Bitcoin reorganisations
 
 - **Before the confirmation depth.** If `B` leaves the best chain before the tip
   reaches `h(B) + 5`, the candidate is discarded and the selection in step 1 is
   run again on the new best chain. This is a pure function of the best chain, so
-  the new `B` may be the same height with a different hash. No genesis exists
-  until step 2 is satisfied.
-- **After the confirmation depth.** The first derivation that satisfies step 2
+  the new `B` may be at the same height with a different hash. There is no
+  canonical genesis until step 2 is satisfied.
+- **A reorganisation that replaces blocks above `B`, but not `B`.** It changes
+  nothing: the genesis does not depend on them. (This is why the genesis uses
+  `B` alone and not the block that completes the confirmations.)
+- **After the confirmation depth.** The first selection that satisfies step 2
   is final. A later Bitcoin reorganisation that removes `B` does not change
-  Ghost's genesis; Ghost nodes never read Bitcoin. The embedded hash still
-  proves what it proved: `B` existed when the genesis was derived with 6
-  confirmations.
-- **A reorganisation of six or more blocks that crosses `B` after some operators
-  derived genesis and before others did** is outside the model. It has not
-  happened in normal Bitcoin operation for over a decade, to our knowledge. If it
-  is observed before Ghost's first block, Ghost is not launched on that genesis
-  and the project announces a new `T_L` with the usual 30 days' notice. After the
-  first block exists, nothing changes.
+  Ghost's genesis; Ghost nodes never read Bitcoin. A reorganisation can only
+  remove a block with 6 confirmations if it replaces six or more blocks.
+- **A reorganisation of six or more blocks that crosses `B`** after some
+  operators derived genesis and before others did is outside the model. It has
+  not happened in normal Bitcoin operation for over a decade, to our knowledge.
+  If it is observed before Ghost's first block, Ghost is not launched on that
+  genesis and the project announces a new `T_L` with the usual 30 days' notice.
+  After the first block exists, nothing changes.
+- **Early starters.** The genesis is computable as soon as `B` is found. Anyone
+  who mines on it before `B` has 6 confirmations can do so, at their own risk: if
+  `B` is reorganised away, their chain is on a genesis that is not canonical and
+  their work is lost. This is a head start of at most the time for five Bitcoin
+  blocks (about 50 minutes on average), open to anyone running the public rule,
+  and the founder follows the same rule. Block 1 cannot carry a timestamp
+  earlier than the genesis timestamp plus one second, and a chain whose blocks
+  are stamped ahead of schedule faces higher difficulty (section 4.3), which
+  limits what an early start can bank.
 
 ### 8.5 Checking it
 
 Everything needed is 17 consecutive Bitcoin headers: the 11 before `B`, `B`, and
 the 5 after. That is enough to compute `MTP(B)` and `MTP` of the block before
 it (to show `B` is the lowest, since median time past never decreases), to read
-the timestamp of `C` and the hash of `B`, and to check Bitcoin's proof of work
-on each header against a minimum-work constant in the tool. The release includes a
-tool that derives the genesis from such a file, and an announcement of the
+the hash of `B`, to check the 6 confirmations, and to check Bitcoin's proof of
+work on each header against a minimum-work constant in the tool. The release
+includes a tool that derives the genesis from such a file. An announcement of the
 derived genesis hash is a convenience only: a node and an operator trust their
 own derivation, and if it differs from any announcement, the derivation wins.
 
