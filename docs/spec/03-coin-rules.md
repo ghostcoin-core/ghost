@@ -34,7 +34,7 @@ settled, the check rejects (fails closed) and the point is listed in section 11.
 | Fees in conservation | The fee comes from the commitment inside the proof; its base-fee part is burned | Outline; decision 0001 |
 | Remainder | Every reveal adds exactly one remainder commitment, also when it holds zero | Outline ("one private shape") |
 | Remainder key | Same Phantom Key by default; a new key as an option (claim) | Outline |
-| Public accounting | Running totals in and out of the hidden set; a reveal that would take the hidden total below zero is rejected | Outline (backstop); rejection **Proposed** (threat model, section 6 item 5) |
+| Public accounting | Running totals in and out of the hidden set; a reveal that would take the hidden total below zero is rejected | Outline (backstop); rejection by founder decision, 2026-10-17 (threat model, section 6 item 5) |
 | Rules on GHOST | None in the first milestone | Outline |
 
 ## 2. Conventions
@@ -187,7 +187,7 @@ in this order and stops at the first failure.
 2. **Entry and format.** The transaction is a top-level transaction to the
    commit entry point, with a supported commit format version and a payload of
    the exact length that version defines. **Proposed:** a commit reached by a
-   contract call, not a top-level transaction, is rejected (question 6).
+   contract call, not a top-level transaction, is rejected (question 5).
 3. **No final commitment and no type field.** The payload carries the
    fingerprint `F` and the encrypted note, and nothing that the node would
    treat as a final commitment or as a type tag. A payload with any extra field
@@ -199,7 +199,7 @@ in this order and stops at the first failure.
    specification; a note of any other length is rejected (threat model C18).
 6. **Amount range.** The burned amount `v` is the transaction's value, and
    `1 <= v <= V_MAX`. A zero or larger amount is rejected. No other minimum and
-   no cooldown apply (question 4).
+   no cooldown apply (question 3).
 7. **Funds.** The sender's balance covers `v` plus the maximum gas cost. This
    is the base client's own check, restated because the burn depends on it.
 8. **Tree room.** The coin tree has room for one more leaf. **Proposed:** if
@@ -260,8 +260,9 @@ chain, and step 13 is the only step that writes.
 8. **Marker unused.** The marker is not in the spent-marker set of the
    canonical chain, and no earlier transaction in the same block uses it.
 9. **Accounting backstop.** `out + fee` is at most the hidden total of
-   section 9 before this reveal. **Proposed** as a consensus rule; it is
-   unreachable if the proof system is sound.
+   section 9 before this reveal. This is a consensus rule by founder decision
+   (threat model, section 6 item 5); it is unreachable if the proof system is
+   sound.
 10. **Proof.** The proof verifies against the public inputs above. It must
     establish, as the proof-statement specification constrains:
     - **Membership:** an input commitment `C`, opened as in section 5 with type
@@ -345,7 +346,8 @@ This is a **backstop**, not a detector of counterfeits inside the set (outline,
 "Coin rules"; threat model C27). Conservation is proven on every reveal, and
 that is what keeps the money sound. If the proof system were broken, an
 attacker could move value between hidden commitments without the totals
-changing. **Proposed:** reveal step 9 makes the backstop a consensus rule, so
+changing. By founder decision, reveal step 9 makes the backstop a consensus
+rule, so
 such a break can drain at most what was burned in and never mint beyond it,
 and the damage is bounded and visible as the hidden total running short (threat
 model, section 6 item 5).
@@ -432,18 +434,16 @@ Each has a default that rejects or adds nothing until the founder decides.
    rejected.
 2. **Amount range.** Is `V_MAX = 2^96 - 1` wei the right ceiling? Default:
    yes, rejecting anything above.
-3. **Accounting as a consensus rule.** Should reveal step 9 reject, or only be
-   reported? Default: reject.
-4. **Minimum commit amount, cooldown, second commitment.** The old design had
+3. **Minimum commit amount, cooldown, second commitment.** The old design had
    a minimum commit amount, a per-sender cooldown and a second, separate
    commitment stored next to each leaf. Default for each: none.
-5. **Root age.** Should reveals accept any canonical root, or only roots from a
+4. **Root age.** Should reveals accept any canonical root, or only roots from a
    recent window? Default: any canonical root.
-6. **Commits from contracts.** May a contract call the commit entry point?
+5. **Commits from contracts.** May a contract call the commit entry point?
    Default: no, top-level transactions only.
-7. **Full coin tree.** Default until the rollover is specified: reject commits
+6. **Full coin tree.** Default until the rollover is specified: reject commits
    and reveals once the tree is full.
-8. **Where the totals live.** In the state only, or also in the header so that
+7. **Where the totals live.** In the state only, or also in the header so that
    header-only verifiers can read them? Default: state only.
 
 ## 12. Follow-ups outside this document
