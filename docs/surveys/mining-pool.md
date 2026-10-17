@@ -126,31 +126,46 @@ table (next section).
 
 ### Payout vault
 
-- **One vault per share.** The `coinbase` is the address of a vault contract
-  created by the factory with the CREATE2 opcode, with the Merkle root of the
-  payout table as its salt and immutable argument. Because the table includes the
-  sharechain tip, each share's vault address is unique, so the funds at an address
-  are exactly the reward (and priority tips) of the blocks that named it.
+- **One vault per template.** The `coinbase` is the address of a vault contract
+  created by the factory with the CREATE2 opcode. Its salt is a hash of the
+  Merkle root of the payout table, the hash of the share's Ghost parent block and
+  the sharechain parent. Two sibling shares with the same sharechain parent and
+  the same Ghost parent therefore share an address, and two blocks on different
+  Ghost parents never do. Two canonical blocks cannot share a Ghost parent, but
+  the vault does not rely on that: it accounts cumulatively, so it stays correct
+  if it is funded more than once, before or after deployment, between claims, or
+  after every payee has claimed (see Claims).
 - **The vault can be deployed after the block is found.** An address with no code
   can receive the coinbase credit. Anyone may deploy it later.
 - **Claims.** `claim(index, payee, weight, proof)` checks the proof against the
-  root and pays `reward * weight / total_weight`, remembering what was paid so
-  nothing pays twice, with the rounding remainder going to the highest-weight
-  entry. Claims are pull-style because a window of a few thousand payees cannot
+  root. The vault tracks `total_received` (its balance plus everything it has
+  paid out) and `paid[payee]`, and pays
+  `total_received * weight / total_weight - paid[payee]`, then raises
+  `paid[payee]`. Payments are rounded down, so the rounding remainder stays in the
+  vault as dust, and later funding is shared in the same proportions. No claim can
+  pay a payee more than its weight's share of everything the vault ever received.
+  Claims are pull-style because a window of a few thousand payees cannot
   be paid in one transaction under any realistic block gas limit. A `claimMany`
   helper batches claims across vaults, so a small miner can let dust accumulate
   and claim once, with no expiry. This is the answer to the original P2Pool's
   dust problem (the wiki lists it as a known weakness): nothing is lost to dust,
   it is only worth claiming later.
-- **First claim with no gas.** A new miner holds no GHOST for gas. The vault
-  therefore lets any caller claim for a payee and take back its gas cost (price
-  times gas used, capped) out of that payee's amount. This is a refund of cost,
-  not a fee on the reward, and it needs no operator. It is a vault parameter that
-  should be reviewed as a rule, because it is the only place value moves other
-  than to the payee.
+- **First claim with no gas.** A new miner holds no GHOST for gas. Anyone may
+  claim for a payee with no reimbursement at all, which is always safe because
+  the money goes to the payee. For a payee with no balance, the vault also
+  accepts a reimbursed claim only with the payee's own signed authorisation (a
+  typed-data signature binding the payee, the maximum reimbursement, a nonce and
+  a deadline). A permissionless "caller takes back its gas cost" rule is rejected:
+  the caller picks the gas price, and a block producer receives priority fees as
+  coinbase income, so it could claim for others at an inflated price and be
+  repaid from their rewards. The signed form removes that, and a payee who
+  cannot pay for any transaction can still have a relayer submit it. The
+  reimbursement is the only place value moves other than to the payee, so it is
+  a rule to review.
 - **Safety properties to prove by test and review:** the sum paid never exceeds
-  the vault balance; no payee is paid more than its share; no claim can be
-  replayed; a reverting recipient contract cannot block others; reentrancy is
+  what the vault has received; no payee is paid more than its share of that; no
+  claim or signed authorisation can be replayed; funding before deployment,
+  between claims and after all claims leaves the totals correct; a reverting recipient contract cannot block others; reentrancy is
   impossible by construction.
 
 ### Why this satisfies "no operator"
@@ -215,7 +230,7 @@ in the state transition. There are three ways to share it.
 **Founder decision, only if the vault design is not accepted:** any multi-output
 rule changes the outline's consensus text. With the vault, the only items to
 confirm are the two specification dependencies in the bottom line and the
-gas-refund rule in section 2.
+signed-reimbursement rule in section 2.
 
 One further point to state plainly: pooled mining shares the reward by
 agreement, so a finder in a pool does not keep the whole reward. The outline's
@@ -231,7 +246,21 @@ Two chains reorganise independently: the Ghost chain and the sharechain.
   is valid in isolation (its parent header is known and checks out, RandomX
   work meets the share target, coinbase equals the vault of its table). A share
   on an orphaned Ghost branch is still a valid, paid share. It simply cannot
-  become a block.
+  become a block. Three limits keep this from being exploited:
+  - **Executable templates.** A pool node is a full node. It executes the share's
+    block (state root, receipts) when it has the parent state and refuses a share
+    whose block would fail, so work cannot be paid for a template that could
+    never become a block. A node without the parent state holds the share
+    unaccepted until it has it.
+  - **Deterministic freshness.** A share's Ghost parent timestamp must be within a
+    fixed limit of the share's own timestamp (a few blocks, set by the simulator),
+    and share timestamps must not run backwards along the sharechain.
+  - **First-seen staleness.** A node does not adopt as its sharechain tip a
+    share whose timestamp is further behind its own clock than a fixed limit when
+    first seen (not applied while syncing history). An attacker who mines against
+    an obsolete Ghost parent for longer than the limit has to hold back or
+    backdate shares and cannot extend the tip honest nodes follow. This is a
+    local rule, not a consensus rule, and needs its own tests (launch gate).
 - **A Ghost reorg of a pool block** removes the block, its vault credit and any
   claims made against that vault in the same reorged blocks, together. The state
   stays consistent. Wallets and the miner software should show a claim as final
@@ -297,9 +326,12 @@ What the goal needs:
    to (a few hundred headers at 30-second blocks, so tens of seconds of
    light-mode checking, analysis), then confirms for each job that the coinbase is
    the vault of the table and that the share's `extra` commits to the miner's own
-   payout address. A node that lies can then only waste the miner's work, not
-   redirect it. Whether this fits in the minute depends on measurement; the
-   fallback is to start mining at once and verify in parallel.
+   payout address. The miner does not hash remote work until these checks pass,
+   because a block found in the meantime would pay a lying node irrecoverably.
+   Once they pass, a node that lies can only waste the miner's work, not redirect
+   it. Whether this fits in the minute depends on measurement. If it does not, the
+   goal is relaxed or the checker starts from a bundled recent state (see the
+   last open question); there is no unverified-mining fallback.
 5. **The signed installer.** The outline already requires that the one-command
    installer verify a signature on what it downloads, and an app alternative. The
    pool adds only its endpoint list and the miner build to the signed bundle.
@@ -317,24 +349,26 @@ announced:
 2. A simulator run showing, for 30-second blocks, stale and uncle rates, the
    smallest hashrate that appears in a window at the planned pool size, and the
    chosen interval, window and uncle parameters with the reasons.
-3. A private multi-node network with at least ten independent pool nodes,
+3. Tests for invalid templates, indefinitely stale Ghost parents, and the
+   first-seen staleness limit, alongside ordinary propagation races.
+4. A private multi-node network with at least ten independent pool nodes,
    volunteers included, with pool blocks found, claimed and reorganised, and with
    a fresh node syncing the sharechain from peers.
-4. Vault tests: property tests and fuzzing of the safety properties in section 2,
+5. Vault tests: property tests and fuzzing of the safety properties in section 2,
    a test for every reorg case in section 5, and a written independent review of
    the vault and factory with every Critical or High finding fixed.
-5. Adversarial tests: forged coinbase, table mismatch, wrong consensus ID,
+6. Adversarial tests: forged coinbase, table mismatch, wrong consensus ID,
    share floods (bounded load), malformed sidecars, a lying pool node against the
    thin checker.
-6. Measured "minute to mining": wall-clock from running the one command to the
+7. Measured "minute to mining": wall-clock from running the one command to the
    first accepted share, on the project's defined minimum machine, in light mode
    and with the switch to fast mode, over a clean network.
-7. Hardware and architecture coverage matching the base plan's RandomX
+8. Hardware and architecture coverage matching the base plan's RandomX
    cross-checks, applied to the pool's miner build.
-8. The two specification dependencies (header `extra`, factory at genesis or in
-   the first blocks) recorded in the chain specification, and the founder's
-   decision on the gas-refund rule.
-9. Solo mining and pool mining both working in the frozen release candidate.
+9. The two specification dependencies (header `extra`, factory at genesis or in
+   the first blocks) recorded in the chain specification, and the review of the
+   signed-reimbursement rule.
+10. Solo mining and pool mining both working in the frozen release candidate.
 
 If any item fails, the launch date moves, because the outline makes the pool a
 launch requirement, unless the founder changes that requirement in writing.
