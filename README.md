@@ -1,7 +1,9 @@
 # Ghost
 
-Ghost is a public, open-source commit and reveal system for data, with no
-privileged protocol administrator. GHOST is the coin that runs the chain.
+Ghost is a public, open-source, quantum-safe bearer commit-and-reveal system
+for any data, with no administrator. Committing returns digits that are the only
+authority over the data; GHOST, the coin that runs the chain, is the first type
+of data and the first demo.
 
 **This project is experimental.** Nothing here has been audited by an outside
 firm, nothing is launched, and everything may change. Do not rely on it for
