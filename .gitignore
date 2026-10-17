@@ -3,4 +3,5 @@ benchmarks/target/
 benchmarks/.tools/
 benchmarks/web/pkg/
 benchmarks/out/
+proofs/target/
 __pycache__/
