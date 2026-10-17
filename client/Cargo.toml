@@ -1,0 +1,19 @@
+[package]
+name = "ghost-client"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Ghost client library: Phantom Keys, derivation from the digits and building a commit"
+
+# Its own workspace, so it builds on its own and never joins another one.
+[workspace]
+
+# Only crates already pinned in the repository's lock files. The random source
+# is the caller's, so the crate never needs an operating system source.
+[dependencies]
+rand_core = { version = "0.10.1", default-features = false }
+tiny-keccak = { version = "2.0.2", features = ["keccak", "sha3"] }
+
+[dev-dependencies]
+rand = { version = "0.10.1", default-features = false, features = ["std_rng"] }
