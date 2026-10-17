@@ -145,10 +145,10 @@ Directions examined and set aside on 2026-10-17, with reasons in [decision 0002]
 
 ## Supply and emission
 - **Starting supply:** zero.
-- **Main emission:** 21 million GHOST on a smooth per-block decline, halving every two years. It is never described as a cap.
-- **Starting reward:** about 6.92 GHOST per block at 30-second blocks.
+- **Main emission:** a smooth per-block decline from about 6.92 GHOST, halving every two years, sized on 21 million GHOST. It is never described as a cap. About 20.4 million is issued before the tail begins, and total issuance passes 21 million at about year 13.
+- **Starting reward:** about 6.92 GHOST per block at 30-second blocks (exactly 6.92356).
 - **Pace:** 29% in year one and 75% by year four.
-- **Tail:** 0.2 GHOST per block forever, which is 1% of the main emission per year. It begins after about eight years.
+- **Tail:** 0.2 GHOST per block forever, about 210,000 GHOST a year (1% of 21 million). It begins when the declining reward reaches 0.2 GHOST, at about year 10 (founder decision, 2026-10-17; exact figures in [the consensus and emission spec](spec/06-consensus-and-emission.md)).
 - **If the block time changes,** per-block figures scale so yearly amounts stay the same.
 
 ## First product
