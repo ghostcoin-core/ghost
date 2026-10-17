@@ -1,0 +1,36 @@
+[package]
+name = "ghost-bench"
+version = "0.1.0"
+description = "Benchmark statement and harness for proving a coin reveal with Plonky3"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Multi-threaded proving through Plonky3's rayon wrapper. The native runner
+# is built with it; the WebAssembly build is single-threaded unless built with
+# a toolchain that supports wasm threads.
+parallel = ["p3-maybe-rayon/parallel", "p3-uni-stark/parallel"]
+
+[dependencies]
+p3-air.workspace = true
+p3-baby-bear.workspace = true
+p3-challenger.workspace = true
+p3-commit.workspace = true
+p3-dft.workspace = true
+p3-field.workspace = true
+p3-fri.workspace = true
+p3-keccak.workspace = true
+p3-keccak-air.workspace = true
+p3-matrix.workspace = true
+p3-maybe-rayon.workspace = true
+p3-merkle-tree.workspace = true
+p3-poseidon2.workspace = true
+p3-symmetric.workspace = true
+p3-uni-stark.workspace = true
+postcard.workspace = true
+rand.workspace = true
+
+[[bin]]
+name = "ghost-bench-native"
+path = "src/bin/ghost-bench-native.rs"

@@ -1,0 +1,6 @@
+# Benchmark harness build output and local tools
+benchmarks/target/
+benchmarks/.tools/
+benchmarks/web/pkg/
+benchmarks/out/
+__pycache__/

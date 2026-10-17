@@ -34,43 +34,51 @@ benchmark is run against the edited version.
 
 ## Reference hardware and browser
 
-One laptop and one phone. Both are real, widely sold models and are chosen to
-be unremarkable on purpose: a result on a better device would not mean much.
+One machine, measured in two configurations: as it is, and with its CPU
+throttled to stand in for a mid-range phone. No real phone is measured.
 
-| | Laptop | Phone |
+| | Mac Studio | Emulated mid-range phone |
 |---|---|---|
-| Model | Apple MacBook Air 13-inch (M2, 2022), model identifier Mac14,2 | Samsung Galaxy A55 5G, model SM-A556B (international version) |
-| Year | 2022 (released July 2022) | 2024 (announced 11 March 2024, released 15 March 2024) |
-| Processor | Apple M2, 8 cores (4 performance, 4 efficiency) | Samsung Exynos 1480, 8 cores (4 x Cortex-A78 at 2.75 GHz, 4 x Cortex-A55 at 2.0 GHz) |
-| Memory | 8 GB (the base configuration) | 8 GB |
-| Storage | 256 GB | 256 GB |
-| Operating system | The latest macOS release on the day of the run, recorded | The latest Android release Samsung ships for the model on the day of the run, recorded |
-| Browser | Google Chrome stable, version 155 (155.0.8059.40 at the time of writing) | Google Chrome for Android stable, version 155 (155.0.8059.39 at the time of writing) |
+| Machine | Apple Mac Studio, Apple M5 Max, 64 GB memory | The same Mac Studio |
+| CPU | Not throttled | Chrome DevTools CPU throttling at 4x, Lighthouse's calibration for a mid-tier mobile device |
+| Operating system | The latest macOS release on the day of the run, recorded | The same |
+| Browser | Google Chrome stable; the full build string is recorded at run time | The same Chrome build |
+| Label in every record, table and report | Mac Studio | Emulated mid-range phone, not a real device |
 
 Why these:
 
-- The A55 is Samsung's mid-range line, sold new and used in volume. The M2
-  Air is the most common Apple Silicon laptop in circulation, and its base
-  configuration is a plain 8 GB machine.
-- Chrome is the most used browser on both platforms and has the best
-  WebAssembly support, including threads and SIMD.
-- **Default:** the exact models and the Chrome major version are choices made
-  here, not outline decisions. Replace a model only with one in the same class,
-  and say so in the results.
+- The Mac Studio is the reference machine the project owner has. It is a
+  high-end machine, so a pass on it alone says little; that is why the target
+  must also be met in the emulated phone configuration.
+- The emulated phone is the same Chrome on the same Mac with DevTools CPU
+  throttling at 4x, Lighthouse's calibration for a mid-tier mobile device. It
+  is labelled "emulated mid-range phone, not a real device" wherever it
+  appears. It slows the CPU only; it does not reproduce a phone's memory,
+  thermal limits or browser build. The results check that the throttling
+  reached the benchmark's worker: the emulated runs must be slower than the
+  unthrottled ones by roughly the throttling factor.
+- Chrome is the most used browser and has the best WebAssembly support,
+  including threads and SIMD.
+- **Default:** the Chrome build is the stable release on the day of the run,
+  pinned for the whole run and recorded. The machine and the throttling factor
+  are decisions made for this plan, not outline decisions. Replace the machine
+  only with one in the same class, and say so in the results.
 
 Rules for the machines:
 
 - Chrome is pinned to one build for the whole run. Automatic updates are off
   while the benchmark runs, and the full build string is recorded.
 - A fresh browser profile with no extensions is used. Only the benchmark tab is
-  open, and it stays in the foreground with the screen on.
-- Laptop: plugged in, no other applications running, lid open.
-- Phone: not charging, battery between 50% and 100% at the start of each
-  session, power-saving mode off, airplane mode on (nothing in the benchmark
-  needs a network once the page is loaded), no other applications running.
+  open, and it stays in the foreground with the display on.
+- Mac Studio: no other applications running, display awake.
+- Emulated phone: DevTools is open on the benchmark tab with CPU throttling set
+  to 4x before the session starts; nothing else is throttled or changed.
 - Thermal state is part of the result, not a nuisance. Each session starts
-  after the device has rested for at least 10 minutes, and the harness records
-  every run's start time so heat build-up shows in the series.
+  after the machine has rested for at least 3 minutes, in both configurations,
+  and the harness records every run's start time so heat build-up shows in the
+  series.
+- Sessions of the two configurations, the hash candidates and the blowups are
+  interleaved (see [Method](#method)).
 
 ## The statement being proved
 
@@ -111,9 +119,9 @@ calls, the input lengths or the constraint counts change.
   permutation circuit.
 - Both are measured. The outline chooses the most-studied hash that meets the
   speed target, and Keccak is the more studied of the two. If B meets the
-  target on both devices it is chosen over A; otherwise A is chosen if it
-  meets the target. The decision itself is made after the measurements, not
-  here.
+  target on both the Mac Studio and the emulated phone it is chosen over A;
+  otherwise A is chosen if it meets the target. The decision itself is made
+  after the measurements, not here.
 - Every use of the hash carries its own explicit tag, as the outline requires.
   For A, a tag is placed in the capacity part of the state (one element for the
   use, one for the tree level where relevant). For B, a one-byte tag and, for
@@ -213,16 +221,36 @@ counts.
 - **Default target:** 128 bits of security for soundness, for the complete
   configuration actually used, counted under the library's conjectured
   security estimate.
-- The estimate must come from the library's own security analysis (the
-  security estimator that ships with the pinned revision), applied to the
-  actual parameters, and must account for all of: the FRI queries and folding,
-  the grinding bits, the opening batching, the composition of the constraints
-  (the number and degree of the constraints and the size of the challenge
-  field), and the collision resistance of the commitment hash. A configuration
-  whose total estimate is below 128 bits is rejected before any timing is
-  recorded. The simple rule of counting each query of a code of rate 2^-k as k
-  bits is only a starting point for choosing the number of queries; it is not
-  accepted as evidence of the level.
+- The estimate comes from the library's own security analysis (the security
+  estimator that ships with the pinned revision), applied to the actual
+  parameters, and must account for all of: the FRI queries and folding, the
+  grinding bits, the opening batching, the composition of the constraints (the
+  number and degree of the constraints and the size of the challenge field),
+  and the collision resistance of the commitment hash.
+- If the pinned revision ships no security estimator, the harness's own
+  estimator is used instead, with the same 128-bit conjectured floor. It is
+  documented in the harness code and computes, from the actual parameters, both
+  the conjectured (ethSTARK-style) and the best proven FRI soundness, including
+  the grinding, the opening batching, the constraint composition, the size of
+  the challenge field and the collision resistance of the commitment hash.
+  Results name which estimator produced their figures. (The revision pinned at
+  the time of writing ships one, `p3-security`, used through
+  `p3-uni-stark`'s security parameters, so the harness uses it.)
+- Either way, a configuration whose total conjectured estimate is below 128
+  bits is rejected before any timing is recorded. The simple rule of counting
+  each query of a code of rate 2^-k as k bits is only a starting point for
+  choosing the number of queries; it is not accepted as evidence of the level.
+- The commitment hash counts at its collision resistance. For candidate A the
+  proof's own Merkle commitments use digests of 9 elements (about 279 bits),
+  because 8 elements give only about 124 bits of collision resistance;
+  Keccak-256 gives 128. The statement's 8-element digests for candidate A (the
+  tree, the commitments and the marker) also give only about 124 bits of
+  collision resistance; that is recorded for the threat-model work and does not
+  change the cost shape.
+- A configuration that cannot be built in zero-knowledge mode is reported as
+  not buildable and is not measured. In particular, zero-knowledge mode adds one
+  to the degree of the quotient, so the constraint degree must be at most the
+  blowup: a circuit of degree 3 cannot run at a blowup of 2^1.
 - Grinding is allowed up to 16 bits. The harness computes the number of
   queries from the estimate and does not use a hard-coded count. The extension
   degree is chosen so that the challenge field is large enough for the target
@@ -265,26 +293,28 @@ counts.
 
 ## What is recorded
 
-For every proof, in the browser, on each device:
+For every proof, in the browser, on the Mac Studio and on the emulated phone:
 
 | Quantity | Definition |
 |---|---|
 | Proving time | Wall-clock milliseconds, taken inside the worker with `performance.now()`, from the call that receives the witness inputs to the return of the finished proof bytes. It includes witness and trace generation, the zero-knowledge randomness, FRI commitment and queries, and grinding. It excludes page load, downloading and compiling the WebAssembly module, and moving the result to the page. These are recorded separately (below) |
 | Module start-up time | Milliseconds to fetch, compile and instantiate the module in the worker, recorded for the cold run |
-| Peak memory | The high-water mark of the WebAssembly linear memory in the worker (pages grown multiplied by 64 KiB), read by the harness after each proof. Also recorded: the browser's own process-level peak, from the operating system's tools (macOS `footprint` on the renderer process; on Android `dumpsys meminfo` taken while the proof runs and the largest value kept) |
+| Peak memory | The high-water mark of the WebAssembly linear memory in the worker (pages grown multiplied by 64 KiB), read by the harness after each proof. Also recorded, for both the Mac Studio and the emulated phone: the browser's own process-level peak, the macOS footprint of the renderer process that runs the benchmark tab (`footprint` on that process, the peak kept) |
 | Proof size | Bytes of the proof in the library's standard serde encoding with the postcard format, public inputs excluded. Also recorded: the public inputs' size and the total |
-| Verification time | Wall-clock milliseconds to verify the proof, in the same worker on the same device, from receiving the proof and public inputs to a yes or no. Also recorded once natively on the laptop, because the chain verifies natively |
+| Verification time | Wall-clock milliseconds to verify the proof, in the same worker in the same configuration, from receiving the proof and public inputs to a yes or no. Also recorded once natively on the Mac Studio, because the chain verifies natively |
 | Outcome | Whether the run completed, was killed by the browser, or ran out of memory |
 
 Also recorded on every result:
 
-- Device, operating system, Chrome build, number of logical cores reported
-  by the browser, whether threads and SIMD were available and used.
+- Device configuration (Mac Studio, or emulated mid-range phone with the CPU
+  throttling factor), operating system, Chrome build, number of logical cores
+  reported by the browser, whether threads and SIMD were available and used.
 - Library revision, Rust compiler version, build flags, the hash candidate,
   the blowup, the number of queries, grinding bits, the extension degree, the
-  trace height and width, and the security figures (conjectured and proven).
-- Start time of the run, so thermal drift is visible. On the phone, battery
-  level and the browser's reported thermal state where available.
+  trace height and width, the security figures (conjectured and proven) and
+  the estimator that produced them.
+- Start time of the run, so thermal drift is visible, and the CPU pressure
+  state the browser reports, where available.
 
 ### Builds
 
@@ -293,36 +323,38 @@ Also recorded on every result:
   ship that, so this is what a user gets.
 - **Fallback build:** WebAssembly, single thread, SIMD on. Measured as well,
   because the application must still work where threads are unavailable.
-- **Native reference:** the same prover built natively on the laptop, for
+- **Native reference:** the same prover built natively on the Mac Studio, for
   context only. It does not count towards the target.
 
 ## Method
 
-1. **Correctness before speed.** Before any timing counts, on every device and
-   build, the harness verifies that: a good proof verifies; the proof fails
-   when any public input is changed (root, marker, remainder commitment,
+1. **Correctness before speed.** Before any timing counts, in every
+   configuration and build, the harness verifies that: a good proof verifies;
+   the proof fails when any public input is changed (root, marker, remainder commitment,
    amount, fee, binding digest); a witness that breaks conservation (value out
    exceeds value in, or the sum is off by one at a limb boundary) does not
    produce a proof that verifies; and a witness with a wrong Merkle path is
    rejected. A speed number from a build that fails any of these is discarded.
-2. **Sessions.** Five sessions per device, per build, per hash candidate, per
-   blowup. A session is a fresh browser tab opened on the page, so every
-   session has a real cold start.
+2. **Sessions.** Five sessions on the Mac Studio and five on the emulated
+   phone, per build, per hash candidate, per blowup. A session is a fresh
+   browser tab opened on the page, so every session has a real cold start.
 3. **Runs per session.** One cold run (the first proof after the tab opens),
    then ten warm runs back to back in the same worker. 55 proofs per
    configuration.
-4. **Rest.** At least 10 minutes between sessions on the phone and 3 minutes on
-   the laptop, so one session's heat does not carry into the next. The
-   back-to-back warm runs inside a session are kept as they are, because a user
-   who makes several reveals in a row meets the same heat.
+4. **Rest.** At least 3 minutes between sessions, in both configurations, so
+   one session's heat does not carry into the next. The back-to-back warm runs
+   inside a session are kept as they are, because a user who makes several
+   reveals in a row meets the same heat.
 5. **Order.** Configurations are interleaved rather than run one after another,
-   so drift in room temperature or battery level does not favour one.
+   so drift in room temperature does not favour one. This includes the Mac
+   Studio and emulated phone sessions.
 6. **Primary configuration.** Hash candidate A, blowup 2^1, primary build. The
    others are the sweep and are reported beside it.
 
 ## Reading the result
 
-For every configuration the report gives, per device:
+For every configuration the report gives, for the Mac Studio and for the
+emulated phone:
 
 - Cold proving time: the median and the slowest of the five cold runs.
 - Warm proving time: the median, the 90th percentile, and the slowest of the
@@ -330,17 +362,23 @@ For every configuration the report gives, per device:
 - Peak memory, proof size and verification time: the median and the largest.
 - Whether any run failed.
 
-**Default:** the 10-second target is met for a configuration on a device when
-**both** the median warm proving time **and** the slowest cold proving time are
-10 seconds or less, and no run failed. The target applies to proving time as
-defined above and to both devices; the laptop meeting it while the phone does
-not is reported as "met on the laptop only", not as a pass. A configuration
-that has zero-knowledge mode off does not count.
+**Default:** the 10-second target is met for a configuration on the Mac Studio,
+or on the emulated phone, when **both** the median warm proving time **and** the
+slowest cold proving time are 10 seconds or less, and no run failed. The target
+applies to proving time as defined above and is met only when it is met on both
+the Mac Studio and the emulated phone. The Mac Studio is a high-end machine, so
+a pass there alone says little: the Mac Studio meeting it while the emulated
+phone does not is reported as "met on the Mac Studio only", not as a pass. A
+configuration that has zero-knowledge mode off does not count, and neither does
+the native reference.
 
 The report then states, in plain words, which hash candidates meet the target,
 which one the outline's rule picks, and the proof size and verification time
-that result in. If no candidate meets the target on both devices, the report
-says so, and the proof system is revisited as the outline requires.
+that result in. It ends with one verdict: met, met on the Mac Studio only, or
+not met. If no candidate meets the target on both the Mac Studio and the
+emulated phone, the report says so, and the proof system is revisited as the
+outline requires. Results from the emulated phone are always labelled
+"emulated mid-range phone, not a real device".
 
 ## Where the results go
 
@@ -358,9 +396,12 @@ says so, and the proof system is revisited as the outline requires.
 The outline leaves these open. Each is a default chosen for this plan that a
 later decision may change.
 
-1. Laptop: MacBook Air 13-inch (M2, 2022), 8 GB, 256 GB.
-2. Phone: Samsung Galaxy A55 5G (SM-A556B, 2024), 8 GB, 256 GB.
-3. Browser: Chrome stable 155 on both, pinned for the whole run.
+1. Reference machine: the project owner's Mac Studio (Apple M5 Max, 64 GB).
+2. Phone class: the same Chrome on the same Mac Studio with DevTools CPU
+   throttling at 4x (Lighthouse's mid-tier mobile calibration), labelled
+   everywhere as "emulated mid-range phone, not a real device".
+3. Browser: Google Chrome stable, the build recorded at run time and pinned for
+   the whole run.
 4. Field: BabyBear with a degree-5 extension; digests of 8 elements.
 5. Hash: Poseidon2 (width 24) as candidate A and Keccak-256 as candidate B;
    both measured, chosen by the outline's rule.
@@ -372,5 +413,11 @@ later decision may change.
 9. Statistics: five sessions, one cold and ten warm runs each; the target is
    judged on the median warm time and the slowest cold time.
 10. Builds: threaded and single-thread WebAssembly, both with SIMD.
-11. Cooling, power and network rules for the devices.
-12. Where the harness and results live in the repository.
+11. Machine rules: a fresh browser profile, a pinned Chrome build, at least 3
+    minutes' rest between sessions, and interleaved configurations, the same for
+    the Mac Studio and the emulated phone.
+12. Process-level memory: the macOS footprint of the renderer process, in both
+    configurations.
+13. Security estimator: the library's own; if the pinned revision ships none,
+    the harness's documented estimator, with the same 128-bit conjectured floor.
+14. Where the harness and results live in the repository.
