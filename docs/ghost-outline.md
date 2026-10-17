@@ -1,6 +1,6 @@
 # Ghost: locked outline
 
-Locked 2026-10-13. Details for each section are worked out separately and do not change this outline unless noted.
+Locked 2026-10-13. Details for each section are worked out separately and do not change this outline unless noted. Updated 2026-10-17: the core value proposition (founder decision), the base client and EVM decision, the founder decisions, and a data milestone.
 
 ## Context
 This is a rebuild of a system that previously ran on a public testnet under the name Specter. The old code is used as reference only (see "Reference: old Specter code"). Its audits were all done by AI, not an outside firm, and nothing here relies on them.
@@ -8,8 +8,27 @@ This is a rebuild of a system that previously ran on a public testnet under the 
 ## Goal
 A public, open-source **commit and reveal system for data** with no privileged protocol administrator. Any kind of information can be committed privately and later revealed under rules the chain enforces. GHOST is the coin that runs the chain, and it is one type of data the system handles.
 
+## Core value proposition
+Decided by the founder on 2026-10-17.
+
+**Quantum-safe bearer commit and reveal for any data, with no administrator.** Commit anything and get digits that are the only authority over it. Reveal it, spend it or prove you hold it, under rules the chain enforces. Crypto is the first type of data and the first demo; data commitments are part of the core from block one, not a later add-on.
+
+Fixed requirements of the core:
+1. **Only the holder can act.** No administrator, miner, committee or time-lock can reveal or take a commitment.
+2. **Quantum-safe throughout.** Hash-based proofs only, never wrapped in elliptic-curve proofs.
+3. **No link between commit and reveal,** shown by the linkage test.
+4. **Two kinds of reveal:** a one-time reveal that uses the commitment up, and a repeatable proof of holding.
+5. **Rules fixed at commit** (for example time windows or destinations), enforced on reveal.
+
+Claims we make, and claims we never make:
+- The chain can prove a commitment **has not been revealed**. It can never prove nobody has **viewed** its contents: the author, and anyone the digits are shown to, can read them off the chain.
+- A Phantom Key controls authority and access. Data that has been shown can be copied; the key does not control the bytes after that.
+- On Vanish, coins are removed from supply and replaced by a bearer authorization to mint them again. Public accounting still tracks value entering and leaving the hidden set, so "removed from supply" is the claim, not "gone from existence".
+
+Directions examined and set aside on 2026-10-17, with reasons in [decision 0002](decisions/0002-core-value-proposition.md): delegation trees as the core, unforkable agents, digital originals, self-acting data (research only, no launch dependency), one-way bridges from other chains, and sealed audit reports.
+
 ## Positioning
-- General data architecture, payments-first validation.
+- General data architecture; the coin is the first demo.
 - Launched by open proof of work with no allocation to anyone.
 - Designed for post-quantum security within a defined threat model.
 - Built for an era of AI agents: the chain is the root of trust, and agents verify proofs between themselves at machine speed.
@@ -19,7 +38,7 @@ A public, open-source **commit and reveal system for data** with no privileged p
 - **Build from existing, reviewed components.** Nothing is written from scratch where a proven implementation exists. No new cryptography is invented.
 
 ## Foundation
-- **Base:** an Ethereum-compatible client with proof-of-work mining. The current lean is the modern Rust client (Reth) with a mining module added, over an Ethereum Classic-family client. It is confirmed by reading both codebases as the first task.
+- **Base:** settled on 2026-10-17. A maintained fork of Go Ethereum's proof-of-work code from Core-Geth at a pinned commit, with RandomX replacing Etchash. See [decision 0001](decisions/0001-base-client.md).
 - **Taken off the shelf:**
   - the EVM, networking and storage from the base;
   - the RandomX reference implementation;
@@ -158,11 +177,21 @@ One complete lifecycle with plain GHOST, tested adversarially:
    - a fee that uses the whole balance;
    - two competing reveals.
 
+## Second milestone: data lifecycle
+The same lifecycle with a data commitment, using the same commitment format, trees and Phantom Keys as the coin:
+
+1. Commit a file or secret and receive a Phantom Key. The data itself stays off the chain, encrypted under a key derived from the digits; nothing that unlocks it is written to the chain.
+2. Prove holding repeatedly, bound to the verifier and a fresh challenge, without using the commitment up.
+3. Reveal it once and reject a second reveal.
+4. Restore from the digits alone on a clean device.
+5. Pass the linkage test for data commitments.
+6. Revoke: the holder uses the commitment up, after which proofs of holding fail.
+
 ## Later
 - Built-in rules on GHOST.
 - Sending hidden GHOST to someone not present.
 - Combining keys.
-- Data applications.
+- Further data applications (for example prepaid, revocable access keys for AI services).
 - Swaps with Bitcoin.
 
 ## Launch
@@ -244,12 +273,14 @@ The old Specter code is not part of this repository. File paths below are relati
 ## Founder decisions
 - **Public identity:** decided. The founder will appear under a pseudonym.
 - **Legal review:** decided. The founder knowingly skipped it.
+- **Core value proposition:** decided 2026-10-17 (see "Core value proposition").
 
 ## Scope of work order
-1. Base client survey and choice.
+1. Base client survey and choice (done).
 2. Proof benchmark in a browser against the 10-second target.
-3. The lifecycle specification.
-4. The first milestone: one full commit, reveal and claim cycle, tested adversarially.
+3. The lifecycle specification, covering coin and data commitments.
+4. The first milestone: one full commit, reveal and claim cycle with GHOST, tested adversarially.
+5. The second milestone: the same lifecycle with a data commitment.
 
 ## Licence
 - **Our own code** (proof statements, web app, SDK, mining tools): dual MIT and Apache 2.0.
@@ -260,7 +291,7 @@ The old Specter code is not part of this repository. File paths below are relati
 2. A threat model.
 3. Measurements of proving time, verification cost, chain growth and mining behaviour.
 4. An AI review of the custom parts by a model other than the one that wrote them.
-5. Legal review: knowingly skipped by the founder decision.
+5. Legal review: knowingly skipped by founder decision.
 
 ## Out of scope
 - Phantom Swarm.
