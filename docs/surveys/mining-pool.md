@@ -1,5 +1,7 @@
 # Survey: an operator-free mining pool
 
+> Note (2026-10-17): the project decided not to build a mining pool. Solo mining is the launch requirement, and anyone may run their own pool. This survey is kept as background research only.
+
 Status: research only, no code. Written 2026-10-17.
 
 The outline requires that solo mining and an operator-free pool both work before
