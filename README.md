@@ -32,6 +32,10 @@ are in [scripts/check-commit-message.sh](scripts/check-commit-message.sh).
 
 All changes to `main` go through a pull request, and the CI jobs must pass.
 
+## Security
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
 ## Licence
 
 The project's own code is licensed under either of
