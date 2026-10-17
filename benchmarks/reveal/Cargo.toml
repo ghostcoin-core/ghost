@@ -1,0 +1,26 @@
+[package]
+name = "ghost-reveal-bench"
+version = "0.1.0"
+description = "The real coin reveal prover of ghost-proofs, built for a browser worker, and a native check of the proofs it makes"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+build = "build.rs"
+
+# Its own workspace, apart from the harness workspace one level up: it builds
+# the real statement from ../../proofs, whose Plonky3 pins and lock file it
+# shares, and needs no WebAssembly bindings generator.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ghost-proofs = { path = "../../proofs" }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+
+[profile.test]
+opt-level = 3

@@ -5,6 +5,12 @@ mid-range phone, not a real device.** Every completed proof finished under 10
 seconds. The slowest was about 5.2 seconds (Keccak, blowup 2^3, emulated
 mid-range phone, not a real device, a cold run).
 
+The real coin reveal prover of the `proofs/` crate was measured again in the
+browser afterwards, by the same method: see
+[real reveal prover in the browser](reveal-results.md). It also meets the
+target, with less room (slowest proof 8.98 s on the emulated mid-range phone,
+not a real device).
+
 These results are measured against [the benchmark plan](plan.md). The raw
 records are in [results/](results/), one file per configuration, device and
 session.

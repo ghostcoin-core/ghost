@@ -43,6 +43,15 @@ class ServeHeaders(unittest.TestCase):
         self.assertEqual(headers["Cache-Control"], "no-store")
         self.assertIn(b'src="main.js"', body)
 
+    def test_reveal_page_loads_its_own_worker(self):
+        _, body = self.get("/reveal.html")
+        self.assertIn(b'src="reveal-main.js"', body)
+        _, main = self.get("/reveal-main.js")
+        self.assertIn(b"./reveal-worker.js", main)
+        headers, worker = self.get("/reveal-worker.js")
+        self.assertEqual(headers["Content-Type"], "text/javascript")
+        self.assertIn(b"reveal-pkg/ghost_reveal_bench.wasm", worker)
+
     def test_scripts_and_modules_have_the_right_types(self):
         headers, _ = self.get("/worker.js")
         self.assertEqual(headers["Content-Type"], "text/javascript")
