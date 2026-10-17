@@ -22,7 +22,10 @@ is the slower fallback, so the verdict holds for the threaded build too.
   proof verified.
 - Every record is the single-thread build with SIMD (`wasm-single`), in Chrome
   on the Mac Studio. The emulated mid-range phone, not a real device, is the
-  same Chrome on the Mac Studio with 4x CPU throttling.
+  same Chrome on the Mac Studio with 4x CPU throttling. The throttling was
+  applied to the whole renderer process, worker included, by pausing and
+  resuming it (25 ms running in every 100 ms), because the DevTools throttle
+  does not reach background workers in this Chrome build.
 
 ## Refused entries
 
