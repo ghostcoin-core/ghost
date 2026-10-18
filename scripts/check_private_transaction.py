@@ -6,7 +6,8 @@ Python standard library only. It checks that:
   1. the required sections are present, each as a numbered `## N. ...`
      heading, and the sections are numbered 1 upwards without gaps;
   2. the parameter table holds every named constant, the type byte is outside
-     Ethereum's types, and every derived constant (payload and envelope size,
+     Ethereum's types, the proof field is the version 1 width, and every
+     derived constant (payload and envelope size,
      `G_PRIV`, the pool's byte cap) equals its recomputed value;
   3. the payload table lists exactly the fields of the private transaction, in
      order, contiguous, at their stated widths, with no sender, signature,
@@ -59,6 +60,9 @@ PARAMETERS = ("TYPE_BYTE", "TX_VERSION", "PROOF_BYTES", "NOTE_BYTES", "PAYLOAD_B
               "TIP_DIVISOR", "MIN_GAS_LIMIT", "POOL_MAX_COUNT", "POOL_MAX_BYTES")
 
 V_MAX = 2**96 - 1
+# The proof field of version 1 for every reveal kind (section 3, "Proof
+# field"); a change of width is a new version, never an edit of this one.
+PROOF_FIELD_BYTES = 1_310_720
 # The base client's smallest gas limit; the ceiling step's 1/20000 term is
 # 1 / (8 * MIN_GAS_LIMIT / 2).
 MIN_GAS_LIMIT = 5000
@@ -253,6 +257,9 @@ class Checker:
             self.fail(f"TYPE_BYTE {p['TYPE_BYTE']:#04x} is taken or outside EIP-2718's range")
         if p["NOTE_BYTES"] != 156:
             self.fail(f"NOTE_BYTES is {p['NOTE_BYTES']}, spec 01 fixes 156")
+        if p["PROOF_BYTES"] != PROOF_FIELD_BYTES:
+            self.fail(f"PROOF_BYTES is {p['PROOF_BYTES']}, version 1 fixes {PROOF_FIELD_BYTES}; "
+                      f"a change of width is a new version")
         if p["MIN_GAS_LIMIT"] != MIN_GAS_LIMIT:
             self.fail(f"MIN_GAS_LIMIT is {p['MIN_GAS_LIMIT']}; the ceiling step of section 5 "
                       f"assumes {MIN_GAS_LIMIT}")

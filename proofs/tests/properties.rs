@@ -346,6 +346,106 @@ fn zero_knowledge_mode_is_on_in_shipped_configuration() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The proof field and its budget (spec 07, section 3).
+
+/// The gate's estimate of one statement, from the shipped configuration.
+fn statement_trace(statement: Statement) -> SecurityEstimate {
+    let config = shipped_configuration().expect("the shipped configuration builds");
+    config
+        .statements
+        .into_iter()
+        .find(|(s, _)| *s == statement)
+        .unwrap_or_else(|| panic!("{statement:?} is not in the report"))
+        .1
+}
+
+/// Every statement the crate knows fits the coin reveal's trace budget, so
+/// none can outgrow the proof field.
+#[test]
+fn proof_budget_holds_for_every_statement() {
+    assert_eq!((MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH), (2048, 3808));
+    let config = shipped_configuration().expect("the shipped configuration builds");
+    let reported: Vec<Statement> = config.statements.iter().map(|(s, _)| *s).collect();
+    assert_eq!(reported, Statement::ALL);
+    for (statement, estimate) in config.statements {
+        assert!(
+            estimate.trace_height <= MAX_TRACE_HEIGHT,
+            "{statement:?}: {} rows, over the budget of {MAX_TRACE_HEIGHT}",
+            estimate.trace_height
+        );
+        assert!(
+            estimate.trace_width <= MAX_TRACE_WIDTH,
+            "{statement:?}: {} columns, over the budget of {MAX_TRACE_WIDTH}",
+            estimate.trace_width
+        );
+        assert!(proof_length_bound(estimate.trace_height, estimate.trace_width) <= PROOF_FIELD_BYTES);
+    }
+}
+
+/// The longest proof the encoding can produce for the budget trace fits the
+/// proof field of version 1.
+#[test]
+fn proof_length_bound_fits_field() {
+    assert_eq!(PROOF_FIELD_BYTES, 1_310_720);
+    let bound = proof_length_bound(MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH);
+    assert!(bound <= PROOF_FIELD_BYTES, "the bound {bound} is over {PROOF_FIELD_BYTES}");
+    // The figure spec 07, section 3 derives term by term.
+    assert_eq!(bound, 1_268_539);
+    // Any smaller trace has a smaller bound.
+    for statement in Statement::ALL {
+        let t = statement_trace(statement);
+        assert!(proof_length_bound(t.trace_height, t.trace_width) <= bound, "{statement:?}");
+    }
+}
+
+/// A real coin reveal proof fits the field and its trace's bound.
+#[test]
+fn coin_reveal_proof_fits_field() {
+    let _one = one_at_a_time();
+    let t = statement_trace(Statement::CoinReveal);
+    let bound = proof_length_bound(t.trace_height, t.trace_width);
+    for (coin, seed) in [(partial_reveal(), 60), (example_coin(ONE_GHOST, ONE_GHOST - FEE, 0, FEE), 61)] {
+        let (_, proof) = valid_reveal(&coin, seed);
+        let len = proof.as_bytes().len();
+        assert!(len <= PROOF_FIELD_BYTES, "a coin reveal proof of {len} bytes");
+        assert!(len <= bound, "a coin reveal proof of {len} bytes, over the bound {bound}");
+    }
+}
+
+/// A real data reveal proof, reveal and revoke, fits the field and its
+/// trace's bound.
+#[cfg(feature = "unsettled-points-test")]
+#[test]
+fn data_reveal_proof_fits_field() {
+    let _one = one_at_a_time();
+    let t = statement_trace(Statement::DataReveal);
+    let bound = proof_length_bound(t.trace_height, t.trace_width);
+    let d = example_data();
+    let opening = DataOpening {
+        s: d.s,
+        r: d.r,
+        b: d.b,
+        cf: d.cf,
+        position: 0,
+        path: d.path,
+    };
+    for (purpose, seed) in [(DataPurpose::Reveal, 62), (DataPurpose::Revoke, 63)] {
+        let request = DataRevealRequest {
+            purpose,
+            root: d.root,
+            party: [0x70; 32],
+            fee: amount_word(FEE),
+            rule: EMPTY_RULE,
+        };
+        let (tx, proof) = prove_data_reveal(&params(), &opening, &request, zk(seed)).expect("honest proof");
+        assert_eq!(verify_data_reveal_unsettled(&params(), &tx, &proof), Ok(()));
+        let len = proof.as_bytes().len();
+        assert!(len <= PROOF_FIELD_BYTES, "a data reveal proof of {len} bytes");
+        assert!(len <= bound, "a data reveal proof of {len} bytes, over the bound {bound}");
+    }
+}
+
 /// Section 7: every binding layout field, offset and width, and the totals,
 /// as the specification's tables state them.
 #[test]

@@ -79,8 +79,9 @@ pub use reveal::{
     verify_coin_reveal,
 };
 pub use stark::{
-    BATCH_POW_BITS, COLLISION_RESISTANCE_BITS, EXTENSION_DEGREE, LOG_BLOWUP, MAX_GRINDING_BITS, NUM_QUERIES,
-    QUERY_POW_BITS, SecurityEstimate, Statement, TARGET_CONJECTURED_BITS,
+    BATCH_POW_BITS, COLLISION_RESISTANCE_BITS, EXTENSION_DEGREE, LOG_BLOWUP, MAX_GRINDING_BITS, MAX_TRACE_HEIGHT,
+    MAX_TRACE_WIDTH, NUM_QUERIES, PROOF_FIELD_BYTES, QUERY_POW_BITS, SecurityEstimate, Statement,
+    TARGET_CONJECTURED_BITS, proof_length_bound,
 };
 
 /// Why a proof was not made or not accepted.
@@ -123,6 +124,9 @@ pub enum ProofError {
     ConstraintDegreeTooHigh,
     /// The estimate is below 128 conjectured bits.
     BelowSecurityFloor { bits: usize },
+    /// A statement's trace is taller or wider than the proof-size budget
+    /// (spec 07, section 3), so its proof might not fit the proof field.
+    TraceOverBudget { height: usize, width: usize },
     /// Proof bytes that do not decode, or a proof of the wrong shape.
     MalformedProof,
     /// The proving library failed.
@@ -151,6 +155,11 @@ impl fmt::Display for ProofError {
             Self::NotZeroKnowledge => f.write_str("configuration is not zero-knowledge"),
             Self::ConstraintDegreeTooHigh => f.write_str("constraint degree too high for the blowup"),
             Self::BelowSecurityFloor { bits } => write!(f, "{bits} conjectured bits, below {TARGET_CONJECTURED_BITS}"),
+            Self::TraceOverBudget { height, width } => write!(
+                f,
+                "trace of {height} rows by {width} columns is over the budget of \
+                 {MAX_TRACE_HEIGHT} by {MAX_TRACE_WIDTH}"
+            ),
             Self::MalformedProof => f.write_str("malformed proof"),
             Self::Proving => f.write_str("proving failed"),
             Self::Rejected => f.write_str("proof rejected"),

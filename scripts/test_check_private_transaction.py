@@ -88,18 +88,27 @@ class CheckerTest(unittest.TestCase):
                                 "is taken or outside")
 
     def test_wrong_g_priv(self):
-        text = self.damaged("| `G_PRIV` | 16,569,156 |", "| `G_PRIV` | 16,569,157 |")
-        self.assert_gap(text, "parameter G_PRIV is 16569157, recomputed 16569156")
+        text = self.damaged("| `G_PRIV` | 21,090,372 |", "| `G_PRIV` | 21,090,373 |")
+        self.assert_gap(text, "parameter G_PRIV is 21090373, recomputed 21090372")
 
     def test_wrong_verify_gas_moves_g_priv(self):
         text = self.damaged("| `VERIFY_GAS` | 92,300 |", "| `VERIFY_GAS` | 92,000 |")
-        self.assert_gap(text, "parameter G_PRIV is 16569156, recomputed 16568856")
+        self.assert_gap(text, "parameter G_PRIV is 21090372, recomputed 21090072")
 
     def test_wrong_envelope_and_pool_bytes(self):
-        text = self.damaged("| `ENVELOPE_BYTES` | 1,028,491 |", "| `ENVELOPE_BYTES` | 1,028,490 |")
-        self.assert_gap(text, "parameter ENVELOPE_BYTES is 1028490, recomputed 1028491")
-        text = self.damaged("| `POOL_MAX_BYTES` | 16,455,856 |", "| `POOL_MAX_BYTES` | 16,000,000 |")
+        text = self.damaged("| `ENVELOPE_BYTES` | 1,311,067 |", "| `ENVELOPE_BYTES` | 1,311,066 |")
+        self.assert_gap(text, "parameter ENVELOPE_BYTES is 1311066, recomputed 1311067")
+        text = self.damaged("| `POOL_MAX_BYTES` | 20,977,072 |", "| `POOL_MAX_BYTES` | 16,000,000 |")
         self.assert_gap(text, "parameter POOL_MAX_BYTES is 16000000")
+
+    def test_proof_width_is_version_1(self):
+        # Any other width is refused, the old one included: a change of width
+        # is a new version.
+        text = self.damaged("| `PROOF_BYTES` | 1,310,720 |", "| `PROOF_BYTES` | 1,310,721 |")
+        self.assert_gap(text, "PROOF_BYTES is 1310721, version 1 fixes 1310720")
+        old = "| `PROOF_BYTES` | 1,028,144 |"
+        text = self.damaged("| `PROOF_BYTES` | 1,310,720 |", old)
+        self.assert_gap(text, "PROOF_BYTES is 1028144, version 1 fixes 1310720")
 
     def test_wrong_note_size(self):
         self.assert_gap(self.damaged("| `NOTE_BYTES` | 156 |", "| `NOTE_BYTES` | 128 |"),
@@ -108,12 +117,12 @@ class CheckerTest(unittest.TestCase):
     # Payload
 
     def test_payload_widths_must_add_up(self):
-        text = self.damaged("Total: 1,028,490 bytes of payload; 1,028,491 bytes",
-                            "Total: 1,028,489 bytes of payload; 1,028,490 bytes")
+        text = self.damaged("Total: 1,311,066 bytes of payload; 1,311,067 bytes",
+                            "Total: 1,311,065 bytes of payload; 1,311,066 bytes")
         errors = checker.check_text(text)
-        self.assertTrue(any("total says 1028489 bytes of payload, fields sum to 1028490" in e
+        self.assertTrue(any("total says 1311065 bytes of payload, fields sum to 1311066" in e
                             for e in errors), errors)
-        self.assertTrue(any("total says 1028490 bytes with the type byte" in e for e in errors), errors)
+        self.assertTrue(any("total says 1311066 bytes with the type byte" in e for e in errors), errors)
 
     def test_payload_field_width_changed(self):
         text = self.damaged("| 106 | 20 | `recipient` |", "| 106 | 32 | `recipient` |")
@@ -122,8 +131,8 @@ class CheckerTest(unittest.TestCase):
         self.assertTrue(any("'out' at offset 126, expected 138" in e for e in errors), errors)
 
     def test_payload_proof_width_changed(self):
-        text = self.damaged("| 190 | 1028144 | `proof` |", "| 190 | 1028000 | `proof` |")
-        self.assert_gap(text, "'proof' is 1028000 bytes, expected 1028144")
+        text = self.damaged("| 190 | 1310720 | `proof` |", "| 190 | 1310000 | `proof` |")
+        self.assert_gap(text, "'proof' is 1310000 bytes, expected 1310720")
 
     def test_payload_field_missing(self):
         text = self.damaged("| 0 | 2 | `version` | `TX_VERSION`, `0x0001` |\n", "")
@@ -132,8 +141,8 @@ class CheckerTest(unittest.TestCase):
     def test_sender_field_rejected(self):
         for name in ("signature", "nonce", "gas_limit", "sender", "rule"):
             with self.subTest(name=name):
-                text = self.damaged("| 1028334 | 156 | `note` |",
-                                    f"| 1028334 | 156 | `{name}` |")
+                text = self.damaged("| 1310910 | 156 | `note` |",
+                                    f"| 1310910 | 156 | `{name}` |")
                 self.assert_gap(text, f"payload field '{name}' is not allowed")
 
     def test_no_payload_table(self):
@@ -156,8 +165,8 @@ class CheckerTest(unittest.TestCase):
     # Worked examples
 
     def test_window_fee_wrong(self):
-        text = self.damaged_after("[window-genesis]", "tip = 2359477604085573", "tip = 2359477604085572")
-        self.assert_gap(text, "example window-genesis: tip is 2359477604085572")
+        text = self.damaged_after("[window-genesis]", "tip = 3003306891179819", "tip = 3003306891179818")
+        self.assert_gap(text, "example window-genesis: tip is 3003306891179818")
         text = self.damaged_after("[window-genesis]", "price = 1424017979", "price = 1424017978")
         self.assert_gap(text, "example window-genesis: price is 1424017978")
 
@@ -205,45 +214,45 @@ class CheckerTest(unittest.TestCase):
                 self.assert_gap(text, f"boundary case example {name}")
 
     def test_full_reveal_wrong(self):
-        text = self.damaged_after("[full-reveal]", "out = 974045746355058703", "out = 974045746355058704")
+        text = self.damaged_after("[full-reveal]", "out = 966963624197021993", "out = 966963624197021994")
         errors = checker.check_text(text)
         self.assertTrue(any("example full-reveal: valid = yes, recomputed no" in e for e in errors), errors)
 
     def test_full_reveal_minted_wrong(self):
-        text = self.damaged_after("[full-reveal]", "minted = 974045746355058703", "minted = 1")
+        text = self.damaged_after("[full-reveal]", "minted = 966963624197021993", "minted = 1")
         self.assert_gap(text, "example full-reveal: minted is 1")
 
     def test_zero_amount_claim_shape(self):
-        text = self.damaged_after("[zero-amount-claim]", "out = 0\nremainder = 974045746355058703",
-                                  "out = 974045746355058703\nremainder = 0")
+        text = self.damaged_after("[zero-amount-claim]", "out = 0\nremainder = 966963624197021993",
+                                  "out = 966963624197021993\nremainder = 0")
         errors = checker.check_text(text)
         self.assertTrue(any("zero-amount-claim: the amounts do not have the shape" in e
                             for e in errors), errors)
 
     def test_whole_balance_burn_wrong(self):
-        text = self.damaged_after("[fee-uses-whole-balance]", "burned = 23594776040855724",
-                                  "burned = 25954253644941297")
-        self.assert_gap(text, "example fee-uses-whole-balance: burned is 25954253644941297")
+        text = self.damaged_after("[fee-uses-whole-balance]", "burned = 30033068911798188",
+                                  "burned = 33036375802978007")
+        self.assert_gap(text, "example fee-uses-whole-balance: burned is 33036375802978007")
 
     def test_fee_above_balance_marked_valid(self):
         text = self.damaged_after("[fee-above-balance]", "valid = no", "valid = yes")
         self.assert_gap(text, "example fee-above-balance: valid = yes, recomputed no")
 
     def test_boundary_fee_not_window_fee(self):
-        text = self.damaged_after("[zero-amount-claim]", "fee = 25954253644941297",
-                                  "fee = 25954253644941296")
-        self.assert_gap(text, "example zero-amount-claim: fee 25954253644941296 is not the window fee")
+        text = self.damaged_after("[zero-amount-claim]", "fee = 33036375802978007",
+                                  "fee = 33036375802978006")
+        self.assert_gap(text, "example zero-amount-claim: fee 33036375802978006 is not the window fee")
 
     def test_competing_reveals_wrong(self):
         text = self.damaged_after("[competing-reveals]", "rejected = b", "rejected = a")
         self.assert_gap(text, "the first reveal must be included")
         text = self.damaged_after("[competing-reveals]", "marker_b = m", "marker_b = n")
         self.assert_gap(text, "must carry the same marker")
-        text = self.damaged_after("[competing-reveals]", "total_out_change = 525954253644941297",
+        text = self.damaged_after("[competing-reveals]", "total_out_change = 533036375802978007",
                                   "total_out_change = 500000000000000000")
         self.assert_gap(text, "total_out_change is 500000000000000000")
-        text = self.damaged_after("[competing-reveals]", "remainder_b = 674045746355058703",
-                                  "remainder_b = 674045746355058704")
+        text = self.damaged_after("[competing-reveals]", "remainder_b = 666963624197021993",
+                                  "remainder_b = 666963624197021994")
         self.assert_gap(text, "reveal b does not conserve value")
 
     def test_unknown_example_kind(self):

@@ -17,6 +17,11 @@
 //!
 //! The zero-knowledge randomness is 32 bytes the caller supplies; this crate
 //! never reads the operating system's random source.
+//!
+//! The proof-size budget of spec 07, section 3 lives here too: no statement's
+//! trace may be taller than [`MAX_TRACE_HEIGHT`] or wider than
+//! [`MAX_TRACE_WIDTH`], the coin reveal's, and [`proof_length_bound`] shows
+//! that a proof of such a trace fits [`PROOF_FIELD_BYTES`].
 
 use alloc::vec::Vec;
 use std::sync::OnceLock;
@@ -78,6 +83,18 @@ const NUM_RANDOM_CODEWORDS: usize = EXTENSION_DEGREE;
 const SALT_ELEMS: usize = 5;
 /// Points at which the main trace is opened (`zeta` and `zeta * g`).
 const TRACE_OPENING_POINTS: usize = 2;
+/// Words of a Merkle digest: Keccak-256 as four `u64` lanes.
+const DIGEST_WORDS: usize = 4;
+
+/// Width of the proof field of a private transaction in version 1, for every
+/// reveal kind (spec 07, section 3): 1.25 MiB. A change of width is a new
+/// transaction version, never an edit of this one.
+pub const PROOF_FIELD_BYTES: usize = 1_310_720;
+/// The proof-size budget (spec 07, section 3): the most rows a statement's
+/// trace may have before zero-knowledge padding, the coin reveal's.
+pub const MAX_TRACE_HEIGHT: usize = 2048;
+/// The most columns a statement's trace may have, the coin reveal's.
+pub const MAX_TRACE_WIDTH: usize = 3808;
 
 /// The challenge field.
 pub(crate) type Challenge = BinomialExtensionField<BabyBear, EXTENSION_DEGREE>;
@@ -92,7 +109,7 @@ type ValMmcs = MerkleTreeHidingMmcs<
     KeccakCompress,
     StdRng,
     2,
-    4,
+    DIGEST_WORDS,
     SALT_ELEMS,
 >;
 type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
@@ -237,6 +254,7 @@ impl Statement {
 pub(crate) fn gate(statement: Statement) -> Result<SecurityEstimate, ProofError> {
     static PLANS: [OnceLock<SecurityEstimate>; 3] = [OnceLock::new(), OnceLock::new(), OnceLock::new()];
     let est = *PLANS[statement.index()].get_or_init(|| estimate(&statement.air()));
+    within_budget(&est)?;
     // Zero-knowledge adds one to the quotient degree, so the constraint degree
     // must fit the blowup.
     if est.constraint_degree > 1 << LOG_BLOWUP {
@@ -248,6 +266,118 @@ pub(crate) fn gate(statement: Statement) -> Result<SecurityEstimate, ProofError>
         });
     }
     Ok(est)
+}
+
+/// The proof-size budget: a statement whose trace is taller or wider than the
+/// coin reveal's could make a proof longer than [`PROOF_FIELD_BYTES`], so it
+/// is refused before anything is proved or verified.
+fn within_budget(est: &SecurityEstimate) -> Result<(), ProofError> {
+    if est.trace_height > MAX_TRACE_HEIGHT || est.trace_width > MAX_TRACE_WIDTH {
+        return Err(ProofError::TraceOverBudget {
+            height: est.trace_height,
+            width: est.trace_width,
+        });
+    }
+    Ok(())
+}
+
+// The proof length bound. Every size is the most the encoding can write at
+// the pinned Plonky3 revision, through postcard.
+
+/// A BabyBear element: four little-endian bytes, never a varint.
+const FIELD_BYTES: usize = 4;
+/// A challenge: [`EXTENSION_DEGREE`] base elements, with no length prefix.
+const CHALLENGE_BYTES: usize = EXTENSION_DEGREE * FIELD_BYTES;
+/// The longest varint postcard writes, for a length prefix or a `usize`.
+const VARINT_MAX_BYTES: usize = 10;
+/// A digest: [`DIGEST_WORDS`] `u64` words, each a varint.
+const DIGEST_MAX_BYTES: usize = DIGEST_WORDS * VARINT_MAX_BYTES;
+/// The tag of an `Option`.
+const OPTION_TAG_BYTES: usize = 1;
+/// A commitment: a Merkle cap of height 0, one digest behind a length prefix.
+const CAP_BYTES: usize = VARINT_MAX_BYTES + DIGEST_MAX_BYTES;
+/// The most quotient chunks the gate lets through. The gate allows a
+/// constraint degree `d` of at most the blowup; the library splits the
+/// quotient into `2 * next_power_of_two(d)` chunks in zero-knowledge mode.
+const MAX_QUOTIENT_CHUNKS: usize = 2 * (1 << LOG_BLOWUP);
+/// Base columns of the quotient chunks and of the randomization polynomial:
+/// one challenge flattened, before the hiding columns.
+const FLATTENED_CHALLENGE_COLUMNS: usize = EXTENSION_DEGREE;
+
+/// A sequence of `len` items of `item` bytes each, behind its length prefix.
+const fn seq(len: usize, item: usize) -> usize {
+    VARINT_MAX_BYTES + len * item
+}
+
+/// The most sibling digests a pruned multiproof for [`NUM_QUERIES`] indices
+/// can carry in a binary tree of `depth` levels: at each level at most one
+/// per parent of a queried node, so at most one per query and at most the
+/// number of parents at that level.
+fn multiproof_digests(depth: usize) -> usize {
+    (0..depth).map(|level| NUM_QUERIES.min(1 << level)).sum()
+}
+
+/// The longest proof the shipped configuration can serialize for a statement
+/// whose trace has `trace_height` rows (before zero-knowledge padding) and
+/// `trace_width` columns. It is a bound from the proof's structure, not a
+/// sampled length: every term takes its worst case (spec 07, section 3).
+pub fn proof_length_bound(trace_height: usize, trace_width: usize) -> usize {
+    let h = trace_height.max(zk_min_trace_height()).next_power_of_two();
+    // Zero-knowledge doubles the rows, and the blowup gives the codeword.
+    let log_codeword = (2 * h).trailing_zeros() as usize + LOG_BLOWUP;
+    // Binary folding down to a final polynomial of one coefficient.
+    let fri_rounds = log_codeword - LOG_BLOWUP;
+    let chunks = MAX_QUOTIENT_CHUNKS;
+    let challenges = |n| seq(n, CHALLENGE_BYTES);
+    let row = |n| seq(n, FIELD_BYTES);
+
+    // Trace, quotient and the optional randomization commitment.
+    let commitments = 3 * CAP_BYTES + OPTION_TAG_BYTES;
+    // The trace at zeta and zeta * g, no preprocessed trace (two absent
+    // options), each quotient chunk at zeta and the randomization polynomial.
+    let opened_values = challenges(trace_width)
+        + OPTION_TAG_BYTES
+        + challenges(trace_width)
+        + 2 * OPTION_TAG_BYTES
+        + seq(chunks, challenges(FLATTENED_CHALLENGE_COLUMNS))
+        + OPTION_TAG_BYTES
+        + challenges(FLATTENED_CHALLENGE_COLUMNS);
+    // The hidden columns' openings, per round, matrix and point.
+    let hidden = challenges(NUM_RANDOM_CODEWORDS);
+    let hidden_openings = VARINT_MAX_BYTES
+        + seq(1, seq(1, hidden))
+        + seq(1, seq(TRACE_OPENING_POINTS, hidden))
+        + seq(chunks, seq(1, hidden));
+    // One input batch: every query's rows, every query's salts and one
+    // pruned multiproof over the codeword tree.
+    let batch = |matrices: usize, width: usize| {
+        seq(NUM_QUERIES, seq(matrices, row(width)))
+            + seq(NUM_QUERIES, seq(matrices, row(SALT_ELEMS)))
+            + seq(multiproof_digests(log_codeword), DIGEST_MAX_BYTES)
+    };
+    let input_openings = VARINT_MAX_BYTES
+        + batch(1, NUM_RANDOM_CODEWORDS + FLATTENED_CHALLENGE_COLUMNS)
+        + batch(1, trace_width + NUM_RANDOM_CODEWORDS)
+        + batch(chunks, FLATTENED_CHALLENGE_COLUMNS + NUM_RANDOM_CODEWORDS);
+    // Each FRI layer: one sibling per query, its salts and its multiproof;
+    // layer `i` is a tree of `log_codeword - 1 - i` levels.
+    let layers: usize = (0..fri_rounds)
+        .map(|i| {
+            seq(NUM_QUERIES, challenges(1))
+                + seq(NUM_QUERIES, seq(1, row(SALT_ELEMS)))
+                + seq(multiproof_digests(log_codeword - 1 - i), DIGEST_MAX_BYTES)
+        })
+        .sum();
+    let fri = FIELD_BYTES
+        + seq(fri_rounds, CAP_BYTES)
+        + seq(fri_rounds, FIELD_BYTES)
+        + input_openings
+        + VARINT_MAX_BYTES
+        + layers
+        + challenges(1)
+        + FIELD_BYTES;
+    // Then `degree_bits` and the out-of-domain grinding witness.
+    commitments + opened_values + hidden_openings + fri + VARINT_MAX_BYTES + FIELD_BYTES
 }
 
 fn public_field(public: &[u8]) -> Vec<F> {
@@ -297,4 +427,62 @@ pub(crate) fn estimates() -> Result<[(Statement, SecurityEstimate); 3], ProofErr
         *slot = (statement, gate(statement)?);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn trace(trace_height: usize, trace_width: usize) -> SecurityEstimate {
+        SecurityEstimate {
+            conjectured_bits: TARGET_CONJECTURED_BITS,
+            proven_bits: 0,
+            trace_height,
+            trace_width,
+            constraint_degree: 1 << LOG_BLOWUP,
+        }
+    }
+
+    /// The gate refuses a trace one row or one column over the budget, and
+    /// takes the budget trace itself.
+    #[test]
+    fn budget_refuses_a_trace_over_it() {
+        assert_eq!(within_budget(&trace(MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH)), Ok(()));
+        assert_eq!(
+            within_budget(&trace(2 * MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH)),
+            Err(ProofError::TraceOverBudget {
+                height: 2 * MAX_TRACE_HEIGHT,
+                width: MAX_TRACE_WIDTH
+            })
+        );
+        assert_eq!(
+            within_budget(&trace(MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH + 1)),
+            Err(ProofError::TraceOverBudget {
+                height: MAX_TRACE_HEIGHT,
+                width: MAX_TRACE_WIDTH + 1
+            })
+        );
+    }
+
+    /// Each extra column adds its two out-of-domain challenges and one base
+    /// element per query; a doubled height adds a level to every tree.
+    #[test]
+    fn bound_grows_with_the_trace() {
+        let base = proof_length_bound(MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH);
+        assert_eq!(
+            proof_length_bound(MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH + 1) - base,
+            2 * CHALLENGE_BYTES + NUM_QUERIES * FIELD_BYTES
+        );
+        assert!(proof_length_bound(2 * MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH) > base);
+        assert_eq!(proof_length_bound(1000, 10), proof_length_bound(1024, 10));
+    }
+
+    /// A multiproof never needs more than one digest per query per level, nor
+    /// more than the level has parents.
+    #[test]
+    fn multiproof_digests_take_the_worst_level_by_level() {
+        assert_eq!(multiproof_digests(1), 1);
+        assert_eq!(multiproof_digests(6), 63);
+        assert_eq!(multiproof_digests(14), 63 + 8 * NUM_QUERIES);
+    }
 }
