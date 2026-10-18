@@ -282,6 +282,13 @@ pub(crate) fn verify(statement: Statement, public: &[u8], proof: &[u8]) -> Resul
     p3_uni_stark::verify(&config, &air, &proof, &public_field(public)).map_err(|_| ProofError::Rejected)
 }
 
+/// The length of the one serialized proof at the start of `bytes`, or `None`
+/// when no proof of the shipped configuration decodes there.
+pub(crate) fn serialized_len(bytes: &[u8]) -> Option<usize> {
+    let (_, rest) = postcard::take_from_bytes::<StarkProof<Config>>(bytes).ok()?;
+    Some(bytes.len() - rest.len())
+}
+
 /// The gate's estimate for every statement, for the shipped configuration
 /// report.
 pub(crate) fn estimates() -> Result<[(Statement, SecurityEstimate); 3], ProofError> {

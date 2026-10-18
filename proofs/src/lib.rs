@@ -7,6 +7,9 @@
 //! - S3, the proof of holding: [`verify_hold`], which rejects every proof until
 //!   the spent-marker set is settled, and the verifier's [`ChallengeBook`].
 //!
+//! The module [`ffi`] is a C interface to [`verify_coin_reveal`], with its
+//! header in `include/ghost_proofs.h`.
+//!
 //! S2 and S3 are written in full, and are built and verified only by the
 //! functions compiled under the `unsettled-points-test` feature, for tests.
 //! The public verifiers reject them whether or not the feature is on.
@@ -49,6 +52,7 @@ mod stark;
 
 #[doc(hidden)]
 pub mod adversary;
+pub mod ffi;
 
 pub use amount::{
     AMOUNT_HIGH_BYTES, AMOUNT_LIMBS, V_MAX, amount_is_valid, amount_limbs, amount_value, amount_word,
