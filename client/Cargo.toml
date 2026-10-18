@@ -21,3 +21,8 @@ tiny-keccak = { version = "2.0.2", features = ["keccak", "sha3"] }
 
 [dev-dependencies]
 rand = { version = "0.10.1", default-features = false, features = ["std_rng"] }
+
+# The RandomX seal check (Argon2d over 256 MiB, then an interpreted VM) takes
+# minutes per hash unoptimised; the tests build it optimised.
+[profile.test]
+opt-level = 3

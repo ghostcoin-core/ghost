@@ -19,6 +19,9 @@
 //!   chain's leaves, notes and spent markers (section 8).
 //! - [`tree_state`]: the shared tree state a reveal proves against (spec 02,
 //!   section 8).
+//! - [`seal`]: the RandomX block seal of a header, checked in light
+//!   verification mode (spec 08), on [`randomx`], a Rust port of RandomX v1
+//!   light-mode hashing.
 //!
 //! # Secrets
 //!
@@ -47,8 +50,10 @@ pub mod derive;
 pub mod hash;
 pub mod key;
 pub mod note;
+pub mod randomx;
 pub mod restore;
 pub mod reveal;
+pub mod seal;
 pub mod tree_state;
 mod wipe;
 
@@ -64,4 +69,5 @@ pub use reveal::{
     claim_to_new_key, full_reveal, partial_reveal, prove_reveal, BuiltReveal, OwnedCoin,
     RemainderCoin, RevealError, RevealTerms,
 };
+pub use seal::{check_seal, seal_hash, seed_height, verify_seal, HeaderError, SealError, SealKey};
 pub use tree_state::{choose_tree_state, HeaderRoot, TreeStateChoice};
