@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { toHex } from "../src/bytes.mjs";
-import { DEFAULT_COMMIT_ENTRY, createFlow } from "../src/flow.mjs";
+import { DEFAULT_COMMIT_ENTRY, ZERO_ADDRESS, createFlow } from "../src/flow.mjs";
 import { DEFAULT_ENDPOINT } from "../src/rpc.mjs";
 import { loadModule, nodeProver, webappDir } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
@@ -123,7 +123,12 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
     assert.equal(s.fee, SPEC_FEE);
     assert.equal(s.available, GHOST - SPEC_FEE);
 
-    // A partial reveal of 0.25 GHOST to any address.
+    // Not to the zero address, whose credit nobody can spend.
+    const before = node.requests.length;
+    await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: ZERO_ADDRESS }), /zero address/);
+    assert.equal(node.requests.length, before, "nothing is asked or sent");
+
+    // A partial reveal of 0.25 GHOST to any other address.
     const reveal = await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
     assert.ok(reveal.block > 44);
     assert.equal(node.reveals.length, 1);
@@ -293,8 +298,8 @@ test("a fabricated receipt does not confirm a claim the chain does not hold", as
     const positions = flow.claimSaved();
 
     // The endpoint withholds the claim, returns its hash, and answers the
-    // receipt lookup with a success in block 77, a block that exists.
-    node.dishonest.withhold = () => ({ status: "0x1", blockNumber: "0x4d" });
+    // receipt lookup with a success in a block mined after it was sent.
+    node.dishonest.withhold = () => ({ status: "0x1", blockNumber: `0x${node.mine().toString(16)}` });
     await assert.rejects(flow.claimCheck(answersFor(newKey, positions)), /has not settled/);
     assert.equal(node.withheld.length, 1, "the claim reached the endpoint");
     assert.equal(node.reveals.length, 0, "and was never executed");
@@ -303,13 +308,20 @@ test("a fabricated receipt does not confirm a claim the chain does not hold", as
     assert.equal(s.status, "unclaimed", "the old key stays unclaimed");
     assert.ok(s.current, "and still shows its coin");
 
-    // A receipt naming a block the chain does not have is refused too, and
+    // A receipt naming a block the chain does not have is refused too, as is
+    // one naming block 77, which was in the chain before the claim was sent;
     // a fresh look at the key still shows it unclaimed.
-    node.dishonest.withhold = () => ({ status: "0x1", blockNumber: "0x400" });
-    await flow.claimStart();
-    const again = flow.claimSaved();
-    await assert.rejects(flow.claimCheck(answersFor(flow.state.summon.claim.key, again)), /not a block of the chain/);
-    assert.notEqual(flow.state.summon.claim.stage, "confirmed");
+    for (const [blockNumber, refusal] of [
+      ["0x400", /not a block of the chain/],
+      ["0x4d", /before the transaction was sent/],
+    ]) {
+      node.dishonest.withhold = () => ({ status: "0x1", blockNumber });
+      await flow.claimStart();
+      const again = flow.claimSaved();
+      await assert.rejects(flow.claimCheck(answersFor(flow.state.summon.claim.key, again)), refusal);
+      assert.notEqual(flow.state.summon.claim.stage, "confirmed");
+    }
+    assert.equal(node.reveals.length, 0);
     assert.equal((await flow.summonRefresh()).status, "unclaimed");
   } finally {
     await done();
@@ -380,6 +392,9 @@ test("the built-in endpoint is the local internal network", () => {
   assert.throws(() => flow.setEndpoint("ftp://example.org"), /http or https/);
   assert.throws(() => flow.setEndpoint("https://user:pw@example.org"), /user name/);
   assert.equal(flow.setEndpoint("https://node.example.org/rpc"), "https://node.example.org/rpc");
+  assert.throws(() => flow.setCommitEntry(ZERO_ADDRESS), /zero address/);
+  assert.equal(flow.state.commitEntry, DEFAULT_COMMIT_ENTRY, "a refused entry leaves the setting as it was");
+  assert.equal(flow.setCommitEntry(RECIPIENT), RECIPIENT);
 });
 
 test("index.html loads only same-origin scripts and names no external URL", async () => {
