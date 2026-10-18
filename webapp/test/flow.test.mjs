@@ -214,8 +214,12 @@ async function setUp() {
   // Every worker request, with how many endpoint requests came before it
   // started and after it ended, and how long it took.
   const work = [];
+  // `hooks.prove(args)`, when set, runs before each proof and gives the
+  // arguments the worker is sent.
+  const hooks = { prove: null };
   const prover = {
     request(op, args, onProgress) {
+      if (op === "prove" && hooks.prove) args = hooks.prove(args);
       const at = node.requests.length;
       const started = performance.now();
       return worker.request(op, args, onProgress).finally(() => {
@@ -233,7 +237,7 @@ async function setUp() {
     worker.terminate();
     await node.close();
   };
-  return { node, flow, chain, work, done };
+  return { node, flow, chain, work, hooks, done };
 }
 
 // The endpoint's requests since request `from`, with the worker requests
@@ -247,6 +251,20 @@ function timeline(node, work, from, fromWork) {
     if (i < node.requests.length) events.push(JSON.stringify([node.requests[i].method, node.requests[i].params]));
   }
   return events;
+}
+
+// A timeline with block hashes left out and block numbers (but genesis)
+// counted from block `base`, so that runs from tips the same distance past
+// an epoch block and a fee window compare.
+function relative(events, base) {
+  return events.map((e) =>
+    e
+      .replace(/0x[0-9a-f]{64}/g, "0xhash")
+      .replace(/^\["eth_getBlockByNumber",\["(0x[0-9a-f]+)"/, (_, n) => {
+        const number = Number(BigInt(n));
+        return `["eth_getBlockByNumber",["${number === 0 ? "genesis" : `base${number - base >= 0 ? "+" : ""}${number - base}`}"`;
+      }),
+  );
 }
 
 // Vanish of `amount` GHOST with a right save check; the new key.
@@ -333,6 +351,98 @@ test("altered notes cannot make the requests depend on whether the key owns a co
       `the decoy took ${Math.round(notOwnerProofs[0].ms)} ms, the real proof ${Math.round(real[0].ms)} ms`,
     );
     assert.equal(node.reveals.length, 1);
+  } finally {
+    await done();
+  }
+});
+
+test("a refused proof and a fee change leave the requests and their timing as for a key without a coin", async () => {
+  const { node, flow, work, hooks, done } = await setUp();
+  const GWEI = 10n ** 9n;
+  try {
+    const owner = await vanish(flow, "1");
+    const target = node.leaves.findIndex((l) => toHex(l.commitment) === toHex(node.commits[0].commitment));
+    const other = await vanish(flow, "1");
+    node.foreignCommits(1);
+    // Each attempt starts 12 blocks past an epoch block, at the start of a
+    // fee window.
+    node.mineTo(76);
+    assert.equal((await flow.summonOpen(other)).status, "unclaimed");
+    node.dishonest.note = (position, note) => (position === target ? note : new Uint8Array(note.length));
+
+    // While the first proof of an attempt is made, the next fee window's
+    // blocks arrive with a higher base fee, so the fee changes and the
+    // reveal is proved again.
+    let baseFee = GWEI;
+    const feeChange = () => {
+      let first = true;
+      return (args) => {
+        if (first) {
+          first = false;
+          baseFee += GWEI;
+          node.setBaseFee(baseFee);
+          for (let i = 0; i < 4; i += 1) node.mine();
+        }
+        return args;
+      };
+    };
+    const attempt = async (base) => {
+      const from = node.requests.length;
+      const fromWork = work.length;
+      const outcome = await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }).then(
+        () => null,
+        (err) => err,
+      );
+      const events = relative(timeline(node, work, from, fromWork), base);
+      return { outcome, events, proofs: work.slice(fromWork).filter((w) => w.op === "prove") };
+    };
+
+    // The key without a coin: a decoy proved for each attempt.
+    hooks.prove = feeChange();
+    const none = await attempt(76);
+    assert.match(none.outcome.message, /holds no unspent coin/);
+    assert.deepEqual(none.proofs.map((p) => p.decoy), [true, true], "a decoy for the first attempt and for the retry");
+
+    // The owner's key, with every real proof refused in the worker (its
+    // coin not under the root it is sent): the same requests at the same
+    // places among the worker's work, and each refusal takes a proof's time.
+    node.foreignCommits(1);
+    node.mineTo(108);
+    assert.equal((await flow.summonOpen(owner)).status, "unclaimed");
+    const change = feeChange();
+    hooks.prove = (args) => {
+      change(args);
+      if (args.decoy) return args;
+      const root = Uint8Array.from(args.root);
+      root[0] ^= 1;
+      return { ...args, root };
+    };
+    const refused = await attempt(108);
+    assert.match(refused.outcome.message, /not in the tree/);
+    assert.deepEqual(refused.proofs.map((p) => p.decoy), [false, false], "the coin's own proof, twice");
+    assert.deepEqual(refused.events, none.events, "a refused proof and a retry ask the same, in the same order");
+    for (const p of refused.proofs) {
+      assert.ok(
+        p.ms > none.proofs[0].ms / 4,
+        `a refused proof took ${Math.round(p.ms)} ms, a decoy ${Math.round(none.proofs[0].ms)} ms`,
+      );
+    }
+    assert.equal(node.reveals.length, 0);
+
+    // The owner's key again, proved after the retry: up to the reveal, the
+    // same as without a coin.
+    node.foreignCommits(1);
+    node.mineTo(140);
+    assert.equal((await flow.summonOpen(owner)).status, "unclaimed");
+    hooks.prove = feeChange();
+    const made = await attempt(140);
+    assert.equal(made.outcome, null);
+    const sentAt = made.events.findIndex((e) => e.startsWith('["eth_sendRawTransaction"'));
+    assert.ok(sentAt > 0);
+    assert.deepEqual(made.events.slice(0, sentAt), none.events, "the retried reveal asks the same before it is sent");
+    assert.deepEqual(made.proofs.map((p) => p.decoy), [false, false]);
+    assert.equal(node.reveals.length, 1);
+    assert.ok(node.reveals[0].fee > SPEC_FEE, "the reveal carries the raised fee");
   } finally {
     await done();
   }
