@@ -16,8 +16,17 @@
 // storage, a file, a cookie or a server, and it is dropped as soon as the
 // step that needs it is done.
 
-import { concat, fromHex, quantity, toHex, toQuantity } from "./bytes.mjs";
-import { EPOCH_BLOCKS, epochHeight, feeForNextBlock, formatGhost, parseAddress, parseGhost } from "./chain.mjs";
+import { concat, equalBytes, fromHex, quantity, toHex, toQuantity } from "./bytes.mjs";
+import {
+  CONFIRMATIONS,
+  EPOCH_BLOCKS,
+  epochHeight,
+  feeForNextBlock,
+  formatGhost,
+  parseAddress,
+  parseGhost,
+} from "./chain.mjs";
+import { readHeader } from "./header.mjs";
 import { DEFAULT_ENDPOINT, createRpc } from "./rpc.mjs";
 
 // The commit entry address of the local internal network. The transaction
@@ -116,30 +125,55 @@ export function createFlow({
 
   // --- The chain, from the endpoint ---
 
+  async function blockNumber() {
+    return Number(quantity(await rpc.call("eth_blockNumber")));
+  }
+
+  // Block `number`'s header, kept only if keccak256 of its 18-field RLP
+  // (spec 05, section 10) is the hash the endpoint returned with it, so no
+  // field, a coin root included, can be changed under a real hash. The
+  // proof-of-work seal is not checked: the endpoint is trusted for it.
   async function headerAt(number) {
     const raw = await rpc.call("eth_getBlockByNumber", [toQuantity(number), false]);
     if (!raw) throw new Error(`the endpoint has no block ${number}`);
+    const { values, rlp } = readHeader(raw);
+    const hash = fromHex(raw.hash, 32);
+    const { hash: computed } = await prover.request("keccak256", { bytes: rlp });
+    if (!equalBytes(computed, hash)) {
+      throw new Error(`the endpoint's header of block ${number} does not hash to the block hash it returned`);
+    }
     const header = {
-      number: Number(quantity(raw.number)),
-      hash: fromHex(raw.hash, 32),
-      parentHash: fromHex(raw.parentHash, 32),
-      baseFee: quantity(raw.baseFeePerGas),
-      gasUsed: quantity(raw.gasUsed),
-      gasLimit: quantity(raw.gasLimit),
-      coinTreeRoot: fromHex(raw.coinTreeRoot, 32),
+      number: Number(values.number),
+      hash,
+      parentHash: values.parentHash,
+      baseFee: values.baseFeePerGas,
+      gasUsed: values.gasUsed,
+      gasLimit: values.gasLimit,
+      coinTreeRoot: values.coinTreeRoot,
     };
     if (header.number !== number) throw new Error(`the endpoint returned block ${header.number} for ${number}`);
     return header;
   }
 
+  // The chain as of its tip: verified headers, each the parent of the next,
+  // from 32 blocks below the epoch block (or from genesis) up to the tip,
+  // which covers the epoch window, the fee window and the block 6 below the
+  // tip. Which blocks are asked for depends on the tip alone.
   async function readChain() {
     const chainId = quantity(await rpc.call("eth_chainId"));
-    const tip = await headerAt(Number(quantity(await rpc.call("eth_blockNumber"))));
-    const genesis = await headerAt(0);
-    return { chainId, tip, genesis };
+    const top = await blockNumber();
+    const epoch = epochHeight(top);
+    const low = epoch === null || epoch < EPOCH_BLOCKS ? 0 : epoch - EPOCH_BLOCKS;
+    const headers = await headerRange(low, top);
+    const at = (n) => {
+      if (n < low || n > top) throw new Error(`block ${n} is outside the headers read`);
+      return headers[n - low];
+    };
+    const genesis = low === 0 ? headers[0] : await headerAt(0);
+    return { chainId, epoch, headers, at, tip: headers[headers.length - 1], genesis };
   }
 
-  // Consecutive headers, each the parent of the next.
+  // Consecutive verified headers, each the parent of the next.
   async function headerRange(from, to) {
     const headers = [];
     for (let n = from; n <= to; n += 1) {
@@ -193,18 +227,21 @@ export function createFlow({
   }
 
   // Everything the endpoint is asked for a key is asked before the key is
-  // tried on a note: the tree, the markers, the epoch headers and the fee
-  // headers, all fixed by the tip alone. Notes are not checked against the
-  // tree (an endpoint can alter them), so no request may follow from what
-  // restore found; on every path, found or not, the requests are the same.
+  // tried on a note: the headers, the tree and the markers, all fixed by the
+  // tip alone. Notes are not checked against the tree (an endpoint can alter
+  // them), so no request may follow from what restore found; on every path,
+  // found or not, the requests are the same.
+  //
+  // The markers are those as of 6 blocks below the tip, so a key shows
+  // claimed only once its coin's spend has 6 blocks on top.
   async function scanKey(key) {
     const chain = await readChain();
     progress("reading the coin tree");
     const tree = await fetchTree(chain.tip);
-    const spent = await fetchSpent(chain.tip);
-    const epoch = epochHeight(chain.tip.number);
-    const epochHeaders = epoch === null || epoch < EPOCH_BLOCKS ? null : await headerRange(epoch - EPOCH_BLOCKS, epoch);
-    const fee = (await feeForNextBlock(chain.tip, headerAt)).fee;
+    const spent = await fetchSpent(chain.at(Math.max(0, chain.tip.number - CONFIRMATIONS)));
+    const { epoch } = chain;
+    const epochHeaders = epoch === null || epoch < EPOCH_BLOCKS ? null : chain.headers.slice(0, EPOCH_BLOCKS + 1);
+    const fee = (await feeForNextBlock(chain.tip, async (n) => chain.at(n))).fee;
     progress("looking for the key's coins");
     const { found } = await prover.request("restore", {
       chainId: chain.chainId,
@@ -212,21 +249,23 @@ export function createFlow({
       records: tree.records,
       markers: spent,
     });
-    return { chain, tree, epoch, epochHeaders, fee, found };
+    return { chain, tree, epochHeaders, fee, found };
   }
 
   // The tree state to prove `coin` against (spec 02, section 8): the epoch
   // root E of the tip, if the shared epoch rule picks it. It sends no
   // request: the scan fetched everything it reads.
   //
-  // The headers are always blocks E - 32 to E, whatever the coin, so the
-  // requests say nothing about where the coin is. Each header's leaf
+  // The headers are always blocks E - 32 to E, verified and linked to the
+  // tip, whatever the coin, so the requests say nothing about where the
+  // coin is. Each header's leaf
   // count is read from the roots of every prefix of the fetched leaves. The
   // leaf's block is the first of those headers whose tree holds the leaf;
   // for a leaf older than E - 32 that is block E - 32 itself, which only
   // makes the rule stricter, never looser.
   async function planReveal(scan, coin) {
-    const { chain, tree, epoch, epochHeaders: headers } = scan;
+    const { chain, tree, epochHeaders: headers } = scan;
+    const { epoch } = chain;
     if (!headers) {
       throw new WaitError(`the first epoch block is block ${EPOCH_BLOCKS}; wait until the chain passes block ${EPOCH_BLOCKS + 12}`);
     }
@@ -282,19 +321,31 @@ export function createFlow({
   }
 
   // A receipt is the endpoint's word only. A transaction counts as settled
-  // when the chain shows what it did: the coin tree as of the tip, checked
-  // against the tip's coin root, holds `commitment` (the new leaf every
-  // commit, reveal and claim appends) at a position the receipt's block
-  // added, read from the coin roots of that block and its parent in the
-  // header chain that leads to the tip.
+  // when the chain shows what it did, with 6 blocks on top: the coin tree as
+  // of the tip, checked against the tip's coin root, holds `commitment` (the
+  // new leaf every commit, reveal and claim appends) at a position the
+  // receipt's block added, read from the coin roots of that block and its
+  // parent in the verified header chain that leads to the tip.
   async function waitSettled(hash, commitment) {
     const receipt = await waitReceipt(hash);
     progress("checking the block");
-    const tip = await headerAt(Number(quantity(await rpc.call("eth_blockNumber"))));
-    if (receipt.blockNumber < 1 || receipt.blockNumber > tip.number) {
+    let top = await blockNumber();
+    if (receipt.blockNumber < 1 || receipt.blockNumber > top) {
       throw new Error(`the receipt names block ${receipt.blockNumber}, not a block of the chain`);
     }
-    const [parent, block] = await headerRange(receipt.blockNumber - 1, tip.number);
+    if (top < receipt.blockNumber + CONFIRMATIONS) progress(`waiting for ${CONFIRMATIONS} blocks on top`);
+    for (let i = 0; top < receipt.blockNumber + CONFIRMATIONS; i += 1) {
+      if (i >= maxPolls) {
+        throw new Error(
+          `block ${receipt.blockNumber} has ${top - receipt.blockNumber} of the ${CONFIRMATIONS} blocks on top it needs; refresh later`,
+        );
+      }
+      await sleep(pollMs);
+      top = await blockNumber();
+    }
+    const headers = await headerRange(receipt.blockNumber - 1, top);
+    const [parent, block] = headers;
+    const tip = headers[headers.length - 1];
     if (receipt.blockHash && toHex(receipt.blockHash) !== toHex(block.hash)) {
       throw new Error(`the receipt's block is not block ${block.number} of the chain`);
     }
@@ -315,48 +366,69 @@ export function createFlow({
     throw new Error(`block ${block.number} does not hold the transaction's new coin; it has not settled`);
   }
 
+  // The proof of a reveal of the key's current coin, made in the worker
+  // without a request to the endpoint; throws when there is nothing to prove.
+  async function proveReveal(scan, { key, kind, out, recipient, newKey }) {
+    const { current } = keyStatus(scan.found);
+    if (!current) throw new Error("this key holds no unspent coin");
+    const plan = await planReveal(scan, current);
+    const paid = (kind === "claim" ? 0n : out) + plan.fee;
+    if (paid > current.amount) {
+      throw new Error(
+        `the coin holds ${formatGhost(current.amount)} GHOST; with the fee of ${formatGhost(plan.fee)} GHOST at most ${formatGhost(current.amount > plan.fee ? current.amount - plan.fee : 0n)} can go out`,
+      );
+    }
+    progress("proving in the background worker");
+    return prover.request(
+      "prove",
+      {
+        chainId: scan.chain.chainId,
+        domain: plan.domain,
+        kind,
+        root: plan.root,
+        recipient: fromHex(kind === "claim" ? ZERO_ADDRESS : recipient, 20),
+        out: kind === "claim" ? 0n : out,
+        fee: plan.fee,
+        number: current.number,
+        amount: current.amount,
+        position: current.position,
+        leaves: plan.leaves,
+        key,
+        newKey,
+      },
+      (stage) => progress(stage === "proving" ? "proving in the background worker" : stage),
+    );
+  }
+
   // Proves a reveal of the key's current coin and sends it. A proof whose
   // fee window lapsed while it was being made is made again.
-  async function revealAndSend({ key, kind, out, recipient, newKey }) {
+  //
+  // After restore, every path, the one where the key holds no coin
+  // included, asks the endpoint the same thing in the same order before
+  // anything depends on the outcome: eth_blockNumber, the tip's header and
+  // the fee for the next block. Only then does a failure surface, or the
+  // reveal go out; sending the reveal is what links the connection to the
+  // coin.
+  async function revealAndSend(request) {
     for (let attempt = 0; attempt < FEE_ATTEMPTS; attempt += 1) {
-      const scan = await scanKey(key);
-      const { current } = keyStatus(scan.found);
-      if (!current) throw new Error("this key holds no unspent coin");
-      const plan = await planReveal(scan, current);
-      const paid = (kind === "claim" ? 0n : out) + plan.fee;
-      if (paid > current.amount) {
-        throw new Error(
-          `the coin holds ${formatGhost(current.amount)} GHOST; with the fee of ${formatGhost(plan.fee)} GHOST at most ${formatGhost(current.amount > plan.fee ? current.amount - plan.fee : 0n)} can go out`,
-        );
+      const scan = await scanKey(request.key);
+      let proved = null;
+      let failure = null;
+      try {
+        proved = await proveReveal(scan, request);
+      } catch (err) {
+        failure = err;
       }
-      progress("proving in the background worker");
-      const proved = await prover.request(
-        "prove",
-        {
-          chainId: scan.chain.chainId,
-          domain: plan.domain,
-          kind,
-          root: plan.root,
-          recipient: fromHex(kind === "claim" ? ZERO_ADDRESS : recipient, 20),
-          out: kind === "claim" ? 0n : out,
-          fee: plan.fee,
-          number: current.number,
-          amount: current.amount,
-          position: current.position,
-          leaves: plan.leaves,
-          key,
-          newKey,
-        },
-        (stage) => progress(stage === "proving" ? "proving in the background worker" : stage),
-      );
-      const tip = await headerAt(Number(quantity(await rpc.call("eth_blockNumber"))));
-      if ((await feeForNextBlock(tip, headerAt)).fee !== plan.fee) continue;
+      const tip = await headerAt(await blockNumber());
+      const { fee } = await feeForNextBlock(tip, headerAt);
+      if (fee !== scan.fee) continue;
+      if (failure) throw failure;
       progress("sending the reveal");
       const hash = await rpc.call("eth_sendRawTransaction", [toHex(proved.envelope)]);
       if (String(hash).toLowerCase() !== toHex(proved.txHash)) {
         throw new Error("the endpoint returned another transaction hash");
       }
-      return { hash, fee: plan.fee, remainder: proved.remainder };
+      return { hash, fee: scan.fee, remainder: proved.remainder };
     }
     throw new Error("the fee changed every time a proof was ready; try again");
   }

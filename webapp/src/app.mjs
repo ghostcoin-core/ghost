@@ -2,13 +2,17 @@
 // input to it. All logic is in flow.mjs; nothing here keeps a key beyond
 // the element that shows it, which is emptied when the step ends.
 
-import { formatGhost } from "./chain.mjs";
+import { CONFIRMATIONS, formatGhost } from "./chain.mjs";
 import { DEFAULT_COMMIT_ENTRY, createFlow } from "./flow.mjs";
 import { downloadKeyImage } from "./keyimage.mjs";
 import { browserProver } from "./prover.mjs";
 import { DEFAULT_ENDPOINT } from "./rpc.mjs";
 
 const $ = (id) => document.getElementById(id);
+
+// Headers are checked against their hashes and each other, not their seals.
+const SEAL_TRUST =
+  "Confirmation trusts the chosen endpoint for the proof-of-work seal of each block, which the app does not verify.";
 
 const flow = createFlow({
   prover: browserProver(),
@@ -92,8 +96,8 @@ function describeSummon(s) {
   const lines = [];
   if (s.status === "scanning") return "Reading the chain…";
   if (s.status === "not-found") lines.push("No coin for this key yet. A commit shows once its block is in.");
-  if (s.status === "claimed") lines.push("Claimed: this key's coin has been moved or revealed.");
-  if (s.status === "pending") lines.push("A transaction of this key is waiting for its block.");
+  if (s.status === "claimed") lines.push(`Claimed: this key's coin was moved or revealed ${CONFIRMATIONS} or more blocks ago.`);
+  if (s.status === "pending") lines.push(`A transaction of this key is waiting for its block and ${CONFIRMATIONS} more on top.`);
   if (s.status === "unclaimed" && s.current) {
     lines.push(`Unclaimed: ${formatGhost(s.current.amount)} GHOST.`);
     lines.push(`Fee now: ${formatGhost(s.fee)} GHOST; at most ${formatGhost(s.available)} GHOST can go out.`);
@@ -102,6 +106,7 @@ function describeSummon(s) {
     lines.push(`Revealed ${formatGhost(s.lastReveal.out)} GHOST to ${s.lastReveal.recipient} in block ${s.lastReveal.block}.`);
   }
   lines.push(`Chain tip: block ${s.tip ?? "?"}. Notes are not yet checked against block receipts.`);
+  lines.push(SEAL_TRUST);
   return lines.join(" ");
 }
 
@@ -112,8 +117,9 @@ function render(state) {
   const v = state.vanish;
   renderKeyStep("vanish", v);
   const vanishStatus = {
-    pending: () => `Commit sent (${v.txHash}); waiting for its block.`,
-    confirmed: () => `Committed ${formatGhost(v.amount)} GHOST in block ${v.block}. Keep your key safe; the app has forgotten it.`,
+    pending: () => `Commit sent (${v.txHash}); waiting for its block and ${CONFIRMATIONS} more on top.`,
+    confirmed: () =>
+      `Committed ${formatGhost(v.amount)} GHOST in block ${v.block}, with ${CONFIRMATIONS} blocks on top. Keep your key safe; the app has forgotten it. ${SEAL_TRUST}`,
   };
   $("vanish-status").textContent = v && vanishStatus[v.stage] ? vanishStatus[v.stage]() : "";
 
@@ -126,8 +132,9 @@ function render(state) {
     renderKeyStep("claim", s.claim);
     const c = s.claim;
     const claimStatus = {
-      pending: () => `Claim sent (${c.txHash}); waiting for its block.`,
-      confirmed: () => `Claimed ${formatGhost(c.amount)} GHOST to the new key in block ${c.block}.`,
+      pending: () => `Claim sent (${c.txHash}); waiting for its block and ${CONFIRMATIONS} more on top.`,
+      confirmed: () =>
+        `Claimed ${formatGhost(c.amount)} GHOST to the new key in block ${c.block}, with ${CONFIRMATIONS} blocks on top. ${SEAL_TRUST}`,
     };
     $("claim-status").textContent = c && claimStatus[c.stage] ? claimStatus[c.stage]() : "";
     $("claim-start").disabled = Boolean(c && c.stage !== "confirmed");

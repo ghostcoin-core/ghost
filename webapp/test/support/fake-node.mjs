@@ -5,8 +5,9 @@
 //
 // It follows the specifications of this repository: whole pages of 4,096
 // leaves with their notes and the page-root list (spec 05, section 8), the
-// header roots of spec 05, section 4, the private transaction envelope and
-// fee of spec 07, sections 3 to 5, and the commit of spec 03, section 6.
+// header roots of spec 05, section 4, the header encoding and hash of spec 05,
+// section 10, the private transaction envelope and fee of spec 07, sections 3
+// to 5, and the commit of spec 03, section 6.
 // A reveal is decoded and its proof verified with the real verifier, then
 // checked as a node admits it: fee in force, root of an earlier canonical
 // block, marker unused. Commits arrive through the scripted wallet below.
@@ -23,6 +24,9 @@ const NOTE_BYTES = 156;
 const GWEI = 1_000_000_000n;
 // Spec 05, vector empty-data-tree: no data commitment is ever made here.
 const EMPTY_DATA_ROOT = "0x3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03";
+// Spec 05, section 10: the hash of the empty list, and the start difficulty.
+const EMPTY_LIST_HASH = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347";
+const D_START = 1n << 24n;
 export const FAKE_CHAIN_ID = 7_777_001n;
 
 const sha256 = (...parts) => {
@@ -32,6 +36,35 @@ const sha256 = (...parts) => {
 };
 
 const q = (n) => `0x${BigInt(n).toString(16)}`;
+
+// The header RLP of spec 05, section 10, written apart from the app's: the
+// 18 fields in order, as the base client's JSON-RPC names them.
+const HEADER_ORDER = [
+  "parentHash", "sha3Uncles", "miner", "stateRoot", "transactionsRoot", "receiptsRoot", "logsBloom",
+  "difficulty", "number", "gasLimit", "gasUsed", "timestamp", "extraData", "mixHash", "nonce",
+  "baseFeePerGas", "coinTreeRoot", "dataTreeRoot",
+];
+const HEADER_INTS = new Set(["difficulty", "number", "gasLimit", "gasUsed", "timestamp", "baseFeePerGas"]);
+
+function bigEndian(n) {
+  const out = [];
+  for (let v = BigInt(n); v > 0n; v >>= 8n) out.unshift(Number(v & 0xffn));
+  return Uint8Array.from(out);
+}
+
+function prefixed(payload, short) {
+  if (payload.length < 56) return concat([Uint8Array.of(short + payload.length), payload]);
+  const size = bigEndian(payload.length);
+  return concat([Uint8Array.of(short + 55 + size.length), size, payload]);
+}
+
+function headerRlp(json) {
+  const items = HEADER_ORDER.map((name) => {
+    const bytes = HEADER_INTS.has(name) ? bigEndian(BigInt(json[name])) : fromHex(json[name]);
+    return bytes.length === 1 && bytes[0] < 0x80 ? bytes : prefixed(bytes, 0x80);
+  });
+  return prefixed(concat(items), 0xc0);
+}
 
 // The node's own fee of spec 07, section 4, written apart from the app's.
 function nodeFee(blocks, height) {
@@ -54,25 +87,54 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   const reveals = [];
   const commits = [];
   // What a dishonest endpoint does, for the tests that play one:
-  // `note(position, note)` replaces each note it serves, and with
-  // `withhold` set a reveal is not executed: its hash is returned and its
-  // receipt lookup answered with `withhold(hash)`.
-  const dishonest = { note: null, withhold: null };
+  // `note(position, note)` replaces each note it serves; with `withhold`
+  // set a reveal is not executed: its hash is returned and its receipt
+  // lookup answered with `withhold(hash, reveal)`; with `forge` set to
+  // { from, extra } the coin tree it serves as of block `from` and later
+  // also holds the `extra` leaves ({ commitment, note }), and those blocks'
+  // headers carry that tree's root but keep their real hash.
+  const dishonest = { note: null, withhold: null, forge: null };
   const withheld = [];
   let nonce = 0;
 
-  function header(block) {
+  // A block's header fields, with the names of the base client's JSON-RPC.
+  function headerFields(number, parentHash, coinTreeRoot) {
     return {
-      number: q(block.number),
-      hash: toHex(block.hash),
-      parentHash: toHex(block.parentHash),
-      baseFeePerGas: q(block.baseFee),
-      gasLimit: q(block.gasLimit),
-      gasUsed: q(block.gasUsed),
-      coinTreeRoot: toHex(block.coinTreeRoot),
+      parentHash: toHex(parentHash),
+      sha3Uncles: EMPTY_LIST_HASH,
+      miner: toHex(new Uint8Array(20)),
+      stateRoot: toHex(sha256("state", String(number))),
+      transactionsRoot: toHex(sha256("transactions", String(number))),
+      receiptsRoot: toHex(sha256("receipts", String(number))),
+      logsBloom: toHex(new Uint8Array(256)),
+      difficulty: q(D_START),
+      number: q(number),
+      gasLimit: q(30_000_000n),
+      gasUsed: q(15_000_000n),
+      timestamp: q(1_798_767_600 + number * 30),
+      extraData: "0x",
+      mixHash: toHex(sha256("mix", String(number))),
+      nonce: toHex(sha256("nonce", String(number)).slice(0, 8)),
+      baseFeePerGas: q(GWEI),
+      coinTreeRoot: toHex(coinTreeRoot),
       dataTreeRoot: EMPTY_DATA_ROOT,
-      timestamp: q(block.number * 30),
     };
+  }
+
+  const forged = (block) => dishonest.forge && block.number >= dishonest.forge.from;
+
+  // The leaves served as of `block`.
+  function served(block) {
+    const real = leaves.slice(0, block.leafCount);
+    return forged(block) ? [...real, ...dishonest.forge.extra] : real;
+  }
+
+  const servedLeaves = (block) => concat(served(block).map((l) => l.commitment));
+
+  function header(block) {
+    const json = { ...block.json, hash: toHex(block.hash) };
+    if (forged(block)) json.coinTreeRoot = toHex(ghost.treeRoots(servedLeaves(block)).root);
+    return json;
   }
 
   // One new block holding `apply`'s changes.
@@ -82,13 +144,13 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     const leafCount = leaves.length;
     const coinTreeRoot = ghost.treeRoots(concat(leaves.map((l) => l.commitment))).root;
     const parentHash = number === 0 ? new Uint8Array(32) : blocks[number - 1].hash;
+    const json = headerFields(number, parentHash, coinTreeRoot);
     blocks.push({
       number,
       parentHash,
-      hash: sha256("fake block", String(number), parentHash, coinTreeRoot),
+      json,
+      hash: ghost.keccak256(headerRlp(json)),
       baseFee: GWEI,
-      gasLimit: 30_000_000n,
-      gasUsed: 15_000_000n,
       coinTreeRoot,
       leafCount,
       spentCount: spent.length,
@@ -142,7 +204,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     const hash = toHex(reveal.txHash);
     if (dishonest.withhold) {
       withheld.push({ ...reveal, hash });
-      receipts.set(hash, dishonest.withhold(hash));
+      receipts.set(hash, dishonest.withhold(hash, reveal));
       return hash;
     }
     const number = mine((n) => {
@@ -154,6 +216,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     receipts.set(hash, {
       transactionHash: hash,
       blockNumber: q(number),
+      blockHash: toHex(blocks[number].hash),
       status: "0x1",
       type: "0x50",
       marker: toHex(reveal.marker),
@@ -177,8 +240,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     eth_sendRawTransaction: ([hex]) => sendRaw(hex),
     ghost_getPageRoots: ([tree, treeIndex, anchor]) => {
       if (tree !== "coin" || treeIndex !== "0x0") throw new Error("only coin tree 0 exists");
-      const block = blockByHash(anchor);
-      const { pageRoots } = ghost.treeRoots(concat(leaves.slice(0, block.leafCount).map((l) => l.commitment)));
+      const { pageRoots } = ghost.treeRoots(servedLeaves(blockByHash(anchor)));
       return { pageRoots: pageRoots.map(toHex) };
     },
     ghost_getTreePage: ([tree, treeIndex, page, anchor]) => {
@@ -186,7 +248,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       const block = blockByHash(anchor);
       const start = Number(BigInt(page)) * PAGE;
       if (tree === "coin") {
-        const part = leaves.slice(start, Math.min(start + PAGE, block.leafCount));
+        const part = served(block).slice(start, start + PAGE);
         const note = (l, i) => (dishonest.note ? dishonest.note(start + i, l.note) : l.note);
         return { count: q(part.length), leaves: part.map((l) => toHex(l.commitment)), notes: part.map((l, i) => toHex(note(l, i))) };
       }
@@ -237,6 +299,8 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     spent,
     blocks,
     tip: () => blocks.length - 1,
+    // One more block, with nothing in it.
+    mine: () => mine(),
     mineTo(height) {
       while (blocks.length - 1 < height) mine();
     },

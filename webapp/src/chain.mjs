@@ -12,6 +12,9 @@ export const TIP_DIVISOR = 10n;
 export const EPOCH_BLOCKS = 32;
 // ...and at least this many blocks below the tip.
 export const EPOCH_DEPTH = 12;
+// Blocks on top of a transaction's block before the app shows it confirmed,
+// and on top of a spent marker before a key shows claimed.
+export const CONFIRMATIONS = 6;
 // Base units in one GHOST.
 export const DECIMALS = 18;
 const ONE = 10n ** BigInt(DECIMALS);

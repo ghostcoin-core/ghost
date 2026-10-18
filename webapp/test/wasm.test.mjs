@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { fromHex, toHex } from "../src/bytes.mjs";
+import { readHeader } from "../src/header.mjs";
 import { loadModule } from "./support/env.mjs";
 
 const ghost = await loadModule();
@@ -24,6 +25,44 @@ test("tree roots match spec 05, section 11", () => {
   assert.equal(prefixes[0], "0x8e66512042388a7863d500c4f96861466ae48b9d64ea1e10ec382c31aa61b5a8");
   assert.equal(prefixes[2], toHex(root));
   assert.equal(prefixes[1], toHex(ghost.treeRoots(fromHex(LEAF_A)).root));
+});
+
+// Spec 05, vector header-block-one-example, as the JSON-RPC names its fields.
+const BLOCK_ONE = {
+  parentHash: "0xffc501cc30c42da020a29cce3823251ca1c110c250bfed5a3d752e262bb86af7",
+  sha3Uncles: "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+  miner: "0x00000000000000000000000000000000000004d2",
+  stateRoot: `0x${"11".repeat(32)}`,
+  transactionsRoot: `0x${"22".repeat(32)}`,
+  receiptsRoot: `0x${"33".repeat(32)}`,
+  logsBloom: `0x${"00".repeat(256)}`,
+  difficulty: "0x1000000",
+  number: "0x1",
+  gasLimit: "0x1c9c380",
+  gasUsed: "0x1ec30",
+  timestamp: "0x6b37040e",
+  extraData: "0x",
+  mixHash: `0x${"44".repeat(32)}`,
+  nonce: "0x0102030405060708",
+  baseFeePerGas: "0x342770c0",
+  coinTreeRoot: "0x142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5",
+  dataTreeRoot: "0xdfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a",
+};
+
+test("a header's RLP and hash match spec 05, section 11", () => {
+  const { rlp, values } = readHeader(BLOCK_ONE);
+  assert.equal(values.number, 1n);
+  assert.equal(values.baseFeePerGas, 875_000_000n);
+  assert.match(toHex(rlp), /^0xf90243a0ffc501cc/);
+  assert.match(toHex(rlp), /84342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a$/);
+  assert.equal(toHex(ghost.keccak256(rlp)), "0x943182f201b34dae77dc5c8efb5c84083dda907eac51f8ac3fc6f6c36a791c23");
+  // Any changed field changes the hash: a coin root, a base fee.
+  const otherRoot = { ...BLOCK_ONE, coinTreeRoot: BLOCK_ONE.coinTreeRoot.replace(/5$/, "4") };
+  assert.notEqual(toHex(ghost.keccak256(readHeader(otherRoot).rlp)), "0x943182f201b34dae77dc5c8efb5c84083dda907eac51f8ac3fc6f6c36a791c23");
+  assert.throws(() => readHeader({ ...BLOCK_ONE, dataTreeRoot: undefined }), /no dataTreeRoot/);
+  assert.throws(() => readHeader({ ...BLOCK_ONE, coinTreeRoot: BLOCK_ONE.coinTreeRoot.slice(0, -2) }), /expected 32 bytes/);
+  assert.throws(() => readHeader({ ...BLOCK_ONE, extraData: `0x${"00".repeat(33)}` }), /longer than 32/);
+  assert.throws(() => readHeader({ ...BLOCK_ONE, number: `0x1${"0".repeat(16)}` }), /out of range/);
 });
 
 test("the tree check accepts matching data and refuses a changed leaf or root", () => {
