@@ -96,6 +96,8 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   const dishonest = { note: null, withhold: null, forge: null };
   const withheld = [];
   let nonce = 0;
+  // The base fee of the blocks mined from now on.
+  let baseFee = GWEI;
 
   // A block's header fields, with the names of the base client's JSON-RPC.
   function headerFields(number, parentHash, coinTreeRoot) {
@@ -115,7 +117,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       extraData: "0x",
       mixHash: toHex(sha256("mix", String(number))),
       nonce: toHex(sha256("nonce", String(number)).slice(0, 8)),
-      baseFeePerGas: q(GWEI),
+      baseFeePerGas: q(baseFee),
       coinTreeRoot: toHex(coinTreeRoot),
       dataTreeRoot: EMPTY_DATA_ROOT,
     };
@@ -150,7 +152,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       parentHash,
       json,
       hash: ghost.keccak256(headerRlp(json)),
-      baseFee: GWEI,
+      baseFee,
       coinTreeRoot,
       leafCount,
       spentCount: spent.length,
@@ -301,6 +303,10 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     tip: () => blocks.length - 1,
     // One more block, with nothing in it.
     mine: () => mine(),
+    // Blocks mined from now on carry base fee `wei` (each still half full).
+    setBaseFee(wei) {
+      baseFee = wei;
+    },
     mineTo(height) {
       while (blocks.length - 1 < height) mine();
     },

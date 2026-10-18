@@ -517,6 +517,10 @@ pub extern "C" fn ghost_choose_tree_state(ptr: *const u8, len: usize) -> u32 {
 /// caller), the root is that tree's, and the given root and key texts are
 /// not used. The app proves a decoy when it has no coin to prove, so the
 /// time before its next request does not depend on whether it found one.
+/// A real reveal refused before its proof (its coin not under the root, a
+/// key that does not parse, amounts that do not balance) proves a decoy too
+/// before it returns the refusal, so neither does it depend on whether the
+/// proof could be made.
 ///
 /// Output: transaction hash (32), the spent marker (32), the remainder's `C`
 /// (32), number (8) and amount word (32), then the envelope.
@@ -543,37 +547,50 @@ pub extern "C" fn ghost_prove(ptr: *const u8, len: usize) -> u32 {
         let new_key_text = if claim { Some(input.text()?) } else { None };
 
         let z = zeros();
-        let (key, new_key, index) = if decoy {
-            if leaves.is_empty() {
-                leaves.push(z[0]);
+        // A real reveal refused before its proof is made is not refused at
+        // once: a decoy is proved, checked and encoded in its place and only
+        // then is the refusal returned, so the time this call takes does not
+        // depend on whether the reveal could be made.
+        let mut refused = None;
+        let mut built = None;
+        if !decoy {
+            match real_coin(key_text, new_key_text, number, value, position, &leaves, &terms, &z) {
+                Ok((key, new_key, coin)) => match prove_coin(&params, &key, &coin, new_key.as_ref(), &terms, out, &mut rng, zk) {
+                    Ok(made) => built = Some(made),
+                    Err(e) => refused = Some(e),
+                },
+                Err(e) => refused = Some(e),
             }
-            let key = PhantomKey::generate(KeyFormat::Standard, &mut rng);
-            let new_key = claim.then(|| PhantomKey::generate(KeyFormat::Standard, &mut rng));
-            let index = (position as usize).min(leaves.len() - 1);
-            let commit = key.coin_commit(number, value, Rule::EMPTY).map_err(|e| e.to_string())?;
-            leaves[index] = *commit.commitment.as_bytes();
-            terms.root = tree_root(&leaves, &z);
-            (key, new_key, index)
-        } else {
-            let key = key(key_text)?;
-            let new_key = new_key_text.map(key_for_claim).transpose()?;
-            let index = position as usize;
-            if index >= leaves.len() {
-                return Err(String::from("the coin is not in the tree under the chosen root"));
-            }
-            let commit = key.coin_commit(number, value, Rule::EMPTY).map_err(|e| e.to_string())?;
-            if &leaves[index] != commit.commitment.as_bytes() || tree_root(&leaves, &z) != terms.root {
-                return Err(String::from("the coin is not in the tree under the chosen root"));
-            }
-            (key, new_key, index)
-        };
-        let position = index as u32;
-        let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, position, path: witness(&leaves, index, &z) };
-        let built = match &new_key {
-            None => partial_reveal(&params, &key, &coin, &terms, out, &mut rng, zk),
-            Some(new_key) => claim_to_new_key(&params, &key, &coin, new_key, &terms, out, &mut rng, zk),
         }
-        .map_err(|e| e.to_string())?;
+        let built = match built {
+            Some(made) => made,
+            None => {
+                // In place of a refused reveal, the coin the app gives a
+                // decoy: the fee plus 1 wei, and 1 wei out for a partial.
+                let (number, value, out) = match refused {
+                    Some(_) => {
+                        let spare = if claim { 1 } else { 2 };
+                        (0, terms.fee.wei().saturating_add(spare), spare - 1)
+                    }
+                    None => (number, value.wei(), out.wei()),
+                };
+                let made = Amount::new(value).and_then(|value| Ok((value, Amount::new(out)?))).map_err(|e| e.to_string()).and_then(
+                    |(value, out)| {
+                        let (key, new_key, coin) =
+                            decoy_coin(claim, number, value, position, &mut leaves, &mut terms, &mut rng, &z)?;
+                        prove_coin(&params, &key, &coin, new_key.as_ref(), &terms, out, &mut rng, zk)
+                    },
+                );
+                if let Some(refusal) = refused {
+                    if let Ok(made) = made {
+                        let _ = verify_coin_reveal(&params, &made.reveal, &made.proof);
+                        let _ = encode_envelope(chain_id, &made.reveal, &made.proof);
+                    }
+                    return Err(refusal);
+                }
+                made?
+            }
+        };
         verify_coin_reveal(&params, &built.reveal, &built.proof)
             .map_err(|e| format!("the proof did not verify in the worker: {e}"))?;
         let envelope = encode_envelope(chain_id, &built.reveal, &built.proof)?;
@@ -587,6 +604,80 @@ pub extern "C" fn ghost_prove(ptr: *const u8, len: usize) -> u32 {
         result.extend_from_slice(&envelope);
         Ok(result)
     })
+}
+
+/// The key, the new key of a claim and the coin of a real reveal, if the
+/// coin is the leaf at `position` of the tree under `terms.root`.
+#[allow(clippy::too_many_arguments)]
+fn real_coin(
+    key_text: &str,
+    new_key_text: Option<&str>,
+    number: u64,
+    value: Amount,
+    position: u32,
+    leaves: &[[u8; 32]],
+    terms: &RevealTerms,
+    z: &[[u8; 32]],
+) -> Result<(PhantomKey, Option<PhantomKey>, OwnedCoin), String> {
+    let key = key(key_text)?;
+    let new_key = new_key_text.map(key_for_claim).transpose()?;
+    let index = position as usize;
+    if index >= leaves.len() {
+        return Err(String::from("the coin is not in the tree under the chosen root"));
+    }
+    let commit = key.coin_commit(number, value, Rule::EMPTY).map_err(|e| e.to_string())?;
+    if &leaves[index] != commit.commitment.as_bytes() || tree_root(leaves, z) != terms.root {
+        return Err(String::from("the coin is not in the tree under the chosen root"));
+    }
+    let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, position, path: witness(leaves, index, z) };
+    Ok((key, new_key, coin))
+}
+
+/// A decoy's throwaway key (and new key for a claim) and coin: the coin
+/// replaces the leaf at `position` (or the last), and `terms.root` becomes
+/// that tree's root.
+#[allow(clippy::too_many_arguments)]
+fn decoy_coin(
+    claim: bool,
+    number: u64,
+    value: Amount,
+    position: u32,
+    leaves: &mut Vec<[u8; 32]>,
+    terms: &mut RevealTerms,
+    rng: &mut StdRng,
+    z: &[[u8; 32]],
+) -> Result<(PhantomKey, Option<PhantomKey>, OwnedCoin), String> {
+    if leaves.is_empty() {
+        leaves.push(z[0]);
+    }
+    let key = PhantomKey::generate(KeyFormat::Standard, rng);
+    let new_key = claim.then(|| PhantomKey::generate(KeyFormat::Standard, rng));
+    let index = (position as usize).min(leaves.len() - 1);
+    let commit = key.coin_commit(number, value, Rule::EMPTY).map_err(|e| e.to_string())?;
+    leaves[index] = *commit.commitment.as_bytes();
+    terms.root = tree_root(leaves, z);
+    let position = index as u32;
+    let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, position, path: witness(leaves, index, z) };
+    Ok((key, new_key, coin))
+}
+
+/// A partial reveal of `coin`, or with `new_key` a claim to it.
+#[allow(clippy::too_many_arguments)]
+fn prove_coin(
+    params: &ChainParams,
+    key: &PhantomKey,
+    coin: &OwnedCoin,
+    new_key: Option<&PhantomKey>,
+    terms: &RevealTerms,
+    out: Amount,
+    rng: &mut StdRng,
+    zk: [u8; 32],
+) -> Result<ghost_client::BuiltReveal, String> {
+    match new_key {
+        None => partial_reveal(params, key, coin, terms, out, rng, zk),
+        Some(new_key) => claim_to_new_key(params, key, coin, new_key, terms, out, rng, zk),
+    }
+    .map_err(|e| e.to_string())
 }
 
 fn key_for_claim(text: &str) -> Result<PhantomKey, String> {

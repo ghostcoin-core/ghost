@@ -112,8 +112,11 @@ account, so it needs no wallet.
    headers for the next block. Before these requests the worker always
    makes a proof and sends nothing: of the coin when it can be revealed,
    otherwise of a decoy, a throwaway key's coin placed at the last position
-   of the same leaves, of the same kind. So the time before them is a
-   proof's on every path, fee retries included. The worker's other work
+   of the same leaves, of the same kind. A coin's proof that the worker
+   refuses before proving (its coin not under the root, amounts that do not
+   balance) proves a decoy in its place and only then returns the refusal.
+   So the time before them is a proof's on every path, refusals and fee
+   retries included. The worker's other work
    (the leaf count of every epoch header, restore, the epoch rule) is the
    same on every path too. Only after these requests does a failure surface
    or the reveal go out. Found or not, failing or not, the endpoint sees the

@@ -451,7 +451,9 @@ export function createFlow({
   // in the same order before anything depends on the outcome. The work is a
   // proof: of the coin when there is one to reveal, otherwise of a decoy
   // (`decoyArgs`), so the time before the next request is a proof's time on
-  // every path, the fee retries included. The requests are eth_blockNumber,
+  // every path, the fee retries included. A coin's proof the worker refuses
+  // takes a proof's time too: the worker proves a decoy before it answers
+  // with the refusal (lib.rs, ghost_prove). The requests are eth_blockNumber,
   // the tip's header and the fee for the next block. Only then does a
   // failure surface, or the reveal go out; sending the reveal is what links
   // the connection to the coin.
