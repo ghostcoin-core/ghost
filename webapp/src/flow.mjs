@@ -192,11 +192,19 @@ export function createFlow({
     }
   }
 
+  // Everything the endpoint is asked for a key is asked before the key is
+  // tried on a note: the tree, the markers, the epoch headers and the fee
+  // headers, all fixed by the tip alone. Notes are not checked against the
+  // tree (an endpoint can alter them), so no request may follow from what
+  // restore found; on every path, found or not, the requests are the same.
   async function scanKey(key) {
     const chain = await readChain();
     progress("reading the coin tree");
     const tree = await fetchTree(chain.tip);
     const spent = await fetchSpent(chain.tip);
+    const epoch = epochHeight(chain.tip.number);
+    const epochHeaders = epoch === null || epoch < EPOCH_BLOCKS ? null : await headerRange(epoch - EPOCH_BLOCKS, epoch);
+    const fee = (await feeForNextBlock(chain.tip, headerAt)).fee;
     progress("looking for the key's coins");
     const { found } = await prover.request("restore", {
       chainId: chain.chainId,
@@ -204,26 +212,25 @@ export function createFlow({
       records: tree.records,
       markers: spent,
     });
-    return { chain, tree, found };
+    return { chain, tree, epoch, epochHeaders, fee, found };
   }
 
   // The tree state to prove `coin` against (spec 02, section 8): the epoch
-  // root E of the tip, if the shared epoch rule picks it.
+  // root E of the tip, if the shared epoch rule picks it. It sends no
+  // request: the scan fetched everything it reads.
   //
-  // The headers fetched are always blocks E - 32 to E, whatever the coin,
-  // so the requests say nothing about where the coin is. Each header's leaf
+  // The headers are always blocks E - 32 to E, whatever the coin, so the
+  // requests say nothing about where the coin is. Each header's leaf
   // count is read from the roots of every prefix of the fetched leaves. The
   // leaf's block is the first of those headers whose tree holds the leaf;
   // for a leaf older than E - 32 that is block E - 32 itself, which only
   // makes the rule stricter, never looser.
   async function planReveal(scan, coin) {
-    const { chain, tree } = scan;
-    const epoch = epochHeight(chain.tip.number);
-    if (epoch === null || epoch < EPOCH_BLOCKS) {
+    const { chain, tree, epoch, epochHeaders: headers } = scan;
+    if (!headers) {
       throw new WaitError(`the first epoch block is block ${EPOCH_BLOCKS}; wait until the chain passes block ${EPOCH_BLOCKS + 12}`);
     }
     progress("choosing the tree state");
-    const headers = await headerRange(epoch - EPOCH_BLOCKS, epoch);
     const { roots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
     const countOf = new Map(roots.map((root, count) => [toHex(root), count]));
     const counts = headers.map((header) => {
@@ -248,11 +255,10 @@ export function createFlow({
     if (!chosen) {
       throw new WaitError(`no commitment followed the coin before epoch block ${epoch}; wait until after block ${nextEpoch}`);
     }
-    const fee = await feeForNextBlock(chain.tip, headerAt);
     return {
       root: epochHeader.coinTreeRoot,
       leaves: tree.leaves.slice(0, epochCount * 32),
-      fee: fee.fee,
+      fee: scan.fee,
       domain: chain.genesis.hash,
     };
   }
@@ -261,12 +267,52 @@ export function createFlow({
     for (let i = 0; i < maxPolls; i += 1) {
       const receipt = await rpc.call("eth_getTransactionReceipt", [hash]);
       if (receipt) {
+        if (receipt.transactionHash != null && String(receipt.transactionHash).toLowerCase() !== String(hash).toLowerCase()) {
+          throw new Error("the endpoint returned the receipt of another transaction");
+        }
         if (quantity(receipt.status) !== 1n) throw new Error("the transaction failed in its block");
-        return { blockNumber: Number(quantity(receipt.blockNumber)) };
+        return {
+          blockNumber: Number(quantity(receipt.blockNumber)),
+          blockHash: receipt.blockHash == null ? null : fromHex(receipt.blockHash, 32),
+        };
       }
       await sleep(pollMs);
     }
     throw new Error("no block holds the transaction yet; refresh later");
+  }
+
+  // A receipt is the endpoint's word only. A transaction counts as settled
+  // when the chain shows what it did: the coin tree as of the tip, checked
+  // against the tip's coin root, holds `commitment` (the new leaf every
+  // commit, reveal and claim appends) at a position the receipt's block
+  // added, read from the coin roots of that block and its parent in the
+  // header chain that leads to the tip.
+  async function waitSettled(hash, commitment) {
+    const receipt = await waitReceipt(hash);
+    progress("checking the block");
+    const tip = await headerAt(Number(quantity(await rpc.call("eth_blockNumber"))));
+    if (receipt.blockNumber < 1 || receipt.blockNumber > tip.number) {
+      throw new Error(`the receipt names block ${receipt.blockNumber}, not a block of the chain`);
+    }
+    const [parent, block] = await headerRange(receipt.blockNumber - 1, tip.number);
+    if (receipt.blockHash && toHex(receipt.blockHash) !== toHex(block.hash)) {
+      throw new Error(`the receipt's block is not block ${block.number} of the chain`);
+    }
+    const tree = await fetchTree(tip);
+    const { roots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
+    const countOf = new Map(roots.map((root, count) => [toHex(root), count]));
+    const before = countOf.get(toHex(parent.coinTreeRoot));
+    const after = countOf.get(toHex(block.coinTreeRoot));
+    if (before === undefined || after === undefined) {
+      throw new Error(`the endpoint's tree does not match the header of block ${block.number}`);
+    }
+    const leaf = toHex(commitment);
+    for (let position = before; position < after; position += 1) {
+      if (toHex(tree.leaves.slice(position * 32, position * 32 + 32)) === leaf) {
+        return { blockNumber: block.number, position };
+      }
+    }
+    throw new Error(`block ${block.number} does not hold the transaction's new coin; it has not settled`);
   }
 
   // Proves a reveal of the key's current coin and sends it. A proof whose
@@ -329,9 +375,9 @@ export function createFlow({
     const s = state.summon;
     const scan = await scanKey(s.key);
     const { status, current } = keyStatus(scan.found);
-    const fee = (await feeForNextBlock(scan.chain.tip, headerAt)).fee;
+    const { fee } = scan;
     s.coins = scan.found.map(({ number, amount, position, spent }) => ({ number, amount, position, spent }));
-    s.status = s.claimConfirmed ? "claimed" : status;
+    s.status = status;
     s.current = current ? { number: current.number, amount: current.amount, position: current.position } : null;
     s.fee = fee;
     s.available = current && current.amount > fee ? current.amount - fee : 0n;
@@ -419,7 +465,7 @@ export function createFlow({
         v.stage = "pending";
         v.txHash = txHash;
         progress("waiting for a block");
-        const receipt = await waitReceipt(txHash);
+        const receipt = await waitSettled(txHash, commit.commitment);
         v.stage = "confirmed";
         v.block = receipt.blockNumber;
         return { ok: true, txHash, block: receipt.blockNumber };
@@ -461,7 +507,7 @@ export function createFlow({
         s.status = "pending";
         s.lastReveal = { txHash: sent.hash, out, recipient: to, fee: sent.fee, block: null };
         progress("waiting for a block");
-        const receipt = await waitReceipt(sent.hash);
+        const receipt = await waitSettled(sent.hash, sent.remainder.commitment);
         s.lastReveal.block = receipt.blockNumber;
         await refreshSummon();
         return s.lastReveal;
@@ -484,7 +530,8 @@ export function createFlow({
     },
 
     // Claim, step 3: with the new key's groups re-typed, move the coin's
-    // value minus the fee to the new key, and wait for its block.
+    // value minus the fee to the new key, and wait for its block. The old
+    // key stays unclaimed until the chain shows the new key's coin.
     claimCheck(answers) {
       return run("claiming", async () => {
         const s = state.summon;
@@ -496,12 +543,10 @@ export function createFlow({
         c.stage = "pending";
         c.txHash = sent.hash;
         c.amount = sent.remainder.amount;
-        s.status = "pending";
         progress("waiting for a block");
-        const receipt = await waitReceipt(sent.hash);
+        const receipt = await waitSettled(sent.hash, sent.remainder.commitment);
         c.stage = "confirmed";
         c.block = receipt.blockNumber;
-        s.claimConfirmed = true;
         await refreshSummon();
         return { ok: true, txHash: sent.hash, block: receipt.blockNumber, amount: sent.remainder.amount };
       });
