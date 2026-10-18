@@ -160,11 +160,10 @@ account, so it needs no wallet.
   page methods was not at hand when the app was written. The node does not
   accept a reveal yet, so `eth_sendRawTransaction` of a reveal works only
   against the test's stand-in.
-- **Proof field width (conflict with spec 07).** Spec 07 sets the proof field
-  to 1,028,144 bytes from decision 0003, but the real prover's proofs measure
-  about 1.19 MB ([reveal results](benchmarks/reveal-results.md)), so none fits.
-  The app uses a field of 1,310,720 bytes (1.25 MiB) and otherwise the layout
-  of spec 07, section 3, until the founder settles the width.
+- **Proof field width.** The app uses the settled proof field of spec 07,
+  section 3 ("Proof field"): 1,310,720 bytes (1.25 MiB) for every reveal kind,
+  in the layout of that section. The real prover's proofs measure about
+  1.19 MB ([reveal results](benchmarks/reveal-results.md)), below the field.
 - **Commit entry address.** No specification fixes it yet. It is a setting
   next to the endpoint, with a placeholder default.
 - **The seal is the endpoint's word.** The app recomputes each header's hash

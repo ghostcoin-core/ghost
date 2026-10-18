@@ -47,13 +47,10 @@ use rand::rngs::StdRng;
 pub const TYPE_BYTE: u8 = 0x50;
 /// The only transaction version (spec 07, section 2).
 pub const TX_VERSION: [u8; 2] = [0x00, 0x01];
-/// Width of the proof field of the envelope.
-///
-/// Spec 07 sets 1,028,144 bytes from decision 0003, but the real prover's
-/// proofs measure about 1.19 MB (docs/benchmarks/reveal-results.md), so no
-/// real proof fits that width. Until the founder settles it, the app uses
-/// this width, 1.25 MiB; docs/webapp.md records the conflict.
+/// Width of the proof field of the envelope: 1.25 MiB, the settled width of
+/// version 1 for every reveal kind (spec 07, section 3, "Proof field").
 pub const PROOF_FIELD_BYTES: usize = 1_310_720;
+const _: () = assert!(PROOF_FIELD_BYTES == ghost_proofs::PROOF_FIELD_BYTES);
 /// The payload fields before the proof: version, chain identifier, marker,
 /// root, remainder, recipient, amount out and fee.
 const HEAD_BYTES: usize = 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32;

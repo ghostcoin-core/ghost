@@ -38,6 +38,7 @@ question 1).
 |---|---|---|
 | Transaction type | A new EIP-2718 typed transaction, type byte `0x50`, outside Ethereum's `0x00` to `0x04` and not `0x7e` | Front desk decision |
 | Shape | One fixed-length payload: version, chain identifier, marker, root, remainder, recipient, amount out, fee, proof, note. Every private transaction has the same size | Front desk decision; outline ("One private shape") |
+| Proof field | 1,310,720 bytes (1.25 MiB) for every reveal kind, with a trace budget the prover enforces and a derived upper bound on the proof length; a change of width is a new version | Founder decision, 2026-10-18 (section 3) |
 | Absent fields | No signature, nonce, gas price, gas limit, tip, sender, type tag, rule or digest field | Front desk decision; spec 02, PS-6 |
 | Root | A plain 32-byte root with no tree index, resolved against the eligible coin roots of spec 05, section 5, across rollovers | Front desk decision; spec 05 |
 | Hash | Keccak-256 of the type byte followed by the payload, the base client's typed-transaction hash | EIP-2718 |
@@ -78,19 +79,19 @@ and changes no state. In addition:
 |---|---|---|
 | `TYPE_BYTE` | `0x50` | EIP-2718 type of the private transaction |
 | `TX_VERSION` | `0x0001` | The only accepted `version`; equal to the protocol version of spec 02, section 2 |
-| `PROOF_BYTES` | 1,028,144 | Width of the proof field: the padded proof length at blowup 2^2 (decision 0003, "Cost on the chain") |
+| `PROOF_BYTES` | 1,310,720 | Width of the proof field, 1.25 MiB, the same for every reveal kind (section 3, "Proof field") |
 | `NOTE_BYTES` | 156 | Width of the encrypted note (spec 01, section 9) |
-| `PAYLOAD_BYTES` | 1,028,490 | Sum of the payload widths (section 3) |
-| `ENVELOPE_BYTES` | 1,028,491 | The type byte and the payload |
+| `PAYLOAD_BYTES` | 1,311,066 | Sum of the payload widths (section 3) |
+| `ENVELOPE_BYTES` | 1,311,067 | The type byte and the payload |
 | `BYTE_GAS` | 16 | Gas per envelope byte: the base client's price of a non-zero calldata byte (EIP-2028) |
 | `BASE_TX_GAS` | 21,000 | The base client's base cost of any transaction |
 | `VERIFY_GAS` | 92,300 | Gas for verifying the proof (section 4) |
-| `G_PRIV` | 16,569,156 | Gas of every private transaction: `BYTE_GAS * ENVELOPE_BYTES + BASE_TX_GAS + VERIFY_GAS` |
+| `G_PRIV` | 21,090,372 | Gas of every private transaction: `BYTE_GAS * ENVELOPE_BYTES + BASE_TX_GAS + VERIFY_GAS` |
 | `FEE_WINDOW` | 4 | Blocks for which one fee is in force (section 5) |
 | `TIP_DIVISOR` | 10 | The tip is the base-fee part divided by this, rounded up |
 | `MIN_GAS_LIMIT` | 5,000 | The base client's smallest block gas limit, used in the growth bound of section 5 |
 | `POOL_MAX_COUNT` | 16 | Most private transactions a node's pool holds (section 6) |
-| `POOL_MAX_BYTES` | 16,455,856 | Most bytes of private transactions a node's pool holds: `POOL_MAX_COUNT * ENVELOPE_BYTES` |
+| `POOL_MAX_BYTES` | 20,977,072 | Most bytes of private transactions a node's pool holds: `POOL_MAX_COUNT * ENVELOPE_BYTES` |
 
 ## 3. Encoding and hashing
 
@@ -122,10 +123,10 @@ them:
 | 106 | 20 | `recipient` | The address credited with `out` |
 | 126 | 32 | `out` | Amount word: the public amount out, zero allowed |
 | 158 | 32 | `fee` | Amount word: the fee in force (section 4) |
-| 190 | 1028144 | `proof` | The serialized proof followed by zero bytes to exactly `PROOF_BYTES` |
-| 1028334 | 156 | `note` | The remainder's encrypted note (spec 01, section 9) |
+| 190 | 1310720 | `proof` | The serialized proof followed by zero bytes to exactly `PROOF_BYTES` |
+| 1310910 | 156 | `note` | The remainder's encrypted note (spec 01, section 9) |
 
-Total: 1,028,490 bytes of payload; 1,028,491 bytes with the type byte.
+Total: 1,311,066 bytes of payload; 1,311,067 bytes with the type byte.
 
 **What is not in it.** There is no signature, nonce, gas price, gas limit,
 priority fee, sender, access list or value field (front desk decision): the
@@ -181,6 +182,78 @@ section 7, made exact:
 5. `recipient`, `marker`, `root`, `remainder` and `note` are fixed-width byte
    strings with no further encoding rule (spec 02, section 10).
 
+**Proof field.** `PROOF_BYTES` is 1,310,720 bytes (1.25 MiB) in version 1,
+for the coin reveal and the data reveal alike: every reveal kind uses the same
+field width and the same layout, so every private transaction has one size and
+one shape whatever it reveals (founder decision, 2026-10-18). The data reveal
+has no encoding yet ("Data reveals" below), but its proof already fits this
+field. The width was chosen so that it never has to grow.
+
+- **Why not 1,028,144.** The earlier width came from the benchmark statement
+  of decision 0003, a trace of 1,024 rows by 3,271 columns. The coin reveal
+  that shipped is 2,048 rows by 3,808 columns, and its proofs measure
+  1,188,348 bytes (median) to 1,194,788 bytes (largest), so none fitted. The
+  proof settings did not change: blowup 2^2, 57 queries, extension degree 5,
+  Keccak-256, zero-knowledge on. The data reveal and the proof of holding are
+  1,024-row traces, smaller than the coin reveal.
+- **Budget.** Every reveal statement, the coin reveal, the data reveal and any
+  later one, must fit the coin reveal's trace: at most 2,048 rows before
+  zero-knowledge padding and at most 3,808 columns, at the version 1 proof
+  settings. The prover's security gate refuses a statement over the budget
+  before it proves or verifies anything (`MAX_TRACE_HEIGHT`,
+  `MAX_TRACE_WIDTH` and the error `TraceOverBudget` in `proofs/src/stark.rs`),
+  and a test fails when any statement the crate knows is over it.
+- **Bound.** The longest proof the encoding can produce for a trace at the
+  budget is 1,268,539 bytes, 42,181 bytes below the field. It is derived from
+  the structure of the proof at the pinned Plonky3 revision, not sampled, and
+  computed by `proof_length_bound` in `proofs/src/stark.rs`; a test asserts it
+  is at most `PROOF_BYTES`, and another proves each statement the prover
+  supports and asserts each proof is at most `PROOF_BYTES` and at most the
+  bound for its trace.
+- **Version rule.** A change of width is a new `version`, never an edit of
+  version 1. A statement that does not fit the budget needs a new version
+  with its own width, not a wider field under version 1.
+
+**Derivation of the bound.** The proof is the postcard serialization of the
+library's proof. Each uncertain term takes its worst case:
+
+- a BabyBear element is a fixed 4 bytes (the library writes it as a raw
+  little-endian word, not a varint) and a challenge is 5 of them, 20 bytes;
+- every length prefix, and `degree_bits`, is a varint at its maximum, 10
+  bytes; an option's tag is 1 byte;
+- a digest is four 64-bit Keccak lanes, each a varint of at most 10 bytes, so
+  40 bytes; a commitment is a Merkle cap of one digest, 50 bytes;
+- a pruned Merkle multiproof over a binary tree of `d` levels holds at most
+  `min(57, 2^j)` digests at the level with `2^j` parents, the most the 57
+  query indices can force there: 519 digests for the 14-level trees of the
+  inputs;
+- the gate allows a constraint degree of at most 4, which gives at most 8
+  quotient chunks in zero-knowledge mode;
+- the trace is padded to twice its rows for zero-knowledge, 4,096, and every
+  committed codeword is 4 times that, 16,384 rows (14 levels); hiding adds 5
+  random columns to each committed matrix and 5 salt elements to each opened
+  row; FRI folds by 2 down to a final polynomial of one coefficient, so it
+  commits 12 layers of 13 down to 2 levels.
+
+For the budget trace of 2,048 rows by 3,808 columns:
+
+| Part | What it holds | Bytes |
+|---|---|---|
+| Commitments | Trace, quotient and randomization caps, with the option tag | 151 |
+| Opened values | The trace at both out-of-domain points (3,808 challenges each), 8 quotient chunks and the randomization polynomial, 5 challenges each, with the tags | 153,344 |
+| Hidden openings | The 5 random columns of every opened matrix at every point | 1,350 |
+| Trace openings | 57 rows of 3,813 elements, 57 salts, 519 digests | 893,574 |
+| Quotient openings | 57 rows of 8 chunks of 10 elements, 57 salts per chunk, 519 digests | 58,410 |
+| Randomization openings | 57 rows of 10 elements, 57 salts, 519 digests | 26,490 |
+| FRI layers | 12 layers: per query one sibling challenge and a salt, and 2,156 digests over all layers | 134,490 |
+| The rest | Length prefixes of the input batches, 12 layer commitments, the grinding witnesses, the final polynomial, `degree_bits` | 730 |
+| Bound | | 1,268,539 |
+
+The bound only grows with the trace: one more column adds 268 bytes (two
+challenges and 57 elements), and a taller trace adds a level to every tree.
+So every trace within the budget has a bound at most 1,268,539 bytes, and its
+proof fits the field.
+
 **Hash.** The transaction hash is `keccak256(0x50 || payload)`, the base
 client's hash of every typed transaction. The type byte separates it from the
 hash of every other transaction type, and it never enters a proof or a
@@ -203,9 +276,11 @@ and the note bytes, so that wallets can check notes and marker status against
 **Data reveals.** Version 1 has no field for a type tag or a purpose, so it
 cannot carry a data reveal. A data reveal has no encoding and is rejected,
 which is already the outcome of spec 04, section 6, step 6 until the founder
-settles spec 04, question 1. A later version that encodes data reveals must
-give them exactly `ENVELOPE_BYTES` too: one size for every private transaction
-is a hard target, not a default.
+settles spec 04, question 1. The proof field is already sized for it: a data
+reveal proof fits `PROOF_BYTES` (section 3, "Proof field"), and any later
+encoding of data reveals must give them exactly `ENVELOPE_BYTES` and the same
+1,310,720-byte proof field: one size for every private transaction is a hard
+target, not a default.
 
 ## 4. Fee formula
 
@@ -220,7 +295,7 @@ section 3). So private transactions fill the block's gas limit and move the
 base fee by the base client's own EIP-1559 rule, as public transactions do.
 **Proposed** derivation of `G_PRIV`:
 
-- **Bytes.** `BYTE_GAS * ENVELOPE_BYTES = 16 * 1,028,491 = 16,455,856`. The
+- **Bytes.** `BYTE_GAS * ENVELOPE_BYTES = 16 * 1,311,067 = 20,977,072`. The
   block gas limit is the base client's only bound on block size, and a public
   transaction pays 16 gas for each non-zero calldata byte. A private
   transaction pays the same for every byte, zero padding included, because the
@@ -232,10 +307,10 @@ base fee by the base client's own EIP-1559 rule, as public transactions do.
   30-second block and a slowest native verification of 9.23 ms. Mapping the
   whole default gas limit of 30,000,000 (spec 05, question 1) onto that budget
   gives 10,000 gas per millisecond, so `VERIFY_GAS = 9.23 * 10,000 = 92,300`.
-- **Total.** `G_PRIV = 16,455,856 + 21,000 + 92,300 = 16,569,156`.
+- **Total.** `G_PRIV = 20,977,072 + 21,000 + 92,300 = 21,090,372`.
 
 `G_PRIV` is more than half of the default gas limit, so a block holds at most
-one private transaction. That is the cost of a proof of about one megabyte at
+one private transaction. That is the cost of a proof field of 1.25 MiB at
 the public byte price, which decision 0003 already names as the binding limit;
 it is question 1 of section 11. If the block gas limit is ever below `G_PRIV`,
 no private transaction can be included.
@@ -275,25 +350,25 @@ fee       = base_part + tip
 [window-genesis]
 kind = window
 b_ref = 1000000000
-g_priv = 16569156
+g_priv = 21090372
 price = 1424017979
-base_part = 23594776040855724
-tip = 2359477604085573
-fee = 25954253644941297
+base_part = 30033068911798188
+tip = 3003306891179819
+fee = 33036375802978007
 ```
 
-The fee is about 0.026 GHOST, of which about 0.0236 is burned and about
-0.00236 goes to the block finder. A second window, used in section 5:
+The fee is about 0.033 GHOST, of which about 0.0300 is burned and about
+0.00300 goes to the block finder. A second window, used in section 5:
 
 ```text
 [window-next]
 kind = window
 b_ref = 1100000000
-g_priv = 16569156
+g_priv = 21090372
 price = 1566419776
-base_part = 25954253630029056
-tip = 2595425363002906
-fee = 28549678993031962
+base_part = 33036375783996672
+tip = 3303637578399668
+fee = 36340013362396340
 ```
 
 ## 5. Fee is current
@@ -383,14 +458,14 @@ move, the two windows have the same fee and the transaction stays valid.
 ```text
 [lapse-window-change]
 kind = lapse
-fee_proved = 25954253644941297
-fee_in_force = 28549678993031962
+fee_proved = 33036375802978007
+fee_in_force = 36340013362396340
 valid = no
 
 [lapse-fee-unchanged]
 kind = lapse
-fee_proved = 25954253644941297
-fee_in_force = 25954253644941297
+fee_proved = 33036375802978007
+fee_in_force = 33036375802978007
 valid = yes
 ```
 
@@ -439,7 +514,7 @@ these hold, checked in this order and stopping at the first failure. Steps 1 to
    proof verifies against it.
 
 **Hard caps (Proposed).** At most `POOL_MAX_COUNT = 16` private transactions
-and `POOL_MAX_BYTES = 16,455,856` bytes, whichever binds first; private
+and `POOL_MAX_BYTES = 20,977,072` bytes, whichever binds first; private
 transactions do not count against, and cannot evict, public transactions. At
 the default gas limit at most one private transaction fits in a block, so at
 most four are included in one window; sixteen holds four windows' worth for
@@ -494,7 +569,7 @@ later one. A block that holds both is invalid.
 
 These are the boundary cases of the outline ("First milestone" 8) and spec 03,
 section 8, worked through with the fee of window `window-genesis` (section 4),
-`fee = 25,954,253,644,941,297` wei. Every case has the same size and shape: one
+`fee = 33,036,375,802,978,007` wei. Every case has the same size and shape: one
 input, the recipient and `out` fields present (zero allowed), one remainder
 commitment (zero allowed) and one note. `burned` is the base-fee part, `tip`
 the finder's tip and `minted` what the recipient is credited; all three are zero
@@ -508,13 +583,13 @@ remainder holds zero but still exists (spec 02, PS-13).
 kind = reveal
 window = window-genesis
 v = 1000000000000000000
-out = 974045746355058703
+out = 966963624197021993
 remainder = 0
-fee = 25954253644941297
+fee = 33036375802978007
 valid = yes
-burned = 23594776040855724
-tip = 2359477604085573
-minted = 974045746355058703
+burned = 30033068911798188
+tip = 3003306891179819
+minted = 966963624197021993
 ```
 
 **A zero-amount claim.** Nothing goes out; the remainder takes everything after
@@ -528,11 +603,11 @@ kind = reveal
 window = window-genesis
 v = 1000000000000000000
 out = 0
-remainder = 974045746355058703
-fee = 25954253644941297
+remainder = 966963624197021993
+fee = 33036375802978007
 valid = yes
-burned = 23594776040855724
-tip = 2359477604085573
+burned = 30033068911798188
+tip = 3003306891179819
 minted = 0
 ```
 
@@ -543,13 +618,13 @@ minted = 0
 [fee-uses-whole-balance]
 kind = reveal
 window = window-genesis
-v = 25954253644941297
+v = 33036375802978007
 out = 0
 remainder = 0
-fee = 25954253644941297
+fee = 33036375802978007
 valid = yes
-burned = 23594776040855724
-tip = 2359477604085573
+burned = 30033068911798188
+tip = 3003306891179819
 minted = 0
 ```
 
@@ -562,10 +637,10 @@ it covers.
 [fee-above-balance]
 kind = reveal
 window = window-genesis
-v = 25954253644941296
+v = 33036375802978006
 out = 0
 remainder = 0
-fee = 25954253644941297
+fee = 33036375802978007
 valid = no
 burned = 0
 tip = 0
@@ -586,18 +661,18 @@ step 6, and `a` is included. Only `a`'s amount is minted, and spec 03's
 kind = competing
 window = window-genesis
 v = 1000000000000000000
-fee = 25954253644941297
+fee = 33036375802978007
 marker_a = m
 marker_b = m
 out_a = 500000000000000000
-remainder_a = 474045746355058703
+remainder_a = 466963624197021993
 out_b = 300000000000000000
-remainder_b = 674045746355058703
+remainder_b = 666963624197021993
 first = a
 included = a
 rejected = b
 minted = 500000000000000000
-total_out_change = 525954253644941297
+total_out_change = 533036375802978007
 ```
 
 ## 8. Properties
@@ -668,10 +743,13 @@ removed does not count (spec 03, section 10).
 
 Each point rejects until the founder or a later specification settles it.
 
-1. **The longest proof.** `PROOF_BYTES` is the largest proof of ten runs
-   (decision 0003, "What the benchmark did not cover"), not the largest the
-   encoding can produce. A proof that does not fit cannot be sent; the wallet
-   proves again with fresh randomness. A change of width is a new `version`.
+1. **The longest proof.** Settled (founder decision, 2026-10-18): `PROOF_BYTES`
+   is 1,310,720 bytes for every reveal kind, above the bound of 1,268,539
+   bytes derived from the proof's structure for any trace within the budget
+   (section 3, "Proof field"). Every proof the prover makes therefore fits,
+   and the prover refuses a statement over the budget. A change of width is a
+   new `version`, never an edit of version 1. The item keeps its number so
+   that the items below keep theirs.
 2. **Fee of a data reveal.** Unsettled (spec 04, question 1). Version 1 has no
    data reveal; every data reveal is rejected.
 3. **Receipt layout.** The receipt's fields beyond its type and cumulative gas
@@ -718,6 +796,12 @@ difference is listed here for the founder's review.
 7. **Public input size.** Decision 0003 counts 164 bytes of public inputs next
    to the proof. The payload carries 346 bytes besides the proof, because it
    also carries the note and fixed-width amount words.
+8. **Proof field width.** Decision 0003 ("Cost on the chain") pads a proof to
+   1,028,144 bytes, from its benchmark statement of 1,024 rows by 3,271
+   columns. The coin reveal that shipped is 2,048 rows by 3,808 columns and
+   its proofs do not fit that width, so this document sets 1,310,720 bytes
+   (section 3, "Proof field"). Decision 0003 and the benchmark results record
+   the earlier figure as history and are not edited.
 
 ## 11. Questions for the founder
 
@@ -745,7 +829,8 @@ python3 scripts/check_private_transaction.py
 from the repository root. It uses Python's standard library only and exits
 nonzero on any gap. It checks that the required sections are present and
 numbered without gaps; that the parameter table holds every constant, the type
-byte is not one of Ethereum's, and the payload size, envelope size, `G_PRIV`
+byte is not one of Ethereum's, `PROOF_BYTES` is the version 1 width of
+1,310,720, and the payload size, envelope size, `G_PRIV`
 and the pool's byte cap equal their recomputed values; that the payload table
 lists exactly the fields of section 3 in order, contiguous, at their widths,
 with no sender, signature, nonce or gas field, and adds up to the stated fixed
