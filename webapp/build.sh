@@ -25,7 +25,7 @@ cargo_home="${CARGO_HOME:-$HOME/.cargo}"
 rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
 # The page's own files, in the order they are copied.
 files=(index.html style.css)
-modules=(app bytes chain flow keyimage prover rpc wasm worker worker-core)
+modules=(app bytes chain flow header keyimage prover rpc wasm worker worker-core)
 
 if ! rustup run "$toolchain" rustc --version >/dev/null 2>&1; then
   echo "Rust $toolchain is not installed. Install it with:" >&2

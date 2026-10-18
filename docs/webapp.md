@@ -18,8 +18,10 @@ supported EVM wallet and uses GHOST privately. It does three things.
   the rest, minus the fee, stays under the same key as the next commitment.
 - **Claim.** The app creates a new key, shows it and runs the same save
   check on it, then moves the coin's value minus the fee to the new key. A
-  received key shows **unclaimed** until the claim is in a block; then it
-  shows **claimed**, and the new key holds the coin.
+  received key shows **unclaimed** until the claim is in a block with 6
+  verified blocks on top; then it shows **claimed**, and the new key holds the
+  coin. Confirmation trusts the chosen endpoint for the proof-of-work seal of
+  each block, which the app does not verify.
 
 ## Layout
 
@@ -29,6 +31,7 @@ supported EVM wallet and uses GHOST privately. It does three things.
 | `webapp/src/flow.mjs` | The flow controller: every step above, with no DOM |
 | `webapp/src/app.mjs`, `keyimage.mjs` | The thin DOM layer and the key image drawn on a canvas |
 | `webapp/src/chain.mjs` | The fee of spec 07, the base fee rule, the epoch height, amounts |
+| `webapp/src/header.mjs` | The header's 18-field RLP of spec 05, section 10, to recompute a block hash |
 | `webapp/src/rpc.mjs` | JSON-RPC to the chosen endpoint |
 | `webapp/src/prover.mjs`, `worker.mjs`, `worker-core.mjs` | The background worker and its message interface |
 | `webapp/src/wasm.mjs` | The WebAssembly module's plain exports, with no bindings generator |
@@ -49,7 +52,7 @@ network, `http://127.0.0.1:8545`. The app sends only these requests:
 |---|---|---|
 | `eth_chainId` | none | The chain identifier |
 | `eth_blockNumber` | none | The tip |
-| `eth_getBlockByNumber` | height, `false` | A header with `hash`, `parentHash`, `baseFeePerGas`, `gasUsed`, `gasLimit` and `coinTreeRoot` |
+| `eth_getBlockByNumber` | height, `false` | A header with its `hash` and the 18 fields of spec 05, section 10, by their base client names (`parentHash` to `nonce`, `baseFeePerGas`, `coinTreeRoot`, `dataTreeRoot`) |
 | `ghost_getPageRoots` | `"coin"`, tree index, anchor block hash | `{ pageRoots }`: the page roots of pages 0 to the last page with a leaf |
 | `ghost_getTreePage` | `"coin"`, tree index, page, anchor block hash | `{ count, leaves, notes }`: every filled position of the page, in order |
 | `ghost_getTreePage` | `"coin-markers"`, tree index, page, anchor block hash | `{ count, markers }`: a page of 4,096 spent coin markers in inclusion order |
@@ -58,12 +61,26 @@ network, `http://127.0.0.1:8545`. The app sends only these requests:
 
 The page and marker requests follow [spec 05](spec/05-trees-and-headers.md),
 section 8: whole pages from page 0, as of a block hash, whatever the wallet
-expects to find. The headers asked for depend only on the tip: genesis, the
-tip, the first block of the fee window, and blocks `E - 32` to `E` for the
-epoch block `E`. No request names a key, a commitment, a position or a
-marker, and the app never asks for a witness; it computes its own from the
+expects to find. The headers asked for depend only on the tip: every block
+from `E - 32` to the tip for the epoch block `E` (from genesis while `E` is
+below 32), and genesis. No request names a key, a commitment, a position or
+a marker, and the app never asks for a witness; it computes its own from the
 pages. The only request that carries a coin's data is the reveal itself,
-whose fields are public.
+whose fields are public; sending it, though, links the connection to the
+coin it spends.
+
+## Headers
+
+The app keeps a header only if keccak256 of its RLP, the list of the 18
+fields of [spec 05](spec/05-trees-and-headers.md), section 10 (fields 0 to
+14 of the base header, the base fee, `coinTreeRoot`, `dataTreeRoot`), is the
+hash the endpoint returned with it, and only if each header's `parentHash` is
+the hash of the one before it, up to the tip. The worker computes the hash
+with the client library's keccak256; `webapp/src/header.mjs` builds the RLP.
+Every coin root the app uses comes from such a header. The app does not
+check the proof-of-work seal or the difficulty, so it trusts the chosen
+endpoint for the seal: an endpoint can still serve a whole chain of
+well-formed headers no miner sealed.
 
 ## Wallet
 
@@ -80,40 +97,51 @@ account, so it needs no wallet.
 
 1. **Restore.** The app reads the coin tree as of the tip in whole pages and
    checks each page against the page-root list and the list against the tip's
-   `coinTreeRoot`. It reads the spent markers the same way. The worker tries
-   the key's note key on every note and recomputes each found commitment
-   (spec 01, section 8). The current coin is the found commitment whose
-   marker is not spent. Notes are not checked against the tree, so an
-   endpoint can alter them; the app therefore asks for everything a reveal
-   needs (the tree, the markers, the epoch headers and the fee headers, all
-   fixed by the tip) before the key is tried, and sends no further request
-   until a proof is ready. Found or not, failing or not, the endpoint sees
-   the same requests.
-2. **Tree state.** The proof uses the epoch root of
+   `coinTreeRoot`. It reads the spent markers the same way, as of the block
+   6 below the tip, so a key shows claimed only once its spend has 6 blocks
+   on top. The worker tries the key's note key on every note and recomputes
+   each found commitment (spec 01, section 8). The current coin is the found
+   commitment whose marker is not spent. Notes are not checked against the
+   tree, so an endpoint can alter them; the app therefore asks for everything
+   a reveal needs (the headers, the tree and the markers, all fixed by the
+   tip) before the key is tried.
+2. **Same requests after restore.** On a reveal or claim, every path after
+   restore, the one where the key holds no unspent coin included, then asks
+   the endpoint the same thing in the same order before anything depends on
+   what restore found: `eth_blockNumber`, the tip's header and the fee
+   headers for the next block. The worker's proof, when there is one, is
+   made before these requests and sends none. Only after them does a failure
+   surface or the reveal go out. Found or not, failing or not, the endpoint
+   sees the same requests up to the reveal; the reveal itself, and the time
+   a proof takes, do tell it the connection holds a coin.
+3. **Tree state.** The proof uses the epoch root of
    [spec 02](spec/02-proof-statements.md), section 8, through the client
    library's `choose_tree_state`. The epoch block is `E`, the highest
-   multiple of 32 at least 12 blocks below the tip. The app fetches blocks
-   `E - 32` to `E`, reads each one's leaf count from the roots of every prefix
+   multiple of 32 at least 12 blocks below the tip. The app takes the
+   verified headers of blocks `E - 32` to `E`, reads each one's leaf count from the roots of every prefix
    of the leaves it already has, and takes as the leaf's block the first of
    them whose tree holds the leaf. For a leaf older than `E - 32` that is
    block `E - 32`, which makes the rule stricter, never looser: if no leaf was
    added between it and `E`, the app waits for the next epoch. A coin newer
    than `E` waits too.
-3. **Fee.** The fee is the formula of [spec 07](spec/07-private-transaction.md),
+4. **Fee.** The fee is the formula of [spec 07](spec/07-private-transaction.md),
    section 4, for the window of the next block, from headers alone. If the
-   window's fee changes while the proof is made, the app proves again.
-4. **Proof.** The worker computes the witness from the leaves under the
+   window's fee changes while the proof is made, the app proves again; on
+   every path, so the abort path also scans again.
+5. **Proof.** The worker computes the witness from the leaves under the
    epoch root, proves with the client library (partial reveal or claim to a
    new key), verifies the proof itself, and builds the envelope of spec 07,
    section 3. A claim sends nothing out and names the zero address.
-5. **Status.** The app polls the receipt, but a receipt is only the
-   endpoint's word. A commit, reveal or claim counts as settled only when the
-   coin tree as of the tip, checked against the tip's coin root, holds the
-   new leaf the transaction appends, at a position added by the receipt's
-   block, read from the coin roots of that block and its parent in the header
+6. **Status.** The app polls the receipt, but a receipt is only the
+   endpoint's word. It then waits until the receipt's block has 6 blocks on
+   top. A commit, reveal or claim counts as confirmed only when the coin tree
+   as of the tip, checked against the tip's coin root, holds the new leaf the
+   transaction appends, at a position added by the receipt's block, read
+   from the coin roots of that block and its parent in the verified header
    chain leading to the tip. Until then a claim stays pending and the old key
    unclaimed. After that the old key shows claimed because its marker is
-   spent.
+   spent 6 or more blocks below the tip. Confirmation trusts the chosen
+   endpoint for the proof-of-work seal, which the app does not verify.
 
 ## Limits of this version
 
@@ -129,10 +157,11 @@ account, so it needs no wallet.
   of spec 07, section 3, until the founder settles the width.
 - **Commit entry address.** No specification fixes it yet. It is a setting
   next to the endpoint, with a placeholder default.
-- **Headers are taken from the endpoint.** The app checks parent links over
-  the headers it fetches but not the proof-of-work seal; there is no header
-  chain in the page. A wrong header can make a reveal fail at the node or a
-  status wrong, never move a coin.
+- **The seal is the endpoint's word.** The app recomputes each header's hash
+  and checks parent links up to the tip, but not the proof-of-work seal, and
+  there is no header chain kept in the page. An endpoint that fabricates
+  sealless headers can make a reveal fail at the node or a status wrong,
+  never move a coin.
 - **Notes and markers are not checked against receipts** (spec 05, section 8,
   item 5): the page says so next to the status. Marker pages are hints.
 - **One tree.** Only coin tree 0 is read; a rollover is 2^32 leaves away.
@@ -151,10 +180,13 @@ account, so it needs no wallet.
   a key's digits and no commitment of the key reached the endpoint or the
   wallet, and that `index.html` loads only same-origin scripts. Playing a
   dishonest endpoint, it also checks that altered notes leave the requests
-  the same whether the key owns the targeted coin or not, and that a
-  fabricated receipt for a withheld claim confirms nothing.
+  the same whether the key owns the targeted coin or not, up to the reveal
+  itself; that a fabricated receipt for a withheld claim confirms nothing;
+  that headers whose `coinTreeRoot` was changed under their real hash are
+  refused; and that a claim is not confirmed, nor the old key claimed,
+  before 6 blocks are on top.
 - `wasm.test.mjs`: the module against the golden vectors of spec 01 and
-  spec 05.
+  spec 05, the header's RLP and hash included.
 - `units.test.mjs`: the fee against the worked examples of spec 07, the
   base fee rule, the epoch height, amounts and the save check.
 

@@ -41,6 +41,10 @@ const OPS = {
     return { roots: ghost.prefixRoots(leaves, from, to) };
   },
 
+  keccak256(ghost, { bytes }) {
+    return { hash: ghost.keccak256(bytes) };
+  },
+
   chooseTreeState(ghost, args) {
     return { chosen: ghost.chooseTreeState(args) };
   },

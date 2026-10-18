@@ -63,6 +63,8 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
     wallet,
     endpoint: node.url,
     pollMs: 5,
+    // While the app waits, the chain grows by a block.
+    sleep: async () => node.mine(),
     onChange: (s) => {
       if (s.progress && stages[stages.length - 1] !== s.progress.stage) stages.push(s.progress.stage);
     },
@@ -197,19 +199,24 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
 });
 
 // A stand-in node, a scripted wallet and a flow on them, with strangers'
-// coins on the chain.
+// coins on the chain. While the app waits the chain grows by a block, unless
+// `chain.mining` is set to false.
 async function setUp() {
   const ghost = await loadModule();
   const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
   const wallet = node.wallet(ACCOUNT);
   const prover = nodeProver();
-  const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5 });
+  const chain = { mining: true };
+  const sleep = async () => {
+    if (chain.mining) node.mine();
+  };
+  const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5, maxPolls: 20, sleep });
   node.foreignCommits(2);
   const done = async () => {
     prover.terminate();
     await node.close();
   };
-  return { node, flow, done };
+  return { node, flow, chain, done };
 }
 
 // Vanish of `amount` GHOST with a right save check; the new key.
@@ -257,6 +264,17 @@ test("altered notes cannot make the requests depend on whether the key owns a co
     assert.ok(owned.some((r) => r.startsWith('["eth_getBlockByNumber"')), "the epoch and fee headers are fetched");
     assert.deepEqual(owned, notOwner, "a failed reveal asks the same whether the key owns the coin or not");
     assert.equal(node.reveals.length, 0);
+
+    // A reveal that goes through: up to the reveal itself, the endpoint
+    // sees what it saw when the key held no coin and the app gave up.
+    assert.ok(notOwner.at(-1).startsWith('["eth_getBlockByNumber"'), "the abort path asks for the tip and fee headers");
+    from = node.requests.length;
+    await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
+    const revealed = seen(node, from);
+    const sentAt = revealed.findIndex((r) => r.startsWith('["eth_sendRawTransaction"'));
+    assert.ok(sentAt > 0);
+    assert.deepEqual(revealed.slice(0, sentAt), notOwner, "the requests before the reveal do not depend on what restore found");
+    assert.equal(node.reveals.length, 1);
   } finally {
     await done();
   }
@@ -293,6 +311,63 @@ test("a fabricated receipt does not confirm a claim the chain does not hold", as
     await assert.rejects(flow.claimCheck(answersFor(flow.state.summon.claim.key, again)), /not a block of the chain/);
     assert.notEqual(flow.state.summon.claim.stage, "confirmed");
     assert.equal((await flow.summonRefresh()).status, "unclaimed");
+  } finally {
+    await done();
+  }
+});
+
+// A key with a coin old enough to claim, opened, and a new key whose save
+// check is under way; the right answers for it.
+async function readyToClaim(node, flow) {
+  const key = await vanish(flow, "1");
+  node.mineTo(40);
+  node.foreignCommits(1);
+  node.mineTo(80);
+  assert.equal((await flow.summonOpen(key)).status, "unclaimed");
+  const newKey = await flow.claimStart();
+  return answersFor(newKey, flow.claimSaved());
+}
+
+test("headers whose coin root was altered under their real hash are refused", async () => {
+  const { node, flow, done } = await setUp();
+  try {
+    const answers = await readyToClaim(node, flow);
+    // The endpoint withholds the claim and serves, from a new block on, a
+    // coin tree that holds the claim's new coin, with each header's
+    // coinTreeRoot set to that tree's root and its hash left as it was.
+    node.dishonest.withhold = (hash, reveal) => {
+      const block = node.mine();
+      node.dishonest.forge = { from: block, extra: [{ commitment: reveal.remainder, note: reveal.note }] };
+      return { transactionHash: hash, status: "0x1", blockNumber: `0x${block.toString(16)}` };
+    };
+    await assert.rejects(flow.claimCheck(answers), /does not hash to/);
+    assert.equal(node.withheld.length, 1);
+    assert.equal(node.reveals.length, 0, "the claim was never executed");
+    assert.notEqual(flow.state.summon.claim.stage, "confirmed");
+    assert.equal(flow.state.summon.status, "unclaimed");
+    // A fresh look at the key refuses the altered tip header too.
+    await assert.rejects(flow.summonRefresh(), /does not hash to/);
+    assert.equal(flow.state.summon.status, "unclaimed");
+  } finally {
+    await done();
+  }
+});
+
+test("a claim is confirmed, and the old key claimed, only with 6 blocks on top", async () => {
+  const { node, flow, chain, done } = await setUp();
+  try {
+    const answers = await readyToClaim(node, flow);
+    chain.mining = false;
+    await assert.rejects(flow.claimCheck(answers), /blocks on top/);
+    assert.equal(node.reveals.length, 1, "the claim is in a block");
+    const s = flow.state.summon;
+    assert.equal(s.claim.stage, "pending");
+    assert.equal(s.status, "unclaimed");
+    const block = node.reveals[0].block;
+    node.mineTo(block + 5);
+    assert.equal((await flow.summonRefresh()).status, "unclaimed", "five blocks on top are not enough");
+    node.mineTo(block + 6);
+    assert.equal((await flow.summonRefresh()).status, "claimed");
   } finally {
     await done();
   }
