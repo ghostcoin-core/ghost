@@ -53,6 +53,12 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   const requests = [];
   const reveals = [];
   const commits = [];
+  // What a dishonest endpoint does, for the tests that play one:
+  // `note(position, note)` replaces each note it serves, and with
+  // `withhold` set a reveal is not executed: its hash is returned and its
+  // receipt lookup answered with `withhold(hash)`.
+  const dishonest = { note: null, withhold: null };
+  const withheld = [];
   let nonce = 0;
 
   function header(block) {
@@ -134,6 +140,11 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     if (!blocks.some((b) => toHex(b.coinTreeRoot) === toHex(reveal.root))) throw new Error("root not eligible");
     if (spent.some((s) => toHex(s.marker) === toHex(reveal.marker))) throw new Error("marker already spent");
     const hash = toHex(reveal.txHash);
+    if (dishonest.withhold) {
+      withheld.push({ ...reveal, hash });
+      receipts.set(hash, dishonest.withhold(hash));
+      return hash;
+    }
     const number = mine((n) => {
       leaves.push({ commitment: reveal.remainder, note: reveal.note, block: n });
       spent.push({ marker: reveal.marker, block: n });
@@ -176,7 +187,8 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       const start = Number(BigInt(page)) * PAGE;
       if (tree === "coin") {
         const part = leaves.slice(start, Math.min(start + PAGE, block.leafCount));
-        return { count: q(part.length), leaves: part.map((l) => toHex(l.commitment)), notes: part.map((l) => toHex(l.note)) };
+        const note = (l, i) => (dishonest.note ? dishonest.note(start + i, l.note) : l.note);
+        return { count: q(part.length), leaves: part.map((l) => toHex(l.commitment)), notes: part.map((l, i) => toHex(note(l, i))) };
       }
       if (tree === "coin-markers") {
         const part = spent.slice(start, Math.min(start + PAGE, block.spentCount));
@@ -218,6 +230,8 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     requests,
     reveals,
     commits,
+    dishonest,
+    withheld,
     balances,
     leaves,
     spent,

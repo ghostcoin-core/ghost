@@ -196,6 +196,108 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
   }
 });
 
+// A stand-in node, a scripted wallet and a flow on them, with strangers'
+// coins on the chain.
+async function setUp() {
+  const ghost = await loadModule();
+  const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
+  const wallet = node.wallet(ACCOUNT);
+  const prover = nodeProver();
+  const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5 });
+  node.foreignCommits(2);
+  const done = async () => {
+    prover.terminate();
+    await node.close();
+  };
+  return { node, flow, done };
+}
+
+// Vanish of `amount` GHOST with a right save check; the new key.
+async function vanish(flow, amount) {
+  const key = await flow.vanishStart(amount);
+  const sent = await flow.vanishCheck(answersFor(key, flow.vanishSaved()));
+  assert.equal(sent.ok, true);
+  return key;
+}
+
+// What the endpoint saw since request `from`, without the JSON-RPC ids.
+const seen = (node, from) => node.requests.slice(from).map((r) => JSON.stringify([r.method, r.params]));
+
+test("altered notes cannot make the requests depend on whether the key owns a coin", async () => {
+  const { node, flow, done } = await setUp();
+  try {
+    const owner = await vanish(flow, "1");
+    const target = node.leaves.findIndex((l) => toHex(l.commitment) === toHex(node.commits[0].commitment));
+    const other = await vanish(flow, "1");
+    node.foreignCommits(1);
+    node.mineTo(44);
+    assert.equal((await flow.summonOpen(other)).status, "unclaimed");
+
+    // The endpoint keeps every leaf and root but zeroes every note except
+    // the targeted coin's: only the targeted coin's owner still finds one.
+    node.dishonest.note = (position, note) => (position === target ? note : new Uint8Array(note.length));
+
+    let from = node.requests.length;
+    await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), /holds no unspent coin/);
+    const notOwner = seen(node, from);
+
+    from = node.requests.length;
+    assert.equal((await flow.summonOpen(owner)).status, "unclaimed");
+    const openOwner = seen(node, from);
+    from = node.requests.length;
+    assert.equal((await flow.summonOpen(other)).status, "not-found");
+    assert.deepEqual(seen(node, from), openOwner, "opening a key asks the same whether it owns the coin or not");
+
+    // Back on the owner's key, a reveal that fails after restore found the
+    // coin: the endpoint sees exactly what it saw for the key without one.
+    await flow.summonOpen(owner);
+    from = node.requests.length;
+    await assert.rejects(flow.summonReveal({ amount: "5", recipient: RECIPIENT }), /at most/);
+    const owned = seen(node, from);
+    assert.ok(owned.some((r) => r.startsWith('["eth_getBlockByNumber"')), "the epoch and fee headers are fetched");
+    assert.deepEqual(owned, notOwner, "a failed reveal asks the same whether the key owns the coin or not");
+    assert.equal(node.reveals.length, 0);
+  } finally {
+    await done();
+  }
+});
+
+test("a fabricated receipt does not confirm a claim the chain does not hold", async () => {
+  const { node, flow, done } = await setUp();
+  try {
+    const key = await vanish(flow, "1");
+    // A later commitment inside epoch window 32 to 64, then block 77 and on.
+    node.mineTo(40);
+    node.foreignCommits(1);
+    node.mineTo(80);
+    assert.equal((await flow.summonOpen(key)).status, "unclaimed");
+    const newKey = await flow.claimStart();
+    const positions = flow.claimSaved();
+
+    // The endpoint withholds the claim, returns its hash, and answers the
+    // receipt lookup with a success in block 77, a block that exists.
+    node.dishonest.withhold = () => ({ status: "0x1", blockNumber: "0x4d" });
+    await assert.rejects(flow.claimCheck(answersFor(newKey, positions)), /has not settled/);
+    assert.equal(node.withheld.length, 1, "the claim reached the endpoint");
+    assert.equal(node.reveals.length, 0, "and was never executed");
+    const s = flow.state.summon;
+    assert.notEqual(s.claim.stage, "confirmed");
+    assert.equal(s.status, "unclaimed", "the old key stays unclaimed");
+    assert.ok(s.current, "and still shows its coin");
+
+    // A receipt naming a block the chain does not have is refused too, and
+    // a fresh look at the key still shows it unclaimed.
+    node.dishonest.withhold = () => ({ status: "0x1", blockNumber: "0x400" });
+    await flow.claimStart();
+    const again = flow.claimSaved();
+    await assert.rejects(flow.claimCheck(answersFor(flow.state.summon.claim.key, again)), /not a block of the chain/);
+    assert.notEqual(flow.state.summon.claim.stage, "confirmed");
+    assert.equal((await flow.summonRefresh()).status, "unclaimed");
+  } finally {
+    await done();
+  }
+});
+
 test("the built-in endpoint is the local internal network", () => {
   const flow = createFlow({ prover: { request: async () => ({}) } });
   assert.equal(flow.state.endpoint, new URL(DEFAULT_ENDPOINT).href);

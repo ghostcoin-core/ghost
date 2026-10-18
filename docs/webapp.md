@@ -83,7 +83,12 @@ account, so it needs no wallet.
    `coinTreeRoot`. It reads the spent markers the same way. The worker tries
    the key's note key on every note and recomputes each found commitment
    (spec 01, section 8). The current coin is the found commitment whose
-   marker is not spent.
+   marker is not spent. Notes are not checked against the tree, so an
+   endpoint can alter them; the app therefore asks for everything a reveal
+   needs (the tree, the markers, the epoch headers and the fee headers, all
+   fixed by the tip) before the key is tried, and sends no further request
+   until a proof is ready. Found or not, failing or not, the endpoint sees
+   the same requests.
 2. **Tree state.** The proof uses the epoch root of
    [spec 02](spec/02-proof-statements.md), section 8, through the client
    library's `choose_tree_state`. The epoch block is `E`, the highest
@@ -101,8 +106,13 @@ account, so it needs no wallet.
    epoch root, proves with the client library (partial reveal or claim to a
    new key), verifies the proof itself, and builds the envelope of spec 07,
    section 3. A claim sends nothing out and names the zero address.
-5. **Status.** The app polls the receipt. After a claim's block the old key
-   shows claimed; opened again later, it shows claimed because its marker is
+5. **Status.** The app polls the receipt, but a receipt is only the
+   endpoint's word. A commit, reveal or claim counts as settled only when the
+   coin tree as of the tip, checked against the tip's coin root, holds the
+   new leaf the transaction appends, at a position added by the receipt's
+   block, read from the coin roots of that block and its parent in the header
+   chain leading to the tip. Until then a claim stays pending and the old key
+   unclaimed. After that the old key shows claimed because its marker is
    spent.
 
 ## Limits of this version
@@ -139,7 +149,10 @@ account, so it needs no wallet.
   with the real verifier, checks the fee, the root and the marker as a node
   admits a reveal, and records every request. The test checks that no run of
   a key's digits and no commitment of the key reached the endpoint or the
-  wallet, and that `index.html` loads only same-origin scripts.
+  wallet, and that `index.html` loads only same-origin scripts. Playing a
+  dishonest endpoint, it also checks that altered notes leave the requests
+  the same whether the key owns the targeted coin or not, and that a
+  fabricated receipt for a withheld claim confirms nothing.
 - `wasm.test.mjs`: the module against the golden vectors of spec 01 and
   spec 05.
 - `units.test.mjs`: the fee against the worked examples of spec 07, the
