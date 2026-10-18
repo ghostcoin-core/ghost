@@ -178,12 +178,13 @@ export class Ghost {
     return this.call("ghost_choose_tree_state", input)[0] === 1;
   }
 
-  // kind: "partial" or "claim". `leaves`: the tree under `root`.
+  // kind: "partial" or "claim". `leaves`: the tree under `root`. With
+  // `decoy`, the same work for a throwaway key (lib.rs, ghost_prove).
   prove(a) {
     const input = new Input()
       .u64(a.chainId)
       .bytes(a.domain, 32)
-      .u8(a.kind === "claim" ? 1 : 0)
+      .u8((a.kind === "claim" ? 1 : 0) + (a.decoy ? 2 : 0))
       .bytes(a.root, 32)
       .bytes(a.recipient, 20)
       .bytes(word(a.out))

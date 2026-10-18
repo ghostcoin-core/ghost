@@ -109,11 +109,16 @@ account, so it needs no wallet.
    restore, the one where the key holds no unspent coin included, then asks
    the endpoint the same thing in the same order before anything depends on
    what restore found: `eth_blockNumber`, the tip's header and the fee
-   headers for the next block. The worker's proof, when there is one, is
-   made before these requests and sends none. Only after them does a failure
-   surface or the reveal go out. Found or not, failing or not, the endpoint
-   sees the same requests up to the reveal; the reveal itself, and the time
-   a proof takes, do tell it the connection holds a coin.
+   headers for the next block. Before these requests the worker always
+   makes a proof and sends nothing: of the coin when it can be revealed,
+   otherwise of a decoy, a throwaway key's coin placed at the last position
+   of the same leaves, of the same kind. So the time before them is a
+   proof's on every path, fee retries included. The worker's other work
+   (the leaf count of every epoch header, restore, the epoch rule) is the
+   same on every path too. Only after these requests does a failure surface
+   or the reveal go out. Found or not, failing or not, the endpoint sees the
+   same requests at the same pace up to the reveal; the reveal itself tells
+   it the connection holds a coin.
 3. **Tree state.** The proof uses the epoch root of
    [spec 02](spec/02-proof-statements.md), section 8, through the client
    library's `choose_tree_state`. The epoch block is `E`, the highest
@@ -170,8 +175,8 @@ account, so it needs no wallet.
   fails to decrypt exactly as a stranger's note does, so the app cannot tell
   it was altered. An endpoint that spoils the notes of some positions sees
   whether a reveal follows; over several reveals that can narrow down which
-  commitment the connection holds. The requests are the same either way;
-  whether a reveal is sent, and how long the proof took, are not. Use an
+  commitment the connection holds. The requests and the proof work before
+  them are the same either way; whether a reveal is sent is not. Use an
   endpoint you run or trust.
 - **The zero address.** The app refuses it as a reveal's recipient and as
   the commit entry address, because what it is credited cannot be spent.
@@ -190,9 +195,9 @@ account, so it needs no wallet.
   admits a reveal, and records every request. The test checks that no run of
   a key's digits and no commitment of the key reached the endpoint or the
   wallet, and that `index.html` loads only same-origin scripts. Playing a
-  dishonest endpoint, it also checks that altered notes leave the requests
-  the same whether the key owns the targeted coin or not, up to the reveal
-  itself; that a fabricated receipt for a withheld claim confirms nothing;
+  dishonest endpoint, it also checks that altered notes leave the requests,
+  and where the worker's proof falls among them, the same whether the key
+  owns the targeted coin or not, up to the reveal itself; that a fabricated receipt for a withheld claim confirms nothing;
   that headers whose `coinTreeRoot` was changed under their real hash are
   refused; and that a claim is not confirmed, nor the old key claimed,
   before 6 blocks are on top.

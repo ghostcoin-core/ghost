@@ -234,6 +234,11 @@ export function createFlow({
   //
   // The markers are those as of 6 blocks below the tip, so a key shows
   // claimed only once its coin's spend has 6 blocks on top.
+  //
+  // The work in the worker is the same whatever the key finds too: the leaf
+  // count of each epoch header, read from the roots of every prefix of the
+  // fetched leaves, is computed here for every key, not only for one with a
+  // coin to reveal.
   async function scanKey(key) {
     const chain = await readChain();
     progress("reading the coin tree");
@@ -242,6 +247,17 @@ export function createFlow({
     const { epoch } = chain;
     const epochHeaders = epoch === null || epoch < EPOCH_BLOCKS ? null : chain.headers.slice(0, EPOCH_BLOCKS + 1);
     const fee = (await feeForNextBlock(chain.tip, async (n) => chain.at(n))).fee;
+    let epochCounts = null;
+    if (epochHeaders) {
+      const { roots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
+      const countOf = new Map(roots.map((root, count) => [toHex(root), count]));
+      epochCounts = epochHeaders.map((header) => {
+        const count = countOf.get(toHex(header.coinTreeRoot));
+        if (count === undefined) throw new Error(`the endpoint's tree does not match the header of block ${header.number}`);
+        return count;
+      });
+    }
+    const epochLeaves = epochCounts ? tree.leaves.slice(0, epochCounts[epochCounts.length - 1] * 32) : tree.leaves;
     progress("looking for the key's coins");
     const { found } = await prover.request("restore", {
       chainId: chain.chainId,
@@ -249,7 +265,7 @@ export function createFlow({
       records: tree.records,
       markers: spent,
     });
-    return { chain, tree, epochHeaders, fee, found };
+    return { chain, tree, epochHeaders, epochCounts, epochLeaves, fee, found };
   }
 
   // The tree state to prove `coin` against (spec 02, section 8): the epoch
@@ -258,25 +274,16 @@ export function createFlow({
   //
   // The headers are always blocks E - 32 to E, verified and linked to the
   // tip, whatever the coin, so the requests say nothing about where the
-  // coin is. Each header's leaf
-  // count is read from the roots of every prefix of the fetched leaves. The
-  // leaf's block is the first of those headers whose tree holds the leaf;
-  // for a leaf older than E - 32 that is block E - 32 itself, which only
-  // makes the rule stricter, never looser.
+  // coin is. The leaf's block is the first of those headers whose tree
+  // holds the leaf; for a leaf older than E - 32 that is block E - 32
+  // itself, which only makes the rule stricter, never looser.
   async function planReveal(scan, coin) {
-    const { chain, tree, epochHeaders: headers } = scan;
+    const { chain, epochHeaders: headers, epochCounts: counts, epochLeaves } = scan;
     const { epoch } = chain;
     if (!headers) {
       throw new WaitError(`the first epoch block is block ${EPOCH_BLOCKS}; wait until the chain passes block ${EPOCH_BLOCKS + 12}`);
     }
     progress("choosing the tree state");
-    const { roots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
-    const countOf = new Map(roots.map((root, count) => [toHex(root), count]));
-    const counts = headers.map((header) => {
-      const count = countOf.get(toHex(header.coinTreeRoot));
-      if (count === undefined) throw new Error(`the endpoint's tree does not match the header of block ${header.number}`);
-      return count;
-    });
     const epochHeader = headers[headers.length - 1];
     const epochCount = counts[counts.length - 1];
     const nextEpoch = epoch + EPOCH_BLOCKS + 12;
@@ -284,6 +291,7 @@ export function createFlow({
       throw new WaitError(`the coin is newer than epoch block ${epoch}; it can be revealed after block ${nextEpoch}`);
     }
     const leafHeader = headers[counts.findIndex((count) => count > coin.position)];
+    scan.askedEpochRule = true;
     const { chosen } = await prover.request("chooseTreeState", {
       tip: chain.tip.number,
       leafHeight: leafHeader.number,
@@ -296,7 +304,7 @@ export function createFlow({
     }
     return {
       root: epochHeader.coinTreeRoot,
-      leaves: tree.leaves.slice(0, epochCount * 32),
+      leaves: epochLeaves,
       fee: scan.fee,
       domain: chain.genesis.hash,
     };
@@ -371,9 +379,9 @@ export function createFlow({
     throw new Error(`block ${block.number} does not hold the transaction's new coin; it has not settled`);
   }
 
-  // The proof of a reveal of the key's current coin, made in the worker
-  // without a request to the endpoint; throws when there is nothing to prove.
-  async function proveReveal(scan, { key, kind, out, recipient, newKey }) {
+  // The worker's input for a reveal of the key's current coin; throws when
+  // there is nothing to prove.
+  async function revealArgs(scan, { key, kind, out, recipient, newKey }) {
     const { current } = keyStatus(scan.found);
     if (!current) throw new Error("this key holds no unspent coin");
     const plan = await planReveal(scan, current);
@@ -383,46 +391,89 @@ export function createFlow({
         `the coin holds ${formatGhost(current.amount)} GHOST; with the fee of ${formatGhost(plan.fee)} GHOST at most ${formatGhost(current.amount > plan.fee ? current.amount - plan.fee : 0n)} can go out`,
       );
     }
-    progress("proving in the background worker");
-    return prover.request(
-      "prove",
-      {
-        chainId: scan.chain.chainId,
-        domain: plan.domain,
-        kind,
-        root: plan.root,
-        recipient: fromHex(kind === "claim" ? ZERO_ADDRESS : recipient, 20),
-        out: kind === "claim" ? 0n : out,
-        fee: plan.fee,
-        number: current.number,
-        amount: current.amount,
-        position: current.position,
-        leaves: plan.leaves,
-        key,
-        newKey,
-      },
-      (stage) => progress(stage === "proving" ? "proving in the background worker" : stage),
-    );
+    return {
+      chainId: scan.chain.chainId,
+      domain: plan.domain,
+      kind,
+      root: plan.root,
+      recipient: fromHex(kind === "claim" ? ZERO_ADDRESS : recipient, 20),
+      out: kind === "claim" ? 0n : out,
+      fee: plan.fee,
+      number: current.number,
+      amount: current.amount,
+      position: current.position,
+      leaves: plan.leaves,
+      key,
+      newKey,
+    };
+  }
+
+  // The worker's input for a decoy of the same kind over the same leaves
+  // (lib.rs, ghost_prove): a throwaway key's coin of the fee plus 1 wei at
+  // the last position, proved as a real reveal would be. The epoch rule is
+  // asked once too, as it is for a coin, whenever the scan has epoch headers.
+  async function decoyArgs(scan, { kind, recipient }) {
+    const { chain, epochHeaders: headers, epochLeaves } = scan;
+    if (headers && !scan.askedEpochRule) {
+      const epochHeader = headers[headers.length - 1];
+      await prover.request("chooseTreeState", {
+        tip: chain.tip.number,
+        leafHeight: headers[0].number,
+        leafRoot: headers[0].coinTreeRoot,
+        height: epochHeader.number,
+        root: epochHeader.coinTreeRoot,
+      });
+    }
+    const claim = kind === "claim";
+    return {
+      decoy: true,
+      chainId: chain.chainId,
+      domain: chain.genesis.hash,
+      kind: claim ? "claim" : "partial",
+      root: new Uint8Array(32),
+      recipient: fromHex(claim ? ZERO_ADDRESS : recipient, 20),
+      out: claim ? 0n : 1n,
+      fee: scan.fee,
+      number: 0n,
+      amount: scan.fee + (claim ? 1n : 2n),
+      position: Math.max(epochLeaves.length / 32 - 1, 0),
+      leaves: epochLeaves,
+      key: "",
+      newKey: "",
+    };
   }
 
   // Proves a reveal of the key's current coin and sends it. A proof whose
   // fee window lapsed while it was being made is made again.
   //
   // After restore, every path, the one where the key holds no coin
-  // included, asks the endpoint the same thing in the same order before
-  // anything depends on the outcome: eth_blockNumber, the tip's header and
-  // the fee for the next block. Only then does a failure surface, or the
-  // reveal go out; sending the reveal is what links the connection to the
-  // coin.
+  // included, does the same work and then asks the endpoint the same thing
+  // in the same order before anything depends on the outcome. The work is a
+  // proof: of the coin when there is one to reveal, otherwise of a decoy
+  // (`decoyArgs`), so the time before the next request is a proof's time on
+  // every path, the fee retries included. The requests are eth_blockNumber,
+  // the tip's header and the fee for the next block. Only then does a
+  // failure surface, or the reveal go out; sending the reveal is what links
+  // the connection to the coin.
   async function revealAndSend(request) {
     for (let attempt = 0; attempt < FEE_ATTEMPTS; attempt += 1) {
       const scan = await scanKey(request.key);
-      let proved = null;
+      let args = null;
       let failure = null;
       try {
-        proved = await proveReveal(scan, request);
+        args = await revealArgs(scan, request);
       } catch (err) {
         failure = err;
+      }
+      let proved = null;
+      progress("proving in the background worker");
+      try {
+        const result = await prover.request("prove", args ?? (await decoyArgs(scan, request)), (stage) =>
+          progress(stage === "proving" ? "proving in the background worker" : stage),
+        );
+        if (args) proved = result;
+      } catch (err) {
+        failure ??= err;
       }
       const tip = await headerAt(await blockNumber());
       const { fee } = await feeForNextBlock(tip, headerAt);
