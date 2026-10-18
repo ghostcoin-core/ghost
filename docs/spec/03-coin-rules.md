@@ -192,9 +192,10 @@ in this order and stops at the first failure.
    fingerprint `F` and the encrypted note, and nothing that the node would
    treat as a final commitment or as a type tag. A payload with any extra field
    is rejected by the exact-length check in step 2.
-4. **Fingerprint encoding.** Every element of `F` is a canonical encoding of a
-   field element (below the field's modulus). **Proposed:** an all-zero `F` is
-   rejected.
+4. **Fingerprint encoding.** `F` is a 32-byte Keccak-256 string, so every
+   value of it is canonical and there is no modulus check
+   ([spec 01](01-commitments-and-keys.md), section 12, item 2; milestone 1
+   review). **Proposed:** an all-zero `F` is rejected.
 5. **Note.** The encrypted note has the fixed length set by the lifecycle
    specification; a note of any other length is rejected (threat model C18).
 6. **Amount range.** The burned amount `v` is the transaction's value, and
@@ -238,9 +239,10 @@ chain, and step 13 is the only step that writes.
    defines, and carries no sender, signature or account fields. Anything else
    is rejected (outline: every private transaction has an identical size and
    shape).
-2. **Encoding.** Every public input is canonical: field elements below the
-   modulus, amounts `out` and `fee` in `[0, V_MAX]`, and the recipient a
-   20-byte address with no other bits set.
+2. **Encoding.** Every public input is canonical: amounts `out` and `fee` in
+   `[0, V_MAX]`, and the recipient a 20-byte address with no other bits set.
+   Roots, markers and commitments are 32-byte strings with no modulus check
+   ([spec 01](01-commitments-and-keys.md), section 12, item 2).
 3. **Type.** The type tag is `COIN` at the current version. A `DATA` type, an
    unknown type or an old version is rejected here, before any lookup or proof
    verification, so a data commitment never reaches the mint.
@@ -249,10 +251,13 @@ chain, and step 13 is the only step that writes.
 5. **Fee.** The fee equals the chain's formula for this block (base fee plus
    the fixed private tip). The user does not choose it (outline,
    "Transactions and fees").
-6. **Binding digest.** The node computes the binding digest itself from the
-   transaction's recipient, amount out, fee, remainder commitment, tree root,
-   marker, chain identifier, transaction type and version, protocol version
-   and domain tag, and uses its own value as the public input. It never takes
+6. **Binding digest.** The node computes the binding digest itself, over the
+   fields and in the order of [spec 02](02-proof-statements.md), sections 4
+   and 7:
+   the chain identifier, protocol version, domain tag, statement code and
+   version, type tag, purpose, tree root, marker, remainder commitment,
+   recipient, amount out, fee, rule and the remainder's note, and uses its own
+   value as the public input. It never takes
    a digest from the sender. A proof made for a different recipient, fee,
    amount, chain or purpose therefore fails at step 10.
 7. **Root.** The tree root is the coin-tree root in the header of an ancestor
@@ -275,7 +280,11 @@ chain, and step 13 is the only step that writes.
       parts, so one commitment has one marker.
     - **Remainder:** the public remainder commitment is built as in section 5
       from `F'` and `v'`, with the same type tag, content fingerprint and rule
-      as `C`, fresh blinding, and `s'` and `r'` free (section 8).
+      as `C`, and `s'`, `r'` and `b'` free ([spec 02](02-proof-statements.md),
+      section 4, constraint 4). Fresh blinding is the wallet's duty (section
+      8), not something the proof shows: a remainder that reused `r` and `b`
+      would carry the spent marker and could never be revealed, which harms
+      only its own holder.
     - **Conservation:** `v = out + v' + fee`.
     - **Ranges:** `v`, `out`, `v'` and `fee` are each in `[0, V_MAX]`, so `v'`
       cannot be negative and the sum cannot wrap.
@@ -399,8 +408,9 @@ written `f` here, and each case assumes every other check passes.
 - **CR-7. Overflow and wrap are rejected.** A reveal with `out = V_MAX + 1`
   is rejected at step 2. A proof where `out + v' + fee` equals `v` only modulo
   the field size (for example `v = 10`, `out = 20`, `v' = p - 10`, `fee = 0`,
-  with `p` the field modulus) is rejected at step 10 by the range check on
-  `v'`. A
+  with `p` the field modulus) is rejected at step 10 by the integer
+  conservation equation: `p - 10` is below `V_MAX`, so the range check alone
+  does not catch it ([spec 02](02-proof-statements.md), section 9). A
   commit with value `2^96` is rejected at commit step 6.
 - **CR-8. Recipient and fee are bound.** A valid proof made for recipient `A`
   and fee `f` is submitted with recipient `B`: rejected at step 10, nothing
