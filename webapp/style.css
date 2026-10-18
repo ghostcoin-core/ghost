@@ -1,0 +1,81 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  line-height: 1.45;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 46rem;
+  padding: 1rem;
+}
+
+section {
+  border-top: 1px solid #8884;
+  padding: 0.5rem 0 1rem;
+}
+
+label {
+  display: block;
+  margin: 0.5rem 0;
+}
+
+input,
+textarea {
+  box-sizing: border-box;
+  display: block;
+  font: inherit;
+  margin-top: 0.25rem;
+  width: 100%;
+}
+
+button {
+  font: inherit;
+  margin: 0.25rem 0.25rem 0.25rem 0;
+}
+
+.warn {
+  color: #b45309;
+  font-weight: 600;
+}
+
+.secret {
+  font-family: ui-monospace, monospace;
+  font-size: 1.4rem;
+  letter-spacing: 0.08em;
+  user-select: all;
+  word-spacing: 0.4em;
+}
+
+.blurred {
+  filter: blur(0.45em);
+  user-select: none;
+}
+
+.groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.groups label {
+  width: 7rem;
+}
+
+.groups input {
+  font-family: ui-monospace, monospace;
+}
+
+.groups input[aria-invalid="true"] {
+  outline: 2px solid #dc2626;
+}
+
+#error {
+  color: #dc2626;
+}
+
+footer {
+  border-top: 1px solid #8884;
+  font-size: 0.9rem;
+  opacity: 0.8;
+}

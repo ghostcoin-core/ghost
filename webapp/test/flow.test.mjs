@@ -1,0 +1,226 @@
+// The proof of done: the app's flow controller, driven headless through
+// Vanish (with a save check that first fails, then passes), a partial
+// Summon and a Claim, with the real prover built for wasm32-unknown-unknown
+// running in a worker_threads worker through the browser worker's message
+// interface, against the scripted node stand-in. The stand-in verifies each
+// reveal's proof with the real verifier before it accepts it, and records
+// every request so the test can check that no key digit or secret reached
+// the endpoint or the wallet.
+
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import test from "node:test";
+
+import { toHex } from "../src/bytes.mjs";
+import { DEFAULT_COMMIT_ENTRY, createFlow } from "../src/flow.mjs";
+import { DEFAULT_ENDPOINT } from "../src/rpc.mjs";
+import { loadModule, nodeProver, webappDir } from "./support/env.mjs";
+import { startFakeNode } from "./support/fake-node.mjs";
+
+const GHOST = 10n ** 18n;
+// Spec 07, vector window-genesis: the fee at a base fee of 1 gwei.
+const SPEC_FEE = 25_954_253_644_941_297n;
+const ACCOUNT = "0x1111111111111111111111111111111111111111";
+const RECIPIENT = "0x2222222222222222222222222222222222222222";
+const ENDPOINT_METHODS = new Set([
+  "eth_chainId",
+  "eth_blockNumber",
+  "eth_getBlockByNumber",
+  "eth_getTransactionReceipt",
+  "eth_sendRawTransaction",
+  "ghost_getPageRoots",
+  "ghost_getTreePage",
+]);
+
+function answersFor(key, positions) {
+  const groups = key.split(" ");
+  return positions.map((p) => groups[p - 1]);
+}
+
+// A group that differs from the right one in its last digit.
+function mistype(group) {
+  return group.slice(0, 3) + String((Number(group[3]) + 1) % 10);
+}
+
+// Every run of three groups of a key, without separators: no request may
+// hold any of them.
+function digitRuns(key) {
+  const digits = key.replace(/\s/g, "");
+  const runs = [];
+  for (let i = 0; i + 12 <= digits.length; i += 4) runs.push(digits.slice(i, i + 12));
+  return runs;
+}
+
+test("Vanish, a partial Summon and a Claim against the node stand-in", async () => {
+  const ghost = await loadModule();
+  const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
+  const wallet = node.wallet(ACCOUNT);
+  const prover = nodeProver();
+  const stages = [];
+  const flow = createFlow({
+    prover,
+    wallet,
+    endpoint: node.url,
+    pollMs: 5,
+    onChange: (s) => {
+      if (s.progress && stages[stages.length - 1] !== s.progress.stage) stages.push(s.progress.stage);
+    },
+  });
+  try {
+    // Strangers' coins before ours.
+    node.foreignCommits(3);
+    await flow.connectWallet();
+    assert.equal(flow.state.wallet.account, ACCOUNT);
+
+    // --- Vanish ---
+    const key = await flow.vanishStart("1");
+    assert.match(key, /^\d{4}( \d{4}){11}$/, "a standard key of twelve groups");
+    assert.equal(flow.state.vanish.stage, "shown");
+    assert.throws(() => flow.claimSaved(), /show the key first/);
+
+    const positions = flow.vanishSaved();
+    assert.equal(positions.length, 3);
+    assert.equal(new Set(positions).size, 3, "three distinct groups");
+    assert.deepEqual([...positions].sort((a, b) => a - b), positions, "asked in order");
+    for (const p of positions) assert.ok(p >= 1 && p <= 12);
+
+    // A wrong re-type blocks the commit: nothing reaches the wallet or the chain.
+    const right = answersFor(key, positions);
+    const wrong = [...right];
+    wrong[1] = mistype(wrong[1]);
+    const leavesBefore = node.leaves.length;
+    const refused = await flow.vanishCheck(wrong);
+    assert.deepEqual(refused, { ok: false, wrong: [positions[1]] });
+    assert.equal(flow.state.vanish.stage, "check");
+    assert.equal(wallet.calls.filter((c) => c.method === "eth_sendTransaction").length, 0);
+    assert.equal(node.leaves.length, leavesBefore);
+    assert.equal(node.commits.length, 0);
+
+    // The right groups send it.
+    const sent = await flow.vanishCheck(right);
+    assert.equal(sent.ok, true);
+    assert.equal(flow.state.vanish.stage, "confirmed");
+    assert.equal(flow.state.vanish.key, null, "the app drops the key once the commit is sent");
+    const sends = wallet.calls.filter((c) => c.method === "eth_sendTransaction");
+    assert.equal(sends.length, 1);
+    assert.equal(sends[0].params[0].to, DEFAULT_COMMIT_ENTRY);
+    assert.equal(BigInt(sends[0].params[0].value), GHOST);
+    assert.equal(node.commits.length, 1);
+    const ourCommitment = toHex(node.commits[0].commitment);
+
+    // Strangers' coins after ours, then enough blocks for epoch block 32.
+    node.foreignCommits(2);
+    node.mineTo(44);
+
+    // --- Summon: the received key shows unclaimed ---
+    let s = await flow.summonOpen(key);
+    assert.equal(s.status, "unclaimed");
+    assert.equal(s.coins.length, 1);
+    assert.equal(s.current.amount, GHOST);
+    assert.equal(s.fee, SPEC_FEE);
+    assert.equal(s.available, GHOST - SPEC_FEE);
+
+    // A partial reveal of 0.25 GHOST to any address.
+    const reveal = await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
+    assert.ok(reveal.block > 44);
+    assert.equal(node.reveals.length, 1);
+    assert.equal(node.reveals[0].fee, SPEC_FEE, "the fee of spec 07 for a base fee of 1 gwei");
+    assert.equal(node.reveals[0].out, GHOST / 4n);
+    assert.equal(node.balances.get(RECIPIENT), GHOST / 4n);
+    assert.ok(stages.includes("proving in the background worker"), "progress is shown while proving");
+    s = flow.state.summon;
+    assert.equal(s.status, "unclaimed", "still unclaimed after a partial reveal");
+    assert.equal(s.coins.length, 2);
+    assert.equal(s.coins.filter((c) => c.spent).length, 1);
+    const left = GHOST - GHOST / 4n - SPEC_FEE;
+    assert.equal(s.current.amount, left);
+    assert.equal(s.current.number, 1n);
+
+    // More coins after the remainder, then epoch block 64.
+    node.foreignCommits(1);
+    node.mineTo(76);
+
+    // --- Claim ---
+    const newKey = await flow.claimStart();
+    assert.match(newKey, /^\d{4}( \d{4}){11}$/);
+    assert.notEqual(newKey, key);
+    const claimPositions = flow.claimSaved();
+    const claimWrong = answersFor(newKey, claimPositions);
+    claimWrong[0] = mistype(claimWrong[0]);
+    assert.equal((await flow.claimCheck(claimWrong)).ok, false);
+    assert.equal(node.reveals.length, 1, "a wrong re-type of the new key sends no claim");
+    const claimed = await flow.claimCheck(answersFor(newKey, claimPositions));
+    assert.equal(claimed.ok, true);
+    assert.equal(claimed.amount, left - SPEC_FEE);
+    assert.equal(node.reveals.length, 2);
+    assert.equal(node.reveals[1].out, 0n, "a claim sends nothing out");
+    assert.equal(toHex(node.reveals[1].recipient), "0x0000000000000000000000000000000000000000");
+    assert.equal(flow.state.summon.status, "claimed");
+    assert.equal(flow.state.summon.claim.stage, "confirmed");
+    assert.equal(flow.state.summon.claim.key, null);
+
+    // Opened afresh, the old key shows claimed from the chain's markers...
+    s = await flow.summonOpen(key);
+    assert.equal(s.status, "claimed");
+    assert.equal(s.current, null);
+    // ...and the new key holds the value, unclaimed.
+    s = await flow.summonOpen(newKey);
+    assert.equal(s.status, "unclaimed");
+    assert.equal(s.current.amount, left - SPEC_FEE);
+    assert.equal(s.current.number, 0n);
+    flow.summonClose();
+
+    // --- Nothing secret left the app ---
+    const traffic = [...node.requests, ...wallet.calls];
+    assert.ok(node.requests.length > 0);
+    for (const r of node.requests) assert.ok(ENDPOINT_METHODS.has(r.method), `unexpected method ${r.method}`);
+    for (const secretKey of [key, newKey]) {
+      for (const r of traffic) {
+        assert.ok(!r.body.includes(secretKey), "a whole key was sent");
+        for (const run of digitRuns(secretKey)) assert.ok(!r.body.includes(run), `key digits were sent in ${r.method}`);
+      }
+    }
+    for (const r of node.requests) {
+      assert.ok(!r.body.toLowerCase().includes(ourCommitment.slice(2)), `${r.method} named the coin's commitment`);
+    }
+    // Tree data only ever in whole pages from page 0, as of a block hash.
+    for (const r of node.requests.filter((x) => x.method === "ghost_getTreePage")) {
+      assert.equal(r.params.length, 4);
+      assert.equal(r.params[2], "0x0", "the internal network's tree fits one page");
+      assert.match(r.params[3], /^0x[0-9a-f]{64}$/);
+    }
+  } finally {
+    prover.terminate();
+    await node.close();
+  }
+});
+
+test("the built-in endpoint is the local internal network", () => {
+  const flow = createFlow({ prover: { request: async () => ({}) } });
+  assert.equal(flow.state.endpoint, new URL(DEFAULT_ENDPOINT).href);
+  assert.match(DEFAULT_ENDPOINT, /^http:\/\/127\.0\.0\.1:\d+$/);
+  assert.throws(() => flow.setEndpoint("ftp://example.org"), /http or https/);
+  assert.throws(() => flow.setEndpoint("https://user:pw@example.org"), /user name/);
+  assert.equal(flow.setEndpoint("https://node.example.org/rpc"), "https://node.example.org/rpc");
+});
+
+test("index.html loads only same-origin scripts and names no external URL", async () => {
+  const html = await readFile(resolve(webappDir, "index.html"), "utf8");
+  assert.doesNotMatch(html, /https?:\/\//i, "no absolute http URL");
+  assert.doesNotMatch(html, /(src|href)\s*=\s*["']?\/\//i, "no protocol-relative URL");
+  const scripts = [...html.matchAll(/<script\b([^>]*)>/gi)].map((m) => m[1]);
+  assert.ok(scripts.length >= 1);
+  for (const attrs of scripts) {
+    const src = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(attrs);
+    assert.ok(src, "no inline script");
+    assert.match(src[1], /^\.?\/?[\w./-]+\.mjs$/, `script ${src[1]} is not a same-origin module`);
+  }
+  for (const m of html.matchAll(/\b(?:src|href)\s*=\s*["']([^"']+)["']/gi)) {
+    assert.doesNotMatch(m[1], /^[a-z][a-z0-9+.-]*:/i, `${m[1]} is not same-origin`);
+  }
+  const csp = /http-equiv="Content-Security-Policy"\s+content="([^"]+)"/i.exec(html);
+  assert.ok(csp, "a Content-Security-Policy");
+  assert.match(csp[1], /script-src 'self'/);
+  assert.match(csp[1], /default-src 'none'|default-src 'self'/);
+});
