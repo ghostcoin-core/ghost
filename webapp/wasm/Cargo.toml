@@ -1,0 +1,26 @@
+[package]
+name = "ghost-webapp-wasm"
+version = "0.1.0"
+description = "The Ghost client library for the web app's background worker, as plain WebAssembly exports"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Its own workspace, so it builds on its own and never joins another one. It
+# reaches the client library and the proofs crate by path and shares their
+# pinned crates; it needs no WebAssembly bindings generator.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+# Only crates already pinned in client/Cargo.lock. `rand` is the generator the
+# proofs crate already uses, seeded here from the browser's secure source.
+[dependencies]
+ghost-client = { path = "../../client" }
+ghost-proofs = { path = "../../proofs" }
+rand = { version = "0.10.1", default-features = false, features = ["std_rng"] }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1

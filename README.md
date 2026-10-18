@@ -17,6 +17,11 @@ The scope and design decisions are in
 The repository currently holds the outline and the ground rules for
 contributing. Code follows in the order set out in the outline.
 
+The first product is the web app in [webapp/](webapp/README.md): Vanish,
+Summon and Claim with the save check, on top of the client library, with a
+build anyone can repeat and compare. Its design is in
+[docs/webapp.md](docs/webapp.md).
+
 ## Contributing
 
 After cloning, turn on the local commit message check with one command:

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self' http: https:; style-src 'self'; img-src 'self' blob:; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>Ghost</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="src/app.mjs"></script>
+</head>
+<body>
+  <header>
+    <h1>Ghost</h1>
+    <p class="warn">Experimental. Nothing here has been audited. Do not use it for anything of value.</p>
+  </header>
+
+  <main>
+    <section id="network">
+      <h2>Network</h2>
+      <form id="network-form">
+        <label>Node endpoint (JSON-RPC)
+          <input id="endpoint" type="text" spellcheck="false" autocomplete="off">
+        </label>
+        <label>Commit entry address
+          <input id="commit-entry" type="text" spellcheck="false" autocomplete="off">
+        </label>
+        <button type="submit">Use this network</button>
+      </form>
+      <p><button id="connect" type="button">Connect wallet</button> <span id="wallet-status"></span></p>
+    </section>
+
+    <section id="vanish">
+      <h2>Vanish</h2>
+      <p>Commit GHOST from your wallet to a new Phantom Key. The key is the only authority over the coin: save it before anything is sent.</p>
+      <form id="vanish-form">
+        <label>Amount (GHOST)
+          <input id="vanish-amount" type="text" inputmode="decimal" autocomplete="off">
+        </label>
+        <button type="submit">Create a key</button>
+      </form>
+      <div id="vanish-key" class="key-panel" hidden>
+        <p>Your Phantom Key. Copy it, write it down or download it as an image. It is shown here only; the app never stores it.</p>
+        <p id="vanish-key-text" class="secret blurred"></p>
+        <p>
+          <button id="vanish-show" type="button">Show</button>
+          <button id="vanish-copy" type="button">Copy</button>
+          <button id="vanish-download" type="button">Download image</button>
+          <button id="vanish-saved" type="button">I have saved it</button>
+        </p>
+      </div>
+      <form id="vanish-check" class="check" hidden>
+        <p>Save check: type these groups of your key. The commit is sent only when all three match.</p>
+        <div id="vanish-check-groups" class="groups"></div>
+        <button type="submit">Send the commit</button>
+      </form>
+      <p id="vanish-status" role="status"></p>
+    </section>
+
+    <section id="summon">
+      <h2>Summon</h2>
+      <p>Enter a Phantom Key to see its coin, reveal any available amount to any address, or claim it to a new key.</p>
+      <form id="summon-form">
+        <label>Phantom Key
+          <textarea id="summon-key" rows="2" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+        </label>
+        <button type="submit">Open</button>
+      </form>
+      <div id="summon-panel" hidden>
+        <p id="summon-status" role="status"></p>
+        <p>
+          <button id="summon-refresh" type="button">Refresh</button>
+          <button id="summon-close" type="button">Close the key</button>
+        </p>
+        <form id="reveal-form">
+          <h3>Reveal</h3>
+          <label>Amount (GHOST)
+            <input id="reveal-amount" type="text" inputmode="decimal" autocomplete="off">
+          </label>
+          <label>To address
+            <input id="reveal-to" type="text" spellcheck="false" autocomplete="off">
+          </label>
+          <button type="submit">Reveal</button>
+        </form>
+        <div id="claim">
+          <h3>Claim</h3>
+          <p>Move the remaining value, minus the fee, to a new key. A received key shows unclaimed until the claim is in a block.</p>
+          <button id="claim-start" type="button">Claim to a new key</button>
+          <div id="claim-key" class="key-panel" hidden>
+            <p>Your new Phantom Key. Save it: after the claim it is the only authority over the coin.</p>
+            <p id="claim-key-text" class="secret blurred"></p>
+            <p>
+              <button id="claim-show" type="button">Show</button>
+              <button id="claim-copy" type="button">Copy</button>
+              <button id="claim-download" type="button">Download image</button>
+              <button id="claim-saved" type="button">I have saved it</button>
+            </p>
+          </div>
+          <form id="claim-check" class="check" hidden>
+            <p>Save check: type these groups of the new key. The claim is sent only when all three match.</p>
+            <div id="claim-check-groups" class="groups"></div>
+            <button type="submit">Send the claim</button>
+          </form>
+          <p id="claim-status" role="status"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="activity">
+      <p id="progress" role="status"></p>
+      <p id="error" role="alert"></p>
+    </section>
+  </main>
+
+  <footer>
+    <p>No key is stored: not in the browser, not in a file, not on a server. Proofs are made in this browser in a background worker; there is no proving key to download. Every request goes to the endpoint above, and none names your key or your coin.</p>
+  </footer>
+</body>
+</html>

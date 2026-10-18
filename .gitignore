@@ -6,4 +6,6 @@ benchmarks/web/reveal-pkg/
 benchmarks/reveal/target/
 benchmarks/out/
 proofs/target/
+webapp/wasm/target/
+webapp/dist/
 __pycache__/

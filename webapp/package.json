@@ -1,0 +1,12 @@
+{
+  "name": "ghost-webapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ghost web app: Vanish, Summon and Claim with the save check; plain ES modules, no dependencies",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "./build.sh",
+    "test": "node --test --test-timeout=1200000 test/"
+  }
+}
