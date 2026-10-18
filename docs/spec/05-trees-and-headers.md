@@ -684,7 +684,10 @@ fields: every field is required in every header, from genesis on.
 | 17 | `dataTreeRoot` | 32 bytes | Ghost |
 
 Fields 0 to 14 are the base header of the pinned Core-Geth commit (decision
-0001), in its order. Field 15 is the base client's first optional field, here
+0001), in its order. The base client's sanity check on a block a peer announces
+also refuses a `difficulty` longer than 80 bits; finding a seal at that difficulty takes about 2^80
+hashes on average, out of practical reach, so in practice the bound never
+decides a block (milestone 1 review). Field 15 is the base client's first optional field, here
 required. Fields 16 and 17 are the two tree roots of section 4.
 
 **Forbidden fields.** These later fields of the base client are absent in every

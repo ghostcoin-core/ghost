@@ -423,8 +423,12 @@ C41):
 6. The current remainder is the found commitment whose marker is unspent. Its
    tree position is the position of its leaf, read from the chain, never
    guessed. If none is unspent, the key's value has been fully revealed or
-   claimed away. If more than one is unspent (only possible if a key was
-   wrongly used for two first commitments), the wallet shows each.
+   claimed away. If more than one is unspent, the wallet shows each. That
+   happens when a key was wrongly used for two first commitments, or when
+   someone else copies a commit's public `F`, note and amount into a commit
+   they pay for: the copy is the same commitment with the same marker, so
+   only one of the two can ever be revealed, and the copier loses what they
+   burned (milestone 1 review).
 7. The next number to use is one more than the current remainder's `i`.
 
 Every note ciphertext uses a fresh random nonce, every marker is a hash of a
