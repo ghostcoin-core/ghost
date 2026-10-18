@@ -6,6 +6,10 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lib]
+# The static library carries the C interface of src/ffi.rs for a node to link.
+crate-type = ["rlib", "staticlib"]
+
 # Its own workspace: the benchmark harness is a separate one and nothing here
 # depends on it.
 [workspace]
