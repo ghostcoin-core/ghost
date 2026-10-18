@@ -44,7 +44,8 @@ formulas in this document and no node code (section 9).
 - Amounts are in wei, 10^18 per GHOST.
 - `M = 2^256 - 1`. A seal is valid if its RandomX hash, read as a big-endian
   256-bit integer, is at most `target(D) = M // D`, where `D` is the block's
-  difficulty. (The RandomX engine specification must use the same byte order.)
+  difficulty. ([Spec 08](08-randomx-seal.md), section 6, uses this byte
+  order.)
 - `B` is the block time in seconds, 30 or 60, fixed at genesis. A chain does not
   change `B` after launch.
 
@@ -790,9 +791,10 @@ and the run ended with `All checks passed.`
 - The founder's decision on section 6.3. If it is accepted, the outline's line
   "It begins after about eight years" changes to "about ten years". This
   document does not edit the outline.
-- The RandomX engine specification must use the big-endian comparison in
-  section 2 and the genesis hash as the first-epoch key (as the RandomX survey
-  recommends).
+- The RandomX seal is specified in [spec 08](08-randomx-seal.md). It uses the
+  big-endian comparison of section 2 (spec 08, section 6) and the genesis hash
+  as the first epoch's key (spec 08, section 8), as the RandomX survey
+  recommended.
 - The header specification must list every genesis field that section 8.3 leaves
   to it.
 - The node's difficulty, reward and genesis tests take their expected values

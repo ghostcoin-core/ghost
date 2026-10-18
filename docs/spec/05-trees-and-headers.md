@@ -223,9 +223,11 @@ give is marker status:
 
 **Seal coverage.** The proof-of-work seal must cover both tree-root fields, so
 that no relay can change a root without redoing the work (Core-Geth survey,
-"Seal hash coverage"). The seal hash's exact layout belongs to the RandomX
-engine specification; it covers every header field except the seal fields
-`mixDigest` and `nonce`.
+"Seal hash coverage"). The seal hash's exact layout is in
+[spec 08](08-randomx-seal.md), section 4: Keccak-256 of the header's RLP with
+`mixDigest` and `nonce` set to zero, so it covers every header field except
+those two seal fields, both roots included. Spec 08 also fixes what RandomX
+hashes, the target and the key; its RS-6 is TH-6 below.
 
 - **TH-5. Wrong root in a header.** A block whose `coinTreeRoot` or
   `dataTreeRoot` differs from the executed value by one bit. Expected: the
