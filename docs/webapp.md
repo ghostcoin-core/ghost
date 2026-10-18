@@ -133,7 +133,9 @@ account, so it needs no wallet.
    new key), verifies the proof itself, and builds the envelope of spec 07,
    section 3. A claim sends nothing out and names the zero address.
 6. **Status.** The app polls the receipt, but a receipt is only the
-   endpoint's word. It then waits until the receipt's block has 6 blocks on
+   endpoint's word. A receipt naming a block that was already in the chain
+   when the transaction was sent, or one past the tip, is refused before any
+   header is read for it. The app then waits until the receipt's block has 6 blocks on
    top. A commit, reveal or claim counts as confirmed only when the coin tree
    as of the tip, checked against the tip's coin root, holds the new leaf the
    transaction appends, at a position added by the receipt's block, read
@@ -164,6 +166,15 @@ account, so it needs no wallet.
   never move a coin.
 - **Notes and markers are not checked against receipts** (spec 05, section 8,
   item 5): the page says so next to the status. Marker pages are hints.
+- **An endpoint can test for a coin, one bit at a time.** An altered note
+  fails to decrypt exactly as a stranger's note does, so the app cannot tell
+  it was altered. An endpoint that spoils the notes of some positions sees
+  whether a reveal follows; over several reveals that can narrow down which
+  commitment the connection holds. The requests are the same either way;
+  whether a reveal is sent, and how long the proof took, are not. Use an
+  endpoint you run or trust.
+- **The zero address.** The app refuses it as a reveal's recipient and as
+  the commit entry address, because what it is credited cannot be spent.
 - **One tree.** Only coin tree 0 is read; a rollover is 2^32 leaves away.
 - **No reorganisation handling** beyond rereading everything on each step.
 

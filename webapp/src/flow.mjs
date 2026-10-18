@@ -320,17 +320,22 @@ export function createFlow({
     throw new Error("no block holds the transaction yet; refresh later");
   }
 
-  // A receipt is the endpoint's word only. A transaction counts as settled
-  // when the chain shows what it did, with 6 blocks on top: the coin tree as
+  // A receipt is the endpoint's word only. A transaction sent when the
+  // endpoint's tip was block `sentAfter` can only be in a later block. It
+  // counts as settled when the chain shows what it did, with 6 blocks on
+  // top: the coin tree as
   // of the tip, checked against the tip's coin root, holds `commitment` (the
   // new leaf every commit, reveal and claim appends) at a position the
   // receipt's block added, read from the coin roots of that block and its
   // parent in the verified header chain that leads to the tip.
-  async function waitSettled(hash, commitment) {
+  async function waitSettled(hash, commitment, sentAfter) {
     const receipt = await waitReceipt(hash);
     progress("checking the block");
     let top = await blockNumber();
-    if (receipt.blockNumber < 1 || receipt.blockNumber > top) {
+    if (receipt.blockNumber <= sentAfter) {
+      throw new Error(`the receipt names block ${receipt.blockNumber}, which was in the chain before the transaction was sent`);
+    }
+    if (receipt.blockNumber > top) {
       throw new Error(`the receipt names block ${receipt.blockNumber}, not a block of the chain`);
     }
     if (top < receipt.blockNumber + CONFIRMATIONS) progress(`waiting for ${CONFIRMATIONS} blocks on top`);
@@ -428,7 +433,7 @@ export function createFlow({
       if (String(hash).toLowerCase() !== toHex(proved.txHash)) {
         throw new Error("the endpoint returned another transaction hash");
       }
-      return { hash, fee: scan.fee, remainder: proved.remainder };
+      return { hash, fee: scan.fee, remainder: proved.remainder, sentAfter: tip.number };
     }
     throw new Error("the fee changed every time a proof was ready; try again");
   }
@@ -487,7 +492,9 @@ export function createFlow({
     },
 
     setCommitEntry(text) {
-      state.commitEntry = parseAddress(text);
+      const address = parseAddress(text);
+      if (address === ZERO_ADDRESS) throw new Error("the commit entry cannot be the zero address: the value would be burned");
+      state.commitEntry = address;
       emit();
       return state.commitEntry;
     },
@@ -526,6 +533,7 @@ export function createFlow({
           throw new Error(`the wallet is on chain ${walletChain}, the endpoint on chain ${chainId}`);
         }
         progress("building the commit");
+        const sentAfter = await blockNumber();
         const commit = await prover.request("commit", { chainId, amount: v.amount, key: v.key });
         progress("waiting for the wallet");
         const txHash = await wallet.request({
@@ -537,7 +545,7 @@ export function createFlow({
         v.stage = "pending";
         v.txHash = txHash;
         progress("waiting for a block");
-        const receipt = await waitSettled(txHash, commit.commitment);
+        const receipt = await waitSettled(txHash, commit.commitment, sentAfter);
         v.stage = "confirmed";
         v.block = receipt.blockNumber;
         return { ok: true, txHash, block: receipt.blockNumber };
@@ -575,11 +583,14 @@ export function createFlow({
         const out = parseGhost(amount);
         if (out === 0n) throw new Error("enter an amount above zero");
         const to = parseAddress(recipient);
+        // A reveal credits its recipient, and nobody can spend what the zero
+        // address is credited.
+        if (to === ZERO_ADDRESS) throw new Error("the zero address cannot receive a reveal: the amount would be lost");
         const sent = await revealAndSend({ key: s.key, kind: "partial", out, recipient: to });
         s.status = "pending";
         s.lastReveal = { txHash: sent.hash, out, recipient: to, fee: sent.fee, block: null };
         progress("waiting for a block");
-        const receipt = await waitSettled(sent.hash, sent.remainder.commitment);
+        const receipt = await waitSettled(sent.hash, sent.remainder.commitment, sent.sentAfter);
         s.lastReveal.block = receipt.blockNumber;
         await refreshSummon();
         return s.lastReveal;
@@ -616,7 +627,7 @@ export function createFlow({
         c.txHash = sent.hash;
         c.amount = sent.remainder.amount;
         progress("waiting for a block");
-        const receipt = await waitSettled(sent.hash, sent.remainder.commitment);
+        const receipt = await waitSettled(sent.hash, sent.remainder.commitment, sent.sentAfter);
         c.stage = "confirmed";
         c.block = receipt.blockNumber;
         await refreshSummon();
