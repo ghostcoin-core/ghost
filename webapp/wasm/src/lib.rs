@@ -505,11 +505,18 @@ pub extern "C" fn ghost_choose_tree_state(ptr: *const u8, len: usize) -> u32 {
 
 /// Builds, proves and checks a partial reveal or a claim to a new key.
 ///
-/// Input: chain identifier (8), domain (32), kind (1: 0 partial, 1 claim),
-/// root (32), recipient (20), amount out (32), fee (32), the coin's number
-/// (8), amount word (32) and position (4), the leaves of the tree under the
-/// root (count, 32 each), seed (32), zero-knowledge randomness (32), the key
-/// text, then for a claim the new key's text.
+/// Input: chain identifier (8), domain (32), kind (1: 0 partial, 1 claim,
+/// 2 decoy partial, 3 decoy claim), root (32), recipient (20), amount out
+/// (32), fee (32), the coin's number (8), amount word (32) and position (4),
+/// the leaves of the tree under the root (count, 32 each), seed (32),
+/// zero-knowledge randomness (32), the key text, then for a claim the new
+/// key's text.
+///
+/// A decoy does the same work for a key and a new key made from the seed:
+/// its coin replaces the leaf at the position (the last one, from the
+/// caller), the root is that tree's, and the given root and key texts are
+/// not used. The app proves a decoy when it has no coin to prove, so the
+/// time before its next request does not depend on whether it found one.
 ///
 /// Output: transaction hash (32), the spent marker (32), the remainder's `C`
 /// (32), number (8) and amount word (32), then the envelope.
@@ -518,33 +525,49 @@ pub extern "C" fn ghost_prove(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
         let chain_id = input.u64()?;
         let params = params(chain_id, input.array()?);
-        let claim = match input.u8()? {
-            0 => false,
-            1 => true,
+        let (claim, decoy) = match input.u8()? {
+            kind @ 0..=3 => (kind & 1 == 1, kind & 2 == 2),
             _ => return Err(String::from("unknown reveal kind")),
         };
         let root = input.array()?;
         let recipient = input.array()?;
         let out = amount(input.array()?)?;
-        let terms = RevealTerms { root, recipient, fee: amount(input.array()?)? };
+        let mut terms = RevealTerms { root, recipient, fee: amount(input.array()?)? };
         let number = input.u64()?;
         let value = amount(input.array()?)?;
         let position = input.u32()?;
-        let leaves = input.records::<32>()?;
+        let mut leaves = input.records::<32>()?;
         let mut rng = rng(input.array()?);
         let zk: [u8; 32] = input.array()?;
-        let key = key(input.text()?)?;
-        let new_key = if claim { Some(key_for_claim(input.text()?)?) } else { None };
+        let key_text = input.text()?;
+        let new_key_text = if claim { Some(input.text()?) } else { None };
 
         let z = zeros();
-        let index = position as usize;
-        if index >= leaves.len() {
-            return Err(String::from("the coin is not in the tree under the chosen root"));
-        }
-        let commit = key.coin_commit(number, value, Rule::EMPTY).map_err(|e| e.to_string())?;
-        if &leaves[index] != commit.commitment.as_bytes() || tree_root(&leaves, &z) != terms.root {
-            return Err(String::from("the coin is not in the tree under the chosen root"));
-        }
+        let (key, new_key, index) = if decoy {
+            if leaves.is_empty() {
+                leaves.push(z[0]);
+            }
+            let key = PhantomKey::generate(KeyFormat::Standard, &mut rng);
+            let new_key = claim.then(|| PhantomKey::generate(KeyFormat::Standard, &mut rng));
+            let index = (position as usize).min(leaves.len() - 1);
+            let commit = key.coin_commit(number, value, Rule::EMPTY).map_err(|e| e.to_string())?;
+            leaves[index] = *commit.commitment.as_bytes();
+            terms.root = tree_root(&leaves, &z);
+            (key, new_key, index)
+        } else {
+            let key = key(key_text)?;
+            let new_key = new_key_text.map(key_for_claim).transpose()?;
+            let index = position as usize;
+            if index >= leaves.len() {
+                return Err(String::from("the coin is not in the tree under the chosen root"));
+            }
+            let commit = key.coin_commit(number, value, Rule::EMPTY).map_err(|e| e.to_string())?;
+            if &leaves[index] != commit.commitment.as_bytes() || tree_root(&leaves, &z) != terms.root {
+                return Err(String::from("the coin is not in the tree under the chosen root"));
+            }
+            (key, new_key, index)
+        };
+        let position = index as u32;
         let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, position, path: witness(&leaves, index, &z) };
         let built = match &new_key {
             None => partial_reveal(&params, &key, &coin, &terms, out, &mut rng, zk),

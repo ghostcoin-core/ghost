@@ -210,7 +210,19 @@ async function setUp() {
   const ghost = await loadModule();
   const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
   const wallet = node.wallet(ACCOUNT);
-  const prover = nodeProver();
+  const worker = nodeProver();
+  // Every worker request, with how many endpoint requests came before it
+  // started and after it ended, and how long it took.
+  const work = [];
+  const prover = {
+    request(op, args, onProgress) {
+      const at = node.requests.length;
+      const started = performance.now();
+      return worker.request(op, args, onProgress).finally(() => {
+        work.push({ op, decoy: Boolean(args && args.decoy), at, end: node.requests.length, ms: performance.now() - started });
+      });
+    },
+  };
   const chain = { mining: true };
   const sleep = async () => {
     if (chain.mining) node.mine();
@@ -218,10 +230,23 @@ async function setUp() {
   const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5, maxPolls: 20, sleep });
   node.foreignCommits(2);
   const done = async () => {
-    prover.terminate();
+    worker.terminate();
     await node.close();
   };
-  return { node, flow, chain, done };
+  return { node, flow, chain, work, done };
+}
+
+// The endpoint's requests since request `from`, with the worker requests
+// since worker request `fromWork` in their place among them: what the
+// endpoint can time.
+function timeline(node, work, from, fromWork) {
+  const events = [];
+  const ops = work.slice(fromWork);
+  for (let i = from; i <= node.requests.length; i += 1) {
+    for (const w of ops.filter((x) => x.at === i)) events.push(`worker:${w.op}`);
+    if (i < node.requests.length) events.push(JSON.stringify([node.requests[i].method, node.requests[i].params]));
+  }
+  return events;
 }
 
 // Vanish of `amount` GHOST with a right save check; the new key.
@@ -236,7 +261,7 @@ async function vanish(flow, amount) {
 const seen = (node, from) => node.requests.slice(from).map((r) => JSON.stringify([r.method, r.params]));
 
 test("altered notes cannot make the requests depend on whether the key owns a coin", async () => {
-  const { node, flow, done } = await setUp();
+  const { node, flow, work, done } = await setUp();
   try {
     const owner = await vanish(flow, "1");
     const target = node.leaves.findIndex((l) => toHex(l.commitment) === toHex(node.commits[0].commitment));
@@ -250,8 +275,13 @@ test("altered notes cannot make the requests depend on whether the key owns a co
     node.dishonest.note = (position, note) => (position === target ? note : new Uint8Array(note.length));
 
     let from = node.requests.length;
+    let fromWork = work.length;
     await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), /holds no unspent coin/);
     const notOwner = seen(node, from);
+    const notOwnerTimes = timeline(node, work, from, fromWork);
+    const notOwnerProofs = work.slice(fromWork).filter((w) => w.op === "prove");
+    assert.equal(notOwnerProofs.length, 1, "a key with no coin still has a proof made");
+    assert.equal(notOwnerProofs[0].decoy, true, "of a decoy");
 
     from = node.requests.length;
     assert.equal((await flow.summonOpen(owner)).status, "unclaimed");
@@ -264,21 +294,44 @@ test("altered notes cannot make the requests depend on whether the key owns a co
     // coin: the endpoint sees exactly what it saw for the key without one.
     await flow.summonOpen(owner);
     from = node.requests.length;
+    fromWork = work.length;
     await assert.rejects(flow.summonReveal({ amount: "5", recipient: RECIPIENT }), /at most/);
     const owned = seen(node, from);
     assert.ok(owned.some((r) => r.startsWith('["eth_getBlockByNumber"')), "the epoch and fee headers are fetched");
     assert.deepEqual(owned, notOwner, "a failed reveal asks the same whether the key owns the coin or not");
+    assert.deepEqual(
+      timeline(node, work, from, fromWork),
+      notOwnerTimes,
+      "the worker does the same work at the same place among the requests whether the key owns the coin or not",
+    );
+    assert.deepEqual(
+      work.slice(fromWork).filter((w) => w.op === "prove").map((w) => w.decoy),
+      [true],
+      "a reveal that cannot be made proves a decoy",
+    );
     assert.equal(node.reveals.length, 0);
 
     // A reveal that goes through: up to the reveal itself, the endpoint
     // sees what it saw when the key held no coin and the app gave up.
     assert.ok(notOwner.at(-1).startsWith('["eth_getBlockByNumber"'), "the abort path asks for the tip and fee headers");
     from = node.requests.length;
+    fromWork = work.length;
     await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
     const revealed = seen(node, from);
     const sentAt = revealed.findIndex((r) => r.startsWith('["eth_sendRawTransaction"'));
     assert.ok(sentAt > 0);
     assert.deepEqual(revealed.slice(0, sentAt), notOwner, "the requests before the reveal do not depend on what restore found");
+    const revealedTimes = timeline(node, work, from, fromWork);
+    const sentEvent = revealedTimes.findIndex((r) => r.startsWith('["eth_sendRawTransaction"'));
+    assert.deepEqual(revealedTimes.slice(0, sentEvent), notOwnerTimes, "nor does where the proof work falls among them");
+    const real = work.slice(fromWork).filter((w) => w.op === "prove");
+    assert.equal(real[0].decoy, false, "the reveal is a real proof");
+    assert.equal(real[0].at, real[0].end, "no request is made while proving");
+    // The delay before the next request is a proof's either way.
+    assert.ok(
+      notOwnerProofs[0].ms > real[0].ms / 4,
+      `the decoy took ${Math.round(notOwnerProofs[0].ms)} ms, the real proof ${Math.round(real[0].ms)} ms`,
+    );
     assert.equal(node.reveals.length, 1);
   } finally {
     await done();
