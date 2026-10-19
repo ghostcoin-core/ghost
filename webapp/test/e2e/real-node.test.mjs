@@ -240,13 +240,16 @@ if (!GETH) {
 
     // A reveal or claim, again whenever the epoch rule says to wait. Each
     // reason is logged. The wait is bounded in blocks: past the next epoch
-    // block and its depth, plus one epoch window. When no commitment
-    // followed the coin inside the window, a stranger commits again and the
-    // step waits for that commit's epoch; that is done at most
+    // block and its depth, plus one epoch window, from the tip when the
+    // first wait starts: the step before it proves for tens of seconds while
+    // blocks keep coming, so a tip read before it is long gone. When no
+    // commitment followed the coin inside the window, a stranger commits
+    // again and the step waits for that commit's epoch; that is done at most
     // STRANGER_COMMITS times, so the wait ends.
     const STRANGER_COMMITS = 3;
     async function untilEpoch(step) {
-      let deadline = lastUsefulBlock((await blockNumber()) + 1);
+      let startTip = null;
+      let deadline = null;
       let commits = 0;
       for (;;) {
         assert.ok(node.alive(), "geth stopped while waiting for the epoch rule");
@@ -254,6 +257,10 @@ if (!GETH) {
           return await step();
         } catch (err) {
           if (!(err instanceof WaitError)) throw err;
+          if (startTip === null) {
+            startTip = await blockNumber();
+            deadline = lastUsefulBlock(startTip + 1);
+          }
           const tip = await blockNumber();
           console.log(`epoch rule holds: ${err.message} (tip ${tip}, gives up after block ${deadline})`);
           if (err.message.startsWith("no commitment followed the coin")) {

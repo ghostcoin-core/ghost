@@ -158,7 +158,17 @@ app makes no data commitments.
    epoch root, proves with the client library (partial reveal or claim to a
    new key), verifies the proof itself, and builds the envelope of spec 07,
    section 3. A claim sends nothing out and names the zero address.
-6. **Status.** The app polls the receipt, but a receipt is only the
+6. **Send.** A node that mines fast can refuse the reveal with `chain head
+   kept moving while the reveal was checked`: its pool checks a reveal on a
+   snapshot of the head, checks again a bounded number of times when the
+   head moves, and then gives up. That refusal is a transient, so the app
+   treats exactly it as retryable: it asks for the tip and the fee headers
+   for the next block again and, if the fee is still the proof's, sends the
+   same envelope again; otherwise it proves again as for a fee change. One
+   proof is sent at most 5 times, then the refusal surfaces. Any other
+   refusal surfaces at once. Only a send refused this way is followed by
+   more requests, so the requests before the first send stay as in step 2.
+7. **Status.** The app polls the receipt, but a receipt is only the
    endpoint's word. A receipt naming a block that was already in the chain
    when the transaction was sent, or one past the tip, is refused before any
    header is read for it. The app then waits until the receipt's block has 6 blocks on
