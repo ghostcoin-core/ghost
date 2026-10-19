@@ -109,3 +109,83 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
         run: scripts/ci-gate.sh "rust-$CRATE"
+
+  # Vanish, a partial Summon and a Claim with the real prover against a
+  # release geth of ghost-node at the commit in webapp/test/e2e/NODE_COMMIT.
+  # The geth binary is cached by that commit and the Go version, so the node
+  # is rebuilt only when the pin moves. Go is the version in ghost-node's
+  # go.mod, installed with the setup-go commit ghost-node's own CI pins.
+  webapp-real-node:
+    name: webapp-real-node
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUST_TOOLCHAIN: 1.99.1
+      GO_VERSION: 1.26.9
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Restore the ghost-node geth
+        id: geth-cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/ghost-node/build/bin/geth
+          key: ghost-node-geth-${{ runner.os }}-go${{ env.GO_VERSION }}-${{ hashFiles('webapp/test/e2e/NODE_COMMIT') }}
+      - name: Install Go
+        if: steps.geth-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Build the ghost-node geth
+        if: steps.geth-cache.outputs.cache-hit != 'true'
+        env:
+          GHOST_NODE_DIR: ${{ runner.temp }}/ghost-node
+        run: |
+          go version
+          webapp/scripts/build-node.sh
+      # Saved right after the build, so a failing test does not throw the
+      # build away and make the next run rebuild the node.
+      - name: Save the ghost-node geth
+        if: steps.geth-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/ghost-node/build/bin/geth
+          key: ${{ steps.geth-cache.outputs.cache-primary-key }}
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            webapp/wasm/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-webapp-${{ hashFiles('webapp/wasm/Cargo.lock') }}
+      - name: Build the web app
+        run: webapp/build.sh
+      # Without a node the test prints SKIP and exits 0, so a passing exit
+      # code alone does not show that it ran. A missing or non-executable
+      # geth, or SKIP anywhere in the output, fails the step.
+      - name: Real-node test (Vanish, Summon, Claim)
+        shell: bash
+        env:
+          GHOST_NODE_GETH: ${{ runner.temp }}/ghost-node/build/bin/geth
+          TEST_LOG: ${{ runner.temp }}/real-node.log
+        run: |
+          set -euo pipefail
+          if [ -z "$GHOST_NODE_GETH" ] || [ ! -f "$GHOST_NODE_GETH" ] || [ ! -x "$GHOST_NODE_GETH" ]; then
+            echo "GHOST_NODE_GETH ($GHOST_NODE_GETH) is not an executable file" >&2
+            exit 1
+          fi
+          "$GHOST_NODE_GETH" version
+          node --version
+          node --test --test-timeout=3600000 webapp/test/e2e/real-node.test.mjs 2>&1 | tee "$TEST_LOG"
+          if grep -q SKIP "$TEST_LOG"; then
+            echo "the real-node test skipped instead of running" >&2
+            exit 1
+          fi
