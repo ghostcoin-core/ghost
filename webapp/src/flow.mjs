@@ -29,9 +29,10 @@ import {
 import { readHeader } from "./header.mjs";
 import { DEFAULT_ENDPOINT, createRpc } from "./rpc.mjs";
 
-// The commit entry address of the local internal network. The transaction
-// format work fixes it; until then it is a setting next to the endpoint.
-export const DEFAULT_COMMIT_ENTRY = "0x0000000000000000000000000000000000001000";
+// The coin commit entry address of the internal network ("ghost" in ASCII,
+// then 5; ghost-node params/ghost/privaccounts.go). It stays a setting next
+// to the endpoint.
+export const DEFAULT_COMMIT_ENTRY = "0x67686f7374000000000000000000000000000005";
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 // Leaves (or markers) per page of wallet tree data (spec 05, section 8).
 export const PAGE_LEAVES = 4096;

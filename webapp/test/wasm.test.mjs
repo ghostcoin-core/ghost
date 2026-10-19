@@ -83,16 +83,17 @@ test("the commit matches spec 01, vector coin-commit", () => {
   assert.equal(toHex(commit.commitment), `0x${LEAF_A}`);
   assert.equal(toHex(commit.marker), "0x671b869daf27c895e24a009e3d471e893e8e6ffe62f0309b4e5402c94c47ec85");
   assert.equal(commit.payload.length, ghost.constants().commitPayloadBytes);
-  assert.equal(commit.payload[0], 0x01);
-  assert.equal(toHex(commit.payload.slice(1, 33)), "0xb44338ab6f6dcb3d63772c457737afd38a841207725e1440d235c4f6be0c4d8b");
-  assert.equal(toHex(ghost.coinCommitment(commit.payload.slice(1, 33), 10n ** 18n)), `0x${LEAF_A}`);
+  assert.equal(commit.payload.length, 190);
+  assert.equal(toHex(commit.payload.slice(0, 2)), "0x0001");
+  assert.equal(toHex(commit.payload.slice(2, 34)), "0xb44338ab6f6dcb3d63772c457737afd38a841207725e1440d235c4f6be0c4d8b");
+  assert.equal(toHex(ghost.coinCommitment(commit.payload.slice(2, 34), 10n ** 18n)), `0x${LEAF_A}`);
 });
 
 test("restore finds the committed coin from its note and passes over others", () => {
   const chainId = 7n;
   const commit = ghost.commit({ chainId, amount: 10n ** 18n, seed: crypto.getRandomValues(new Uint8Array(32)), key: VECTOR_KEY });
   const stranger = new Uint8Array(188).fill(3);
-  const records = new Uint8Array([...stranger, ...commit.commitment, ...commit.payload.slice(33)]);
+  const records = new Uint8Array([...stranger, ...commit.commitment, ...commit.payload.slice(34)]);
   let found = ghost.restore({ chainId, key: VECTOR_KEY, records, markers: new Uint8Array(0) });
   assert.equal(found.length, 1);
   assert.equal(found[0].position, 1);

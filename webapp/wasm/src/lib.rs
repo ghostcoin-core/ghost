@@ -57,10 +57,13 @@ const HEAD_BYTES: usize = 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32;
 /// Length of the envelope: the type byte and the payload.
 pub const ENVELOPE_BYTES: usize = 1 + HEAD_BYTES + PROOF_FIELD_BYTES + NOTE_BYTES;
 
-/// Commit format version, the first byte of a commit payload.
-pub const COMMIT_FORMAT_VERSION: u8 = 0x01;
-/// A commit payload: the format version, the fingerprint `F` and the note.
-pub const COMMIT_PAYLOAD_BYTES: usize = 1 + 32 + NOTE_BYTES;
+/// Commit format version, the first two bytes of a commit payload: the
+/// transaction version (spec 07, section 2).
+pub const COMMIT_FORMAT_VERSION: [u8; 2] = TX_VERSION;
+/// A commit payload: the version, the fingerprint `F` and the note, 190
+/// bytes (spec 07; the node's `ghostpriv.CommitData`).
+pub const COMMIT_PAYLOAD_BYTES: usize = COMMIT_FORMAT_VERSION.len() + 32 + NOTE_BYTES;
+const _: () = assert!(COMMIT_PAYLOAD_BYTES == 190);
 
 /// Leaves per page of wallet tree data (spec 05, section 8).
 const PAGE_LEAVES: usize = 4096;
@@ -358,7 +361,7 @@ pub extern "C" fn ghost_check_key(ptr: *const u8, len: usize) -> u32 {
 
 /// The commit of a key's first coin. Input: chain identifier (8), amount word
 /// (32), seed (32), key text. Output: `C` (32), marker (32), then the commit
-/// payload: format version, `F` and the note of number 0.
+/// payload: format version (2), `F` and the note of number 0.
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_commit(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
@@ -380,7 +383,7 @@ pub extern "C" fn ghost_commit(ptr: *const u8, len: usize) -> u32 {
         let mut out = Vec::with_capacity(64 + COMMIT_PAYLOAD_BYTES);
         out.extend_from_slice(commit.commitment.as_bytes());
         out.extend_from_slice(commit.marker.as_bytes());
-        out.push(COMMIT_FORMAT_VERSION);
+        out.extend_from_slice(&COMMIT_FORMAT_VERSION);
         out.extend_from_slice(commit.fingerprint.as_bytes());
         out.extend_from_slice(&note);
         Ok(out)

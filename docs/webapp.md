@@ -88,10 +88,21 @@ Only the injected EIP-1193 provider (`window.ethereum`) is used:
 `eth_requestAccounts`, `eth_chainId` (it must equal the endpoint's) and
 `eth_sendTransaction` for the commit. The commit is a normal transaction to
 the commit entry address whose value is the amount and whose data is the
-commit payload of [spec 03](spec/03-coin-rules.md), section 6: the commit
-format version `0x01`, the fingerprint `F` and the encrypted note of
-commitment number 0 (189 bytes). A reveal is a native transaction with no
+commit payload of [spec 03](spec/03-coin-rules.md), section 6, in the layout
+of [spec 07](spec/07-private-transaction.md) that the node reads as
+`ghostpriv.CommitData`: the 2-byte version `0x0001` (`TX_VERSION`), the
+fingerprint `F` (32 bytes) and the encrypted note of commitment number 0
+(156 bytes), 190 bytes in all. The node refuses any other length or version
+(`commit data is not 190 bytes of version 1`).
+`webapp/test/vectors/commit-payload.json` holds one such payload, built from
+spec 01, vector coin-commit. A reveal is a native transaction with no
 account, so it needs no wallet.
+
+The commit entry address defaults to the internal network's coin commit
+entry, `0x67686f7374000000000000000000000000000005` ("ghost" in ASCII, then
+5; `params/ghost/privaccounts.go` in ghost-node). The data commit entry of
+that network, `0x67686f7374000000000000000000000000000007`, is not used: the
+app makes no data commitments.
 
 ## Summon and Claim
 
@@ -157,15 +168,15 @@ account, so it needs no wallet.
 
 - **The node's own documents.** The request and result shapes above follow
   this repository's specifications; the node's documentation of its tree
-  page methods was not at hand when the app was written. The node does not
-  accept a reveal yet, so `eth_sendRawTransaction` of a reveal works only
-  against the test's stand-in.
+  page methods was not at hand when the app was written. The real-node test
+  (see Tests) runs the whole flow against a release `geth` of ghost-node.
 - **Proof field width.** The app uses the settled proof field of spec 07,
   section 3 ("Proof field"): 1,310,720 bytes (1.25 MiB) for every reveal kind,
   in the layout of that section. The real prover's proofs measure about
   1.19 MB ([reveal results](benchmarks/reveal-results.md)), below the field.
-- **Commit entry address.** No specification fixes it yet. It is a setting
-  next to the endpoint, with a placeholder default.
+- **Commit entry address.** It is a setting next to the endpoint, with the
+  internal network's coin commit entry as its default; another network
+  needs its own.
 - **The seal is the endpoint's word.** The app recomputes each header's hash
   and checks parent links up to the tip, but not the proof-of-work seal, and
   there is no header chain kept in the page. An endpoint that fabricates
@@ -205,8 +216,34 @@ account, so it needs no wallet.
   before 6 blocks are on top.
 - `wasm.test.mjs`: the module against the golden vectors of spec 01 and
   spec 05, the header's RLP and hash included.
+- `commit-layout.test.mjs`: the commit payload against spec 07's layout and
+  the shared vector `test/vectors/commit-payload.json`, and the default
+  commit entry address.
+- `stand-in.test.mjs`: the stand-in refuses what the node refuses for a
+  commit (not to the commit entry address, data not 190 bytes, a version
+  other than `0x0001`, among them the old 189-byte layout) and accepts the
+  190-byte payload.
 - `units.test.mjs`: the fee against the worked examples of spec 07, the
   base fee rule, the epoch height, amounts and the save check.
 
 The key image download is drawn on a canvas in the page and is not covered
 by the headless tests.
+
+### Against a real node
+
+`test/e2e/real-node.test.mjs` is not loaded from `test/index.js`. It starts
+the release `geth` named by `GHOST_NODE_GETH` as a one-node internal network
+(network 6777971, mining, the internal network's genesis, JSON-RPC
+`eth,net,web3,ghost` over HTTP on a port the system picks) and runs Vanish, a
+partial Summon and a Claim with the real prover. The wallet is the node's
+unlocked miner account. It checks on chain the commit's 190 bytes and its
+leaf, the spent marker, the remainder's leaf, the recipient's balance and the
+claimed coin. Without `GHOST_NODE_GETH` it prints
+`SKIP: GHOST_NODE_GETH is not set` and runs nothing.
+`webapp/scripts/build-node.sh` clones ghost-node at the commit in
+`test/e2e/NODE_COMMIT`, builds it and prints the path to its `geth`:
+
+```sh
+GHOST_NODE_GETH="$(webapp/scripts/build-node.sh)" \
+  node --test --test-timeout=3600000 webapp/test/e2e/real-node.test.mjs
+```
