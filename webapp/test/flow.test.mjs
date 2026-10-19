@@ -660,6 +660,51 @@ test("a reveal refused with geth's own reply bytes is sent again", async () => {
   }
 });
 
+// An endpoint that broadcasts the reveal, waits until its remainder can be
+// revealed at another fee and only then answers with the head-moving
+// refusal must not get a second payment: a new proof is only ever of the
+// first proof's coin, and that coin is spent.
+test("a reveal the endpoint took before it answered that the head moved is not paid again from the remainder", async () => {
+  let node = null;
+  const sends = [];
+  const fetch = async (url, init) => {
+    const call = JSON.parse(init.body);
+    if (call.method === "eth_sendRawTransaction") {
+      sends.push(call.params[0]);
+      const response = await globalThis.fetch(url, init);
+      if (sends.length === 1) {
+        assert.equal((await response.json()).error, undefined, "the node took the first send");
+        const block = node.reveals[0].block;
+        node.setBaseFee(2n * 10n ** 9n);
+        node.mineTo(block + 40);
+        node.foreignCommits(1);
+        node.mineTo(block + 80);
+        return new Response(gethHeadMoved(call.id), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return response;
+    }
+    return globalThis.fetch(url, init);
+  };
+  const set = await setUp({ fetch });
+  ({ node } = set);
+  const { flow, work, done } = set;
+  try {
+    await readyToReveal(node, flow);
+    const fromWork = work.length;
+    await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), /no longer unspent/);
+    assert.equal(sends.length, 1, "nothing is sent again");
+    assert.equal(node.reveals.length, 1, "one reveal is in a block");
+    assert.equal(node.balances.get(RECIPIENT.toLowerCase()), 25n * 10n ** 16n, "the recipient is paid once");
+    assert.ok(
+      work.slice(fromWork).filter((w) => w.op === "prove").every((w, i) => i === 0 || w.decoy),
+      "the remainder is never proved",
+    );
+    assert.match(flow.state.error, /no longer unspent/);
+  } finally {
+    await done();
+  }
+});
+
 test("a reveal refused while the head moves is proved again once the fee changed", async () => {
   const { node, flow, work, done } = await setUp();
   try {
@@ -717,14 +762,17 @@ test("a reveal refused while the node keeps mining is sent once its head holds s
   let takenAt = null;
   const fetch = async (url, init) => {
     const call = JSON.parse(init.body);
-    if (call.method === "eth_sendRawTransaction" && node.headMoving.refused === 0 && !node.headMoving.miner) {
-      node.startMining(2);
+    const first = call.method === "eth_sendRawTransaction" && node.headMoving.refused === 0 && !node.headMoving.miner;
+    if (first) node.startMining(2);
+    const response = await globalThis.fetch(url, init);
+    // The miner stops 40 ms after the first refusal, however slow the
+    // machine is to deliver it.
+    if (first) {
       setTimeout(() => {
         node.stopMining();
         stoppedAt = performance.now();
       }, 40);
     }
-    const response = await globalThis.fetch(url, init);
     if (call.method === "eth_sendRawTransaction" && !(await response.clone().json()).error) takenAt = performance.now();
     return response;
   };

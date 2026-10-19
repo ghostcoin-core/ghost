@@ -93,6 +93,12 @@ export function keyStatus(found) {
   return { status: "unclaimed", current: unspent[0] };
 }
 
+// Whether two coins restore found are the same coin: the same leaf position,
+// number and amount.
+function sameCoin(a, b) {
+  return a.position === b.position && a.number === b.number && a.amount === b.amount;
+}
+
 // Every leaf and note of coin tree 0 as of `anchor` (a verified header), in
 // the node's shape: the page roots as an array, then every page in order as
 // `{ kind, treeIndex, page, filled, entries: [{ leaf, note }] }`. Every page
@@ -404,10 +410,16 @@ export function createFlow({
   }
 
   // The worker's input for a reveal of the key's current coin; throws when
-  // there is nothing to prove.
-  async function revealArgs(scan, { key, kind, out, recipient, newKey }) {
+  // there is nothing to prove. With `pinned`, the coin a proof of this
+  // reveal was already made for, only that coin may be proved: once it is
+  // spent or no longer the key's current coin, the reveal sent before may
+  // have gone through, and its remainder must not pay the same reveal again.
+  async function revealArgs(scan, { key, kind, out, recipient, newKey }, pinned = null) {
     const { current } = keyStatus(scan.found);
     if (!current) throw new Error("this key holds no unspent coin");
+    if (pinned && !sameCoin(current, pinned)) {
+      throw new Error("the coin this reveal spends is no longer unspent: the reveal sent before may have gone through; refresh");
+    }
     const plan = await planReveal(scan, current);
     const paid = (kind === "claim" ? 0n : out) + plan.fee;
     if (paid > current.amount) {
@@ -487,14 +499,19 @@ export function createFlow({
   // tip until it holds still, its header and the fee for the next block,
   // then the same envelope while that fee is still the proof's, or a new
   // proof once it is not. The refusal of a proof's HEAD_MOVED_SENDS-th send
-  // surfaces, with nothing asked after it; any other refusal is final.
+  // surfaces, with nothing asked after it; any other refusal is final. Every
+  // proof after the first is of the first proof's input coin (`pinned`), so
+  // an endpoint that took a send and still answered with the refusal cannot
+  // have the remainder pay the same reveal again.
   async function revealAndSend(request) {
+    let pinned = null;
     attempts: for (let attempt = 0; attempt < FEE_ATTEMPTS; attempt += 1) {
       const scan = await scanKey(request.key);
       let args = null;
       let failure = null;
       try {
-        args = await revealArgs(scan, request);
+        args = await revealArgs(scan, request, pinned);
+        pinned ??= { number: args.number, position: args.position, amount: args.amount };
       } catch (err) {
         failure = err;
       }
