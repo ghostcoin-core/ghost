@@ -76,6 +76,37 @@ export function keyStatus(found) {
   return { status: "unclaimed", current: unspent[0] };
 }
 
+// Every leaf and note of coin tree 0 as of `anchor` (a verified header), in
+// the node's shape: the page roots as an array, then every page in order as
+// `{ kind, treeIndex, page, filled, entries: [{ leaf, note }] }`. Every page
+// but the last is full and the last holds 1 to 4,096 leaves; the page roots
+// and leaves are checked against the anchor's coin root. Anything else is
+// refused, never guessed at.
+export async function fetchTree(rpc, prover, anchor) {
+  const anchorHash = toHex(anchor.hash);
+  const list = await rpc.call("ghost_getPageRoots", ["coin", "0x0", anchorHash]);
+  if (!Array.isArray(list)) throw new Error("the endpoint's page roots are not a list");
+  const pageRoots = list.map((root) => fromHex(root, 32));
+  const leaves = [];
+  const records = [];
+  for (let p = 0; p < pageRoots.length; p += 1) {
+    const page = await rpc.call("ghost_getTreePage", ["coin", "0x0", toQuantity(p), anchorHash]);
+    const filled = Number(quantity(page?.filled));
+    const whole = p === pageRoots.length - 1 ? filled >= 1 && filled <= PAGE_LEAVES : filled === PAGE_LEAVES;
+    if (!whole || !Array.isArray(page.entries) || page.entries.length !== filled) {
+      throw new Error(`page ${p} from the endpoint is not a whole page`);
+    }
+    for (const entry of page.entries) {
+      const leaf = fromHex(entry?.leaf, 32);
+      leaves.push(leaf);
+      records.push(leaf, fromHex(entry.note, NOTE_BYTES));
+    }
+  }
+  const leafBytes = concat(leaves);
+  await prover.request("treeCheck", { pageRoots: concat(pageRoots), leaves: leafBytes, root: anchor.coinTreeRoot });
+  return { count: leaves.length, leaves: leafBytes, records: concat(records) };
+}
+
 export function createFlow({
   prover,
   wallet = null,
@@ -188,32 +219,6 @@ export function createFlow({
     return headers;
   }
 
-  // Every leaf and note of coin tree 0 as of `anchor`: the page-root list,
-  // then every page in order, checked against the anchor's coin root.
-  async function fetchTree(anchor) {
-    const anchorHash = toHex(anchor.hash);
-    const list = await rpc.call("ghost_getPageRoots", ["coin", "0x0", anchorHash]);
-    const pageRoots = list.pageRoots.map((root) => fromHex(root, 32));
-    const leaves = [];
-    const records = [];
-    for (let p = 0; p < pageRoots.length; p += 1) {
-      const page = await rpc.call("ghost_getTreePage", ["coin", "0x0", toQuantity(p), anchorHash]);
-      const count = Number(quantity(page.count));
-      const whole = p === pageRoots.length - 1 ? count >= 1 && count <= PAGE_LEAVES : count === PAGE_LEAVES;
-      if (!whole || page.leaves.length !== count || page.notes.length !== count) {
-        throw new Error(`page ${p} from the endpoint is not a whole page`);
-      }
-      for (let i = 0; i < count; i += 1) {
-        const leaf = fromHex(page.leaves[i], 32);
-        leaves.push(leaf);
-        records.push(leaf, fromHex(page.notes[i], NOTE_BYTES));
-      }
-    }
-    const leafBytes = concat(leaves);
-    await prover.request("treeCheck", { pageRoots: concat(pageRoots), leaves: leafBytes, root: anchor.coinTreeRoot });
-    return { count: leaves.length, leaves: leafBytes, records: concat(records) };
-  }
-
   // Every spent coin marker as of `anchor`, in whole marker pages. They are
   // hints, not checked against a header (spec 05, section 8).
   async function fetchSpent(anchor) {
@@ -243,7 +248,7 @@ export function createFlow({
   async function scanKey(key) {
     const chain = await readChain();
     progress("reading the coin tree");
-    const tree = await fetchTree(chain.tip);
+    const tree = await fetchTree(rpc, prover, chain.tip);
     const spent = await fetchSpent(chain.at(Math.max(0, chain.tip.number - CONFIRMATIONS)));
     const { epoch } = chain;
     const epochHeaders = epoch === null || epoch < EPOCH_BLOCKS ? null : chain.headers.slice(0, EPOCH_BLOCKS + 1);
@@ -363,7 +368,7 @@ export function createFlow({
     if (receipt.blockHash && toHex(receipt.blockHash) !== toHex(block.hash)) {
       throw new Error(`the receipt's block is not block ${block.number} of the chain`);
     }
-    const tree = await fetchTree(tip);
+    const tree = await fetchTree(rpc, prover, tip);
     const { roots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
     const countOf = new Map(roots.map((root, count) => [toHex(root), count]));
     const before = countOf.get(toHex(parent.coinTreeRoot));
