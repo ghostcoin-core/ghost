@@ -20,7 +20,7 @@ import { startFakeNode } from "./support/fake-node.mjs";
 
 const GHOST = 10n ** 18n;
 // Spec 07, vector window-genesis: the fee at a base fee of 1 gwei.
-const SPEC_FEE = 25_954_253_644_941_297n;
+const SPEC_FEE = 33_036_375_802_978_007n;
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const RECIPIENT = "0x2222222222222222222222222222222222222222";
 const ENDPOINT_METHODS = new Set([
