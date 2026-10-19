@@ -126,7 +126,10 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   // A fast-mining node, for the tests that play one: the next `count` sends
   // of a valid reveal are refused with HEAD_MOVED_ERROR, each after
   // `blocks` empty blocks are mined, as the node's head moves meanwhile.
-  const headMoving = { count: 0, blocks: 0, refused: 0 };
+  // With `miner` set, an empty block is mined on a timer, and every send of
+  // a valid reveal is refused the same way while it runs, as a node that
+  // seals blocks faster than it checks a reveal refuses each one.
+  const headMoving = { count: 0, blocks: 0, refused: 0, miner: null };
   let nonce = 0;
   // The base fee of the blocks mined from now on.
   let baseFee = GWEI;
@@ -252,8 +255,8 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     if (reveal.fee !== fee) throw new Error(`fee ${reveal.fee} is not the fee in force, ${fee}`);
     if (!blocks.some((b) => toHex(b.coinTreeRoot) === toHex(reveal.root))) throw new Error("root not eligible");
     if (spent.some((s) => toHex(s.marker) === toHex(reveal.marker))) throw new Error("marker already spent");
-    if (headMoving.count > 0) {
-      headMoving.count -= 1;
+    if (headMoving.count > 0 || headMoving.miner) {
+      if (headMoving.count > 0) headMoving.count -= 1;
       headMoving.refused += 1;
       for (let i = 0; i < headMoving.blocks; i += 1) mine();
       // As geth answers it over HTTP: status 200, error code -32000 and the
@@ -402,6 +405,17 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       headMoving.count = count;
       headMoving.blocks = blocks;
     },
+    // An empty block every `everyMs` ms until stopMining(); meanwhile every
+    // send of a valid reveal is refused as the node does when its head keeps
+    // moving.
+    startMining(everyMs) {
+      clearInterval(headMoving.miner);
+      headMoving.miner = setInterval(() => mine(), everyMs);
+    },
+    stopMining() {
+      clearInterval(headMoving.miner);
+      headMoving.miner = null;
+    },
     // Blocks mined from now on carry base fee `wei` (each still half full).
     setBaseFee(wei) {
       baseFee = wei;
@@ -431,7 +445,10 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
         },
       };
     },
-    close: () => new Promise((resolve) => server.close(resolve)),
+    close: () => {
+      clearInterval(headMoving.miner);
+      return new Promise((resolve) => server.close(resolve));
+    },
     word,
   };
 }

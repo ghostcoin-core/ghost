@@ -44,9 +44,14 @@ const KEY_GROUPS = 12;
 const FEE_ATTEMPTS = 3;
 // The node's refusal of a reveal it could not check while new blocks kept
 // arriving (ghost-node's ghostpool): a transient, not a verdict on the
-// reveal. Times one proof is sent while the node answers only that.
+// reveal. A reveal is sent again while the node answers only that, for
+// HEAD_MOVED_MS from its first send; before each resend the app waits until
+// the tip stays put for `stillMs`, asking at most STILL_POLLS times, since
+// the node can only take a reveal while its head holds still for one check.
 export const HEAD_MOVED = "chain head kept moving while the reveal was checked";
-const HEAD_MOVED_SENDS = 5;
+export const HEAD_MOVED_MS = 30_000;
+const STILL_MS = 250;
+const STILL_POLLS = 8;
 
 // That refusal as it arrives over JSON-RPC: code -32000 and the node's
 // words. It is told by its shape on the wire, not by the class of the error
@@ -128,6 +133,7 @@ export function createFlow({
   now = () => Date.now(),
   pollMs = 3000,
   maxPolls = 600,
+  stillMs = STILL_MS,
   endpoint = DEFAULT_ENDPOINT,
   commitEntry = DEFAULT_COMMIT_ENTRY,
   onChange = () => {},
@@ -478,10 +484,13 @@ export function createFlow({
   //
   // A send the node refuses because its head kept moving while it checked
   // the reveal (HEAD_MOVED) is the only one followed by more requests: the
-  // tip and the fee for the next block again, then the same envelope while
-  // that fee is still the proof's, or a new proof once it is not. One proof
-  // is sent at most HEAD_MOVED_SENDS times; any other refusal is final.
+  // tip until it holds still, its header and the fee for the next block,
+  // then the same envelope while that fee is still the proof's, or a new
+  // proof once it is not. Past HEAD_MOVED_MS from the first send the next
+  // such refusal surfaces, with nothing asked after it; any other refusal is
+  // final.
   async function revealAndSend(request) {
+    let deadline = null;
     attempts: for (let attempt = 0; attempt < FEE_ATTEMPTS; attempt += 1) {
       const scan = await scanKey(request.key);
       let args = null;
@@ -506,17 +515,26 @@ export function createFlow({
       if (fee !== scan.fee) continue;
       if (failure) throw failure;
       progress("sending the reveal");
+      deadline ??= now() + HEAD_MOVED_MS;
       let hash;
-      for (let sends = 1; ; sends += 1) {
+      for (;;) {
         try {
           hash = await rpc.call("eth_sendRawTransaction", [toHex(proved.envelope)]);
           break;
         } catch (err) {
-          if (!isHeadMoved(err) || sends >= HEAD_MOVED_SENDS) throw err;
+          if (!isHeadMoved(err) || now() >= deadline) throw err;
         }
-        progress("the node's chain moved on; sending the reveal again");
-        tip = await headerAt(await blockNumber());
+        progress("the node's chain moved on; waiting for a still tip");
+        let number = await blockNumber();
+        for (let polls = 0; polls < STILL_POLLS && now() < deadline; polls += 1) {
+          await sleep(stillMs);
+          const next = await blockNumber();
+          if (next === number) break;
+          number = next;
+        }
+        tip = await headerAt(number);
         if ((await feeForNextBlock(tip, headerAt)).fee !== scan.fee) continue attempts;
+        progress("sending the reveal again");
       }
       if (String(hash).toLowerCase() !== toHex(proved.txHash)) {
         throw new Error("the endpoint returned another transaction hash");

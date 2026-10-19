@@ -96,7 +96,9 @@ async function startGeth() {
       "--nodiscover",
       "--ipcdisable",
       "--http", "--http.addr", "127.0.0.1", "--http.port", "0",
-      "--http.api", "eth,net,web3,ghost",
+      // The miner API lets the test hold its own node's sealing around each
+      // reveal it sends (see `paced` below).
+      "--http.api", "eth,net,web3,ghost,miner",
       "--mine", "--miner.threads", "1", "--miner.etherbase", miner,
       "--unlock", miner, "--password", join(dir, "password"),
       // The miner account is the test's wallet; the endpoint listens on
@@ -238,7 +240,35 @@ if (!GETH) {
       if (stage !== null && stage !== lastStage) console.log(`flow: ${stage}`);
       lastStage = stage;
     };
-    const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 1000, maxPolls: 1800, onChange });
+    // This node seals a block about every 20 ms, while its pool takes about
+    // 190 ms to check a reveal, so it refuses nearly every send with `chain
+    // head kept moving while the reveal was checked`. The test paces its own
+    // node around the Summon and Claim sends: it stops the miner just before
+    // the flow's eth_sendRawTransaction goes out and starts it again once
+    // the node has answered, so the head holds still for the check. The
+    // flow's requests and their order are unchanged, and its resend of a
+    // refused reveal still holds should a block land anyway; the headless
+    // tests cover that resend. A node without the miner API is not paced.
+    let pacing = true;
+    async function paced(url, init) {
+      let held = false;
+      if (pacing && JSON.parse(init.body).method === "eth_sendRawTransaction") {
+        try {
+          await rpc("miner_stop");
+          held = true;
+          console.log(`miner held for a send at tip ${await blockNumber()}`);
+        } catch (err) {
+          pacing = false;
+          console.log(`the miner is not paced: ${err.message}`);
+        }
+      }
+      try {
+        return await fetch(url, init);
+      } finally {
+        if (held) await rpc("miner_start");
+      }
+    }
+    const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 1000, maxPolls: 1800, onChange, fetch: paced });
 
     // The last block at which a commit in block `block` can still let a coin
     // before it be revealed: the epoch window ending at the epoch block E

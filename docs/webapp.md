@@ -164,10 +164,12 @@ app makes no data commitments.
    head moves, and then gives up. That refusal is a transient, so the app
    treats exactly it as retryable. It is told by its JSON-RPC shape, as geth
    answers it over HTTP: error code -32000 and those words, whatever the
-   class of the error object. After it the app asks for the tip and the fee headers
-   for the next block again and, if the fee is still the proof's, sends the
-   same envelope again; otherwise it proves again as for a fee change. One
-   proof is sent at most 5 times, then the refusal surfaces. Any other
+   class of the error object. After it the app asks for the tip until it
+   holds still for 250 ms (at most 8 times), then for the fee headers for
+   the next block and, if the fee is still the proof's, sends the same
+   envelope again; otherwise it proves again as for a fee change. It keeps
+   doing so for 30 seconds from the reveal's first send; the next such
+   refusal after that surfaces, with nothing asked after it. Any other
    refusal surfaces at once. Only a send refused this way is followed by
    more requests, so the requests before the first send stay as in step 2.
 7. **Status.** The app polls the receipt, but a receipt is only the
