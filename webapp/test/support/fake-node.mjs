@@ -35,6 +35,9 @@ export const FAKE_CHAIN_ID = 7_777_001n;
 export const COMMIT_VERSION = Uint8Array.of(0x00, 0x01);
 export const COMMIT_DATA_BYTES = 2 + 32 + NOTE_BYTES;
 export const COMMIT_DATA_ERROR = "commit data is not 190 bytes of version 1";
+// The node's refusal of a reveal whose checks saw a new head every time
+// (ghost-node core/txpool/ghostpool): a transient bound on work per reveal.
+export const HEAD_MOVED_ERROR = "chain head kept moving while the reveal was checked";
 
 const sha256 = (...parts) => {
   const h = createHash("sha256");
@@ -118,6 +121,10 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   // headers carry that tree's root but keep their real hash.
   const dishonest = { note: null, withhold: null, forge: null };
   const withheld = [];
+  // A fast-mining node, for the tests that play one: the next `count` sends
+  // of a valid reveal are refused with HEAD_MOVED_ERROR, each after
+  // `blocks` empty blocks are mined, as the node's head moves meanwhile.
+  const headMoving = { count: 0, blocks: 0, refused: 0 };
   let nonce = 0;
   // The base fee of the blocks mined from now on.
   let baseFee = GWEI;
@@ -243,6 +250,12 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     if (reveal.fee !== fee) throw new Error(`fee ${reveal.fee} is not the fee in force, ${fee}`);
     if (!blocks.some((b) => toHex(b.coinTreeRoot) === toHex(reveal.root))) throw new Error("root not eligible");
     if (spent.some((s) => toHex(s.marker) === toHex(reveal.marker))) throw new Error("marker already spent");
+    if (headMoving.count > 0) {
+      headMoving.count -= 1;
+      headMoving.refused += 1;
+      for (let i = 0; i < headMoving.blocks; i += 1) mine();
+      throw new Error(HEAD_MOVED_ERROR);
+    }
     const hash = toHex(reveal.txHash);
     if (dishonest.withhold) {
       withheld.push({ ...reveal, hash });
@@ -376,6 +389,13 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     tip: () => blocks.length - 1,
     // One more block, with nothing in it.
     mine: () => mine(),
+    headMoving,
+    // The next `count` sends of a valid reveal are refused as the node does
+    // when its head keeps moving, each after `blocks` new empty blocks.
+    moveHeadOnReveal(count, { blocks = 0 } = {}) {
+      headMoving.count = count;
+      headMoving.blocks = blocks;
+    },
     // Blocks mined from now on carry base fee `wei` (each still half full).
     setBaseFee(wei) {
       baseFee = wei;

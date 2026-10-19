@@ -10,7 +10,7 @@ import test from "node:test";
 import { concat, fromHex, toHex, toQuantity } from "../src/bytes.mjs";
 import { DEFAULT_COMMIT_ENTRY } from "../src/flow.mjs";
 import { loadModule } from "./support/env.mjs";
-import { COMMIT_DATA_ERROR, startFakeNode } from "./support/fake-node.mjs";
+import { COMMIT_DATA_ERROR, HEAD_MOVED_ERROR, startFakeNode } from "./support/fake-node.mjs";
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const GHOST = 10n ** 18n;
@@ -164,4 +164,20 @@ test("the stand-in refuses the tree page requests the node refuses, in its words
     const last = await rpcCall(node, "ghost_getTreePage", ["coin", "0x0", "0xfffff", anchor]);
     assert.equal(last.result.filled, "0x0");
     assert.deepEqual(last.result.entries, []);
+  }));
+
+// The head-moving switch refuses only a reveal the stand-in would take: one
+// it refuses for what it is still gets that refusal, no block is mined and
+// the switch stays armed. (flow.test.mjs sends valid reveals through it.)
+test("the stand-in refuses with the head-moving error only a reveal it would take", () =>
+  withNode(async (node) => {
+    assert.equal(HEAD_MOVED_ERROR, "chain head kept moving while the reveal was checked", "the node's words");
+    node.moveHeadOnReveal(2, { blocks: 1 });
+    const tip = node.tip();
+    const reply = await rpcCall(node, "eth_sendRawTransaction", ["0x50c0"]);
+    assert.equal(reply.result, undefined, "a malformed reveal is refused");
+    assert.notEqual(reply.error.message, HEAD_MOVED_ERROR);
+    assert.equal(node.headMoving.count, 2, "still armed");
+    assert.equal(node.headMoving.refused, 0);
+    assert.equal(node.tip(), tip, "no block mined");
   }));

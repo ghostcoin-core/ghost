@@ -27,7 +27,7 @@ import {
   parseGhost,
 } from "./chain.mjs";
 import { readHeader } from "./header.mjs";
-import { DEFAULT_ENDPOINT, createRpc } from "./rpc.mjs";
+import { DEFAULT_ENDPOINT, RpcError, createRpc } from "./rpc.mjs";
 
 // The coin commit entry address of the internal network ("ghost" in ASCII,
 // then 5; ghost-node params/ghost/privaccounts.go). It stays a setting next
@@ -42,6 +42,11 @@ export const SAVE_CHECK_GROUPS = 3;
 const KEY_GROUPS = 12;
 // Times a reveal is proved again when the fee window changes meanwhile.
 const FEE_ATTEMPTS = 3;
+// The node's refusal of a reveal it could not check while new blocks kept
+// arriving (ghost-node's ghostpool): a transient, not a verdict on the
+// reveal. Times one proof is sent while the node answers only that.
+export const HEAD_MOVED = "chain head kept moving while the reveal was checked";
+const HEAD_MOVED_SENDS = 5;
 
 // The reveal cannot be made yet; the message says what it waits for.
 export class WaitError extends Error {}
@@ -463,8 +468,14 @@ export function createFlow({
   // the tip's header and the fee for the next block. Only then does a
   // failure surface, or the reveal go out; sending the reveal is what links
   // the connection to the coin.
+  //
+  // A send the node refuses because its head kept moving while it checked
+  // the reveal (HEAD_MOVED) is the only one followed by more requests: the
+  // tip and the fee for the next block again, then the same envelope while
+  // that fee is still the proof's, or a new proof once it is not. One proof
+  // is sent at most HEAD_MOVED_SENDS times; any other refusal is final.
   async function revealAndSend(request) {
-    for (let attempt = 0; attempt < FEE_ATTEMPTS; attempt += 1) {
+    attempts: for (let attempt = 0; attempt < FEE_ATTEMPTS; attempt += 1) {
       const scan = await scanKey(request.key);
       let args = null;
       let failure = null;
@@ -483,12 +494,23 @@ export function createFlow({
       } catch (err) {
         failure ??= err;
       }
-      const tip = await headerAt(await blockNumber());
+      let tip = await headerAt(await blockNumber());
       const { fee } = await feeForNextBlock(tip, headerAt);
       if (fee !== scan.fee) continue;
       if (failure) throw failure;
       progress("sending the reveal");
-      const hash = await rpc.call("eth_sendRawTransaction", [toHex(proved.envelope)]);
+      let hash;
+      for (let sends = 1; ; sends += 1) {
+        try {
+          hash = await rpc.call("eth_sendRawTransaction", [toHex(proved.envelope)]);
+          break;
+        } catch (err) {
+          if (!(err instanceof RpcError) || err.message !== HEAD_MOVED || sends >= HEAD_MOVED_SENDS) throw err;
+        }
+        progress("the node's chain moved on; sending the reveal again");
+        tip = await headerAt(await blockNumber());
+        if ((await feeForNextBlock(tip, headerAt)).fee !== scan.fee) continue attempts;
+      }
       if (String(hash).toLowerCase() !== toHex(proved.txHash)) {
         throw new Error("the endpoint returned another transaction hash");
       }
