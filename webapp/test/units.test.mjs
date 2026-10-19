@@ -9,6 +9,7 @@ import {
   feeForNextBlock,
   feeForPrice,
   formatGhost,
+  G_PRIV,
   nextBaseFee,
   parseAddress,
   parseGhost,
@@ -17,16 +18,38 @@ import {
 import { keyStatus, pickGroups, wrongGroups } from "../src/flow.mjs";
 
 test("window fees match spec 07, section 4", () => {
+  assert.equal(G_PRIV, 21_090_372n, "g_priv of the worked examples");
   // [window-genesis]
   assert.equal(windowPrice(1_000_000_000n), 1_424_017_979n);
   assert.deepEqual(feeForPrice(1_424_017_979n), {
-    basePart: 23_594_776_040_855_724n,
-    tip: 2_359_477_604_085_573n,
-    fee: 25_954_253_644_941_297n,
+    basePart: 30_033_068_911_798_188n,
+    tip: 3_003_306_891_179_819n,
+    fee: 33_036_375_802_978_007n,
   });
   // [window-next]
   assert.equal(windowPrice(1_100_000_000n), 1_566_419_776n);
-  assert.equal(feeForPrice(1_566_419_776n).fee, 28_549_678_993_031_962n);
+  assert.deepEqual(feeForPrice(1_566_419_776n), {
+    basePart: 33_036_375_783_996_672n,
+    tip: 3_303_637_578_399_668n,
+    fee: 36_340_013_362_396_340n,
+  });
+});
+
+test("the window fee is the node's: GhostRevealGas times U3, plus a tenth rounded up", () => {
+  // ghost-node core/ghostpriv WindowFee, written apart from the app's.
+  const nodeWindowFee = (bRef) => {
+    let u = bRef;
+    for (let j = 0; j < 3; j += 1) u = u + u / 8n + u / 20000n + 1n;
+    const base = 21_090_372n * u;
+    return base + (base + 9n) / 10n;
+  };
+  for (const bRef of [0n, 1n, 7n, 8n, 875n, 1_000_000_000n, 123_456_789_012n]) {
+    assert.equal(feeForPrice(windowPrice(bRef)).fee, nodeWindowFee(bRef), `b_ref ${bRef}`);
+  }
+  // The real node's refusal "reveal fee is not the window fee: have
+  // 218712860, want 278392911" was at a window price of 12 wei.
+  assert.equal(windowPrice(7n), 12n);
+  assert.equal(feeForPrice(12n).fee, 278_392_911n);
 });
 
 test("the base fee follows the base client's rule (spec 07, growth example)", () => {
@@ -48,11 +71,11 @@ test("the fee uses the window's first block", async () => {
   ]);
   const at = async (n) => headers.get(n);
   // Next block 6 is in window 1, which starts at block 4.
-  assert.equal((await feeForNextBlock({ number: 5 }, at)).fee, 25_954_253_644_941_297n);
+  assert.equal((await feeForNextBlock({ number: 5 }, at)).fee, 33_036_375_802_978_007n);
   // Next block 8 starts window 2: its base fee comes from the tip, block 7.
   const tip = { number: 7, baseFee: 1_100_000_000n, gasUsed: 15_000_000n, gasLimit: 30_000_000n };
   const fee = await feeForNextBlock(tip, async () => assert.fail("no header is needed"));
-  assert.equal(fee.fee, 28_549_678_993_031_962n);
+  assert.equal(fee.fee, 36_340_013_362_396_340n);
   assert.equal(fee.window, 2);
 });
 

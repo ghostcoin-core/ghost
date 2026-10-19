@@ -2,8 +2,9 @@
 // transaction fee of spec 07, sections 4 and 5, the base client's EIP-1559
 // base fee, the epoch height of spec 02, section 8, and GHOST amounts.
 
-// Gas of every private transaction (spec 07, section 2).
-export const G_PRIV = 16_569_156n;
+// Gas of every private transaction (spec 07, sections 2 and 4), the node's
+// GhostRevealGas: BYTE_GAS * ENVELOPE_BYTES + BASE_TX_GAS + VERIFY_GAS.
+export const G_PRIV = 21_090_372n;
 // Blocks for which one fee is in force.
 export const FEE_WINDOW = 4;
 // The tip is the base-fee part divided by this, rounded up.
