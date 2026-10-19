@@ -95,7 +95,8 @@ function nodeFee(blocks, height) {
   // Every block here is half full, so a child's base fee equals its parent's.
   let price = start < blocks.length ? blocks[start].baseFee : tip.baseFee;
   for (let j = 0; j < 3; j += 1) price = price + price / 8n + price / 20000n + 1n;
-  const base = 16_569_156n * price;
+  // g_priv of spec 07, section 4: the reveal gas the node charges.
+  const base = 21_090_372n * price;
   return base + (base + 9n) / 10n;
 }
 
