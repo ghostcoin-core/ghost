@@ -167,9 +167,9 @@ app makes no data commitments.
    class of the error object. After it the app asks for the tip until it
    holds still for 250 ms (at most 8 times), then for the fee headers for
    the next block and, if the fee is still the proof's, sends the same
-   envelope again; otherwise it proves again as for a fee change. It keeps
-   doing so for 30 seconds from the reveal's first send; the next such
-   refusal after that surfaces, with nothing asked after it. Any other
+   envelope again; otherwise it proves again as for a fee change. It sends
+   one proof at most 5 times; the refusal of the fifth send surfaces, with
+   nothing asked after it. Any other
    refusal surfaces at once. Only a send refused this way is followed by
    more requests, so the requests before the first send stay as in step 2.
 7. **Status.** The app polls the receipt, but a receipt is only the

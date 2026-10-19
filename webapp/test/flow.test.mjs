@@ -682,21 +682,20 @@ test("a reveal refused while the head moves is proved again once the fee changed
   }
 });
 
-// The CI node seals a block every 20 ms and refused the same reveal more
-// than 5 times in a row; the app keeps sending it, after a still tip each
-// time, until the node takes it.
-test("a reveal the node refuses 8 times while its head moves is sent until the node takes it", async () => {
+// The CI node seals a block every 20 ms; the app sends one proof up to 5
+// times, after a still tip each time, so a fifth send the node takes lands.
+test("a reveal the node refuses 4 times while its head moves is taken on its fifth send", async () => {
   const { node, flow, work, done } = await setUp();
   try {
     await readyToReveal(node, flow);
-    node.moveHeadOnReveal(8, { blocks: 1 });
+    node.moveHeadOnReveal(4, { blocks: 1 });
     const from = node.requests.length;
     const fromWork = work.length;
     await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
     const asked = node.requests.slice(from);
     const sends = sendsIn(asked);
-    assert.equal(node.headMoving.refused, 8);
-    assert.equal(sends.length, 9, "eight refused sends, then the one the node takes");
+    assert.equal(node.headMoving.refused, 4);
+    assert.equal(sends.length, 5, "four refused sends, then the one the node takes");
     assert.equal(new Set(sends.map((r) => r.params[0])).size, 1, "the same envelope each time");
     assert.equal(work.slice(fromWork).filter((w) => w.op === "prove").length, 1, "proved once");
     for (let i = 1; i < sends.length; i += 1) {
@@ -723,7 +722,7 @@ test("a reveal refused while the node keeps mining is sent once its head holds s
       setTimeout(() => {
         node.stopMining();
         stoppedAt = performance.now();
-      }, 200);
+      }, 40);
     }
     const response = await globalThis.fetch(url, init);
     if (call.method === "eth_sendRawTransaction" && !(await response.clone().json()).error) takenAt = performance.now();
@@ -745,15 +744,8 @@ test("a reveal refused while the node keeps mining is sent once its head holds s
   }
 });
 
-test("a reveal refused while the head keeps moving past the deadline surfaces the node's refusal", async () => {
-  // Each refused send takes 10 s on this clock.
-  let skew = 0;
-  const fetch = async (url, init) => {
-    const response = await globalThis.fetch(url, init);
-    if (JSON.parse(init.body).method === "eth_sendRawTransaction") skew += 10_000;
-    return response;
-  };
-  const { node, flow, work, done } = await setUp({ fetch, now: () => Date.now() + skew });
+test("a proof refused 5 times while the head keeps moving surfaces the node's refusal", async () => {
+  const { node, flow, work, done } = await setUp();
   try {
     await readyToReveal(node, flow);
     node.moveHeadOnReveal(100, { blocks: 1 });
@@ -761,7 +753,8 @@ test("a reveal refused while the head keeps moving past the deadline surfaces th
     const fromWork = work.length;
     await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), /kept moving/);
     const asked = node.requests.slice(from);
-    assert.equal(sendsIn(asked).length, 3, "sends at 0, 10 and 20 s; the refusal at 30 s surfaces");
+    assert.equal(sendsIn(asked).length, 5, "at most 5 sends of one proof");
+    assert.equal(node.headMoving.refused, 5);
     assert.equal(asked.at(-1).method, "eth_sendRawTransaction", "nothing is asked after the last refusal");
     assert.equal(work.slice(fromWork).filter((w) => w.op === "prove").length, 1);
     assert.equal(node.reveals.length, 0);
