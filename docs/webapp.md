@@ -176,6 +176,16 @@ app makes no data commitments.
    same reveal again. Any other
    refusal surfaces at once. Only a send refused this way is followed by
    more requests, so the requests before the first send stay as in step 2.
+   The node can also take a send and let it go before any block holds it:
+   its pool checks every reveal it holds again on each new head and drops
+   one that fails. So after a send the node took, the app polls its
+   receipt, and once the tip is 2 blocks past the send with no receipt it
+   also asks `eth_getTransactionByHash`. When the node no longer knows the
+   reveal and no block holds it, nothing was spent, and the send counts as
+   refused as above: the same envelope again while the fee is the proof's,
+   otherwise a new proof of the same coin. Every such envelope spends the
+   same marker, so at most one of them can ever be executed. A reveal the
+   node still holds is waited for as before.
 7. **Status.** The app polls the receipt, but a receipt is only the
    endpoint's word. A receipt naming a block that was already in the chain
    when the transaction was sent, or one past the tip, is refused before any
@@ -244,6 +254,12 @@ app makes no data commitments.
 - `commit-layout.test.mjs`: the commit payload against spec 07's layout and
   the shared vector `test/vectors/commit-payload.json`, and the default
   commit entry address.
+- `reveal-fast-node.test.mjs`: a Summon reveal against the stand-in playing
+  the CI node: a block about every 20 ms, a send refused because the head
+  moved, a fee that changes before the resend so the reveal is proved
+  again, and a taken send the node drops before any block holds it. The
+  reveal must land within a bound, the recipient paid once, every proof of
+  the same coin and every envelope of the same marker.
 - `stand-in.test.mjs`: the stand-in refuses what the node refuses for a
   commit (not to the commit entry address, data not 190 bytes, a version
   other than `0x0001`, among them the old 189-byte layout) and accepts the
