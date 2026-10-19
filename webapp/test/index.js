@@ -4,4 +4,6 @@
 
 import "./units.test.mjs";
 import "./wasm.test.mjs";
+import "./commit-layout.test.mjs";
+import "./stand-in.test.mjs";
 import "./flow.test.mjs";

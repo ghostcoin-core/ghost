@@ -28,6 +28,11 @@ const EMPTY_DATA_ROOT = "0x3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88
 const EMPTY_LIST_HASH = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347";
 const D_START = 1n << 24n;
 export const FAKE_CHAIN_ID = 7_777_001n;
+// The commit data the node takes (spec 07; ghostpriv.CommitData): version
+// 0x0001, F and the note, and the node's words for anything else.
+export const COMMIT_VERSION = Uint8Array.of(0x00, 0x01);
+export const COMMIT_DATA_BYTES = 2 + 32 + NOTE_BYTES;
+export const COMMIT_DATA_ERROR = "commit data is not 190 bytes of version 1";
 
 const sha256 = (...parts) => {
   const h = createHash("sha256");
@@ -182,16 +187,33 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   }
 
   // A commit sent by the wallet to the commit entry address (spec 03,
-  // section 6): format version 0x01, F, the note; the amount is the value.
+  // section 6, in the layout of spec 07 and the node's ghostpriv.CommitData):
+  // version 0x0001 (2 bytes), F (32), the note (156); the amount is the
+  // value. It refuses what the real node refuses, in its words where it has
+  // them, and anything it cannot read as a commit.
   function walletCommit({ to, value, data }) {
-    if (String(to).toLowerCase() !== String(commitEntry).toLowerCase()) throw new Error("not the commit entry address");
-    const payload = fromHex(data);
-    if (payload.length !== 1 + 32 + NOTE_BYTES || payload[0] !== 0x01) throw new Error("malformed commit payload");
-    const v = BigInt(value);
+    if (typeof to !== "string" || to.toLowerCase() !== String(commitEntry).toLowerCase()) {
+      throw new Error("not the commit entry address");
+    }
+    let payload;
+    try {
+      payload = fromHex(data);
+    } catch {
+      throw new Error(COMMIT_DATA_ERROR);
+    }
+    if (payload.length !== COMMIT_DATA_BYTES || payload[0] !== COMMIT_VERSION[0] || payload[1] !== COMMIT_VERSION[1]) {
+      throw new Error(COMMIT_DATA_ERROR);
+    }
+    let v;
+    try {
+      v = BigInt(value);
+    } catch {
+      throw new Error("commit amount out of range");
+    }
     if (v < 1n || v >= 1n << 96n) throw new Error("commit amount out of range");
-    const fingerprint = payload.slice(1, 33);
+    const fingerprint = payload.slice(2, 34);
     if (fingerprint.every((b) => b === 0)) throw new Error("all-zero fingerprint");
-    const result = appendCommit(fingerprint, v, payload.slice(33));
+    const result = appendCommit(fingerprint, v, payload.slice(34));
     commits.push({ ...result, value: v });
     return result.hash;
   }

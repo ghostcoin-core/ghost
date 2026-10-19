@@ -66,7 +66,8 @@ python3 -m http.server --directory webapp/dist 8080
 and open `http://localhost:8080`. Under **Network**, the endpoint defaults to
 the local internal network at `http://127.0.0.1:8545`; type another JSON-RPC
 URL to use another node. The node must allow requests from the page's origin
-(its CORS setting). The commit entry address is a setting next to it.
+(its CORS setting). The commit entry address is a setting next to it; it
+defaults to the internal network's, `0x67686f7374000000000000000000000000000005`.
 
 ## Test it
 
@@ -82,3 +83,14 @@ worker's messages, against a scripted stand-in for the node's JSON-RPC that
 verifies every proof and records every request. Set `GHOST_WEBAPP_WASM` to
 test another build of the module, for example
 `webapp/dist/ghost_webapp_wasm.wasm`.
+
+To run the same flow against a real node, build ghost-node's `geth` at the
+pinned commit and point the real-node test at it:
+
+```sh
+GHOST_NODE_GETH="$(webapp/scripts/build-node.sh)" \
+  node --test --test-timeout=3600000 webapp/test/e2e/real-node.test.mjs
+```
+
+It needs `git`, Go and a C compiler for the node, and prints
+`SKIP: GHOST_NODE_GETH is not set` when the variable is unset.
