@@ -10,8 +10,12 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: true
+  # Only a newer push to the same pull request cancels a run. Runs on main
+  # always finish, so every merge gets a full result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Each job runs one step of scripts/ci-gate.sh, so CI and a local run of
+# that script use the same commands.
 jobs:
   required-files:
     name: required-files
@@ -21,7 +25,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - run: scripts/check-required-files.sh
+      - run: scripts/ci-gate.sh required-files
 
   markdown-lint:
     name: markdown-lint
@@ -31,7 +35,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - run: npx --yes markdownlint-cli2@0.14.0 "**/*.md"
+      - run: scripts/ci-gate.sh markdown-lint
 
   shell-lint:
     name: shell-lint
@@ -41,12 +45,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - run: shellcheck scripts/*.sh .githooks/commit-msg
+      - run: scripts/ci-gate.sh shell-lint
 
   # One job per Rust crate: release tests, then a library check for the
   # browser target. Both run on the GitHub-hosted image like the jobs above:
   # this repository is public, and public repositories never get the
-  # self-hosted runners. The toolchain is pinned to an exact version.
+  # self-hosted runners. The toolchain is pinned to an exact version, and
+  # RUSTUP_TOOLCHAIN hands that same version to the script.
   rust-proofs:
     name: rust-proofs
     runs-on: ubuntu-24.04
@@ -71,10 +76,10 @@ jobs:
             ~/.cargo/git/db
             proofs/target
           key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-${{ hashFiles('proofs/Cargo.lock') }}
-      - name: Test (release)
-        run: cargo test --release --locked --manifest-path "$CRATE/Cargo.toml"
-      - name: Check wasm32-unknown-unknown
-        run: cargo check --locked --manifest-path "$CRATE/Cargo.toml" --lib --target wasm32-unknown-unknown
+      - name: Test (release) and check wasm32-unknown-unknown
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+        run: scripts/ci-gate.sh "rust-$CRATE"
 
   rust-client:
     name: rust-client
@@ -100,7 +105,7 @@ jobs:
             ~/.cargo/git/db
             client/target
           key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-client-${{ hashFiles('client/Cargo.lock') }}
-      - name: Test (release)
-        run: cargo test --release --locked --manifest-path "$CRATE/Cargo.toml"
-      - name: Check wasm32-unknown-unknown
-        run: cargo check --locked --manifest-path "$CRATE/Cargo.toml" --lib --target wasm32-unknown-unknown
+      - name: Test (release) and check wasm32-unknown-unknown
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+        run: scripts/ci-gate.sh "rust-$CRATE"
