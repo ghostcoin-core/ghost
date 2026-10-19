@@ -16,7 +16,9 @@ permissions:
 
 concurrency:
   group: commit-messages-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: true
+  # Only a newer push to the same pull request cancels a run; runs on main
+  # always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
 
 jobs:
   commit-messages:
