@@ -162,7 +162,9 @@ app makes no data commitments.
    kept moving while the reveal was checked`: its pool checks a reveal on a
    snapshot of the head, checks again a bounded number of times when the
    head moves, and then gives up. That refusal is a transient, so the app
-   treats exactly it as retryable: it asks for the tip and the fee headers
+   treats exactly it as retryable. It is told by its JSON-RPC shape, as geth
+   answers it over HTTP: error code -32000 and those words, whatever the
+   class of the error object. After it the app asks for the tip and the fee headers
    for the next block again and, if the fee is still the proof's, sends the
    same envelope again; otherwise it proves again as for a fee change. One
    proof is sent at most 5 times, then the refusal surfaces. Any other

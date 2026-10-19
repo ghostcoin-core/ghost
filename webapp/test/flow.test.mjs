@@ -592,6 +592,66 @@ test("a reveal the node refuses while its head keeps moving is sent again, the s
   }
 });
 
+// geth's own reply to a refused send, byte for byte: HTTP 200, code -32000
+// and the pool's words unwrapped (ghost-node ghostpool errHeadMoving, through
+// TxPool.Add, SendTx and SubmitTransaction), then a newline.
+const gethHeadMoved = (id) =>
+  `{"jsonrpc":"2.0","id":${id},"error":{"code":-32000,"message":"chain head kept moving while the reveal was checked"}}\n`;
+
+test("the stand-in refuses a reveal while its head moves with geth's JSON-RPC reply", async () => {
+  const replies = [];
+  const fetch = async (url, init) => {
+    const response = await globalThis.fetch(url, init);
+    const call = JSON.parse(init.body);
+    if (call.method === "eth_sendRawTransaction") {
+      replies.push({ id: call.id, status: response.status, text: await response.clone().text() });
+    }
+    return response;
+  };
+  const { node, flow, done } = await setUp({ fetch });
+  try {
+    await readyToReveal(node, flow);
+    node.moveHeadOnReveal(1, { blocks: 1 });
+    await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
+    assert.equal(replies.length, 2);
+    assert.equal(replies[0].status, 200);
+    assert.deepEqual(JSON.parse(replies[0].text), JSON.parse(gethHeadMoved(replies[0].id)));
+    assert.equal(node.reveals.length, 1);
+  } finally {
+    await done();
+  }
+});
+
+test("a reveal refused with geth's own reply bytes is sent again", async () => {
+  let node = null;
+  const sends = [];
+  const fetch = async (url, init) => {
+    const call = JSON.parse(init.body);
+    if (call.method === "eth_sendRawTransaction") {
+      sends.push(call.params[0]);
+      if (sends.length === 1) {
+        // The head moves while geth checks the reveal; the fee window stays.
+        node.mine();
+        return new Response(gethHeadMoved(call.id), { status: 200, headers: { "content-type": "application/json" } });
+      }
+    }
+    return globalThis.fetch(url, init);
+  };
+  const set = await setUp({ fetch });
+  ({ node } = set);
+  const { flow, done } = set;
+  try {
+    await readyToReveal(node, flow);
+    await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
+    assert.equal(sends.length, 2, "the refused send, then the one the node takes");
+    assert.equal(sends[0], sends[1], "the same envelope");
+    assert.equal(node.reveals.length, 1);
+    assert.equal(flow.state.error, null);
+  } finally {
+    await done();
+  }
+});
+
 test("a reveal refused while the head moves is proved again once the fee changed", async () => {
   const { node, flow, work, done } = await setUp();
   try {

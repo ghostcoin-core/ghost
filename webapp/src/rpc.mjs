@@ -4,10 +4,15 @@
 // The local internal network, the built-in default.
 export const DEFAULT_ENDPOINT = "http://127.0.0.1:8545";
 
+// geth's code for an error a method returned (its rpc package, errcodeDefault).
+export const SERVER_ERROR = -32000;
+
 export class RpcError extends Error {
-  constructor(message, code) {
+  constructor(message, code, data) {
     super(message);
+    this.name = "RpcError";
     this.code = code;
+    if (data !== undefined) this.data = data;
   }
 }
 
@@ -42,7 +47,10 @@ export function createRpc(endpoint, { fetch = globalThis.fetch } = {}) {
       });
       if (!response.ok) throw new RpcError(`the endpoint answered HTTP ${response.status}`, response.status);
       const body = await response.json();
-      if (body.error) throw new RpcError(body.error.message || "the endpoint returned an error", body.error.code);
+      if (body.error) {
+        const { message, code, data } = body.error;
+        throw new RpcError(String(message ?? "") || "the endpoint returned an error", Number(code), data);
+      }
       return body.result;
     },
   };
