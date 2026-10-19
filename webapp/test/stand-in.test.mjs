@@ -198,3 +198,23 @@ test("the stand-in's miner moves the head until it is stopped", () =>
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(node.tip(), stopped, "no block after the stop");
   }));
+
+// A miner can also run without refusing sends and put a stranger's commit in
+// every few blocks; a transaction lookup finds what a block holds and nothing
+// for a hash the node never took.
+test("the stand-in's miner can commit as it mines, and a lookup finds only what the node holds", () =>
+  withNode(async (node, wallet) => {
+    const leaves = node.leaves.length;
+    node.startMining(2, { refuse: false, commitEvery: 3 });
+    assert.equal(node.headMoving.refuseWhileMining, false);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    node.stopMining();
+    assert.ok(node.leaves.length > leaves, "the miner committed");
+    assert.equal(node.headMoving.refuseWhileMining, true, "a plain restart refuses sends again");
+    const hash = await send(wallet, { data: vector.data });
+    const found = await rpcCall(node, "eth_getTransactionByHash", [hash]);
+    assert.equal(found.result.hash, hash);
+    assert.match(found.result.blockNumber, /^0x[0-9a-f]+$/);
+    const unknown = await rpcCall(node, "eth_getTransactionByHash", [`0x${"ab".repeat(32)}`]);
+    assert.equal(unknown.result, null);
+  }));

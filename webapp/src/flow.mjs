@@ -52,6 +52,11 @@ export const HEAD_MOVED = "chain head kept moving while the reveal was checked";
 export const HEAD_MOVED_SENDS = 5;
 const STILL_MS = 250;
 const STILL_POLLS = 8;
+// The node can also take a reveal and let it go before any block holds it:
+// its pool checks every reveal it holds again on each new head and drops one
+// that fails (ghostpool Reset). Once the tip is this many blocks past a taken
+// send with no receipt, the app asks whether the node still holds it.
+const HELD_BLOCKS = 2;
 
 // That refusal as it arrives over JSON-RPC: code -32000 and the node's
 // words. It is told by its shape on the wire, not by the class of the error
@@ -340,18 +345,40 @@ export function createFlow({
     };
   }
 
+  // The receipt of `hash`, or null while no block holds it.
+  async function receiptOf(hash) {
+    const receipt = await rpc.call("eth_getTransactionReceipt", [hash]);
+    if (!receipt) return null;
+    if (receipt.transactionHash != null && String(receipt.transactionHash).toLowerCase() !== String(hash).toLowerCase()) {
+      throw new Error("the endpoint returned the receipt of another transaction");
+    }
+    if (quantity(receipt.status) !== 1n) throw new Error("the transaction failed in its block");
+    return {
+      blockNumber: Number(quantity(receipt.blockNumber)),
+      blockHash: receipt.blockHash == null ? null : fromHex(receipt.blockHash, 32),
+    };
+  }
+
   async function waitReceipt(hash) {
     for (let i = 0; i < maxPolls; i += 1) {
-      const receipt = await rpc.call("eth_getTransactionReceipt", [hash]);
-      if (receipt) {
-        if (receipt.transactionHash != null && String(receipt.transactionHash).toLowerCase() !== String(hash).toLowerCase()) {
-          throw new Error("the endpoint returned the receipt of another transaction");
-        }
-        if (quantity(receipt.status) !== 1n) throw new Error("the transaction failed in its block");
-        return {
-          blockNumber: Number(quantity(receipt.blockNumber)),
-          blockHash: receipt.blockHash == null ? null : fromHex(receipt.blockHash, 32),
-        };
+      const receipt = await receiptOf(hash);
+      if (receipt) return receipt;
+      await sleep(pollMs);
+    }
+    throw new Error("no block holds the transaction yet; refresh later");
+  }
+
+  // The receipt of a reveal the node took when its tip was block
+  // `sentAfter`, or null once the node no longer holds it and no block
+  // does: its pool dropped it, so nothing was spent and it can be sent
+  // again. A reveal the node still holds is waited for, as any transaction.
+  async function waitTaken(hash, sentAfter) {
+    for (let i = 0; i < maxPolls; i += 1) {
+      const receipt = await receiptOf(hash);
+      if (receipt) return receipt;
+      if ((await blockNumber()) >= sentAfter + HELD_BLOCKS && !(await rpc.call("eth_getTransactionByHash", [hash]))) {
+        // A block may have taken it between the two questions.
+        return receiptOf(hash);
       }
       await sleep(pollMs);
     }
@@ -365,9 +392,10 @@ export function createFlow({
   // of the tip, checked against the tip's coin root, holds `commitment` (the
   // new leaf every commit, reveal and claim appends) at a position the
   // receipt's block added, read from the coin roots of that block and its
-  // parent in the verified header chain that leads to the tip.
-  async function waitSettled(hash, commitment, sentAfter) {
-    const receipt = await waitReceipt(hash);
+  // parent in the verified header chain that leads to the tip. `receipt`,
+  // when given, is the one already read for `hash`.
+  async function waitSettled(hash, commitment, sentAfter, receipt = null) {
+    receipt ??= await waitReceipt(hash);
     progress("checking the block");
     let top = await blockNumber();
     if (receipt.blockNumber <= sentAfter) {
@@ -503,6 +531,13 @@ export function createFlow({
   // proof after the first is of the first proof's input coin (`pinned`), so
   // an endpoint that took a send and still answered with the refusal cannot
   // have the remainder pay the same reveal again.
+  //
+  // A send the node takes is waited for here until a block holds it
+  // (`waitTaken`). When the node lets it go first, as its pool does with a
+  // held reveal that fails its check on a new head, that send counts as
+  // refused: the same envelope again, or a new proof of the same coin, whose
+  // marker is the same, so at most one of them can ever be executed. The
+  // result carries the receipt.
   async function revealAndSend(request) {
     let pinned = null;
     attempts: for (let attempt = 0; attempt < FEE_ATTEMPTS; attempt += 1) {
@@ -530,15 +565,29 @@ export function createFlow({
       if (fee !== scan.fee) continue;
       if (failure) throw failure;
       progress("sending the reveal");
-      let hash;
       for (let sends = 1; ; sends += 1) {
+        let hash;
+        let taken = false;
         try {
           hash = await rpc.call("eth_sendRawTransaction", [toHex(proved.envelope)]);
-          break;
+          taken = true;
         } catch (err) {
           if (!isHeadMoved(err) || sends >= HEAD_MOVED_SENDS) throw err;
         }
-        progress("the node's chain moved on; waiting for a still tip");
+        if (taken) {
+          if (String(hash).toLowerCase() !== toHex(proved.txHash)) {
+            throw new Error("the endpoint returned another transaction hash");
+          }
+          progress("waiting for a block");
+          const receipt = await waitTaken(hash, tip.number);
+          if (receipt) return { hash, fee: scan.fee, remainder: proved.remainder, sentAfter: tip.number, receipt };
+          if (sends >= HEAD_MOVED_SENDS) {
+            throw new Error(`the node took the reveal and let it go before a block held it, ${sends} times; nothing was spent; try again`);
+          }
+          progress("the node let the reveal go; waiting for a still tip");
+        } else {
+          progress("the node's chain moved on; waiting for a still tip");
+        }
         let number = await blockNumber();
         for (let polls = 0; polls < STILL_POLLS; polls += 1) {
           await sleep(stillMs);
@@ -550,10 +599,6 @@ export function createFlow({
         if ((await feeForNextBlock(tip, headerAt)).fee !== scan.fee) continue attempts;
         progress("sending the reveal again");
       }
-      if (String(hash).toLowerCase() !== toHex(proved.txHash)) {
-        throw new Error("the endpoint returned another transaction hash");
-      }
-      return { hash, fee: scan.fee, remainder: proved.remainder, sentAfter: tip.number };
     }
     throw new Error("the fee changed every time a proof was ready; try again");
   }
@@ -710,7 +755,7 @@ export function createFlow({
         s.status = "pending";
         s.lastReveal = { txHash: sent.hash, out, recipient: to, fee: sent.fee, block: null };
         progress("waiting for a block");
-        const receipt = await waitSettled(sent.hash, sent.remainder.commitment, sent.sentAfter);
+        const receipt = await waitSettled(sent.hash, sent.remainder.commitment, sent.sentAfter, sent.receipt);
         s.lastReveal.block = receipt.blockNumber;
         await refreshSummon();
         return s.lastReveal;
@@ -747,7 +792,7 @@ export function createFlow({
         c.txHash = sent.hash;
         c.amount = sent.remainder.amount;
         progress("waiting for a block");
-        const receipt = await waitSettled(sent.hash, sent.remainder.commitment, sent.sentAfter);
+        const receipt = await waitSettled(sent.hash, sent.remainder.commitment, sent.sentAfter, sent.receipt);
         c.stage = "confirmed";
         c.block = receipt.blockNumber;
         await refreshSummon();

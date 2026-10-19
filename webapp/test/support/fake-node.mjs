@@ -129,7 +129,14 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   // With `miner` set, an empty block is mined on a timer, and every send of
   // a valid reveal is refused the same way while it runs, as a node that
   // seals blocks faster than it checks a reveal refuses each one.
-  const headMoving = { count: 0, blocks: 0, refused: 0, miner: null };
+  // `refuseWhileMining` false lets the miner run without refusing sends.
+  // With `drops` above 0, the next `drops` valid reveals the node takes are
+  // held and then dropped at the next block, as the node's pool drops a held
+  // reveal that fails its check on a new head (ghostpool Reset): no block
+  // holds them and their lookup finds nothing.
+  const headMoving = { count: 0, blocks: 0, refused: 0, miner: null, refuseWhileMining: true, drops: 0 };
+  const held = new Map();
+  const dropped = [];
   let nonce = 0;
   // The base fee of the blocks mined from now on.
   let baseFee = GWEI;
@@ -192,6 +199,8 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       leafCount,
       spentCount: spent.length,
     });
+    for (const hash of held.keys()) dropped.push(hash);
+    held.clear();
     return number;
   }
 
@@ -255,7 +264,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     if (reveal.fee !== fee) throw new Error(`fee ${reveal.fee} is not the fee in force, ${fee}`);
     if (!blocks.some((b) => toHex(b.coinTreeRoot) === toHex(reveal.root))) throw new Error("root not eligible");
     if (spent.some((s) => toHex(s.marker) === toHex(reveal.marker))) throw new Error("marker already spent");
-    if (headMoving.count > 0 || headMoving.miner) {
+    if (headMoving.count > 0 || (headMoving.miner && headMoving.refuseWhileMining)) {
       if (headMoving.count > 0) headMoving.count -= 1;
       headMoving.refused += 1;
       for (let i = 0; i < headMoving.blocks; i += 1) mine();
@@ -265,6 +274,12 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       throw Object.assign(new Error(HEAD_MOVED_ERROR), { code: SERVER_ERROR });
     }
     const hash = toHex(reveal.txHash);
+    if (held.has(hash)) throw new Error("already known");
+    if (headMoving.drops > 0) {
+      headMoving.drops -= 1;
+      held.set(hash, reveal);
+      return hash;
+    }
     if (dishonest.withhold) {
       withheld.push({ ...reveal, hash });
       receipts.set(hash, dishonest.withhold(hash, reveal));
@@ -300,6 +315,14 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       return n < blocks.length ? header(blocks[n]) : null;
     },
     eth_getTransactionReceipt: ([hash]) => receipts.get(String(hash).toLowerCase()) || null,
+    // A transaction the node holds (no block yet) or one a block holds; null
+    // for one it never took or let go.
+    eth_getTransactionByHash: ([hash]) => {
+      const h = String(hash).toLowerCase();
+      if (held.has(h)) return { hash: h, blockNumber: null };
+      const receipt = receipts.get(h);
+      return receipt ? { hash: h, blockNumber: receipt.blockNumber } : null;
+    },
     eth_sendRawTransaction: ([hex]) => sendRaw(hex),
     // The page roots of a tree as a plain array of 32-byte roots, `[]` for an
     // empty tree. No data commitment is made here, so `data` has none.
@@ -407,15 +430,30 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     },
     // An empty block every `everyMs` ms until stopMining(); meanwhile every
     // send of a valid reveal is refused as the node does when its head keeps
-    // moving.
-    startMining(everyMs) {
+    // moving, unless `refuse` is false. With `commitEvery` set, every
+    // `commitEvery`-th block holds a stranger's commit instead, so each epoch
+    // window holds a commitment after any older coin.
+    startMining(everyMs, { refuse = true, commitEvery = 0 } = {}) {
       clearInterval(headMoving.miner);
-      headMoving.miner = setInterval(() => mine(), everyMs);
+      headMoving.refuseWhileMining = refuse;
+      let n = 0;
+      headMoving.miner = setInterval(() => {
+        n += 1;
+        if (commitEvery > 0 && n % commitEvery === 0) foreignCommit();
+        else mine();
+      }, everyMs);
     },
     stopMining() {
       clearInterval(headMoving.miner);
       headMoving.miner = null;
+      headMoving.refuseWhileMining = true;
     },
+    // The next `count` valid reveals the node takes are dropped at the next
+    // block, before any block holds them.
+    dropTaken(count) {
+      headMoving.drops = count;
+    },
+    dropped,
     // Blocks mined from now on carry base fee `wei` (each still half full).
     setBaseFee(wei) {
       baseFee = wei;
