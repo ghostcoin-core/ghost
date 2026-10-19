@@ -169,7 +169,11 @@ app makes no data commitments.
    the next block and, if the fee is still the proof's, sends the same
    envelope again; otherwise it proves again as for a fee change. It sends
    one proof at most 5 times; the refusal of the fifth send surfaces, with
-   nothing asked after it. Any other
+   nothing asked after it. A new proof is only ever of the first proof's
+   input coin: an endpoint can take a send and still answer with this
+   refusal, so once that coin is spent or no longer the key's current coin
+   the app stops with an error instead of spending the remainder on the
+   same reveal again. Any other
    refusal surfaces at once. Only a send refused this way is followed by
    more requests, so the requests before the first send stay as in step 2.
 7. **Status.** The app polls the receipt, but a receipt is only the
