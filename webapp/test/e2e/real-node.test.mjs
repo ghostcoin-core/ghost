@@ -232,17 +232,46 @@ if (!GETH) {
 
     const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 1000, maxPolls: 1800 });
 
-    // A reveal or claim, again whenever the epoch rule says to wait.
+    // The last block at which a commit in block `block` can still let a coin
+    // before it be revealed: the epoch window ending at the epoch block E
+    // after it holds the commit until E + 32 is the epoch block, which the
+    // app picks from block E + 32 + 12 on.
+    const lastUsefulBlock = (block) => Math.ceil(block / EPOCH) * EPOCH + EPOCH + EPOCH_DEPTH - 1;
+
+    // A reveal or claim, again whenever the epoch rule says to wait. Each
+    // reason is logged. The wait is bounded in blocks: past the next epoch
+    // block and its depth, plus one epoch window. When no commitment
+    // followed the coin inside the window, a stranger commits again and the
+    // step waits for that commit's epoch; that is done at most
+    // STRANGER_COMMITS times, so the wait ends.
+    const STRANGER_COMMITS = 3;
     async function untilEpoch(step) {
-      for (let i = 0; i < 20; i += 1) {
+      let deadline = lastUsefulBlock((await blockNumber()) + 1);
+      let commits = 0;
+      for (;;) {
+        assert.ok(node.alive(), "geth stopped while waiting for the epoch rule");
         try {
           return await step();
         } catch (err) {
           if (!(err instanceof WaitError)) throw err;
-          await sleep(5000);
+          const tip = await blockNumber();
+          console.log(`epoch rule holds: ${err.message} (tip ${tip}, gives up after block ${deadline})`);
+          if (err.message.startsWith("no commitment followed the coin")) {
+            if (commits === STRANGER_COMMITS) {
+              throw new Error(`the epoch rule never let the coin be revealed after ${commits} more stranger commits: ${err.message}`);
+            }
+            commits += 1;
+            const block = await strangerCommit();
+            console.log(`a stranger committed in block ${block}; waiting for its epoch block`);
+            deadline = lastUsefulBlock(block);
+            await waitEpochAfter(block);
+          } else if (tip > deadline) {
+            throw new Error(`the epoch rule never let the coin be revealed by block ${deadline}: ${err.message}`);
+          } else {
+            await sleep(5000);
+          }
         }
       }
-      throw new Error("the epoch rule never let the coin be revealed");
     }
 
     try {
