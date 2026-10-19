@@ -53,8 +53,8 @@ network, `http://127.0.0.1:8545`. The app sends only these requests:
 | `eth_chainId` | none | The chain identifier |
 | `eth_blockNumber` | none | The tip |
 | `eth_getBlockByNumber` | height, `false` | A header with its `hash` and the 18 fields of spec 05, section 10, by their base client names (`parentHash` to `nonce`, `baseFeePerGas`, `coinTreeRoot`, `dataTreeRoot`) |
-| `ghost_getPageRoots` | `"coin"`, tree index, anchor block hash | `{ pageRoots }`: the page roots of pages 0 to the last page with a leaf |
-| `ghost_getTreePage` | `"coin"`, tree index, page, anchor block hash | `{ count, leaves, notes }`: every filled position of the page, in order |
+| `ghost_getPageRoots` | `"coin"`, tree index, anchor block hash | An array of 32-byte page roots, of pages 0 to the last page with a leaf (`[]` for an empty tree) |
+| `ghost_getTreePage` | `"coin"`, tree index, page, anchor block hash | `{ kind, treeIndex, page, filled, entries }`: `filled` positions of the page, and `entries`, one `{ leaf, note }` (32 and 156 bytes of hex) per filled position, in order |
 | `ghost_getTreePage` | `"coin-markers"`, tree index, page, anchor block hash | `{ count, markers }`: a page of 4,096 spent coin markers in inclusion order |
 | `eth_sendRawTransaction` | the reveal envelope | The transaction hash |
 | `eth_getTransactionReceipt` | a transaction hash | `null` until the transaction is in a block |
@@ -68,6 +68,13 @@ a marker, and the app never asks for a witness; it computes its own from the
 pages. The only request that carries a coin's data is the reveal itself,
 whose fields are public; sending it, though, links the connection to the
 coin it spends.
+
+The tree answers are read in the node's shape (ghost-node
+`docs/trees-and-headers.md`, "Wallet tree pages") and in no other. The app
+refuses page roots that are not an array, and a coin page whose `filled` is
+not the number of its `entries`, or that is not whole: every page but the
+last holds 4,096 leaves and the last 1 to 4,096. The page roots and leaves
+must then give the anchor header's coin root.
 
 ## Headers
 

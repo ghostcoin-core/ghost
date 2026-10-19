@@ -84,3 +84,84 @@ test("the stand-in accepts the 190-byte commit of version 0x0001", () =>
     assert.equal(toHex(node.leaves[0].commitment), vector.commitment);
     assert.equal(toHex(node.leaves[0].note), vector.note);
   }));
+
+// The stand-in's tree page methods answer in exactly the node's shape
+// (ghost-node docs/trees-and-headers.md, "Wallet tree pages") and refuse
+// what the node refuses, as JSON-RPC errors in its words.
+async function rpcCall(node, method, params) {
+  const response = await fetch(node.url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+  });
+  return response.json();
+}
+
+const tipHash = (node) => toHex(node.blocks[node.tip()].hash);
+
+test("the stand-in serves page roots as an array and coin pages as { kind, treeIndex, page, filled, entries }", () =>
+  withNode(async (node, wallet) => {
+    const empty = await rpcCall(node, "ghost_getPageRoots", ["coin", "0x0", tipHash(node)]);
+    assert.deepEqual(empty.result, [], "an empty coin tree has no page roots");
+    await send(wallet, { data: vector.data });
+    node.foreignCommits(1);
+    const anchor = tipHash(node);
+    const roots = await rpcCall(node, "ghost_getPageRoots", ["coin", "0x0", anchor]);
+    assert.ok(Array.isArray(roots.result));
+    assert.equal(roots.result.length, 1);
+    assert.match(roots.result[0], /^0x[0-9a-f]{64}$/);
+    const page = await rpcCall(node, "ghost_getTreePage", ["coin", "0x0", "0x0", anchor]);
+    assert.deepEqual(Object.keys(page.result).sort(), ["entries", "filled", "kind", "page", "treeIndex"]);
+    assert.equal(page.result.kind, "coin");
+    assert.equal(page.result.treeIndex, "0x0");
+    assert.equal(page.result.page, "0x0");
+    assert.equal(page.result.filled, "0x2");
+    assert.deepEqual(page.result.entries[0], { leaf: vector.commitment, note: vector.note });
+    assert.deepEqual(Object.keys(page.result.entries[1]).sort(), ["leaf", "note"]);
+    const data = await rpcCall(node, "ghost_getPageRoots", ["data", "0x0", anchor]);
+    assert.deepEqual(data.result, [], "no data commitment, no data page roots");
+    const markers = await rpcCall(node, "ghost_getTreePage", ["coin-markers", "0x0", "0x0", anchor]);
+    assert.deepEqual(markers.result, { count: "0x0", markers: [] });
+  }));
+
+test("the stand-in refuses the tree page requests the node refuses, in its words", () =>
+  withNode(async (node) => {
+    const anchor = tipHash(node);
+    const unknown = `0x${"ee".repeat(32)}`;
+    const refusals = [
+      // A wrong number of parameters.
+      ["ghost_getPageRoots", ["coin", "0x0"], /missing value for required argument/, -32602],
+      ["ghost_getPageRoots", ["coin", "0x0", anchor, "0x0"], /too many arguments/, -32602],
+      ["ghost_getTreePage", ["coin", "0x0", anchor], /missing value for required argument/, -32602],
+      ["ghost_getTreePage", ["coin", "0x0", "0x0", anchor, "0x0"], /too many arguments/, -32602],
+      // An unknown kind.
+      ["ghost_getPageRoots", ["coins", "0x0", anchor], /^invalid argument 0: unknown tree kind$/, -32602],
+      ["ghost_getTreePage", ["markers", "0x0", "0x0", anchor], /^invalid argument 0: unknown tree kind$/, -32602],
+      // An anchor that is not a 32-byte hash: a block number, a tag.
+      ["ghost_getPageRoots", ["coin", "0x0", "0x1"], /^invalid argument 2:/, -32602],
+      ["ghost_getTreePage", ["coin", "0x0", "0x0", "latest"], /^invalid argument 3:/, -32602],
+      // An unknown anchor.
+      ["ghost_getPageRoots", ["coin", "0x0", unknown], /^unknown anchor block$/],
+      ["ghost_getTreePage", ["coin", "0x0", "0x0", unknown], /^unknown anchor block$/],
+      // A page beyond any tree.
+      ["ghost_getTreePage", ["coin", "0x0", "0x100000", anchor], /^page number beyond the tree$/],
+      ["ghost_getTreePage", ["coin-markers", "0x0", "0x100000", anchor], /^page number beyond the tree$/],
+      // A tree index other than 0.
+      ["ghost_getPageRoots", ["coin", "0x1", anchor], /^tree index does not exist at the anchor$/],
+      ["ghost_getTreePage", ["coin", "0x1", "0x0", anchor], /^tree index does not exist at the anchor$/],
+      // Page roots of a marker kind.
+      ["ghost_getPageRoots", ["coin-markers", "0x0", anchor], /^invalid argument 0:/, -32602],
+      ["ghost_getPageRoots", ["data-markers", "0x0", anchor], /^invalid argument 0:/, -32602],
+    ];
+    for (const [method, params, words, code] of refusals) {
+      const reply = await rpcCall(node, method, params);
+      const what = `${method} ${JSON.stringify(params)}`;
+      assert.equal(reply.result, undefined, `${what} is refused`);
+      assert.match(reply.error.message, words, what);
+      if (code !== undefined) assert.equal(reply.error.code, code, what);
+    }
+    // The last page below the bound is still answered, empty.
+    const last = await rpcCall(node, "ghost_getTreePage", ["coin", "0x0", "0xfffff", anchor]);
+    assert.equal(last.result.filled, "0x0");
+    assert.deepEqual(last.result.entries, []);
+  }));

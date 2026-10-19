@@ -7,7 +7,9 @@
 // leaves with their notes and the page-root list (spec 05, section 8), the
 // header roots of spec 05, section 4, the header encoding and hash of spec 05,
 // section 10, the private transaction envelope and fee of spec 07, sections 3
-// to 5, and the commit of spec 03, section 6.
+// to 5, and the commit of spec 03, section 6. Its tree page methods answer in
+// exactly the node's shape and refuse what the node refuses, in its words
+// (ghost-node docs/trees-and-headers.md, "Tree page methods").
 // A reveal is decoded and its proof verified with the real verifier, then
 // checked as a node admits it: fee in force, root of an earlier canonical
 // block, marker unused. Commits arrive through the scripted wallet below.
@@ -17,7 +19,7 @@
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 
-import { concat, fromHex, toHex, word } from "../../src/bytes.mjs";
+import { concat, fromHex, quantity, toHex, word } from "../../src/bytes.mjs";
 
 const PAGE = 4096;
 const NOTE_BYTES = 156;
@@ -41,6 +43,21 @@ const sha256 = (...parts) => {
 };
 
 const q = (n) => `0x${BigInt(n).toString(16)}`;
+
+// The tree kinds the node knows (ghost-node docs/trees-and-headers.md, "Tree
+// page methods"), and its page bound: a page number of 0x100000 or more is
+// beyond any tree.
+const TREE_KINDS = new Set(["coin", "data", "coin-markers", "data-markers"]);
+const MARKER_KINDS = new Set(["coin-markers", "data-markers"]);
+const MAX_PAGES = 0x100000;
+const INVALID_PARAMS = -32602;
+
+// A refusal of a parameter, as the node words it: `invalid argument <i>: …`
+// with code -32602 (or without the argument for a wrong parameter count).
+function invalid(index, reason) {
+  const message = index === null ? reason : `invalid argument ${index}: ${reason}`;
+  return Object.assign(new Error(message), { code: INVALID_PARAMS });
+}
 
 // The header RLP of spec 05, section 10, written apart from the app's: the
 // 18 fields in order, as the base client's JSON-RPC names them.
@@ -262,27 +279,60 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     },
     eth_getTransactionReceipt: ([hash]) => receipts.get(String(hash).toLowerCase()) || null,
     eth_sendRawTransaction: ([hex]) => sendRaw(hex),
-    ghost_getPageRoots: ([tree, treeIndex, anchor]) => {
-      if (tree !== "coin" || treeIndex !== "0x0") throw new Error("only coin tree 0 exists");
-      const { pageRoots } = ghost.treeRoots(servedLeaves(blockByHash(anchor)));
-      return { pageRoots: pageRoots.map(toHex) };
+    // The page roots of a tree as a plain array of 32-byte roots, `[]` for an
+    // empty tree. No data commitment is made here, so `data` has none.
+    ghost_getPageRoots: (params) => {
+      const [kind, block] = treeArgs(params, 3, 2);
+      if (MARKER_KINDS.has(kind)) throw invalid(0, "no page roots for a marker kind");
+      if (kind === "data") return [];
+      return ghost.treeRoots(servedLeaves(block)).pageRoots.map(toHex);
     },
-    ghost_getTreePage: ([tree, treeIndex, page, anchor]) => {
-      if (treeIndex !== "0x0") throw new Error("only tree 0 exists");
-      const block = blockByHash(anchor);
-      const start = Number(BigInt(page)) * PAGE;
-      if (tree === "coin") {
-        const part = served(block).slice(start, start + PAGE);
+    // A coin or data page as `{ kind, treeIndex, page, filled, entries }`; a
+    // marker page as `{ count, markers }`.
+    ghost_getTreePage: (params) => {
+      const [kind, block] = treeArgs(params, 4, 3);
+      let page;
+      try {
+        page = Number(quantity(params[2]));
+      } catch (err) {
+        throw invalid(2, err.message);
+      }
+      if (page >= MAX_PAGES) throw new Error("page number beyond the tree");
+      const start = page * PAGE;
+      if (kind === "coin" || kind === "data") {
+        const part = kind === "coin" ? served(block).slice(start, start + PAGE) : [];
         const note = (l, i) => (dishonest.note ? dishonest.note(start + i, l.note) : l.note);
-        return { count: q(part.length), leaves: part.map((l) => toHex(l.commitment)), notes: part.map((l, i) => toHex(note(l, i))) };
+        const entries = part.map((l, i) => ({ leaf: toHex(l.commitment), note: toHex(note(l, i)) }));
+        return { kind, treeIndex: "0x0", page: q(page), filled: q(entries.length), entries };
       }
-      if (tree === "coin-markers") {
-        const part = spent.slice(start, Math.min(start + PAGE, block.spentCount));
-        return { count: q(part.length), markers: part.map((s) => toHex(s.marker)) };
-      }
-      throw new Error("unknown tree");
+      const part = kind === "coin-markers" ? spent.slice(start, Math.min(start + PAGE, block.spentCount)) : [];
+      return { count: q(part.length), markers: part.map((s) => toHex(s.marker)) };
     },
   };
+
+  // The checks the node makes on a tree page request, in its words: the
+  // number of parameters, the kind, the tree index (only 0 exists) and the
+  // anchor, which must be the 32-byte hash of a known block. Returns the
+  // kind and the anchor's block.
+  function treeArgs(params, count, anchorAt) {
+    if (params.length < count) throw invalid(null, `missing value for required argument ${params.length}`);
+    if (params.length > count) throw invalid(null, `too many arguments, want at most ${count}`);
+    const kind = params[0];
+    if (!TREE_KINDS.has(kind)) throw invalid(0, "unknown tree kind");
+    const anchor = params[anchorAt];
+    if (typeof anchor !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(anchor)) {
+      throw invalid(anchorAt, "not a 32-byte block hash");
+    }
+    let treeIndex;
+    try {
+      treeIndex = quantity(params[1]);
+    } catch (err) {
+      throw invalid(1, err.message);
+    }
+    const block = blockByHash(anchor);
+    if (treeIndex !== 0n) throw new Error("tree index does not exist at the anchor");
+    return [kind, block];
+  }
 
   const server = createServer((req, res) => {
     const chunks = [];
@@ -301,7 +351,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
           reply = { jsonrpc: "2.0", id, result: methods[call.method](call.params || []) };
         }
       } catch (err) {
-        reply = { jsonrpc: "2.0", id, error: { code: -32000, message: String(err.message || err) } };
+        reply = { jsonrpc: "2.0", id, error: { code: err.code ?? -32000, message: String(err.message || err) } };
       }
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(reply));

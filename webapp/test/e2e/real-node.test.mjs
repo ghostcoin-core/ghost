@@ -180,11 +180,15 @@ if (!GETH) {
     // Every leaf of coin tree 0, and every spent coin marker, as of the tip.
     async function chainTree() {
       const tip = await rpc("eth_getBlockByNumber", ["latest", false]);
-      const { pageRoots } = await rpc("ghost_getPageRoots", ["coin", "0x0", tip.hash]);
+      // The node's shape: the page roots as an array, and a page as
+      // `{ kind, treeIndex, page, filled, entries: [{ leaf, note }] }`.
+      const pageRoots = await rpc("ghost_getPageRoots", ["coin", "0x0", tip.hash]);
+      assert.ok(Array.isArray(pageRoots), "the page roots are an array");
       const leaves = [];
       for (let p = 0; p < pageRoots.length; p += 1) {
         const page = await rpc("ghost_getTreePage", ["coin", "0x0", toQuantity(p), tip.hash]);
-        leaves.push(...page.leaves.map((l) => String(l).toLowerCase()));
+        assert.equal(page.entries.length, Number(BigInt(page.filled)), `page ${p} holds \`filled\` entries`);
+        leaves.push(...page.entries.map((entry) => String(entry.leaf).toLowerCase()));
       }
       const markers = [];
       for (let p = 0; ; p += 1) {
