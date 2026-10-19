@@ -181,3 +181,20 @@ test("the stand-in refuses with the head-moving error only a reveal it would tak
     assert.equal(node.headMoving.refused, 0);
     assert.equal(node.tip(), tip, "no block mined");
   }));
+
+// The stand-in's own miner seals blocks on a timer until it is stopped;
+// meanwhile a malformed reveal still gets its own refusal.
+test("the stand-in's miner moves the head until it is stopped", () =>
+  withNode(async (node) => {
+    const tip = node.tip();
+    node.startMining(2);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const reply = await rpcCall(node, "eth_sendRawTransaction", ["0x50c0"]);
+    assert.notEqual(reply.error.message, HEAD_MOVED_ERROR);
+    node.stopMining();
+    const stopped = node.tip();
+    assert.ok(stopped > tip, "blocks were mined");
+    assert.equal(node.headMoving.miner, null);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(node.tip(), stopped, "no block after the stop");
+  }));
