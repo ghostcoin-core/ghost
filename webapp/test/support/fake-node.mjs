@@ -54,6 +54,8 @@ const TREE_KINDS = new Set(["coin", "data", "coin-markers", "data-markers"]);
 const MARKER_KINDS = new Set(["coin-markers", "data-markers"]);
 const MAX_PAGES = 0x100000;
 const INVALID_PARAMS = -32602;
+// geth's code for an error a method returned (rpc package, errcodeDefault).
+export const SERVER_ERROR = -32000;
 
 // A refusal of a parameter, as the node words it: `invalid argument <i>: …`
 // with code -32602 (or without the argument for a wrong parameter count).
@@ -254,7 +256,10 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       headMoving.count -= 1;
       headMoving.refused += 1;
       for (let i = 0; i < headMoving.blocks; i += 1) mine();
-      throw new Error(HEAD_MOVED_ERROR);
+      // As geth answers it over HTTP: status 200, error code -32000 and the
+      // pool's words unwrapped (ghostpool errHeadMoving, through
+      // TxPool.Add, SendTx and SubmitTransaction).
+      throw Object.assign(new Error(HEAD_MOVED_ERROR), { code: SERVER_ERROR });
     }
     const hash = toHex(reveal.txHash);
     if (dishonest.withhold) {
@@ -365,10 +370,11 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
           reply = { jsonrpc: "2.0", id, result: methods[call.method](call.params || []) };
         }
       } catch (err) {
-        reply = { jsonrpc: "2.0", id, error: { code: err.code ?? -32000, message: String(err.message || err) } };
+        reply = { jsonrpc: "2.0", id, error: { code: err.code ?? SERVER_ERROR, message: String(err.message || err) } };
       }
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(reply));
+      // geth ends each reply with a newline.
+      res.end(`${JSON.stringify(reply)}\n`);
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));

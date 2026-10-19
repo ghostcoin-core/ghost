@@ -230,7 +230,15 @@ if (!GETH) {
       },
     };
 
-    const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 1000, maxPolls: 1800 });
+    // Each stage the flow reports is logged once, so a resend of a reveal the
+    // node refused while its head kept moving shows in the job's log.
+    let lastStage = null;
+    const onChange = (state) => {
+      const stage = state.progress?.stage ?? null;
+      if (stage !== null && stage !== lastStage) console.log(`flow: ${stage}`);
+      lastStage = stage;
+    };
+    const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 1000, maxPolls: 1800, onChange });
 
     // The last block at which a commit in block `block` can still let a coin
     // before it be revealed: the epoch window ending at the epoch block E

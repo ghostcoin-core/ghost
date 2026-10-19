@@ -27,7 +27,7 @@ import {
   parseGhost,
 } from "./chain.mjs";
 import { readHeader } from "./header.mjs";
-import { DEFAULT_ENDPOINT, RpcError, createRpc } from "./rpc.mjs";
+import { DEFAULT_ENDPOINT, SERVER_ERROR, createRpc } from "./rpc.mjs";
 
 // The coin commit entry address of the internal network ("ghost" in ASCII,
 // then 5; ghost-node params/ghost/privaccounts.go). It stays a setting next
@@ -47,6 +47,13 @@ const FEE_ATTEMPTS = 3;
 // reveal. Times one proof is sent while the node answers only that.
 export const HEAD_MOVED = "chain head kept moving while the reveal was checked";
 const HEAD_MOVED_SENDS = 5;
+
+// That refusal as it arrives over JSON-RPC: code -32000 and the node's
+// words. It is told by its shape on the wire, not by the class of the error
+// object, so a second copy of rpc.mjs (a bundle, a test) still matches.
+export function isHeadMoved(err) {
+  return Number(err?.code) === SERVER_ERROR && String(err?.message ?? "").includes(HEAD_MOVED);
+}
 
 // The reveal cannot be made yet; the message says what it waits for.
 export class WaitError extends Error {}
@@ -505,7 +512,7 @@ export function createFlow({
           hash = await rpc.call("eth_sendRawTransaction", [toHex(proved.envelope)]);
           break;
         } catch (err) {
-          if (!(err instanceof RpcError) || err.message !== HEAD_MOVED || sends >= HEAD_MOVED_SENDS) throw err;
+          if (!isHeadMoved(err) || sends >= HEAD_MOVED_SENDS) throw err;
         }
         progress("the node's chain moved on; sending the reveal again");
         tip = await headerAt(await blockNumber());
