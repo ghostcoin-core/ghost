@@ -108,7 +108,7 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
     // The right groups send it.
     const sent = await flow.vanishCheck(right);
     assert.equal(sent.ok, true);
-    assert.equal(flow.state.vanish.stage, "confirmed");
+    assert.equal(flow.state.vanish.stage, "done");
     assert.equal(flow.state.vanish.key, null, "the app drops the key once the commit is sent");
     const sends = wallet.calls.filter((c) => c.method === "eth_sendTransaction");
     assert.equal(sends.length, 1);
@@ -170,7 +170,7 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
     assert.equal(node.reveals[1].out, 0n, "a claim sends nothing out");
     assert.equal(toHex(node.reveals[1].recipient), "0x0000000000000000000000000000000000000000");
     assert.equal(flow.state.summon.status, "claimed");
-    assert.equal(flow.state.summon.claim.stage, "confirmed");
+    assert.equal(flow.state.summon.claim.stage, "done");
     assert.equal(flow.state.summon.claim.key, null);
 
     // Opened afresh, the old key shows claimed from the chain's markers...
@@ -490,7 +490,7 @@ test("a fabricated receipt does not confirm a claim the chain does not hold", as
     assert.equal(node.withheld.length, 1, "the claim reached the endpoint");
     assert.equal(node.reveals.length, 0, "and was never executed");
     const s = flow.state.summon;
-    assert.notEqual(s.claim.stage, "confirmed");
+    assert.notEqual(s.claim.stage, "done");
     assert.equal(s.status, "unclaimed", "the old key stays unclaimed");
     assert.ok(s.current, "and still shows its coin");
 
@@ -505,7 +505,7 @@ test("a fabricated receipt does not confirm a claim the chain does not hold", as
       await flow.claimStart();
       const again = flow.claimSaved();
       await assert.rejects(flow.claimCheck(answersFor(flow.state.summon.claim.key, again)), refusal);
-      assert.notEqual(flow.state.summon.claim.stage, "confirmed");
+      assert.notEqual(flow.state.summon.claim.stage, "done");
     }
     assert.equal(node.reveals.length, 0);
     assert.equal((await flow.summonRefresh()).status, "unclaimed");
@@ -541,7 +541,7 @@ test("headers whose coin root was altered under their real hash are refused", as
     await assert.rejects(flow.claimCheck(answers), /does not hash to/);
     assert.equal(node.withheld.length, 1);
     assert.equal(node.reveals.length, 0, "the claim was never executed");
-    assert.notEqual(flow.state.summon.claim.stage, "confirmed");
+    assert.notEqual(flow.state.summon.claim.stage, "done");
     assert.equal(flow.state.summon.status, "unclaimed");
     // A fresh look at the key refuses the altered tip header too.
     await assert.rejects(flow.summonRefresh(), /does not hash to/);
@@ -551,21 +551,22 @@ test("headers whose coin root was altered under their real hash are refused", as
   }
 });
 
-test("a claim is confirmed, and the old key claimed, only with 6 blocks on top", async () => {
+test("a claim is Done, and the old key claimed, at the first block that holds it", async () => {
   const { node, flow, chain, done } = await setUp();
   try {
     const answers = await readyToClaim(node, flow);
+    // No block is mined while the app waits: only the claim's own block.
     chain.mining = false;
-    await assert.rejects(flow.claimCheck(answers), /blocks on top/);
+    const claimed = await flow.claimCheck(answers);
     assert.equal(node.reveals.length, 1, "the claim is in a block");
-    const s = flow.state.summon;
-    assert.equal(s.claim.stage, "pending");
-    assert.equal(s.status, "unclaimed");
     const block = node.reveals[0].block;
-    node.mineTo(block + 5);
-    assert.equal((await flow.summonRefresh()).status, "unclaimed", "five blocks on top are not enough");
-    node.mineTo(block + 6);
+    assert.equal(node.tip(), block, "no block on top of the claim's");
+    assert.equal(claimed.block, block);
+    const s = flow.state.summon;
+    assert.equal(s.claim.stage, "done");
+    assert.equal(s.status, "claimed", "the old key shows claimed at the claim's own block");
     assert.equal((await flow.summonRefresh()).status, "claimed");
+    assert.equal(node.tip(), block);
   } finally {
     await done();
   }

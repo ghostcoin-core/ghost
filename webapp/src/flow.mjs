@@ -76,6 +76,9 @@ export const STALE_ROOT_DEPTH = SETTLE_DEPTH + LEAF_WINDOW;
 // that fails (ghostpool Reset). Once the tip is this many blocks past a taken
 // send with no receipt, the app asks whether the node still holds it.
 const HELD_BLOCKS = 2;
+// Times a receipt that names a replaced block is read again before the
+// transaction counts as dropped by a reorganisation.
+const REREADS = 3;
 
 // That refusal as it arrives over JSON-RPC: code -32000 and the node's
 // words. It is told by its shape on the wire, not by the class of the error
@@ -91,6 +94,24 @@ export class WaitError extends Error {
     super(message);
     this.alone = alone;
   }
+}
+
+// A transaction a block held is no longer in the chain: a reorganisation
+// replaced that block. Nothing the transaction did stands, so the holder can
+// send it again; a reveal or claim sent again spends the same coin marker as
+// the one dropped, so at most one of them is ever executed.
+export class DroppedError extends Error {
+  constructor(block) {
+    super(droppedMessage("transaction", block));
+    this.block = block;
+  }
+}
+
+export function droppedMessage(what, block) {
+  return (
+    `the chain was reorganised and block ${block} no longer holds the ${what}, nor does any other block: ` +
+    `nothing it did stands. You can send it again`
+  );
 }
 
 // The plain warning for a coin no later leaf follows yet. The only tree that
@@ -334,8 +355,9 @@ export function createFlow({
 
   // The chain as of its tip: verified headers, each the parent of the next,
   // from LEAF_WINDOW blocks below the settled block (or from genesis) up to
-  // the tip, which covers the settled block, the fee window and the block 6
-  // below the tip. Which blocks are asked for depends on the tip alone.
+  // the tip, which covers the settled block, the fee window and the block
+  // the markers are read at. Which blocks are asked for depends on the tip
+  // alone.
   async function readChain() {
     const chainId = quantity(await rpc.call("eth_chainId"));
     const top = await blockNumber();
@@ -383,8 +405,9 @@ export function createFlow({
   // them), so no request may follow from what restore found; on every path,
   // found or not, the requests are the same.
   //
-  // The markers are those as of 6 blocks below the tip, so a key shows
-  // claimed only once its coin's spend has 6 blocks on top.
+  // The markers are those as of the tip (CONFIRMATIONS blocks, the tip's own
+  // included), so a key shows claimed as soon as a block holds its coin's
+  // spend.
   //
   // The work in the worker is the same whatever the key finds too: the leaf
   // count of each header read, from the roots of every prefix of the
@@ -397,7 +420,7 @@ export function createFlow({
     const chain = await readChain();
     progress("reading the coin tree");
     const tree = await fetchTree(rpc, prover, chain.tip);
-    const spent = await fetchSpent(chain.at(Math.max(0, chain.tip.number - CONFIRMATIONS)));
+    const spent = await fetchSpent(chain.at(Math.max(0, chain.tip.number - (CONFIRMATIONS - 1))));
     const fee = (await feeForNextBlock(chain.tip, async (n) => chain.at(n))).fee;
     const { roots: prefixRoots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
     const countOf = new Map(prefixRoots.map((root, count) => [toHex(root), count]));
@@ -461,14 +484,22 @@ export function createFlow({
 
   // A receipt is the endpoint's word only. A transaction sent when the
   // endpoint's tip was block `sentAfter` can only be in a later block. It
-  // counts as settled when the chain shows what it did, with 6 blocks on
-  // top: the coin tree as
+  // counts as settled when the chain shows what it did: the coin tree as
   // of the tip, checked against the tip's coin root, holds `commitment` (the
   // new leaf every commit, reveal and claim appends) at a position the
   // receipt's block added, read from the coin roots of that block and its
-  // parent in the verified header chain that leads to the tip. `receipt`,
-  // when given, is the one already read for `hash`.
-  async function waitSettled(hash, commitment, sentAfter, receipt = null) {
+  // parent in the verified header chain that leads to the tip. The first
+  // block that holds it is enough (CONFIRMATIONS counts the transaction's own
+  // block): no block on top is waited for. `receipt`, when given, is the one
+  // already read for `hash`. The result carries the block's number and hash.
+  //
+  // A receipt whose block hash is not the chain's block of that number is
+  // from a block a reorganisation replaced. Neither that receipt nor a
+  // missing one says the transaction is gone: only the chain does. When the
+  // tip's verified coin tree does not hold `commitment`, that is a
+  // DroppedError; when it does, the receipt is read again to find the block
+  // that holds it now, a bounded number of times.
+  async function waitSettled(hash, commitment, sentAfter, receipt = null, reread = 0) {
     receipt ??= await waitReceipt(hash);
     progress("checking the block");
     let top = await blockNumber();
@@ -478,13 +509,10 @@ export function createFlow({
     if (receipt.blockNumber > top) {
       throw new Error(`the receipt names block ${receipt.blockNumber}, not a block of the chain`);
     }
-    if (top < receipt.blockNumber + CONFIRMATIONS) progress(`waiting for ${CONFIRMATIONS} blocks on top`);
-    for (let i = 0; top < receipt.blockNumber + CONFIRMATIONS; i += 1) {
-      if (i >= maxPolls) {
-        throw new Error(
-          `block ${receipt.blockNumber} has ${top - receipt.blockNumber} of the ${CONFIRMATIONS} blocks on top it needs; refresh later`,
-        );
-      }
+    const needed = receipt.blockNumber + CONFIRMATIONS - 1;
+    for (let i = 0; top < needed; i += 1) {
+      if (i >= maxPolls) throw new Error(`the chain has not reached block ${needed} yet; refresh later`);
+      progress(`waiting for block ${needed}`);
       await sleep(pollMs);
       top = await blockNumber();
     }
@@ -492,7 +520,12 @@ export function createFlow({
     const [parent, block] = headers;
     const tip = headers[headers.length - 1];
     if (receipt.blockHash && toHex(receipt.blockHash) !== toHex(block.hash)) {
-      throw new Error(`the receipt's block is not block ${block.number} of the chain`);
+      if (!(await treeHolds(commitment))) throw new DroppedError(block.number);
+      const again = reread < REREADS ? await receiptOf(hash) : null;
+      if (!again) {
+        throw new Error(`the transaction's new coin is in the chain, but the endpoint names no block of the chain for it; refresh later`);
+      }
+      return waitSettled(hash, commitment, sentAfter, again, reread + 1);
     }
     const tree = await fetchTree(rpc, prover, tip);
     const { roots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
@@ -505,10 +538,61 @@ export function createFlow({
     const leaf = toHex(commitment);
     for (let position = before; position < after; position += 1) {
       if (toHex(tree.leaves.slice(position * 32, position * 32 + 32)) === leaf) {
-        return { blockNumber: block.number, position };
+        return { blockNumber: block.number, blockHash: block.hash, position };
       }
     }
     throw new Error(`block ${block.number} does not hold the transaction's new coin; it has not settled`);
+  }
+
+  // Whether the coin tree as of the tip, checked against the tip's verified
+  // header, holds `commitment`. The whole tree is read, so no request names
+  // the leaf.
+  async function treeHolds(commitment) {
+    const tip = await headerAt(await blockNumber());
+    const tree = await fetchTree(rpc, prover, tip);
+    const leaf = toHex(commitment);
+    for (let position = 0; position < tree.count; position += 1) {
+      if (toHex(tree.leaves.slice(position * 32, position * 32 + 32)) === leaf) return true;
+    }
+    return false;
+  }
+
+  // Asks again whether the transaction of a step shown Sent, Done or
+  // dropped (`record`, with its `txHash`, `block`, `blockHash` and
+  // `commitment`) is in the chain, since Done comes at the first block and a
+  // reorganisation can still replace it. The receipt is not the evidence: an
+  // endpoint can answer null for a transaction that went through. While the
+  // chain's verified header at `block` is still the one Done was shown in, it
+  // stays Done. Otherwise a Done step shows dropped only when the tip's
+  // verified coin tree no longer holds the transaction's new coin (a Sent
+  // one stays Sent); when the tree does hold it (moved to another block, or
+  // back after a drop) it shows Done, in the block its receipt names if that
+  // block is the chain's. Returns the stage before.
+  async function recheckDone(record, what) {
+    if (!record || !["sent", "done", "dropped"].includes(record.stage) || !record.commitment) return null;
+    const was = record.stage;
+    const top = await blockNumber();
+    if (was === "done" && record.block <= top && toHex((await headerAt(record.block)).hash) === toHex(record.blockHash)) {
+      return was;
+    }
+    if (!(await treeHolds(record.commitment))) {
+      if (was === "done") {
+        record.stage = "dropped";
+        record.dropped = droppedMessage(what, record.block);
+      }
+      return was;
+    }
+    record.stage = "done";
+    record.dropped = null;
+    const receipt = await receiptOf(record.txHash).catch(() => null);
+    if (receipt && receipt.blockHash && receipt.blockNumber <= top) {
+      const header = await headerAt(receipt.blockNumber);
+      if (toHex(header.hash) === toHex(receipt.blockHash)) {
+        record.block = receipt.blockNumber;
+        record.blockHash = header.hash;
+      }
+    }
+    return was;
   }
 
   // The worker's input for a reveal of the key's current coin; throws when
@@ -603,14 +687,18 @@ export function createFlow({
   // an endpoint that took a send and still answered with the refusal cannot
   // have the remainder pay the same reveal again.
   //
-  // A send the node takes is waited for here until a block holds it
-  // (`waitTaken`). When the node lets it go first, as its pool does with a
+  // A send the node takes is reported at once through `request.onSent({
+  // hash, fee, remainder, coin })`, so the page shows it Sent, and then waited for here until a
+  // block holds it (`waitTaken`). When the node lets it go first, as its pool does with a
   // held reveal that fails its check on a new head, that send counts as
   // refused: the same envelope again, or a new proof of the same coin, whose
   // marker is the same, so at most one of them can ever be executed. The
   // result carries the receipt.
   async function revealAndSend(request) {
-    let pinned = null;
+    // `request.pinned`, when set, is the input coin of a send of this key
+    // that may still go through (a step shown Sent or dropped): this send
+    // may only spend that same coin, so its marker stops a second payment.
+    let pinned = request.pinned ?? null;
     // Proofs whose every send the node refused or let go, and the sends it
     // took and let go, across all proofs.
     let refusedProofs = 0;
@@ -660,6 +748,7 @@ export function createFlow({
           if (String(hash).toLowerCase() !== toHex(proved.txHash)) {
             throw new Error("the endpoint returned another transaction hash");
           }
+          request.onSent?.({ hash, fee: scan.fee, remainder: proved.remainder, coin: pinned });
           progress("waiting for a block");
           const receipt = await waitTaken(hash, tip.number);
           if (receipt) return { hash, fee: scan.fee, remainder: proved.remainder, sentAfter: tip.number, receipt };
@@ -733,6 +822,52 @@ export function createFlow({
     await askRuleForDecoy(prover, scan);
     emit();
     return s;
+  }
+
+  // Waits (`wait`) for the first block that holds a Sent step's transaction
+  // and marks `record` Done in it, or dropped when a reorganisation took it
+  // out first. `commitment` is the transaction's new leaf, which a later
+  // recheck looks for in the chain.
+  async function settle(record, what, commitment, wait) {
+    record.commitment = commitment;
+    try {
+      const receipt = await wait();
+      record.stage = "done";
+      record.block = receipt.blockNumber;
+      record.blockHash = receipt.blockHash;
+      return receipt;
+    } catch (err) {
+      if (err instanceof DroppedError) {
+        record.stage = "dropped";
+        record.dropped = droppedMessage(what, err.block);
+      }
+      throw err;
+    }
+  }
+
+  // `settle` for a reveal or claim of the open key, keeping its pin: the
+  // input coin of a send that may still go through (`s.pinned`, set when the
+  // node takes it) is cleared once the send is Done, and kept when it is
+  // dropped, so a send again can only spend that same coin.
+  async function settleSummon(s, record, what, commitment, wait) {
+    const receipt = await settle(record, what, commitment, wait);
+    s.pinned = null;
+    return receipt;
+  }
+
+  // Refresh's second look at the open key's last reveal and claim. A step
+  // the chain shows dropped keeps its input coin pinned; one the chain shows
+  // Done after all releases the pin, as its coin is then spent for good.
+  async function recheckSummon(s) {
+    for (const [record, what] of [
+      [s.lastReveal, "reveal"],
+      [s.claim, "claim"],
+    ]) {
+      const was = await recheckDone(record, what);
+      if (was === null) continue;
+      if (record.stage === "dropped") s.pinned ??= record.coin;
+      if (record.stage === "done" && was !== "done" && s.pinned && sameCoin(s.pinned, record.coin)) s.pinned = null;
+    }
   }
 
   function saveCheckStep(holder) {
@@ -812,15 +947,27 @@ export function createFlow({
           method: "eth_sendTransaction",
           params: [{ from: account, to: state.commitEntry, value: toQuantity(v.amount), data: toHex(commit.payload) }],
         });
-        // The user has the key; the app no longer needs it.
+        // The user has the key; the app no longer needs it. The wallet took
+        // the commit: the page shows it Sent at once.
         v.key = null;
-        v.stage = "pending";
+        v.stage = "sent";
         v.txHash = txHash;
+        emit();
         progress("waiting for a block");
-        const receipt = await waitSettled(txHash, commit.commitment, sentAfter);
-        v.stage = "confirmed";
-        v.block = receipt.blockNumber;
+        const receipt = await settle(v, "commit", commit.commitment, () => waitSettled(txHash, commit.commitment, sentAfter));
         return { ok: true, txHash, block: receipt.blockNumber };
+      });
+    },
+
+    // Vanish: whether the commit shown Done is still in the chain; it shows
+    // dropped, with the reason, when a reorganisation took it out.
+    vanishRecheck() {
+      return run("checking the commit", async () => {
+        if (!state.vanish || (state.vanish.stage !== "done" && state.vanish.stage !== "dropped")) {
+          throw new Error("no commit is shown Done");
+        }
+        await recheckDone(state.vanish, "commit");
+        return state.vanish;
       });
     },
 
@@ -844,6 +991,7 @@ export function createFlow({
           wait: null,
           claim: null,
           lastReveal: null,
+          pinned: null,
         };
         return refreshSummon();
       });
@@ -852,6 +1000,11 @@ export function createFlow({
     summonRefresh() {
       return run("reading the key's coins", async () => {
         if (!state.summon) throw new Error("enter a key first");
+        // A reveal or claim shown Sent or Done is asked about again: a
+        // reorganisation since can have dropped its block. The scan then
+        // shows the coin unspent again, so it can be sent again, pinned to
+        // that coin.
+        await recheckSummon(state.summon);
         return refreshSummon();
       });
     },
@@ -868,12 +1021,28 @@ export function createFlow({
         // A reveal credits its recipient, and nobody can spend what the zero
         // address is credited.
         if (to === ZERO_ADDRESS) throw new Error("the zero address cannot receive a reveal: the amount would be lost");
-        const sent = await revealAndSend({ key: s.key, kind: "partial", out, recipient: to });
-        s.status = "pending";
-        s.lastReveal = { txHash: sent.hash, out, recipient: to, fee: sent.fee, block: null };
-        progress("waiting for a block");
-        const receipt = await waitSettled(sent.hash, sent.remainder.commitment, sent.sentAfter, sent.receipt);
-        s.lastReveal.block = receipt.blockNumber;
+        // Shown Sent, with the amount and hash, as soon as the node takes it.
+        // From then on its input coin is pinned until it is Done.
+        const onSent = ({ hash, fee, remainder, coin }) => {
+          s.pinned = coin;
+          s.lastReveal = {
+            stage: "sent",
+            txHash: hash,
+            out,
+            recipient: to,
+            fee,
+            block: null,
+            dropped: null,
+            coin,
+            commitment: remainder.commitment,
+          };
+          emit();
+        };
+        const sent = await revealAndSend({ key: s.key, kind: "partial", out, recipient: to, onSent, pinned: s.pinned });
+        progress("checking the block");
+        await settleSummon(s, s.lastReveal, "reveal", sent.remainder.commitment, () =>
+          waitSettled(sent.hash, sent.remainder.commitment, sent.sentAfter, sent.receipt),
+        );
         await refreshSummon();
         return s.lastReveal;
       });
@@ -903,15 +1072,23 @@ export function createFlow({
         const c = s && s.claim;
         const wrong = requireCheck(c, answers);
         if (wrong.length > 0) return { ok: false, wrong };
-        const sent = await revealAndSend({ key: s.key, kind: "claim", out: 0n, newKey: c.key });
-        c.key = null;
-        c.stage = "pending";
-        c.txHash = sent.hash;
-        c.amount = sent.remainder.amount;
-        progress("waiting for a block");
-        const receipt = await waitSettled(sent.hash, sent.remainder.commitment, sent.sentAfter, sent.receipt);
-        c.stage = "confirmed";
-        c.block = receipt.blockNumber;
+        // Shown Sent, with the amount and hash, as soon as the node takes it.
+        // From then on its input coin is pinned until it is Done.
+        const onSent = ({ hash, remainder, coin }) => {
+          s.pinned = coin;
+          c.key = null;
+          c.stage = "sent";
+          c.txHash = hash;
+          c.amount = remainder.amount;
+          c.coin = coin;
+          c.commitment = remainder.commitment;
+          emit();
+        };
+        const sent = await revealAndSend({ key: s.key, kind: "claim", out: 0n, newKey: c.key, onSent, pinned: s.pinned });
+        progress("checking the block");
+        const receipt = await settleSummon(s, c, "claim", sent.remainder.commitment, () =>
+          waitSettled(sent.hash, sent.remainder.commitment, sent.sentAfter, sent.receipt),
+        );
         await refreshSummon();
         return { ok: true, txHash: sent.hash, block: receipt.blockNumber, amount: sent.remainder.amount };
       });

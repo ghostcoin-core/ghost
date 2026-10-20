@@ -10,3 +10,4 @@ import "./commit-layout.test.mjs";
 import "./tree-shape.test.mjs";
 import "./stand-in.test.mjs";
 import "./flow.test.mjs";
+import "./sent-and-done.test.mjs";
