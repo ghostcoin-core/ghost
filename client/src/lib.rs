@@ -22,6 +22,9 @@
 //! - [`seal`]: the RandomX block seal of a header, checked in light
 //!   verification mode (spec 08), on [`randomx`], a Rust port of RandomX v1
 //!   light-mode hashing.
+//! - [`header_chain`]: a header chain checked from a trusted start: the ASERT
+//!   difficulty of every header (spec 06, section 4.3), its seal under the key
+//!   block on its own branch, total work, the best chain and reorganisations.
 //!
 //! # Secrets
 //!
@@ -48,6 +51,7 @@
 pub mod commit;
 pub mod derive;
 pub mod hash;
+pub mod header_chain;
 pub mod key;
 pub mod note;
 pub mod randomx;
@@ -63,6 +67,9 @@ pub use commit::{
     Fingerprint, Marker, Rule, TypeTag, COIN, DATA, V_MAX,
 };
 pub use derive::{Blinding, DataKey, KeyBytes, NoteKey, RevealSecret, Secret};
+pub use header_chain::{
+    required_difficulty, Added, ChainError, ChainParams, HeaderChain, PinnedStart, StartError, U256,
+};
 pub use key::{check_groups, FormattedKey, KeyError, KeyFormat, PhantomKey};
 pub use note::{decrypt_note, encrypt_note, NoteContents, NoteError, NOTE_BYTES};
 pub use restore::{restore_coins, Current, DiscardReason, DiscardedNote, FoundCoin, Restored, TreeLeaf};
@@ -70,5 +77,8 @@ pub use reveal::{
     claim_to_new_key, full_reveal, partial_reveal, prove_reveal, BuiltReveal, OwnedCoin,
     RemainderCoin, RevealError, RevealTerms,
 };
-pub use seal::{check_seal, seal_hash, seed_height, verify_seal, HeaderError, SealError, SealKey};
+pub use seal::{
+    check_seal, header_fields, seal_hash, seed_height, verify_seal, HeaderError, HeaderFields, SealError,
+    SealKey,
+};
 pub use tree_state::{choose_tree_state, HeaderRoot, TreeStateChoice, SETTLE_DEPTH};

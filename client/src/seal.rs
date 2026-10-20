@@ -27,7 +27,10 @@ pub const EPOCH_LAG: u64 = 256;
 
 /// Number of fields in a header (spec 05, section 10).
 const HEADER_FIELDS: usize = 18;
+const PARENT_HASH: usize = 0;
 const DIFFICULTY: usize = 7;
+const NUMBER: usize = 8;
+const TIMESTAMP: usize = 11;
 const MIX_DIGEST: usize = 13;
 const NONCE: usize = 14;
 
@@ -207,6 +210,35 @@ fn seal_hash_of(bytes: &[u8], decoded: &Decoded) -> [u8; 32] {
         copy[start..start + len].fill(0);
     }
     keccak256(&copy)
+}
+
+/// The fields of a decoded header that link it into a chain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeaderFields {
+    /// The header's hash: Keccak-256 of its RLP (spec 05, section 10).
+    pub hash: [u8; 32],
+    pub parent_hash: [u8; 32],
+    /// The difficulty field, big-endian with no leading zero byte.
+    pub difficulty: Vec<u8>,
+    pub number: u64,
+    pub timestamp: u64,
+}
+
+fn integer(be: &[u8]) -> u64 {
+    be.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b))
+}
+
+/// Decodes a header (spec 05, section 10) and returns its hash, parent hash,
+/// difficulty, number and timestamp.
+pub fn header_fields(header: &[u8]) -> Result<HeaderFields, HeaderError> {
+    let decoded = decode(header)?;
+    Ok(HeaderFields {
+        hash: keccak256(header),
+        parent_hash: decoded.value(header, PARENT_HASH).try_into().expect("a fixed 32-byte field"),
+        difficulty: decoded.value(header, DIFFICULTY).to_vec(),
+        number: integer(decoded.value(header, NUMBER)),
+        timestamp: integer(decoded.value(header, TIMESTAMP)),
+    })
 }
 
 /// The header's seal hash: Keccak-256 of its RLP with `mixDigest` and
