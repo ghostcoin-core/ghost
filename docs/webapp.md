@@ -177,12 +177,18 @@ app makes no data commitments.
    head moves, and then gives up. That refusal is a transient, so the app
    treats exactly it as retryable. It is told by its JSON-RPC shape, as geth
    answers it over HTTP: error code -32000 and those words, whatever the
-   class of the error object. After it the app asks for the tip until it
-   holds still for 250 ms (at most 8 times), then for the fee headers for
-   the next block and, if the fee is still the proof's, sends the same
-   envelope again; otherwise it proves again as for a fee change. It sends
-   one proof at most 5 times; the refusal of the fifth send surfaces, with
-   nothing asked after it. A new proof is only ever of the first proof's
+   class of the error object. After it the app waits 250 ms, asks for the
+   tip once and for the fee headers for the next block; it never waits for
+   the tip to hold still, since a node that seals a block every few
+   milliseconds never does. If the fee is no longer the proof's, it proves
+   again as for a fee change. If the block whose root the proof uses is
+   more than 34 blocks below the tip by then (the settled block's 2 plus the
+   32 headers a scan reads), it proves again against the settled root of
+   the tip by then rather than send an envelope whose root is far behind.
+   Otherwise it sends the same envelope again. It sends one proof at most
+   5 times and then proves again; it makes at most 4 proofs, sends the last
+   one 5 times whatever its root, and the refusal of that last send
+   surfaces, with nothing asked after it. A new proof is only ever of the first proof's
    input coin: an endpoint can take a send and still answer with this
    refusal, so once that coin is spent or no longer the key's current coin
    the app stops with an error instead of spending the remainder on the
@@ -275,6 +281,17 @@ app makes no data commitments.
   again, and a taken send the node drops before any block holds it. The
   reveal must land within a bound, the recipient paid once, every proof of
   the same coin and every envelope of the same marker.
+- `reveal-reprove.test.mjs`: a Summon reveal against the stand-in mining
+  every 20 ms that refuses every send of the first proof's envelope; the
+  reveal is proved again for the tip by then and goes through, paid once,
+  every proof of the first proof's coin.
+- `reveal-moving-head.test.mjs`, with nothing built: an in-process stand-in
+  whose tip moves on every poll and a stub prover. A reveal refused there is
+  sent again after one look at the tip, never after waiting for a still tip,
+  and goes through; a refused proof whose root has fallen more than 34
+  blocks below the tip is proved again for the tip instead of sent again;
+  and a node that refuses every send stops the reveal at 4 proofs of at most
+  5 sends each.
 - `stand-in.test.mjs`: the stand-in refuses what the node refuses for a
   commit (not to the commit entry address, data not 190 bytes, a version
   other than `0x0001`, among them the old 189-byte layout) and accepts the
@@ -299,7 +316,11 @@ the release `geth` named by `GHOST_NODE_GETH` as a one-node internal network
 partial Summon and a Claim with the real prover. The wallet is the node's
 unlocked miner account. It checks on chain the commit's 190 bytes and its
 leaf, the spent marker, the remainder's leaf, the recipient's balance and the
-claimed coin. Without `GHOST_NODE_GETH` it prints
+claimed coin. It also checks the tree-state rule: opened before anyone else
+commits, the coin waits with the plain warning and its reveal is refused;
+once a stranger's commit is 2 blocks deep the Summon goes out with no
+further wait, and so does the Claim after another stranger's commit follows
+the remainder. Without `GHOST_NODE_GETH` it prints
 `SKIP: GHOST_NODE_GETH is not set` and runs nothing.
 `webapp/scripts/build-node.sh` clones ghost-node at the commit in
 `test/e2e/NODE_COMMIT`, builds it and prints the path to its `geth`:

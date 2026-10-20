@@ -48,9 +48,9 @@ const FEE_ATTEMPTS = 3;
 // The node's refusal of a reveal it could not check while new blocks kept
 // arriving (ghost-node's ghostpool): a transient, not a verdict on the
 // reveal. One proof's envelope is sent at most HEAD_MOVED_SENDS times while
-// the node answers only that; before each resend the app waits until the tip
-// stays put for `stillMs`, asking at most STILL_POLLS times, since the node
-// can only take a reveal while its head holds still for one check.
+// the node answers only that; before each resend the app waits a fixed
+// `resendMs` and reads the tip once. It never waits for the tip to hold
+// still: a node that seals a block every few milliseconds never does.
 export const HEAD_MOVED = "chain head kept moving while the reveal was checked";
 export const HEAD_MOVED_SENDS = 5;
 // A node whose head keeps moving can refuse every send of one proof: the
@@ -59,8 +59,14 @@ export const HEAD_MOVED_SENDS = 5;
 // coin, for the tree state and fee of the tip by then; at most
 // HEAD_MOVED_PROOFS proofs are made so before the last refusal surfaces.
 export const HEAD_MOVED_PROOFS = 4;
-const STILL_MS = 250;
-const STILL_POLLS = 8;
+const RESEND_MS = 250;
+// A refused proof is proved again at once, rather than sent again, when the
+// block whose root it proves against is more than this many blocks below the
+// tip: that root is no longer among the headers a new scan reads (the
+// settled block and LEAF_WINDOW blocks below it), so a new proof is made
+// against the settled root of the tip by then. The last proof allowed is
+// sent its HEAD_MOVED_SENDS times whatever its root.
+export const STALE_ROOT_DEPTH = SETTLE_DEPTH + LEAF_WINDOW;
 // The node can also take a reveal and let it go before any block holds it:
 // its pool checks every reveal it holds again on each new head and drops one
 // that fails (ghostpool Reset). Once the tip is this many blocks past a taken
@@ -248,7 +254,7 @@ export function createFlow({
   now = () => Date.now(),
   pollMs = 3000,
   maxPolls = 600,
-  stillMs = STILL_MS,
+  resendMs = RESEND_MS,
   endpoint = DEFAULT_ENDPOINT,
   commitEntry = DEFAULT_COMMIT_ENTRY,
   onChange = () => {},
@@ -577,14 +583,15 @@ export function createFlow({
   // the connection to the coin.
   //
   // A send the node refuses because its head kept moving while it checked
-  // the reveal (HEAD_MOVED) is the only one followed by more requests: the
-  // tip until it holds still, its header and the fee for the next block,
-  // then the same envelope while that fee is still the proof's, or a new
-  // proof once it is not. After a proof's HEAD_MOVED_SENDS-th refused send
-  // the reveal is proved again for the tip by then, since a node that
-  // refused one envelope that often may never take it; the refusal of the
-  // last send of the HEAD_MOVED_PROOFS-th such proof surfaces, with nothing
-  // asked after it. Any other refusal is final. Every
+  // the reveal (HEAD_MOVED) is the only one followed by more requests: after
+  // a fixed `resendMs`, the tip once, its header and the fee for the next
+  // block, then the same envelope while that fee is still the proof's and
+  // its root is at most STALE_ROOT_DEPTH blocks below the tip, or a new
+  // proof otherwise. The tip need not hold still. After a proof's
+  // HEAD_MOVED_SENDS-th refused send the reveal is proved again for the tip
+  // by then, since a node that refused one envelope that often may never
+  // take it; the refusal of the last send of the HEAD_MOVED_PROOFS-th proof
+  // surfaces, with nothing asked after it. Any other refusal is final. Every
   // proof after the first is of the first proof's input coin (`pinned`), so
   // an endpoint that took a send and still answered with the refusal cannot
   // have the remainder pay the same reveal again.
@@ -633,20 +640,14 @@ export function createFlow({
       progress("sending the reveal");
       for (let sends = 1; ; sends += 1) {
         let hash;
-        let taken = false;
+        let refusal = null;
         try {
           hash = await rpc.call("eth_sendRawTransaction", [toHex(proved.envelope)]);
-          taken = true;
         } catch (err) {
           if (!isHeadMoved(err)) throw err;
-          if (sends >= HEAD_MOVED_SENDS) {
-            refusedProofs += 1;
-            if (refusedProofs >= HEAD_MOVED_PROOFS) throw err;
-            progress("the node kept refusing this proof; proving again for its new tip");
-            continue attempts;
-          }
+          refusal = err;
         }
-        if (taken) {
+        if (!refusal) {
           if (String(hash).toLowerCase() !== toHex(proved.txHash)) {
             throw new Error("the endpoint returned another transaction hash");
           }
@@ -654,28 +655,32 @@ export function createFlow({
           const receipt = await waitTaken(hash, tip.number);
           if (receipt) return { hash, fee: scan.fee, remainder: proved.remainder, sentAfter: tip.number, receipt };
           letGo += 1;
-          if (sends >= HEAD_MOVED_SENDS) {
-            refusedProofs += 1;
-            if (refusedProofs >= HEAD_MOVED_PROOFS) {
-              throw new Error(`the node took the reveal and let it go before a block held it, ${letGo} times; nothing was spent; try again`);
-            }
-            progress("the node kept letting this proof go; proving again for its new tip");
-            continue attempts;
+        }
+        if (sends >= HEAD_MOVED_SENDS) {
+          refusedProofs += 1;
+          if (refusedProofs >= HEAD_MOVED_PROOFS) {
+            throw (
+              refusal ??
+              new Error(`the node took the reveal and let it go before a block held it, ${letGo} times; nothing was spent; try again`)
+            );
           }
-          progress("the node let the reveal go; waiting for a still tip");
-        } else {
-          progress("the node's chain moved on; waiting for a still tip");
+          progress(
+            refusal
+              ? "the node kept refusing this proof; proving again for its new tip"
+              : "the node kept letting this proof go; proving again for its new tip",
+          );
+          continue attempts;
         }
-        let number = await blockNumber();
-        for (let polls = 0; polls < STILL_POLLS; polls += 1) {
-          await sleep(stillMs);
-          const next = await blockNumber();
-          if (next === number) break;
-          number = next;
-        }
-        tip = await headerAt(number);
+        progress(refusal ? "the node's chain moved on; sending again" : "the node let the reveal go; sending again");
+        await sleep(resendMs);
+        tip = await headerAt(await blockNumber());
         if ((await feeForNextBlock(tip, headerAt)).fee !== scan.fee) {
           feeChanges += 1;
+          continue attempts;
+        }
+        if (tip.number - scan.chain.settled > STALE_ROOT_DEPTH && refusedProofs + 1 < HEAD_MOVED_PROOFS) {
+          refusedProofs += 1;
+          progress("the proof's tree state is far below the node's tip; proving again for its new tip");
           continue attempts;
         }
         progress("sending the reveal again");

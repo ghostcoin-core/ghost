@@ -213,8 +213,8 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
 // A stand-in node, a scripted wallet and a flow on them, with strangers'
 // coins on the chain. While the app waits the chain grows by a block, unless
 // `chain.mining` is set to false.
-// How long the tip must stay put before the app sends a refused reveal again.
-const STILL_MS = 3;
+// How long the app waits before it sends a refused reveal again.
+const RESEND_MS = 3;
 
 async function setUp({ fetch = globalThis.fetch, now = () => Date.now() } = {}) {
   const ghost = await loadModule();
@@ -247,12 +247,12 @@ async function setUp({ fetch = globalThis.fetch, now = () => Date.now() } = {}) 
   };
   const chain = { mining: true };
   // While the app waits for a block, the chain grows by one; while it waits
-  // for a still tip, time passes and only the stand-in's own miner moves it.
+  // before a resend, time passes and only the stand-in's own miner moves it.
   const sleep = async (ms) => {
-    if (ms === STILL_MS) return new Promise((resolve) => setTimeout(resolve, ms));
+    if (ms === RESEND_MS) return new Promise((resolve) => setTimeout(resolve, ms));
     if (chain.mining) node.mine();
   };
-  const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5, maxPolls: 20, stillMs: STILL_MS, sleep, now, fetch });
+  const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, sleep, now, fetch });
   node.foreignCommits(2);
   const done = async () => {
     worker.terminate();
@@ -636,14 +636,13 @@ test("a reveal the node refuses while its head keeps moving is sent again, the s
     assert.equal(node.reveals.length, 1);
     assert.equal(node.reveals[0].fee, SPEC_FEE);
     assert.ok(reveal.block > 82, "settled after the blocks mined during the refusals");
-    // Between two sends: the tip until it holds still, then its header and
-    // the fee window's.
+    // Between two sends: the tip once, after a short wait, then its header
+    // and the fee window's.
     const first = asked.indexOf(sends[0]);
     const second = asked.indexOf(sends[1]);
     const between = asked.slice(first + 1, second).map((r) => r.method);
-    const tips = between.findIndex((m) => m !== "eth_blockNumber");
-    assert.ok(tips >= 2, "the tip, then the tip again after a pause");
-    assert.ok(between.slice(tips).length > 0 && between.slice(tips).every((m) => m === "eth_getBlockByNumber"));
+    assert.equal(between[0], "eth_blockNumber", "the tip once");
+    assert.ok(between.length > 1 && between.slice(1).every((m) => m === "eth_getBlockByNumber"));
   } finally {
     await done();
   }
@@ -777,7 +776,8 @@ test("a reveal refused while the head moves is proved again once the fee changed
 });
 
 // The CI node seals a block every 20 ms; the app sends one proof up to 5
-// times, after a still tip each time, so a fifth send the node takes lands.
+// times, after one short wait and one look at the tip each time, so a fifth
+// send the node takes lands.
 test("a reveal the node refuses 4 times while its head moves is taken on its fifth send", async () => {
   const { node, flow, work, done } = await setUp();
   try {
@@ -794,7 +794,7 @@ test("a reveal the node refuses 4 times while its head moves is taken on its fif
     assert.equal(work.slice(fromWork).filter((w) => w.op === "prove").length, 1, "proved once");
     for (let i = 1; i < sends.length; i += 1) {
       const between = asked.slice(asked.indexOf(sends[i - 1]) + 1, asked.indexOf(sends[i]));
-      assert.ok(between.filter((r) => r.method === "eth_blockNumber").length >= 2, `a still tip before send ${i + 1}`);
+      assert.equal(between.filter((r) => r.method === "eth_blockNumber").length, 1, `one look at the tip before send ${i + 1}`);
     }
     assert.equal(node.reveals.length, 1);
     assert.equal(flow.state.error, null);
@@ -803,26 +803,21 @@ test("a reveal the node refuses 4 times while its head moves is taken on its fif
   }
 });
 
-// A node that keeps sealing blocks refuses every send; once its head holds
-// still, the app's next send is taken.
-test("a reveal refused while the node keeps mining is sent once its head holds still", async () => {
+// A node that keeps sealing a block every 2 ms and refuses the first sends:
+// its head never holds still, and the app's reveal is still taken while the
+// node mines, without waiting for a still tip.
+test("a reveal refused while the node keeps mining goes through without its head holding still", async () => {
   let node = null;
-  let stoppedAt = null;
-  let takenAt = null;
+  let takenWhileMining = null;
   const fetch = async (url, init) => {
     const call = JSON.parse(init.body);
-    const first = call.method === "eth_sendRawTransaction" && node.headMoving.refused === 0 && !node.headMoving.miner;
-    if (first) node.startMining(2);
-    const response = await globalThis.fetch(url, init);
-    // The miner stops 40 ms after the first refusal, however slow the
-    // machine is to deliver it.
-    if (first) {
-      setTimeout(() => {
-        node.stopMining();
-        stoppedAt = performance.now();
-      }, 40);
+    if (call.method === "eth_sendRawTransaction" && node.headMoving.refused === 0 && !node.headMoving.miner) {
+      node.startMining(2, { refuse: false });
+      node.moveHeadOnReveal(2, { blocks: 1 });
     }
-    if (call.method === "eth_sendRawTransaction" && !(await response.clone().json()).error) takenAt = performance.now();
+    const mining = node.headMoving.miner !== null;
+    const response = await globalThis.fetch(url, init);
+    if (call.method === "eth_sendRawTransaction" && !(await response.clone().json()).error) takenWhileMining = mining;
     return response;
   };
   const set = await setUp({ fetch });
@@ -832,11 +827,14 @@ test("a reveal refused while the node keeps mining is sent once its head holds s
     await readyToReveal(node, flow);
     const fromWork = work.length;
     await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
-    assert.ok(node.headMoving.refused >= 1, "refused while the node mined");
-    assert.ok(stoppedAt !== null && takenAt >= stoppedAt, "taken only once the head held still");
-    assert.equal(work.slice(fromWork).filter((w) => w.op === "prove").length, 1, "proved once");
+    assert.equal(node.headMoving.refused, 2, "refused while the node mined");
+    assert.equal(takenWhileMining, true, "taken while the node still mined");
+    const proofs = work.slice(fromWork).filter((w) => w.op === "prove");
+    assert.ok(proofs.length >= 1 && proofs.length <= HEAD_MOVED_PROOFS);
+    assert.ok(proofs.every((w) => !w.decoy && w.position === proofs[0].position), "each time of the same coin");
     assert.equal(node.reveals.length, 1);
   } finally {
+    node.stopMining();
     await done();
   }
 });

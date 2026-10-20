@@ -4,6 +4,7 @@
 
 import "./units.test.mjs";
 import "./early-reveal.test.mjs";
+import "./reveal-moving-head.test.mjs";
 import "./wasm.test.mjs";
 import "./commit-layout.test.mjs";
 import "./tree-shape.test.mjs";

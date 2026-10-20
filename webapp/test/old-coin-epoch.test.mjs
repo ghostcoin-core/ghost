@@ -76,7 +76,7 @@ test("a leaf in S - 32 to S keeps its first header's root", () => {
 const GHOST = 10n ** 18n;
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const RECIPIENT = "0x2222222222222222222222222222222222222222";
-const STILL_MS = 3;
+const RESEND_MS = 3;
 // At tip 76 the settled block is 74 and the headers read start at block 42.
 const TIP = 76;
 const SETTLED = TIP - 2;
@@ -96,10 +96,10 @@ async function setUp() {
   };
   // While an app waits for a block, its chain grows by one.
   const sleep = async (ms) => {
-    if (ms === STILL_MS) return new Promise((resolve) => setTimeout(resolve, ms));
+    if (ms === RESEND_MS) return new Promise((resolve) => setTimeout(resolve, ms));
     node.mine();
   };
-  const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5, maxPolls: 20, stillMs: STILL_MS, sleep });
+  const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, sleep });
   const done = async () => {
     worker.terminate();
     await node.close();

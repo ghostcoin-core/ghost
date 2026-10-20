@@ -3,6 +3,9 @@
 // envelope refused with the head-moving error, the resends of that same
 // envelope included, while the tip keeps advancing. Resending one envelope
 // never gets the reveal through there; a new proof for the tip by then does.
+// At a block every 20 ms the refused proof's root is far below the tip by
+// its first refusal, so the app proves again then instead of sending the
+// same envelope up to 5 times.
 //
 // The Summon must succeed with a reveal whose envelope differs from the
 // refused one, the recipient paid once, and every proof made of the first
@@ -12,7 +15,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { fromHex, toHex } from "../src/bytes.mjs";
-import { DEFAULT_COMMIT_ENTRY, HEAD_MOVED_PROOFS, HEAD_MOVED_SENDS, createFlow } from "../src/flow.mjs";
+import { DEFAULT_COMMIT_ENTRY, HEAD_MOVED_PROOFS, HEAD_MOVED_SENDS, STALE_ROOT_DEPTH, createFlow } from "../src/flow.mjs";
 import { loadModule, nodeProver } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
 
@@ -44,7 +47,7 @@ test("a Summon whose first proof the node refuses on every send is proved again 
     }
     return response;
   };
-  const flow = createFlow({ prover, wallet, endpoint: node.url, fetch, pollMs: 20, maxPolls: 3000, stillMs: 10 });
+  const flow = createFlow({ prover, wallet, endpoint: node.url, fetch, pollMs: 20, maxPolls: 3000, resendMs: 10 });
   try {
     // A block every 20 ms throughout, a stranger's commit in every 8th, so
     // a settled block soon holds a commitment after the coin.
@@ -67,9 +70,13 @@ test("a Summon whose first proof the node refuses on every send is proved again 
     const stale = node.headMoving.stale;
     assert.ok(stale.envelope, "the node refused an envelope");
     const refused = sends.filter((s) => s.error !== null);
-    assert.equal(refused.length, HEAD_MOVED_SENDS, "every send of the first proof refused, at most 5 of them");
+    assert.ok(refused.length >= 1 && refused.length <= HEAD_MOVED_SENDS, `every send of the first proof refused, at most 5 of them (${refused.length})`);
     assert.ok(refused.every((s) => /kept moving/.test(s.error) && s.envelope === stale.envelope));
-    assert.equal(stale.refused, HEAD_MOVED_SENDS);
+    assert.equal(stale.refused, refused.length);
+    assert.ok(
+      refused.every((s) => s.tip - refused[0].tip <= STALE_ROOT_DEPTH),
+      "the refused envelope is not sent again once its root is far below the tip",
+    );
     const landed = sends.at(-1);
     assert.equal(landed.error, null, "the last send is taken");
     assert.notEqual(landed.envelope, stale.envelope, "the reveal that lands is a different proof from the refused one");
