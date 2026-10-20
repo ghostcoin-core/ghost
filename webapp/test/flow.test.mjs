@@ -15,7 +15,6 @@ import test from "node:test";
 import { toHex } from "../src/bytes.mjs";
 import {
   DEFAULT_COMMIT_ENTRY,
-  HEAD_MOVED_PROOFS,
   HEAD_MOVED_SENDS,
   WaitError,
   ZERO_ADDRESS,
@@ -215,6 +214,10 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
 // `chain.mining` is set to false.
 // How long the app waits before it sends a refused reveal again.
 const RESEND_MS = 3;
+// Proofs of one reveal the app makes here before a head-moving refusal
+// surfaces: a few, since each is a real proof (the app's own bound is
+// generous, and reveal-moving-head.test.mjs covers it with a stub prover).
+const PROOFS = 4;
 
 async function setUp({ fetch = globalThis.fetch, now = () => Date.now() } = {}) {
   const ghost = await loadModule();
@@ -252,7 +255,7 @@ async function setUp({ fetch = globalThis.fetch, now = () => Date.now() } = {}) 
     if (ms === RESEND_MS) return new Promise((resolve) => setTimeout(resolve, ms));
     if (chain.mining) node.mine();
   };
-  const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, sleep, now, fetch });
+  const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, headMovedProofs: PROOFS, sleep, now, fetch });
   node.foreignCommits(2);
   const done = async () => {
     worker.terminate();
@@ -830,7 +833,7 @@ test("a reveal refused while the node keeps mining goes through without its head
     assert.equal(node.headMoving.refused, 2, "refused while the node mined");
     assert.equal(takenWhileMining, true, "taken while the node still mined");
     const proofs = work.slice(fromWork).filter((w) => w.op === "prove");
-    assert.ok(proofs.length >= 1 && proofs.length <= HEAD_MOVED_PROOFS);
+    assert.ok(proofs.length >= 1 && proofs.length <= PROOFS);
     assert.ok(proofs.every((w) => !w.decoy && w.position === proofs[0].position), "each time of the same coin");
     assert.equal(node.reveals.length, 1);
   } finally {
@@ -849,16 +852,16 @@ test("a reveal refused on every send of every proof while the head keeps moving 
     await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), /kept moving/);
     const asked = node.requests.slice(from);
     const sends = sendsIn(asked);
-    assert.equal(sends.length, HEAD_MOVED_SENDS * HEAD_MOVED_PROOFS, "at most 5 sends of each of the proofs");
-    assert.equal(node.headMoving.refused, HEAD_MOVED_SENDS * HEAD_MOVED_PROOFS);
+    assert.equal(sends.length, HEAD_MOVED_SENDS * PROOFS, "at most 5 sends of each of the proofs");
+    assert.equal(node.headMoving.refused, HEAD_MOVED_SENDS * PROOFS);
     assert.equal(asked.at(-1).method, "eth_sendRawTransaction", "nothing is asked after the last refusal");
     const proofs = work.slice(fromWork).filter((w) => w.op === "prove");
-    assert.equal(proofs.length, HEAD_MOVED_PROOFS, "proved again after each proof's 5 refused sends, up to the bound");
+    assert.equal(proofs.length, PROOFS, "proved again after each proof's 5 refused sends, up to the bound");
     assert.ok(
       proofs.every((w) => !w.decoy && w.position === proofs[0].position && w.number === proofs[0].number),
       "each time of the same coin",
     );
-    for (let p = 0; p < HEAD_MOVED_PROOFS; p += 1) {
+    for (let p = 0; p < PROOFS; p += 1) {
       const own = sends.slice(p * HEAD_MOVED_SENDS, (p + 1) * HEAD_MOVED_SENDS).map((r) => r.params[0]);
       assert.equal(new Set(own).size, 1, `proof ${p + 1}'s envelope, 5 times`);
       if (p > 0) assert.notEqual(own[0], sends[(p - 1) * HEAD_MOVED_SENDS].params[0], `proof ${p + 1} is a new envelope`);

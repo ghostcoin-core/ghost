@@ -6,8 +6,10 @@
 //
 // The reveal must go through without the tip holding still: a resend after
 // one short wait and one look at the tip, and a new proof against the settled
-// root of the tip by then once the refused proof's root is far below it. The
-// caps on sends and proofs hold, and every proof is of the first coin.
+// root of the tip by then once the refused proof's root is far below it. A
+// node that refuses send after send is tried again for minutes, not seconds;
+// the caps on sends per proof, proofs and time hold, and every proof is of
+// the first coin.
 //
 // Nothing is built: the endpoint is the in-process stand-in of
 // support/moving-node.mjs and the prover a stub.
@@ -16,7 +18,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { SETTLE_DEPTH } from "../src/chain.mjs";
-import { HEAD_MOVED, HEAD_MOVED_PROOFS, HEAD_MOVED_SENDS, LEAF_WINDOW, STALE_ROOT_DEPTH } from "../src/flow.mjs";
+import { HEAD_MOVED, HEAD_MOVED_MS, HEAD_MOVED_PROOFS, HEAD_MOVED_SENDS, LEAF_WINDOW, STALE_ROOT_DEPTH } from "../src/flow.mjs";
 import { flowOn, movingNode } from "./support/moving-node.mjs";
 
 const RECIPIENT = "0x2222222222222222222222222222222222222222";
@@ -95,7 +97,7 @@ test("a refused proof whose root has fallen far below the moving tip is proved a
   assert.equal(flow.state.error, null);
 });
 
-test("a reveal refused on every send while the tip keeps moving stops at the caps, with nothing asked after the last refusal", async () => {
+test("a reveal refused on every send while the tip keeps moving stops at the proof cap, with nothing asked after the last refusal", async () => {
   const node = movingNode({ step: 12, proveBlocks: 4, refuseFirst: Infinity });
   const { flow } = flowOn(node);
   const coin = (await flow.summonOpen("synthetic test key")).current;
@@ -106,7 +108,8 @@ test("a reveal refused on every send while the tip keeps moving stops at the cap
     return true;
   });
 
-  assert.equal(node.proofs.length, HEAD_MOVED_PROOFS, "at most 4 proofs");
+  assert.ok(node.clock.ms < HEAD_MOVED_MS, "the proof cap, not the time bound, ended it");
+  assert.equal(node.proofs.length, HEAD_MOVED_PROOFS, `at most ${HEAD_MOVED_PROOFS} proofs`);
   for (let p = 0; p < HEAD_MOVED_PROOFS; p += 1) {
     const own = node.sends.filter((s) => s.proof === p).length;
     assert.ok(own >= 1 && own <= HEAD_MOVED_SENDS, `proof ${p + 1} sent 1 to 5 times (${own})`);
@@ -117,4 +120,55 @@ test("a reveal refused on every send while the tip keeps moving stops at the cap
   assert.ok(node.proofs.every((p) => p.number === coin.number && p.position === coin.position), "every proof is of the same coin");
   assert.equal(node.reveals.length, 0);
   assert.equal(flow.state.error, HEAD_MOVED);
+});
+
+// The CI node: a block every 20 ms, a proof that takes about 6 s (300
+// blocks), and the node's exact refusal on send after send while the reveal
+// is otherwise good (it takes any canonical root, however deep). The flow
+// must keep going well past a few seconds and a handful of sends.
+test("a reveal the node refuses with the head-moving error for 40 sends over minutes, then takes, goes through, paid once", async () => {
+  const node = movingNode({ step: 12, proveBlocks: 300, proveMs: 6000, refuseFirst: 40, deepest: Infinity });
+  const { flow } = flowOn(node);
+  const coin = (await flow.summonOpen("synthetic test key")).current;
+
+  const reveal = await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
+
+  assert.equal(node.sends.length, 41, "40 refused sends, then the one the node takes");
+  assert.ok(node.sends.slice(0, 40).every((s) => s.error === HEAD_MOVED));
+  assert.equal(node.sends[40].error, null);
+  assert.ok(node.clock.ms > 30_000, `kept going for more than 30 s of refusals (${node.clock.ms} ms)`);
+  // A proof's root is hundreds of blocks below the tip by its first refusal,
+  // so each refused proof is proved again for the tip by then.
+  assert.equal(node.proofs.length, 41);
+  assert.ok(node.sends.every((s, i) => s.proof === i), "one send of each proof");
+  assert.ok(node.proofs.every((p, i) => i === 0 || p.rootHeight > node.proofs[i - 1].rootHeight), "each proof against a later settled root");
+  assert.ok(
+    node.proofs.every((p) => p.number === coin.number && p.position === coin.position && p.amount === coin.amount),
+    "every proof is of the first proof's coin",
+  );
+  assert.equal(node.reveals.length, 1, "one reveal in a block, paid once");
+  assert.equal(node.reveals[0].proof, 40);
+  assert.equal(reveal.block, node.reveals[0].block);
+  assert.equal(flow.state.error, null);
+});
+
+test("a reveal the node refuses with the head-moving error on every send surfaces the refusal once the generous time bound has passed", async () => {
+  const node = movingNode({ step: 12, proveBlocks: 300, proveMs: 6000, refuseFirst: Infinity, deepest: Infinity });
+  const { flow } = flowOn(node);
+  await flow.summonOpen("synthetic test key");
+  const fromRequests = node.requests.length;
+
+  await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), (err) => {
+    assert.equal(err.message, HEAD_MOVED);
+    return true;
+  });
+
+  assert.ok(node.clock.ms >= HEAD_MOVED_MS, "not before the time bound");
+  assert.ok(node.clock.ms < HEAD_MOVED_MS + 10_000, "soon after it");
+  assert.ok(node.proofs.length > 50 && node.proofs.length < HEAD_MOVED_PROOFS);
+  for (let p = 0; p < node.proofs.length; p += 1) {
+    assert.ok(node.sends.filter((s) => s.proof === p).length <= HEAD_MOVED_SENDS, `proof ${p + 1} sent at most 5 times`);
+  }
+  assert.equal(node.requests.slice(fromRequests).at(-1), "eth_sendRawTransaction", "nothing is asked after the last refusal");
+  assert.equal(node.reveals.length, 0);
 });
