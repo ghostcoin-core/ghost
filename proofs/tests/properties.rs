@@ -329,21 +329,64 @@ fn hold_context(d: &Data, verifier: u8, challenge: [u8; 32]) -> HoldContext {
 fn zero_knowledge_mode_is_on_in_shipped_configuration() {
     let config = shipped_configuration().expect("the shipped configuration builds");
     assert!(config.zero_knowledge, "the library reports the configuration as not zero-knowledge");
-    assert_eq!(config.log_blowup, 2);
-    assert_eq!(config.num_queries, 57);
+    assert_eq!(config.log_blowup, 3);
+    assert_eq!(config.num_queries, 43);
     assert_eq!(config.query_pow_bits, 16);
-    assert!(config.batch_pow_bits <= 16);
+    assert_eq!(config.batch_pow_bits, 16);
     assert_eq!(config.extension_degree, 5);
     assert_eq!(config.commitment_collision_bits, 128);
     for (statement, estimate) in config.statements {
         assert!(
-            estimate.conjectured_bits >= 128,
-            "{statement:?}: {} conjectured bits",
-            estimate.conjectured_bits
+            estimate.conjectured_bits_half_grinding >= 128,
+            "{statement:?}: {} conjectured bits with grinding counted at half",
+            estimate.conjectured_bits_half_grinding
         );
         assert!(estimate.constraint_degree <= 1 << config.log_blowup, "{statement:?}");
         assert!(estimate.trace_height.is_power_of_two(), "{statement:?}");
     }
+}
+
+/// QS-12: the shipped configuration meets every item of the rule of spec 09,
+/// section 4.1, and its report states the conjectured and proven figures,
+/// classical and quantum.
+#[test]
+fn shipped_configuration_meets_quantum_rule() {
+    let config = shipped_configuration().expect("the security gate takes the shipped configuration");
+
+    // 1. The queries alone reach 128 conjectured bits, before grinding:
+    // rate 1/8 and 43 queries, 129.
+    assert_eq!((config.log_blowup, config.num_queries), (3, 43));
+    assert_eq!(config.query_bits, config.log_blowup * config.num_queries);
+    assert!(config.query_bits >= 128, "the queries alone give {} bits", config.query_bits);
+    // Grinding is margin, at most 16 bits at a site.
+    assert!(config.query_pow_bits <= MAX_GRINDING_BITS && config.batch_pow_bits <= MAX_GRINDING_BITS);
+
+    // 2. Every estimator term reaches 128 for every statement with grinding
+    // counted at half; the figures are stated in both regimes.
+    let reported: Vec<Statement> = config.statements.iter().map(|(s, _)| *s).collect();
+    assert_eq!(reported, Statement::ALL);
+    for (statement, e) in config.statements {
+        assert!(
+            e.conjectured_bits_half_grinding >= 128,
+            "{statement:?}: {} bits with grinding at half",
+            e.conjectured_bits_half_grinding
+        );
+        assert!(e.conjectured_bits >= e.conjectured_bits_half_grinding, "{statement:?}: {e:?}");
+        assert_eq!(e.conjectured_quantum_bits, e.conjectured_bits / 2, "{statement:?}");
+        assert!(e.conjectured_quantum_bits >= 64, "{statement:?}: {e:?}");
+        assert_eq!(e.proven_quantum_bits, e.proven_bits / 2, "{statement:?}");
+        assert!(e.proven_bits > 0 && e.proven_bits <= e.conjectured_bits, "{statement:?}: {e:?}");
+    }
+
+    // 3. Keccak-256 with 256-bit digests in the commitments and the transcript.
+    assert!(config.commitment_hash_is_keccak256);
+    assert_eq!(config.merkle_digest_bits, 256);
+    assert_eq!(config.transcript_digest_bits, 256);
+    assert_eq!(config.commitment_collision_bits, 128);
+
+    // 4. Hiding on, with salts of at least 128 bits.
+    assert!(config.zero_knowledge);
+    assert!(config.salt_bits >= MIN_SALT_BITS && MIN_SALT_BITS >= 128, "{}-bit salts", config.salt_bits);
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +434,7 @@ fn proof_length_bound_fits_field() {
     let bound = proof_length_bound(MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH);
     assert!(bound <= PROOF_FIELD_BYTES, "the bound {bound} is over {PROOF_FIELD_BYTES}");
     // The figure spec 07, section 3 derives term by term.
-    assert_eq!(bound, 1_268_539);
+    assert_eq!(bound, 1_053_331);
     // Any smaller trace has a smaller bound.
     for statement in Statement::ALL {
         let t = statement_trace(statement);

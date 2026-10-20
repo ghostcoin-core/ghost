@@ -210,9 +210,18 @@ pub fn record_fields(session: &Session) -> Result<String, ProofError> {
     json_num(&mut o, "trace_width", est.trace_width as u64);
     json_num(&mut o, "constraint_degree", est.constraint_degree as u64);
     json_num(&mut o, "conjectured_security_bits", est.conjectured_bits as u64);
+    json_num(&mut o, "conjectured_security_bits_half_grinding", est.conjectured_bits_half_grinding as u64);
+    json_num(&mut o, "conjectured_quantum_security_bits", est.conjectured_quantum_bits as u64);
     json_num(&mut o, "proven_security_bits", est.proven_bits as u64);
+    json_num(&mut o, "proven_quantum_security_bits", est.proven_quantum_bits as u64);
+    json_num(&mut o, "query_security_bits", c.query_bits as u64);
+    json_num(&mut o, "salt_bits", c.salt_bits as u64);
     json_num(&mut o, "security_target_bits", 128);
-    json_str(&mut o, "security_target_regime", "conjectured");
+    json_str(
+        &mut o,
+        "security_target_regime",
+        "conjectured, queries alone and every term with grinding counted at half (spec 09, section 4.1)",
+    );
     json_str(&mut o, "security_estimator", "library: p3-uni-stark StarkSecurityParams (p3-security)");
     json_num(&mut o, "witness_seed", u64::from(session.seed));
     o.push_str(&format!("\"same_key\":{},", session.same_key));

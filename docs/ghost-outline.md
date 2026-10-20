@@ -234,7 +234,7 @@ These are starting points. Each is confirmed or changed by the work named beside
 | Detail | Starting pick | Settled by |
 |---|---|---|
 | Base client | Settled: a maintained fork of Go Ethereum's proof-of-work code from Core-Geth at a pinned commit, with RandomX replacing Etchash. See [decision 0001](decisions/0001-base-client.md). | Decision 0001 |
-| Proof library | Settled: Plonky3 at a pinned revision, over BabyBear with a degree-5 extension and FRI, 128 conjectured bits, zero-knowledge mode on. See [decision 0003](decisions/0003-proof-system.md). | Decision 0003 |
+| Proof library | Settled: Plonky3 at a pinned revision, over BabyBear with a degree-5 extension and FRI at blowup 2^3 with 43 queries, Keccak-256 commitments, zero-knowledge mode on, verified natively and never wrapped in an elliptic-curve proof. It meets the post-quantum rule of [spec 09, section 4.1](spec/09-quantum-safe-accounts.md): 128 conjectured bits classical and 64 quantum, 80 proven classical and 40 quantum. See [decision 0003](decisions/0003-proof-system.md). | Decision 0003 |
 | Hash inside proofs | Settled: Keccak-256, inside proofs and in the trees, chosen over Poseidon2 as the more studied hash that meets the 10-second target. See [decision 0003](decisions/0003-proof-system.md). | Decision 0003 |
 | Private transaction | A new transaction type alongside Ethereum's existing ones | The specification |
 | Key derivation | Every secret derived from the digits with standard hashing | The specification |
