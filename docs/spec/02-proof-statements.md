@@ -451,7 +451,8 @@ through the shortest reorganisations; a reveal whose root is reorganised away
 is refused by the node, spends nothing, and can be proved again.
 
 - **The holder chooses the cover.** The settled root covers every leaf of the
-  tree up to block `h`; that leaf count is the anonymity set of the reveal.
+  tree up to block `h`; that leaf count is an upper bound on the anonymity set of the reveal, not a count of people or of look-alikes
+  (research: privacy under attack).
   The wallet shows it and lets the holder reveal now or wait for more leaves.
   It never forces a wait: in the founder's words, a holder who does not want
   the coin to be traced can wait their own blocks, and one who wants to reveal

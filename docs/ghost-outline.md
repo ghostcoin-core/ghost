@@ -16,7 +16,7 @@ Decided by the founder on 2026-10-17.
 Fixed requirements of the core:
 1. **Only the holder can act.** No administrator, miner, committee or time-lock can reveal or take a commitment.
 2. **Quantum-safe throughout.** Hash-based proofs only, never wrapped in elliptic-curve proofs, and quantum-safe accounts, wallets and node transport from genesis, all held to one security target of at least NIST Category 1 ([spec 09](spec/09-quantum-safe-accounts.md)).
-3. **No link between commit and reveal,** shown by the linkage test.
+3. **No cryptographic link between commit and reveal,** shown by the linkage test. The test checks that no value is shared; it does not show resistance to matching by amount, timing or network address (see [privacy under attack](research/privacy-under-attack.md)).
 4. **Two kinds of reveal:** a one-time reveal that uses the commitment up, and a repeatable proof of holding.
 5. **Rules fixed at commit** (for example time windows or destinations), enforced on reveal.
 
