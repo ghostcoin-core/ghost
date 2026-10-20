@@ -1,6 +1,6 @@
 # Ghost: locked outline
 
-Locked 2026-10-13. Details for each section are worked out separately and do not change this outline unless noted. Updated 2026-10-17: the core value proposition (founder decision), the base client and EVM decision, the founder decisions, and a data milestone.
+Locked 2026-10-13. Details for each section are worked out separately and do not change this outline unless noted. Updated 2026-10-17: the core value proposition (founder decision), the base client and EVM decision, the founder decisions, and a data milestone. Updated 2026-10-20: quantum-safe accounts from genesis and one security target for every part of Ghost (founder decision; [spec 09](spec/09-quantum-safe-accounts.md)).
 
 ## Context
 This is a rebuild of a system that previously ran on a public testnet under the name Specter. The old code is used as reference only (see "Reference: old Specter code"). Its audits were all done by AI, not an outside firm, and nothing here relies on them.
@@ -15,7 +15,7 @@ Decided by the founder on 2026-10-17.
 
 Fixed requirements of the core:
 1. **Only the holder can act.** No administrator, miner, committee or time-lock can reveal or take a commitment.
-2. **Quantum-safe throughout.** Hash-based proofs only, never wrapped in elliptic-curve proofs.
+2. **Quantum-safe throughout.** Hash-based proofs only, never wrapped in elliptic-curve proofs, and quantum-safe accounts, wallets and node transport from genesis, all held to one security target of at least NIST Category 1 ([spec 09](spec/09-quantum-safe-accounts.md)).
 3. **No link between commit and reveal,** shown by the linkage test.
 4. **Two kinds of reveal:** a one-time reveal that uses the commitment up, and a repeatable proof of holding.
 5. **Rules fixed at commit** (for example time windows or destinations), enforced on reveal.
@@ -46,7 +46,7 @@ Directions examined and set aside on 2026-10-17, with reasons in [decision 0002]
   - the RandomX reference implementation;
   - an existing open-source hash-based prover and verifier;
   - standard hashes and standard encryption;
-  - standard EVM wallet interfaces.
+  - standard EVM wallet interfaces (JSON-RPC), with transactions signed under a quantum-safe scheme ID ([spec 09](spec/09-quantum-safe-accounts.md)).
 - **Necessarily custom, and where review effort goes:**
   - the commit and reveal statements;
   - the coin accounting and origin rule;
@@ -99,7 +99,7 @@ Directions examined and set aside on 2026-10-17, with reasons in [decision 0002]
 - **Rules on GHOST.** There are none in the first milestone. Afterwards a short fixed list is added (time lock, expiry, restricted destination), with defined carry-over into remainders and claims.
 
 ## Transactions and fees
-- **Public transfers:** ordinary EVM transfers.
+- **Public transfers:** ordinary EVM transfers, signed by a quantum-safe account ([spec 09](spec/09-quantum-safe-accounts.md)).
 - **Commit:** a normal transaction from a public account, visible.
 - **Reveal:** a native private transaction with no account. The proof is the authorization.
 - **One private shape:** one commitment in, an optional public amount out, and one remainder commitment.
@@ -120,7 +120,7 @@ Directions examined and set aside on 2026-10-17, with reasons in [decision 0002]
 - **No proving-key download.** Hash-based proofs need none. The old app made users download a 370 MB key.
 - **Speed requirement:** 10 seconds or less in a browser on named reference hardware. The proof system is revisited if this is not met.
 - **Boundary:** ordinary accounts can never authorize the reveal of a commitment.
-- **Ordinary accounts:** these start as safe as Ethereum's, with a post-quantum migration planned.
+- **Ordinary accounts:** quantum-safe from genesis. They sign with ML-DSA-44 (FIPS 204), with SLH-DSA (FIPS 205) defined by scheme ID; every secp256k1 transaction type is refused, addresses stay 20 bytes, and wallet accounts come from a wallet seed kept apart from Phantom Keys. See [spec 09](spec/09-quantum-safe-accounts.md).
 
 ## Extension points
 1. Version tags on every commitment, proof and transaction.
@@ -276,6 +276,7 @@ The old Specter code is not part of this repository. File paths below are relati
 - **Public identity:** decided. The founder will appear under a pseudonym.
 - **Legal review:** decided. The founder knowingly skipped it.
 - **Core value proposition:** decided 2026-10-17 (see "Core value proposition").
+- **Quantum-safe everywhere GHOST is held:** decided 2026-10-20, after a model-based audit. Ghost launches with quantum-safe accounts and wallets, not only quantum-safe Phantom Keys, and every part of the system is held to one security target of at least NIST Category 1. The specification the build tickets follow is [spec 09](spec/09-quantum-safe-accounts.md).
 
 ## Scope of work order
 1. Base client survey and choice (done).
