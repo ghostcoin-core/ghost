@@ -15,11 +15,15 @@
 //! The public verifiers reject them whether or not the feature is on.
 //!
 //! **Proof system** (decision 0003): Plonky3's uni-STARK over BabyBear with a
-//! degree-5 extension, hiding FRI at blowup 2^2 with 57 queries, 16 bits of
-//! grinding on the queries and 16 before the batching challenge, Keccak-256
-//! for every commitment, zero-knowledge on, at least 128 conjectured bits. It
-//! is transparent and the proof is verified as it is. Inside the proofs the
-//! only hash is Keccak-256 with the original padding, the hash of spec 01.
+//! degree-5 extension, hiding FRI at blowup 2^3 (rate 1/8) with 43 queries,
+//! 16 bits of grinding on the queries and 16 before the batching challenge,
+//! Keccak-256 for every commitment, zero-knowledge on. The security gate holds
+//! it to the post-quantum rule of spec 09, section 4.1: 129 conjectured bits
+//! from the queries alone, and at least 128 for every term of the library's
+//! estimator with grinding counted at half, so about 64 against a quantum
+//! attacker. It is transparent and the proof is verified as it is, never
+//! wrapped in an elliptic-curve proof. Inside the proofs the only hash is
+//! Keccak-256 with the original padding, the hash of spec 01.
 //!
 //! **What stays private.** No public input is `s`, `r`, `b`, `cf`, `v`, `v'`,
 //! a position or a path. The types that hold them implement neither `Debug`
@@ -79,9 +83,9 @@ pub use reveal::{
     verify_coin_reveal,
 };
 pub use stark::{
-    BATCH_POW_BITS, COLLISION_RESISTANCE_BITS, EXTENSION_DEGREE, LOG_BLOWUP, MAX_GRINDING_BITS, MAX_TRACE_HEIGHT,
-    MAX_TRACE_WIDTH, NUM_QUERIES, PROOF_FIELD_BYTES, QUERY_POW_BITS, SecurityEstimate, Statement,
-    TARGET_CONJECTURED_BITS, proof_length_bound,
+    BATCH_POW_BITS, COLLISION_RESISTANCE_BITS, DIGEST_BITS, EXTENSION_DEGREE, LOG_BLOWUP, MAX_GRINDING_BITS,
+    MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH, MIN_SALT_BITS, NUM_QUERIES, PROOF_FIELD_BYTES, QUERY_POW_BITS, SALT_BITS,
+    SecurityEstimate, Statement, TARGET_CONJECTURED_BITS, proof_length_bound,
 };
 
 /// Why a proof was not made or not accepted.
@@ -122,8 +126,22 @@ pub enum ProofError {
     NotZeroKnowledge,
     /// The constraint degree does not fit the blowup in zero-knowledge mode.
     ConstraintDegreeTooHigh,
-    /// The estimate is below 128 conjectured bits.
+    /// The estimate, with grinding counted at half, is below 128 conjectured
+    /// bits (spec 09, section 4.1, item 2).
     BelowSecurityFloor { bits: usize },
+    /// `log2(blowup) * queries` is below 128: the queries alone do not reach
+    /// the floor (spec 09, section 4.1, item 1).
+    TooFewQueries { bits: usize },
+    /// A grinding site over [`MAX_GRINDING_BITS`].
+    TooMuchGrinding,
+    /// The commitments or the transcript do not use Keccak-256 with 256-bit
+    /// digests (spec 09, section 4.1, item 3).
+    NotKeccak256,
+    /// Salts shorter than [`MIN_SALT_BITS`] (spec 09, section 4.1, item 4).
+    SaltTooShort { bits: usize },
+    /// The library's estimator could not be run on the statement; an
+    /// uncertain estimate is a refusal.
+    EstimateUnavailable,
     /// A statement's trace is taller or wider than the proof-size budget
     /// (spec 07, section 3), so its proof might not fit the proof field.
     TraceOverBudget { height: usize, width: usize },
@@ -154,7 +172,17 @@ impl fmt::Display for ProofError {
             Self::ChallengeAlreadyIssued => f.write_str("challenge already issued"),
             Self::NotZeroKnowledge => f.write_str("configuration is not zero-knowledge"),
             Self::ConstraintDegreeTooHigh => f.write_str("constraint degree too high for the blowup"),
-            Self::BelowSecurityFloor { bits } => write!(f, "{bits} conjectured bits, below {TARGET_CONJECTURED_BITS}"),
+            Self::BelowSecurityFloor { bits } => write!(
+                f,
+                "{bits} conjectured bits with grinding counted at half, below {TARGET_CONJECTURED_BITS}"
+            ),
+            Self::TooFewQueries { bits } => {
+                write!(f, "the queries alone give {bits} conjectured bits, below {TARGET_CONJECTURED_BITS}")
+            }
+            Self::TooMuchGrinding => write!(f, "a grinding site over {MAX_GRINDING_BITS} bits"),
+            Self::NotKeccak256 => f.write_str("commitments or transcript not Keccak-256 with 256-bit digests"),
+            Self::SaltTooShort { bits } => write!(f, "{bits}-bit salts, below {MIN_SALT_BITS}"),
+            Self::EstimateUnavailable => f.write_str("the security estimate could not be computed"),
             Self::TraceOverBudget { height, width } => write!(
                 f,
                 "trace of {height} rows by {width} columns is over the budget of \
@@ -206,20 +234,40 @@ pub struct ShippedConfiguration {
     pub batch_pow_bits: usize,
     pub extension_degree: usize,
     pub commitment_collision_bits: usize,
-    /// The estimator's result for each statement at these parameters.
+    /// `log_blowup * num_queries`: the conjectured bits of the queries alone,
+    /// before grinding (spec 09, section 4.1, item 1).
+    pub query_bits: usize,
+    /// Whether the commitments and the transcript hash are recognised as
+    /// Keccak-256.
+    pub commitment_hash_is_keccak256: bool,
+    /// Bits of a Merkle digest.
+    pub merkle_digest_bits: usize,
+    /// Bits of the transcript hash's output.
+    pub transcript_digest_bits: usize,
+    /// Salt bits per opened row.
+    pub salt_bits: usize,
+    /// The estimator's result for each statement at these parameters:
+    /// conjectured and proven, classical and quantum.
     pub statements: [(Statement, SecurityEstimate); 3],
 }
 
-/// Build the shipped configuration and report it.
+/// Build the shipped configuration and report it. Fails when the security
+/// gate refuses any statement.
 pub fn shipped_configuration() -> Result<ShippedConfiguration, ProofError> {
+    let p = stark::shipped_parameters();
     Ok(ShippedConfiguration {
-        zero_knowledge: stark::shipped_is_zero_knowledge(),
-        log_blowup: LOG_BLOWUP,
-        num_queries: NUM_QUERIES,
-        query_pow_bits: QUERY_POW_BITS,
-        batch_pow_bits: BATCH_POW_BITS,
+        zero_knowledge: p.zero_knowledge,
+        log_blowup: p.fri.log_blowup,
+        num_queries: p.fri.num_queries,
+        query_pow_bits: p.fri.query_pow_bits,
+        batch_pow_bits: p.fri.batch_pow_bits,
         extension_degree: EXTENSION_DEGREE,
         commitment_collision_bits: COLLISION_RESISTANCE_BITS,
+        query_bits: p.fri.log_blowup * p.fri.num_queries,
+        commitment_hash_is_keccak256: p.hash == stark::CommitmentHash::Keccak256,
+        merkle_digest_bits: p.merkle_digest_bits,
+        transcript_digest_bits: p.transcript_digest_bits,
+        salt_bits: p.salt_bits,
         statements: stark::estimates()?,
     })
 }

@@ -191,11 +191,17 @@ field. The width was chosen so that it never has to grow.
 
 - **Why not 1,028,144.** The earlier width came from the benchmark statement
   of decision 0003, a trace of 1,024 rows by 3,271 columns. The coin reveal
-  that shipped is 2,048 rows by 3,808 columns, and its proofs measure
-  1,188,348 bytes (median) to 1,194,788 bytes (largest), so none fitted. The
-  proof settings did not change: blowup 2^2, 57 queries, extension degree 5,
-  Keccak-256, zero-knowledge on. The data reveal and the proof of holding are
-  1,024-row traces, smaller than the coin reveal.
+  that shipped is 2,048 rows by 3,808 columns, and at the proof settings of
+  that time (blowup 2^2, 57 queries) its proofs measured 1,188,348 bytes
+  (median) to 1,194,788 bytes (largest), so none fitted. The data reveal and
+  the proof of holding are 1,024-row traces, smaller than the coin reveal.
+- **Proof settings.** Since 2026-10-20 the settings are those of the
+  post-quantum rule of spec 09, section 4.1 (decision 0003, "Blowup"): blowup
+  2^3 (rate 1/8), 43 queries, 16 grinding bits on the queries and before the
+  batching challenge, extension degree 5, Keccak-256, zero-knowledge on. They
+  make proofs shorter, so the width did not change: the coin reveal's proofs
+  measure 957,516 bytes (median of 9) to 961,981 bytes (largest), natively
+  ([measurements](../benchmarks/reveal-parameters.md)).
 - **Budget.** Every reveal statement, the coin reveal, the data reveal and any
   later one, must fit the coin reveal's trace: at most 2,048 rows before
   zero-knowledge padding and at most 3,808 columns, at the version 1 proof
@@ -204,7 +210,8 @@ field. The width was chosen so that it never has to grow.
   `MAX_TRACE_WIDTH` and the error `TraceOverBudget` in `proofs/src/stark.rs`),
   and a test fails when any statement the crate knows is over it.
 - **Bound.** The longest proof the encoding can produce for a trace at the
-  budget is 1,268,539 bytes, 42,181 bytes below the field. It is derived from
+  budget is 1,053,331 bytes, 257,389 bytes below the field (it was 1,268,539
+  bytes at blowup 2^2 with 57 queries). It is derived from
   the structure of the proof at the pinned Plonky3 revision, not sampled, and
   computed by `proof_length_bound` in `proofs/src/stark.rs`; a test asserts it
   is at most `PROOF_BYTES`, and another proves each statement the prover
@@ -224,34 +231,34 @@ library's proof. Each uncertain term takes its worst case:
 - a digest is four 64-bit Keccak lanes, each a varint of at most 10 bytes, so
   40 bytes; a commitment is a Merkle cap of one digest, 50 bytes;
 - a pruned Merkle multiproof over a binary tree of `d` levels holds at most
-  `min(57, 2^j)` digests at the level with `2^j` parents, the most the 57
-  query indices can force there: 519 digests for the 14-level trees of the
+  `min(43, 2^j)` digests at the level with `2^j` parents, the most the 43
+  query indices can force there: 450 digests for the 15-level trees of the
   inputs;
-- the gate allows a constraint degree of at most 4, which gives at most 8
-  quotient chunks in zero-knowledge mode;
+- the gate allows a constraint degree of at most 8, the blowup, which gives at
+  most 16 quotient chunks in zero-knowledge mode;
 - the trace is padded to twice its rows for zero-knowledge, 4,096, and every
-  committed codeword is 4 times that, 16,384 rows (14 levels); hiding adds 5
+  committed codeword is 8 times that, 32,768 rows (15 levels); hiding adds 5
   random columns to each committed matrix and 5 salt elements to each opened
   row; FRI folds by 2 down to a final polynomial of one coefficient, so it
-  commits 12 layers of 13 down to 2 levels.
+  commits 12 layers of 14 down to 3 levels.
 
 For the budget trace of 2,048 rows by 3,808 columns:
 
 | Part | What it holds | Bytes |
 |---|---|---|
 | Commitments | Trace, quotient and randomization caps, with the option tag | 151 |
-| Opened values | The trace at both out-of-domain points (3,808 challenges each), 8 quotient chunks and the randomization polynomial, 5 challenges each, with the tags | 153,344 |
-| Hidden openings | The 5 random columns of every opened matrix at every point | 1,350 |
-| Trace openings | 57 rows of 3,813 elements, 57 salts, 519 digests | 893,574 |
-| Quotient openings | 57 rows of 8 chunks of 10 elements, 57 salts per chunk, 519 digests | 58,410 |
-| Randomization openings | 57 rows of 10 elements, 57 salts, 519 digests | 26,490 |
-| FRI layers | 12 layers: per query one sibling challenge and a salt, and 2,156 digests over all layers | 134,490 |
+| Opened values | The trace at both out-of-domain points (3,808 challenges each), 16 quotient chunks and the randomization polynomial, 5 challenges each, with the tags | 154,224 |
+| Hidden openings | The 5 random columns of every opened matrix at every point | 2,310 |
+| Trace openings | 43 rows of 3,813 elements, 43 salts, 450 digests | 676,446 |
+| Quotient openings | 43 rows of 16 chunks of 10 elements, 43 salts per chunk, 450 digests | 73,930 |
+| Randomization openings | 43 rows of 10 elements, 43 salts, 450 digests | 22,330 |
+| FRI layers | 12 layers: per query one sibling challenge and a salt, and 2,168 digests over all layers | 123,210 |
 | The rest | Length prefixes of the input batches, 12 layer commitments, the grinding witnesses, the final polynomial, `degree_bits` | 730 |
-| Bound | | 1,268,539 |
+| Bound | | 1,053,331 |
 
-The bound only grows with the trace: one more column adds 268 bytes (two
-challenges and 57 elements), and a taller trace adds a level to every tree.
-So every trace within the budget has a bound at most 1,268,539 bytes, and its
+The bound only grows with the trace: one more column adds 212 bytes (two
+challenges and 43 elements), and a taller trace adds a level to every tree.
+So every trace within the budget has a bound at most 1,053,331 bytes, and its
 proof fits the field.
 
 **Hash.** The transaction hash is `keccak256(0x50 || payload)`, the base
@@ -744,7 +751,7 @@ removed does not count (spec 03, section 10).
 Each point rejects until the founder or a later specification settles it.
 
 1. **The longest proof.** Settled (founder decision, 2026-10-18): `PROOF_BYTES`
-   is 1,310,720 bytes for every reveal kind, above the bound of 1,268,539
+   is 1,310,720 bytes for every reveal kind, above the bound of 1,053,331
    bytes derived from the proof's structure for any trace within the budget
    (section 3, "Proof field"). Every proof the prover makes therefore fits,
    and the prover refuses a statement over the budget. A change of width is a
@@ -809,8 +816,9 @@ Each has a default that this document already applies.
 
 1. **One private transaction per block.** At the public byte price, `G_PRIV`
    is more than half of the default gas limit of 30,000,000, so a block holds
-   one private transaction. A higher gas limit, a lower byte price for private
-   transactions or blowup 2^3 (decision 0003) would change it. Default: the
+   one private transaction. A higher gas limit or a lower byte price for
+   private transactions would change it; the move to blowup 2^3 (decision
+   0003) does not, because the proof field keeps its width. Default: the
    public byte price and the gas limit of spec 05.
 2. **Window length.** Four blocks. Default: 4.
 3. **Tip.** One tenth of the base-fee part, rounded up. Default: one tenth.

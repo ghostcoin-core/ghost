@@ -15,12 +15,15 @@ hash are one decision:
 | Field | BabyBear, with a degree-5 extension field for challenges (154 bits) |
 | Polynomial commitment | FRI, in its hiding form, with a hiding Merkle commitment |
 | Hash inside proofs and in the trees | Keccak-256 |
-| Security level | 128 conjectured bits, from the library's own estimator (`p3-uni-stark` security parameters, `p3-security`) |
-| Zero-knowledge mode | On, in the configuration that ships |
-| Blowup | 2^2 (rate 1/4), 57 queries, 16 grinding bits on the queries |
+| Security level | The rule of [spec 09, section 4.1](../spec/09-quantum-safe-accounts.md): 129 conjectured bits from the queries alone, and at least 128 for every term of the library's own estimator (`p3-uni-stark` security parameters, `p3-security`) with grinding counted at half. Conjectured: 128 bits classical, 64 quantum. Proven: 80 bits classical, 40 quantum (a goal, not gated) |
+| Zero-knowledge mode | On, in the configuration that ships, with 154-bit salts |
+| Blowup | 2^3 (rate 1/8), 43 queries, 16 grinding bits on the queries and 16 before the batching challenge |
 
-The configuration as recorded in every result is
-`keccak-256/hiding-fri/blowup-2^2/queries-57/grinding-q16-b0-o0/ext-5/zk`.
+The configuration that ships is
+`keccak-256/hiding-fri/blowup-2^3/queries-43/grinding-q16-b16-o0/ext-5/zk`
+(amended 2026-10-20, see "Blowup"). The benchmark records of this decision were
+made with `keccak-256/hiding-fri/blowup-2^2/queries-57/grinding-q16-b0-o0/ext-5/zk`
+and, for the comparison, the same at blowup 2^3.
 
 This settles the outline's starting picks of Plonky3 and "a fast proof-friendly
 hash". The library is kept; the hash is not a proof-friendly one.
@@ -42,9 +45,19 @@ Speed in the browser decided only among candidates that passed.
    best proven figure for the same parameters is 72 bits; the target is the
    conjectured figure, and this is said wherever the number is quoted. The
    commitment hash counts at its collision resistance, 128 bits for Keccak-256.
+   Since 2026-10-20 the security gate holds the configuration to spec 09,
+   section 4.1, which a quantum attacker on the Fiat–Shamir hash makes
+   necessary: the queries alone give at least 128 conjectured bits, and every
+   estimator term, the extension-field ones included, reaches 128 with grinding
+   counted at half. The configuration that ships gives 128 conjectured bits
+   classical and 64 quantum, 80 proven classical and 40 proven quantum; the
+   binding term is Keccak-256's collision resistance
+   ([measurements](../benchmarks/reveal-parameters.md)).
 4. **Native verification.** The chain verifies every proof natively, never
    inside an elliptic-curve proof. The native build verified the chosen proof
-   in a median of 8.51 ms (largest 9.23 ms) at blowup 2^2.
+   in a median of 8.51 ms (largest 9.23 ms) at blowup 2^2. The coin reveal at
+   the configuration that ships verifies in a median of 8.08 ms on the build
+   machine ([measurements](../benchmarks/reveal-parameters.md)).
 5. **Speed.** Only then the 10-second target.
 
 ## Hash choice
@@ -110,8 +123,22 @@ Blowup 2^3 also meets the target and was measured beside it:
 - Native verification: 7.56 ms instead of 8.51 ms (median).
 
 The proof is padded to one fixed length, so every private transaction uses the
-same blowup. A change to 2^3 is a change to this decision, made when the block
-size limit is set, and the measurements for it already exist.
+same blowup.
+
+**Amended 2026-10-20: blowup 2^3 with 43 queries.** Rate 1/4 with 57 queries
+gives only 114 conjectured bits from the queries, and 120 with its grinding
+counted at half, so it does not meet the rule of spec 09, section 4.1. Two
+configurations reach 128 from the queries alone: rate 1/4 with 64 queries and
+rate 1/8 with 43. Rate 1/4 with 64 queries makes the longest proof wider than
+the proof field of spec 07 (about 1.4 MB by the same bound), which would change
+the transaction format; rate 1/8 with 43 queries bounds it at 1,053,331 bytes,
+inside the 1,310,720-byte field. So the blowup is 2^3. The cost is proving
+time: 1.62 times as long natively for the coin reveal (median 1.35 s against
+0.84 s), and proofs are about 19 percent smaller (median 957,516 bytes against
+1,187,533). Whether the 10-second proving target still holds on the target
+devices at this cost is measured separately; this amendment does not depend on
+it, and a miss is reported against the target, not answered by lowering the
+security level.
 
 ## Cost on the chain
 
@@ -143,7 +170,9 @@ The block size limit is not decided here.
 - **The fixed proof length is not proven.** Padding used the largest proof of
   10 runs; the largest length the encoding can produce was not measured.
 - **The proven security figure.** Only the conjectured estimate reaches 128
-  bits; the best proven figure is 72.
+  bits; the best proven figure was 72, and is 80 classical and 40 quantum at
+  the configuration that ships since 2026-10-20, below the quantum target. Spec
+  09 (question 3) makes the proven quantum figure a goal, not a gate.
 - **The rest of a transaction.** The chain figures count only the proof and
   its public inputs, not the transaction's other fields, the encrypted note or
   the block header.

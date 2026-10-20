@@ -1,11 +1,26 @@
 //! The proof system of decision 0003 and the one place it is configured.
 //!
 //! BabyBear with a degree-5 extension for challenges, Keccak-256 for every
-//! commitment, hiding FRI at blowup 2^2 with 57 queries and 16 bits of
-//! grinding on the queries, zero-knowledge mode on, at least 128 conjectured
-//! bits by the library's own estimator. The larger trace of the coin reveal
-//! also needs 16 bits of grinding before the batching challenge
-//! ([`BATCH_POW_BITS`]).
+//! commitment, hiding FRI at blowup 2^3 (rate 1/8) with 43 queries and 16 bits
+//! of grinding on the queries and before the batching challenge
+//! ([`BATCH_POW_BITS`]), zero-knowledge mode on.
+//!
+//! The security gate holds the configuration to the rule of spec 09,
+//! section 4.1, so the proof meets the post-quantum target (about half the
+//! classical bits against a quantum attacker on the Fiat–Shamir hash). It
+//! refuses a configuration unless:
+//!
+//! 1. the queries alone reach 128 conjectured bits: `LOG_BLOWUP * NUM_QUERIES`
+//!    is at least 128, before any grinding;
+//! 2. for every statement, the library's estimator, run with the grinding at
+//!    each site counted at half its bits, reports at least 128 bits: it reports
+//!    the smallest of its terms, so every term reaches 128, the extension-field
+//!    ones (DEEP, batching, folding) included;
+//! 3. the hash is Keccak-256 with 256-bit digests, in the Merkle commitments and
+//!    in the transcript;
+//! 4. zero-knowledge is on, with salts of at least 128 bits.
+//!
+//! An estimate the library cannot compute is a refusal, never a pass.
 //!
 //! Plonky3 makes a proof zero-knowledge with a hiding polynomial commitment
 //! scheme (`HidingFriPcs`) paired with a hiding Merkle commitment
@@ -37,9 +52,9 @@ use p3_field::PrimeCharacteristicRing;
 use p3_fri::{FriParameters, HidingFriPcs};
 use p3_keccak::{Keccak256Hash, KeccakF};
 use p3_merkle_tree::MerkleTreeHidingMmcs;
-use p3_symmetric::{CompressionFunctionFromHasher, PaddingFreeSponge, SerializingHasher};
+use p3_symmetric::{CompressionFunctionFromHasher, CryptographicHasher, PaddingFreeSponge, SerializingHasher};
 use p3_uni_stark::{
-    AirLayout, ConjecturedSecurity, GrindingSites, OpeningShape, Proof as StarkProof, ProvenSecurity,
+    AirLayout, ConjecturedSecurity, OpeningShape, Proof as StarkProof, ProvenSecurity,
     StarkConfig, StarkGenericConfig, StarkSecurityParams, get_max_constraint_degree,
 };
 use rand::SeedableRng;
@@ -53,38 +68,53 @@ use crate::schedule::{Assignment, Schedule, execute};
 pub const EXTENSION_DEGREE: usize = 5;
 /// log2 of the challenge field size, rounded down: 5 * log2(2^31 - 2^27 + 1).
 pub const CHALLENGE_FIELD_BITS: usize = 154;
-/// log2 of the blowup.
-pub const LOG_BLOWUP: usize = 2;
-/// FRI queries.
-pub const NUM_QUERIES: usize = 57;
-/// Proof-of-work bits before the FRI queries are drawn.
+/// log2 of the blowup: rate 1/8, so each query is worth 3 conjectured bits.
+pub const LOG_BLOWUP: usize = 3;
+/// FRI queries: 3 * 43 = 129 conjectured bits from the queries alone.
+pub const NUM_QUERIES: usize = 43;
+/// Proof-of-work bits before the FRI queries are drawn: margin, counted at
+/// half by the gate.
 pub const QUERY_POW_BITS: usize = 16;
 /// Proof-of-work bits before the challenge that batches the openings.
 ///
-/// The coin reveal's trace is 2,048 rows of about 3,800 columns, larger than
-/// the benchmark statement decision 0003 measured. The estimator's
-/// batched-openings term, `|EF| / ((functions - 1) * codeword length)`, comes
-/// to about 127 bits for it without grinding, whatever the query count. The
-/// decision's security gate allows up to 16 bits at a site and, after the
-/// queries, tries the batching challenge next; this is that choice. It costs
-/// the prover about 2^16 hashes and the verifier one.
+/// The coin reveal's trace is 2,048 rows of about 3,800 columns. The
+/// estimator's batched-openings term, `|EF| / ((functions - 1) * codeword
+/// length)`, comes to about 126 bits for it at blowup 2^3 without grinding,
+/// whatever the query count; the 8 bits the gate counts of these 16 lift it
+/// over 128. It costs the prover about 2^16 hashes and the verifier one.
 pub const BATCH_POW_BITS: usize = 16;
 /// The most grinding allowed at any one site.
 pub const MAX_GRINDING_BITS: usize = 16;
 const _: () = assert!(QUERY_POW_BITS <= MAX_GRINDING_BITS && BATCH_POW_BITS <= MAX_GRINDING_BITS);
-/// The floor: a statement below this many conjectured bits is refused.
+/// The floor of the rule of spec 09, section 4.1, classical and conjectured:
+/// for the queries alone, and for every estimator term with grinding counted
+/// at half. A quantum attacker gets about half, the 64 bits of NIST
+/// Category 1.
 pub const TARGET_CONJECTURED_BITS: usize = 128;
 /// Collision resistance of Keccak-256 as the commitment hash.
 pub const COLLISION_RESISTANCE_BITS: usize = 128;
+/// Bits of every digest the rule accepts: a Merkle node and the transcript
+/// hash, Keccak-256 at its full output.
+pub const DIGEST_BITS: usize = 256;
+/// The fewest salt bits per opened row the rule accepts.
+pub const MIN_SALT_BITS: usize = 128;
 /// Random columns hiding FRI appends to each committed matrix; the library
 /// requires at least the extension degree.
 const NUM_RANDOM_CODEWORDS: usize = EXTENSION_DEGREE;
-/// Salt elements per Merkle leaf: 5 * 31 = 155 bits of salt.
+/// Salt elements per Merkle leaf.
 const SALT_ELEMS: usize = 5;
+/// Salt bits per opened row, rounded down: 5 BabyBear elements, as many bits
+/// as the 5 coordinates of a challenge, 154.
+pub const SALT_BITS: usize = SALT_ELEMS * CHALLENGE_FIELD_BITS / EXTENSION_DEGREE;
 /// Points at which the main trace is opened (`zeta` and `zeta * g`).
 const TRACE_OPENING_POINTS: usize = 2;
 /// Words of a Merkle digest: Keccak-256 as four `u64` lanes.
 const DIGEST_WORDS: usize = 4;
+/// Lanes the Merkle sponge absorbs per Keccak-f[1600] permutation: 17, the
+/// 136-byte rate of Keccak-256, so its 512-bit capacity.
+const SPONGE_RATE_LANES: usize = 17;
+/// Bytes of the transcript hash's output.
+const TRANSCRIPT_DIGEST_BYTES: usize = 32;
 
 /// Width of the proof field of a private transaction in version 1, for every
 /// reveal kind (spec 07, section 3): 1.25 MiB. A change of width is a new
@@ -99,9 +129,9 @@ pub const MAX_TRACE_WIDTH: usize = 3808;
 /// The challenge field.
 pub(crate) type Challenge = BinomialExtensionField<BabyBear, EXTENSION_DEGREE>;
 type Dft = Radix2DitParallel<F>;
-type KeccakU64Hash = PaddingFreeSponge<KeccakF, 25, 17, 4>;
+type KeccakU64Hash = PaddingFreeSponge<KeccakF, 25, SPONGE_RATE_LANES, DIGEST_WORDS>;
 type KeccakFieldHash = SerializingHasher<KeccakU64Hash>;
-type KeccakCompress = CompressionFunctionFromHasher<KeccakU64Hash, 2, 4>;
+type KeccakCompress = CompressionFunctionFromHasher<KeccakU64Hash, 2, DIGEST_WORDS>;
 type ValMmcs = MerkleTreeHidingMmcs<
     [F; p3_keccak::VECTOR_LEN],
     [u64; p3_keccak::VECTOR_LEN],
@@ -113,7 +143,7 @@ type ValMmcs = MerkleTreeHidingMmcs<
     SALT_ELEMS,
 >;
 type ChallengeMmcs = ExtensionMmcs<F, Challenge, ValMmcs>;
-type Challenger = SerializingChallenger32<F, HashChallenger<u8, Keccak256Hash, 32>>;
+type Challenger = SerializingChallenger32<F, HashChallenger<u8, Keccak256Hash, TRANSCRIPT_DIGEST_BYTES>>;
 type Pcs = HidingFriPcs<F, Dft, ValMmcs, ChallengeMmcs, StdRng>;
 /// The one configuration type: hiding commitments only.
 pub(crate) type Config = StarkConfig<Pcs, Challenge, Challenger>;
@@ -124,15 +154,32 @@ pub const fn zk_min_trace_height() -> usize {
     2 * (NUM_QUERIES + EXTENSION_DEGREE * TRACE_OPENING_POINTS)
 }
 
-fn fri_parameters<M>(mmcs: M) -> FriParameters<M> {
+/// The FRI settings the gate judges.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FriShape {
+    pub(crate) log_blowup: usize,
+    pub(crate) num_queries: usize,
+    pub(crate) query_pow_bits: usize,
+    pub(crate) batch_pow_bits: usize,
+}
+
+/// The FRI settings that ship.
+pub(crate) const SHIPPED_FRI: FriShape = FriShape {
+    log_blowup: LOG_BLOWUP,
+    num_queries: NUM_QUERIES,
+    query_pow_bits: QUERY_POW_BITS,
+    batch_pow_bits: BATCH_POW_BITS,
+};
+
+fn fri_parameters<M>(fri: &FriShape, mmcs: M) -> FriParameters<M> {
     FriParameters {
-        log_blowup: LOG_BLOWUP,
+        log_blowup: fri.log_blowup,
         log_final_poly_len: 0,
         max_log_arity: 1,
-        num_queries: NUM_QUERIES,
-        batch_proof_of_work_bits: BATCH_POW_BITS,
+        num_queries: fri.num_queries,
+        batch_proof_of_work_bits: fri.batch_pow_bits,
         commit_proof_of_work_bits: 0,
-        query_proof_of_work_bits: QUERY_POW_BITS,
+        query_proof_of_work_bits: fri.query_pow_bits,
         mmcs,
     }
 }
@@ -146,7 +193,7 @@ pub(crate) fn stark_config(zk_seed: [u8; 32]) -> Result<Config, ProofError> {
     let masks = StdRng::from_rng(&mut master);
     let u64_hash = KeccakU64Hash::new(KeccakF {});
     let val_mmcs = ValMmcs::new(KeccakFieldHash::new(u64_hash), KeccakCompress::new(u64_hash), 0, salts);
-    let fri = fri_parameters(ChallengeMmcs::new(val_mmcs.clone()));
+    let fri = fri_parameters(&SHIPPED_FRI, ChallengeMmcs::new(val_mmcs.clone()));
     let pcs = Pcs::new(Dft::default(), val_mmcs, fri, NUM_RANDOM_CODEWORDS, masks);
     let config = Config::new(pcs, Challenger::from_hasher(Vec::new(), Keccak256Hash {}));
     if config.is_zk() == 1 {
@@ -162,13 +209,74 @@ pub(crate) fn shipped_is_zero_knowledge() -> bool {
     stark_config([0; 32]).is_ok_and(|config| config.is_zk() == 1)
 }
 
+/// The hash of the commitments and the transcript, recognised by what it
+/// computes rather than by its name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CommitmentHash {
+    /// Keccak-256 with its original padding, the hash of spec 01.
+    Keccak256,
+    /// Anything else.
+    Other,
+}
+
+/// The transcript hash is Keccak-256 when it agrees with spec 01's Keccak-256
+/// on a message longer than one block, and the Merkle sponge runs
+/// Keccak-f[1600] at Keccak-256's rate.
+fn commitment_hash() -> CommitmentHash {
+    const PROBE: &[u8; 200] = &[0x47; 200];
+    let transcript = Keccak256Hash {}.hash_iter(PROBE.iter().copied());
+    if transcript == crate::hash::keccak256(PROBE) && SPONGE_RATE_LANES * 8 == crate::hash::RATE_BYTES {
+        CommitmentHash::Keccak256
+    } else {
+        CommitmentHash::Other
+    }
+}
+
+/// Everything the rule of spec 09, section 4.1 is checked against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Parameters {
+    pub(crate) fri: FriShape,
+    pub(crate) hash: CommitmentHash,
+    /// Bits of a Merkle digest.
+    pub(crate) merkle_digest_bits: usize,
+    /// Bits of the transcript hash's output.
+    pub(crate) transcript_digest_bits: usize,
+    /// Whether the library reports the configuration as zero-knowledge.
+    pub(crate) zero_knowledge: bool,
+    /// Salt bits per opened row.
+    pub(crate) salt_bits: usize,
+}
+
+/// The parameters that ship, as the library and the hash report them.
+pub(crate) fn shipped_parameters() -> Parameters {
+    Parameters {
+        fri: SHIPPED_FRI,
+        hash: commitment_hash(),
+        merkle_digest_bits: DIGEST_WORDS * u64::BITS as usize,
+        transcript_digest_bits: TRANSCRIPT_DIGEST_BYTES * 8,
+        zero_knowledge: shipped_is_zero_knowledge(),
+        salt_bits: SALT_BITS,
+    }
+}
+
 /// The estimator's result for one statement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SecurityEstimate {
-    /// Conjectured bits, the target regime.
+    /// Conjectured bits, classical, with every grinding site at its full
+    /// bits.
     pub conjectured_bits: usize,
-    /// Best proven bits for the same parameters, for the record.
+    /// Conjectured bits, classical, with the grinding at each site counted at
+    /// half its bits: the smallest term the estimator reports, the figure the
+    /// gate holds to [`TARGET_CONJECTURED_BITS`] (spec 09, section 4.1).
+    pub conjectured_bits_half_grinding: usize,
+    /// Conjectured bits against a quantum attacker: half the classical figure
+    /// (spec 09, section 4.1, the quantum Fiat–Shamir bound).
+    pub conjectured_quantum_bits: usize,
+    /// Best proven bits for the same parameters, classical, for the record.
     pub proven_bits: usize,
+    /// Proven bits against a quantum attacker, half the classical figure: a
+    /// goal, not gated (spec 09, question 3).
+    pub proven_quantum_bits: usize,
     /// Trace height before zero-knowledge padding.
     pub trace_height: usize,
     /// Trace width.
@@ -178,37 +286,53 @@ pub struct SecurityEstimate {
 }
 
 /// Apply the library's estimator (`p3-security`, through
-/// `StarkSecurityParams`) to the actual parameters of a statement.
-fn estimate(air: &StatementAir) -> SecurityEstimate {
-    let log_height = air.height().trailing_zeros() as usize;
-    let regime = fri_parameters(()).security_regime();
-    let mut params = StarkSecurityParams::from_air::<F, Challenge, StatementAir>(
-        regime,
-        air,
-        AirLayout::from_air(air),
-        TwoAdicMultiplicativeCoset::new(BabyBear::ONE, log_height).expect("two-adic height"),
-        CHALLENGE_FIELD_BITS,
-        COLLISION_RESISTANCE_BITS,
-        TRACE_OPENING_POINTS,
-        OpeningShape::hiding(NUM_RANDOM_CODEWORDS),
-        GrindingSites {
-            batch_combination: BATCH_POW_BITS,
-            ..GrindingSites::NONE
-        },
-    );
-    params.fri_num_queries = NUM_QUERIES;
-    params.fri_query_proof_of_work_bits = QUERY_POW_BITS;
+/// `StarkSecurityParams`) to a statement at the FRI settings of `p`, once with
+/// the grinding as it is and once with each site at half its bits. `None` when
+/// the estimator cannot be run on the statement.
+fn estimate(p: &Parameters, air: &StatementAir) -> Option<SecurityEstimate> {
+    let height = air.height();
+    if !height.is_power_of_two() {
+        return None;
+    }
+    let log_height = height.trailing_zeros() as usize;
     // The committed polynomials are twice as tall after zero-knowledge padding.
     let degree_bits = log_height + 1;
-    let constraint_degree = get_max_constraint_degree::<F, StatementAir>(air, AirLayout::from_air(air), air.height())
+    let report = |fri: &FriShape| -> Option<(usize, usize)> {
+        let fri = fri_parameters(fri, ());
+        let params = StarkSecurityParams::from_air::<F, Challenge, StatementAir>(
+            fri.security_regime(),
+            air,
+            AirLayout::from_air(air),
+            TwoAdicMultiplicativeCoset::new(BabyBear::ONE, log_height)?,
+            CHALLENGE_FIELD_BITS,
+            COLLISION_RESISTANCE_BITS,
+            TRACE_OPENING_POINTS,
+            OpeningShape::hiding(NUM_RANDOM_CODEWORDS),
+            fri.grinding_sites(),
+        );
+        Some((
+            ConjecturedSecurity::compute_from_params(&params, degree_bits).security_bits,
+            ProvenSecurity::compute_from_proof(degree_bits, &params).security_bits(),
+        ))
+    };
+    let (conjectured_bits, proven_bits) = report(&p.fri)?;
+    let (conjectured_bits_half_grinding, _) = report(&FriShape {
+        query_pow_bits: p.fri.query_pow_bits / 2,
+        batch_pow_bits: p.fri.batch_pow_bits / 2,
+        ..p.fri
+    })?;
+    let constraint_degree = get_max_constraint_degree::<F, StatementAir>(air, AirLayout::from_air(air), height)
         .max(<StatementAir as BaseAir<F>>::max_constraint_degree(air).unwrap_or(0));
-    SecurityEstimate {
-        conjectured_bits: ConjecturedSecurity::compute_from_params(&params, degree_bits).security_bits,
-        proven_bits: ProvenSecurity::compute_from_proof(degree_bits, &params).security_bits(),
-        trace_height: air.height(),
+    Some(SecurityEstimate {
+        conjectured_bits,
+        conjectured_bits_half_grinding,
+        conjectured_quantum_bits: conjectured_bits / 2,
+        proven_bits,
+        proven_quantum_bits: proven_bits / 2,
+        trace_height: height,
         trace_width: air.width(),
         constraint_degree,
-    }
+    })
 }
 
 /// The three statements, each with its own fixed shape.
@@ -249,23 +373,71 @@ impl Statement {
     }
 }
 
-/// The security gate: the estimate of a statement at the shipped
-/// parameters, computed once, and refused below the floor.
-pub(crate) fn gate(statement: Statement) -> Result<SecurityEstimate, ProofError> {
-    static PLANS: [OnceLock<SecurityEstimate>; 3] = [OnceLock::new(), OnceLock::new(), OnceLock::new()];
-    let est = *PLANS[statement.index()].get_or_init(|| estimate(&statement.air()));
-    within_budget(&est)?;
+/// Items 1, 3 and 4 of the rule of spec 09, section 4.1: what the parameters
+/// alone decide, before any statement is estimated.
+fn check_parameters(p: &Parameters) -> Result<(), ProofError> {
+    // 1. The queries alone, before grinding.
+    let query_bits = p.fri.log_blowup * p.fri.num_queries;
+    if query_bits < TARGET_CONJECTURED_BITS {
+        return Err(ProofError::TooFewQueries { bits: query_bits });
+    }
+    if p.fri.query_pow_bits > MAX_GRINDING_BITS || p.fri.batch_pow_bits > MAX_GRINDING_BITS {
+        return Err(ProofError::TooMuchGrinding);
+    }
+    // 3. Keccak-256 at its full output, in the commitments and the transcript.
+    if p.hash != CommitmentHash::Keccak256
+        || p.merkle_digest_bits != DIGEST_BITS
+        || p.transcript_digest_bits != DIGEST_BITS
+    {
+        return Err(ProofError::NotKeccak256);
+    }
+    // 4. Hiding on, with long enough salts.
+    if !p.zero_knowledge {
+        return Err(ProofError::NotZeroKnowledge);
+    }
+    if p.salt_bits < MIN_SALT_BITS {
+        return Err(ProofError::SaltTooShort { bits: p.salt_bits });
+    }
+    Ok(())
+}
+
+/// The budget, the constraint degree and item 2 of the rule: the estimate of
+/// one statement.
+fn check_estimate(p: &Parameters, est: &SecurityEstimate) -> Result<(), ProofError> {
+    within_budget(est)?;
     // Zero-knowledge adds one to the quotient degree, so the constraint degree
     // must fit the blowup.
-    if est.constraint_degree > 1 << LOG_BLOWUP {
+    if est.constraint_degree > 1 << p.fri.log_blowup {
         return Err(ProofError::ConstraintDegreeTooHigh);
     }
-    if est.conjectured_bits < TARGET_CONJECTURED_BITS {
+    // 2. The estimator reports its smallest term, so this holds every term,
+    // the extension-field ones included, to the floor.
+    if est.conjectured_bits_half_grinding < TARGET_CONJECTURED_BITS {
         return Err(ProofError::BelowSecurityFloor {
-            bits: est.conjectured_bits,
+            bits: est.conjectured_bits_half_grinding,
         });
     }
+    Ok(())
+}
+
+/// The whole rule for one statement at the parameters `p`: its estimate, or
+/// the first item it breaks. An estimate that cannot be computed is a
+/// refusal.
+fn check(p: &Parameters, air: &StatementAir) -> Result<SecurityEstimate, ProofError> {
+    check_parameters(p)?;
+    let est = estimate(p, air).ok_or(ProofError::EstimateUnavailable)?;
+    check_estimate(p, &est)?;
     Ok(est)
+}
+
+/// The security gate: the rule checked for a statement at the shipped
+/// parameters, computed once.
+pub(crate) fn gate(statement: Statement) -> Result<SecurityEstimate, ProofError> {
+    static PLANS: [OnceLock<Result<SecurityEstimate, ProofError>>; 3] =
+        [OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    PLANS[statement.index()]
+        .get_or_init(|| check(&shipped_parameters(), &statement.air()))
+        .clone()
 }
 
 /// The proof-size budget: a statement whose trace is taller or wider than the
@@ -436,7 +608,10 @@ mod tests {
     fn trace(trace_height: usize, trace_width: usize) -> SecurityEstimate {
         SecurityEstimate {
             conjectured_bits: TARGET_CONJECTURED_BITS,
+            conjectured_bits_half_grinding: TARGET_CONJECTURED_BITS,
+            conjectured_quantum_bits: TARGET_CONJECTURED_BITS / 2,
             proven_bits: 0,
+            proven_quantum_bits: 0,
             trace_height,
             trace_width,
             constraint_degree: 1 << LOG_BLOWUP,
@@ -475,6 +650,114 @@ mod tests {
         );
         assert!(proof_length_bound(2 * MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH) > base);
         assert_eq!(proof_length_bound(1000, 10), proof_length_bound(1024, 10));
+    }
+
+    /// QS-12: the gate takes the shipped parameters and refuses each item of
+    /// the rule of spec 09, section 4.1 broken on its own: too few queries, an
+    /// estimate short only because grinding counts at half, a hash or digest
+    /// that is not Keccak-256's, hiding off, short salts.
+    #[test]
+    fn gate_refuses_a_configuration_below_the_quantum_rule() {
+        let air = Statement::CoinReveal.air();
+        let shipped = shipped_parameters();
+        assert_eq!(shipped.hash, CommitmentHash::Keccak256);
+        assert_eq!((shipped.merkle_digest_bits, shipped.transcript_digest_bits), (256, 256));
+        assert!(shipped.zero_knowledge);
+        assert_eq!(shipped.salt_bits, 154);
+        let est = check(&shipped, &air).expect("the shipped parameters meet the rule");
+        assert!(est.conjectured_bits_half_grinding >= TARGET_CONJECTURED_BITS);
+        assert_eq!(gate(Statement::CoinReveal), Ok(est));
+
+        let with_fri = |fri: FriShape| Parameters { fri, ..shipped };
+
+        // Item 1: 42 queries at rate 1/8 are 126 bits, refused before the
+        // estimator runs, however much grinding there is.
+        let too_few = with_fri(FriShape {
+            num_queries: 42,
+            ..SHIPPED_FRI
+        });
+        assert_eq!(check(&too_few, &air), Err(ProofError::TooFewQueries { bits: 126 }));
+        // So is rate 1/4 with the 57 queries of the earlier configuration: 114.
+        let earlier = with_fri(FriShape {
+            log_blowup: 2,
+            num_queries: 57,
+            ..SHIPPED_FRI
+        });
+        assert_eq!(check(&earlier, &air), Err(ProofError::TooFewQueries { bits: 114 }));
+
+        // Item 2: one bit of query grinding passes the queries' own rule (129)
+        // and an estimate with grinding at full value, but not with grinding
+        // counted at half.
+        let short = with_fri(FriShape {
+            query_pow_bits: 1,
+            ..SHIPPED_FRI
+        });
+        let short_est = estimate(&short, &air).expect("the estimator runs");
+        assert!(short_est.conjectured_bits >= TARGET_CONJECTURED_BITS, "{short_est:?}");
+        assert!(short_est.conjectured_bits_half_grinding < TARGET_CONJECTURED_BITS, "{short_est:?}");
+        assert_eq!(
+            check(&short, &air),
+            Err(ProofError::BelowSecurityFloor {
+                bits: short_est.conjectured_bits_half_grinding
+            })
+        );
+        // The batching term needs its grinding too: without it the estimate is
+        // short, whatever the queries give.
+        let no_batch_grinding = with_fri(FriShape {
+            batch_pow_bits: 0,
+            ..SHIPPED_FRI
+        });
+        assert!(matches!(
+            check(&no_batch_grinding, &air),
+            Err(ProofError::BelowSecurityFloor { bits }) if bits < TARGET_CONJECTURED_BITS
+        ));
+        // More grinding than a site allows is refused, not counted.
+        let ground = with_fri(FriShape {
+            num_queries: 30,
+            query_pow_bits: 40,
+            ..SHIPPED_FRI
+        });
+        assert_eq!(check(&ground, &air), Err(ProofError::TooFewQueries { bits: 90 }));
+        let over = with_fri(FriShape {
+            query_pow_bits: MAX_GRINDING_BITS + 1,
+            ..SHIPPED_FRI
+        });
+        assert_eq!(check(&over, &air), Err(ProofError::TooMuchGrinding));
+
+        // Item 3: another hash, or a shorter digest in either place.
+        for broken in [
+            Parameters {
+                hash: CommitmentHash::Other,
+                ..shipped
+            },
+            Parameters {
+                merkle_digest_bits: 160,
+                ..shipped
+            },
+            Parameters {
+                transcript_digest_bits: 128,
+                ..shipped
+            },
+        ] {
+            assert_eq!(check(&broken, &air), Err(ProofError::NotKeccak256), "{broken:?}");
+        }
+
+        // Item 4: hiding off, or salts under 128 bits.
+        let open = Parameters {
+            zero_knowledge: false,
+            ..shipped
+        };
+        assert_eq!(check(&open, &air), Err(ProofError::NotZeroKnowledge));
+        let salted = Parameters {
+            salt_bits: MIN_SALT_BITS - 1,
+            ..shipped
+        };
+        assert_eq!(
+            check(&salted, &air),
+            Err(ProofError::SaltTooShort {
+                bits: MIN_SALT_BITS - 1
+            })
+        );
     }
 
     /// A multiproof never needs more than one digest per query per level, nor

@@ -35,8 +35,13 @@ fn wrong_lengths_do_not_decode() {
 fn record_fields_name_the_shipped_configuration() {
     let fields = record_fields(&Session::new(1, true)).expect("fields");
     assert!(fields.contains("\"zero_knowledge\":true"));
-    assert!(fields.contains("keccak-256/hiding-fri/blowup-2^2/queries-57/grinding-q16-b16-o0/ext-5/zk"));
+    assert!(fields.contains("keccak-256/hiding-fri/blowup-2^3/queries-43/grinding-q16-b16-o0/ext-5/zk"));
     assert!(fields.contains("\"conjectured_security_bits\":128,"));
+    assert!(fields.contains("\"conjectured_security_bits_half_grinding\":128,"));
+    assert!(fields.contains("\"conjectured_quantum_security_bits\":64,"));
+    assert!(fields.contains("\"proven_security_bits\":80,"));
+    assert!(fields.contains("\"proven_quantum_security_bits\":40,"));
+    assert!(fields.contains("\"query_security_bits\":129,"));
 }
 
 #[test]
