@@ -281,10 +281,12 @@ app makes no data commitments.
   again, and a taken send the node drops before any block holds it. The
   reveal must land within a bound, the recipient paid once, every proof of
   the same coin and every envelope of the same marker.
-- `reveal-reprove.test.mjs`: a Summon reveal against the stand-in mining
-  every 20 ms that refuses every send of the first proof's envelope; the
-  reveal is proved again for the tip by then and goes through, paid once,
-  every proof of the first proof's coin.
+- `reveal-reprove.test.mjs`, with nothing built: a Summon reveal against an
+  in-process stand-in whose tip moves on every poll and that refuses every
+  send of the first proof's envelope, with a stub prover. With a proof as
+  slow as the real one the reveal is proved again after one refusal, with a
+  quick one after 5; either way it goes through, paid once, every proof of
+  the first proof's coin and of one marker.
 - `reveal-moving-head.test.mjs`, with nothing built: an in-process stand-in
   whose tip moves on every poll and a stub prover. A reveal refused there is
   sent again after one look at the tip, never after waiting for a still tip,
