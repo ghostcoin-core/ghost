@@ -4,8 +4,8 @@
 //!
 //! This crate implements specification 01 (`docs/spec/01-commitments-and-keys.md`):
 //!
-//! - [`key`]: generating, formatting and parsing a Phantom Key, with its
-//!   checksum groups (sections 5 and 6).
+//! - [`key`]: generating, formatting and parsing a Phantom Key, as 24 words
+//!   (the default) or as digit groups, with its check (sections 5 and 6).
 //! - [`derive`]: every secret derived from the digits: the key bytes, `s`,
 //!   `r`, the blinding `b_i`, the note key and the data key (section 7).
 //! - [`commit`]: the content fingerprint, the fingerprint, the commitment and
@@ -53,6 +53,7 @@ pub mod derive;
 pub mod hash;
 pub mod header_chain;
 pub mod key;
+mod key_words;
 pub mod note;
 pub mod randomx;
 pub mod restore;

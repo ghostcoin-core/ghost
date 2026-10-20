@@ -81,7 +81,7 @@ Directions examined and set aside on 2026-10-17, with reasons in [decision 0002]
 ## Phantom Keys
 - **What it is:** the digits returned on commit. They control that commitment and its continuing remainder.
 - **Bearer object:** whoever holds the digits controls it fully, and the first to reveal wins. There is no recovery and no admin override.
-- **Format:** twelve groups of four digits, the last a checksum, about 146 bits of secret. An optional 24-group version is available.
+- **Format:** 24 words from the 2,048-word list, a 256-bit secret with a built-in check: quantum-safe, about 128 bits of strength even against a quantum computer, and a length people already write down by hand. The same key can be shown as 21 groups of four digits for those who prefer digits. Keys already issued as twelve groups of four digits (about 146 bits of secret, about 73 against a quantum search) or as 24 groups still restore unchanged.
 - **Generation:** always by the app from a secure random source.
 - **The digits are all you need.** Everything else is derived from them.
 - **Delivery:** a key reaches another person outside the chain.

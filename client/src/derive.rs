@@ -1,7 +1,8 @@
-//! Every secret derived from the digits (spec 01, section 7).
+//! Every secret derived from the key (spec 01, section 7).
 //!
 //! ```text
-//! key_bytes = code || secret digits as ASCII
+//! key_bytes = 0x20 || the 32 secret bytes        (words key)
+//! key_bytes = code || secret digits as ASCII     (digit key, 0x0C or 0x18)
 //! s      = S("ghost/secret/v1",        key_bytes)
 //! r      = S("ghost/reveal-secret/v1", key_bytes)
 //! b_i    = S("ghost/blinding/v1",      key_bytes, i as 8 bytes)
@@ -64,9 +65,10 @@ secret_32! {
     DataKey
 }
 
-/// The key bytes every derivation takes: the format code, then the secret
-/// digits as ASCII, without the checksum groups. 45 bytes for a standard key,
-/// 89 for a long key.
+/// The key bytes every derivation takes: the format code, then the 32 secret
+/// bytes of a words key, or the secret digits of a digit key as ASCII,
+/// without the checksum groups. 33 bytes for a words key, whether it was
+/// typed as words or as digits; 45 for a standard key, 89 for a long key.
 pub struct KeyBytes {
     bytes: [u8; MAX_KEY_BYTES],
     len: usize,
@@ -86,7 +88,7 @@ impl KeyBytes {
             len: 0,
         };
         out.bytes[0] = key.key_format().code();
-        out.len = 1 + key.copy_secret_digits(&mut out.bytes[1..]);
+        out.len = 1 + key.copy_key_secret(&mut out.bytes[1..]);
         out
     }
 
