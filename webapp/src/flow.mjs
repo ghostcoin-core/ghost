@@ -8,13 +8,20 @@
 //   pages, the spent markers in whole pages, receipts, and the reveal
 //   transaction. No request names a key, a commitment, a position or a
 //   marker; the reveal itself carries only public fields;
-// - the injected EIP-1193 wallet, only to send the commit;
 // - the background worker (prover.mjs), which holds the WebAssembly module
-//   and receives a key's digits for the length of one request.
+//   and receives a key's digits or the wallet seed's words for the length of
+//   one request.
 //
-// A key lives only in this object's memory: it is never written to browser
-// storage, a file, a cookie or a server, and it is dropped as soon as the
-// step that needs it is done.
+// The wallet is built in (spec 09, section 9): a 256-bit seed shown as 24
+// words, which derives a quantum-safe account key (ML-DSA-44). The commit is
+// an account transaction (type 0x52) the worker signs and the app sends with
+// eth_sendRawTransaction; no browser wallet and no elliptic-curve key is
+// used. Summon pays to any 20-byte address and needs no wallet.
+//
+// A key or a seed lives only in this object's memory: it is never written to
+// browser storage, a file, a cookie or a server. A Phantom Key is dropped as
+// soon as the step that needs it is done; the seed is kept while the wallet
+// is open and dropped when it is closed.
 
 import { concat, equalBytes, fromHex, quantity, toHex, toQuantity } from "./bytes.mjs";
 import {
@@ -22,6 +29,7 @@ import {
   SETTLE_DEPTH,
   feeForNextBlock,
   formatGhost,
+  nextBaseFee,
   parseAddress,
   parseGhost,
   settledHeight,
@@ -43,6 +51,23 @@ const NOTE_BYTES = 156;
 // Groups the user re-types before a key is used, out of a key's twelve.
 export const SAVE_CHECK_GROUPS = 3;
 const KEY_GROUPS = 12;
+// Words of a wallet seed, of which the user re-types SAVE_CHECK_GROUPS.
+export const SEED_WORDS = 24;
+// The account of the seed the app uses.
+export const ACCOUNT_INDEX = 0;
+// What an account transaction adds to the intrinsic gas of a type 0x02
+// transaction, which eth_estimateGas counts: 16 gas for each of the 2 + 1,312
+// + 2,420 bytes of scheme, public key and signature, and 3,000 for the
+// ML-DSA-44 check (ghost-node params/ghost/accounttx.go).
+export const ACCOUNT_EXTRA_GAS = 62_744n;
+// Local bounds on what the endpoint's answers can make the wallet sign, so
+// a dishonest endpoint cannot turn a commit into a large fee: the gas limit
+// of a commit, the priority fee per gas, and the most a commit's gas can
+// cost in all (0.01 GHOST by default, a setting of createFlow). The app
+// refuses to sign above them.
+export const COMMIT_GAS_CAP = 500_000n;
+export const PRIORITY_FEE_CAP = 2_000_000_000n;
+export const MAX_COMMIT_FEE = 10n ** 16n;
 // Times a reveal is proved again when the fee window changes meanwhile.
 const FEE_ATTEMPTS = 3;
 // The node's refusal of a reveal it could not check while new blocks kept
@@ -141,6 +166,17 @@ export function pickGroups(random, total = KEY_GROUPS, count = SAVE_CHECK_GROUPS
 export function wrongGroups(keyText, positions, answers) {
   const groups = keyText.trim().split(/[\s-]+/);
   return positions.filter((position, i) => String(answers[i] ?? "").replace(/[\s-]/g, "") !== groups[position - 1]);
+}
+
+// The positions whose typed word does not match the seed's, in any case.
+export function wrongWords(words, positions, answers) {
+  const list = normalWords(words).split(" ");
+  return positions.filter((position, i) => String(answers[i] ?? "").trim().toLowerCase() !== list[position - 1]);
+}
+
+// Seed words as the module reads them: lower case, single spaces.
+export function normalWords(text) {
+  return String(text).trim().toLowerCase().split(/\s+/).join(" ");
 }
 
 // The key's state from what restore found: no coin yet, a coin to claim,
@@ -272,7 +308,6 @@ async function askRuleForDecoy(prover, scan) {
 
 export function createFlow({
   prover,
-  wallet = null,
   fetch = globalThis.fetch,
   random = (n) => crypto.getRandomValues(new Uint8Array(n)),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -284,12 +319,17 @@ export function createFlow({
   headMovedProofs = HEAD_MOVED_PROOFS,
   endpoint = DEFAULT_ENDPOINT,
   commitEntry = DEFAULT_COMMIT_ENTRY,
+  maxCommitFee = MAX_COMMIT_FEE,
   onChange = () => {},
 } = {}) {
   let rpc = createRpc(endpoint, { fetch });
+  // The open wallet's seed words, never in `state`.
+  let walletWords = null;
   const state = {
     endpoint: rpc.url,
     commitEntry,
+    // The wallet: null, or { stage, words, groups, wrong, address, balance }.
+    // `words` is set only while a new seed is shown and checked.
     wallet: null,
     busy: null,
     progress: null,
@@ -784,14 +824,85 @@ export function createFlow({
     }
   }
 
-  async function connect() {
-    if (!wallet) throw new Error("no browser wallet found: the app needs one that injects window.ethereum");
-    const accounts = await wallet.request({ method: "eth_requestAccounts" });
-    if (!Array.isArray(accounts) || accounts.length === 0) throw new Error("the wallet shared no account");
-    const chainId = quantity(await wallet.request({ method: "eth_chainId" }));
-    state.wallet = { account: String(accounts[0]).toLowerCase(), chainId };
+  // Opens the wallet of `words`: its account's address, read by the worker.
+  async function openWallet(words) {
+    const text = normalWords(words);
+    const { address } = await prover.request("walletAccount", { words: text, index: ACCOUNT_INDEX });
+    walletWords = text;
+    state.wallet = { stage: "open", words: null, groups: null, wrong: [], address: toHex(address), balance: null };
     emit();
+    await readBalance();
     return state.wallet;
+  }
+
+  async function readBalance() {
+    const w = state.wallet;
+    if (!w || w.stage !== "open") return null;
+    w.balance = quantity(await rpc.call("eth_getBalance", [w.address, "latest"]));
+    emit();
+    return w.balance;
+  }
+
+  // Signs and sends an account transaction (type 0x52) from the open
+  // wallet's account: the nonce, fee and gas from the endpoint, the genesis
+  // hash from its verified block 0 (the signature binds the chain), signed in
+  // the worker. Returns the transaction hash.
+  async function sendFromWallet({ chainId, to, value, data }) {
+    if (!walletWords || !state.wallet || state.wallet.stage !== "open") {
+      throw new Error("open a wallet first: create one, or restore it from its 24 words");
+    }
+    const from = state.wallet.address;
+    const genesis = (await headerAt(0)).hash;
+    const nonce = quantity(await rpc.call("eth_getTransactionCount", [from, "pending"]));
+    const tip = await headerAt(await blockNumber());
+    // The endpoint's priority fee, at most PRIORITY_FEE_CAP.
+    const asked = quantity(await rpc.call("eth_maxPriorityFeePerGas"));
+    const priority = asked < PRIORITY_FEE_CAP ? asked : PRIORITY_FEE_CAP;
+    const maxFee = 2n * nextBaseFee(tip) + priority;
+    const call = { from, to, value: toQuantity(value), data: toHex(data) };
+    const gasLimit = quantity(await rpc.call("eth_estimateGas", [call])) + ACCOUNT_EXTRA_GAS;
+    if (gasLimit > COMMIT_GAS_CAP) {
+      throw new Error(`the endpoint asks for ${gasLimit} gas for the commit, more than the ${COMMIT_GAS_CAP} the app signs`);
+    }
+    if (gasLimit * maxFee > maxCommitFee) {
+      throw new Error(
+        `the commit's gas could cost up to ${formatGhost(gasLimit * maxFee)} GHOST at the endpoint's fees, more than the ${formatGhost(maxCommitFee)} GHOST the app signs`,
+      );
+    }
+    const balance = await readBalance();
+    if (balance < value + gasLimit * maxFee) {
+      throw new Error(`the wallet holds ${formatGhost(balance)} GHOST, less than the amount and the most the gas can cost`);
+    }
+    progress("signing with the wallet's quantum-safe key");
+    const signed = await prover.request("walletSign", {
+      words: walletWords,
+      index: ACCOUNT_INDEX,
+      chainId,
+      genesis,
+      nonce,
+      maxPriorityFeePerGas: priority,
+      maxFeePerGas: maxFee,
+      gasLimit,
+      to: fromHex(to, 20),
+      value,
+      data,
+    });
+    if (toHex(signed.sender) !== from) throw new Error("the signed transaction is not from the wallet's account");
+    const txHash = toHex(signed.txHash);
+    let answered;
+    try {
+      answered = await rpc.call("eth_sendRawTransaction", [toHex(signed.envelope)]);
+    } catch (err) {
+      // A node can take the transaction and still answer with an error:
+      // ghost-node's eth_sendRawTransaction does for type 0x52 once its pool
+      // has it. The commit counts as sent only if the node then holds it;
+      // whether a block holds it is checked against the chain as for any
+      // commit.
+      if (!(await rpc.call("eth_getTransactionByHash", [txHash]))) throw err;
+      answered = txHash;
+    }
+    if (String(answered).toLowerCase() !== txHash) throw new Error("the endpoint answered with another transaction's hash");
+    return txHash;
   }
 
   async function refreshSummon() {
@@ -906,14 +1017,67 @@ export function createFlow({
       return state.commitEntry;
     },
 
-    connectWallet() {
-      return run("connecting the wallet", connect);
+    // Wallet, new: a new seed, shown as 24 words to write down.
+    walletCreate() {
+      return run("creating a wallet", async () => {
+        const { words } = await prover.request("walletNew");
+        walletWords = null;
+        state.wallet = { stage: "shown", words, groups: null, wrong: [], address: null, balance: null };
+        emit();
+        return words;
+      });
+    },
+
+    // Wallet, new: the user says the words are saved; three to re-type.
+    walletSaved() {
+      const w = state.wallet;
+      if (!w || w.stage !== "shown") throw new Error("show the wallet's words first");
+      w.groups = pickGroups(random, SEED_WORDS);
+      w.wrong = [];
+      w.stage = "check";
+      emit();
+      return w.groups;
+    },
+
+    // Wallet, new: the re-typed words. The wallet opens only if all match.
+    walletCheck(answers) {
+      return run("opening the wallet", async () => {
+        const w = state.wallet;
+        if (!w || w.stage !== "check") throw new Error("the save check has not started");
+        const wrong = wrongWords(w.words, w.groups, answers);
+        w.wrong = wrong;
+        emit();
+        if (wrong.length > 0) return { ok: false, wrong };
+        const opened = await openWallet(w.words);
+        return { ok: true, address: opened.address };
+      });
+    },
+
+    // Wallet, restore: the 24 words of a seed saved before.
+    walletRestore(text) {
+      return run("restoring the wallet", async () => {
+        const opened = await openWallet(text);
+        return opened.address;
+      });
+    },
+
+    walletRefresh() {
+      return run("reading the wallet's balance", readBalance);
+    },
+
+    // Drops the seed from memory.
+    walletClose() {
+      if (state.busy) throw new Error(`wait until "${state.busy}" is done`);
+      walletWords = null;
+      state.wallet = null;
+      emit();
     },
 
     // Vanish, step 1: a new standard key for `amountText` GHOST, shown to
     // the user to copy, write down or download.
     vanishStart(amountText) {
       return run("creating a key", async () => {
+        if (!walletWords) throw new Error("open a wallet first: create one, or restore it from its 24 words");
         const amount = parseGhost(amountText);
         if (amount === 0n) throw new Error("enter an amount above zero");
         const { key } = await prover.request("newKey");
@@ -933,21 +1097,13 @@ export function createFlow({
         const v = state.vanish;
         const wrong = requireCheck(v, answers);
         if (wrong.length > 0) return { ok: false, wrong };
-        const account = state.wallet ? state.wallet.account : (await connect()).account;
+        if (!walletWords) throw new Error("open a wallet first: create one, or restore it from its 24 words");
         const chainId = quantity(await rpc.call("eth_chainId"));
-        const walletChain = quantity(await wallet.request({ method: "eth_chainId" }));
-        if (walletChain !== chainId) {
-          throw new Error(`the wallet is on chain ${walletChain}, the endpoint on chain ${chainId}`);
-        }
         progress("building the commit");
         const sentAfter = await blockNumber();
         const commit = await prover.request("commit", { chainId, amount: v.amount, key: v.key });
-        progress("waiting for the wallet");
-        const txHash = await wallet.request({
-          method: "eth_sendTransaction",
-          params: [{ from: account, to: state.commitEntry, value: toQuantity(v.amount), data: toHex(commit.payload) }],
-        });
-        // The user has the key; the app no longer needs it. The wallet took
+        const txHash = await sendFromWallet({ chainId, to: state.commitEntry, value: v.amount, data: commit.payload });
+        // The user has the key; the app no longer needs it. The node took
         // the commit: the page shows it Sent at once.
         v.key = null;
         v.stage = "sent";
@@ -955,6 +1111,7 @@ export function createFlow({
         emit();
         progress("waiting for a block");
         const receipt = await settle(v, "commit", commit.commitment, () => waitSettled(txHash, commit.commitment, sentAfter));
+        await readBalance();
         return { ok: true, txHash, block: receipt.blockNumber };
       });
     },

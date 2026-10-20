@@ -33,3 +33,16 @@ export function nodeProver() {
   worker.on("error", (err) => prover.fail(err.message));
   return prover;
 }
+
+// The tests' wallet: the seed of the bytes 0 to 31 as its 24 words, and its
+// account 0, whose address ghost-node's own code gives for the key that seed
+// derives (client/tests/accounts.rs).
+export const TEST_WALLET_WORDS =
+  "abandon amount liar amount expire adjust cage candy arch gather drum bullet absurd math era live bid rhythm alien crouch range attend journey unaware";
+export const TEST_WALLET_ADDRESS = "0x80992a5c983fc01cd9a0c16c4dfc47b9a750d022";
+
+// Funds the tests' wallet on the stand-in `node` and opens it in `flow`.
+export async function openTestWallet(flow, node, balance = 100n * 10n ** 18n) {
+  node.fund(TEST_WALLET_ADDRESS, balance);
+  return flow.walletRestore(TEST_WALLET_WORDS);
+}

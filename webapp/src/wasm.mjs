@@ -226,6 +226,64 @@ export class Ghost {
     return this.call("ghost_coin_commitment", new Input().bytes(fingerprint, 32).bytes(word(amount)).build());
   }
 
+  // A new wallet seed's 24 words from 32 random bytes.
+  walletNew(seed) {
+    const out = this.call("ghost_wallet_new", new Input().bytes(seed, 32).build());
+    const text = decoder.decode(out);
+    out.fill(0);
+    return text;
+  }
+
+  // Account `index` of a wallet seed: its address and ML-DSA-44 public key.
+  walletAccount(words, index) {
+    const out = new Output(this.call("ghost_wallet_account", new Input().text(words).u32(index).build()));
+    return { address: out.take(20), publicKey: out.rest() };
+  }
+
+  // An account transaction (type 0x52) signed with account `index`; `to`
+  // null is a contract creation. Returns its hash, sender and envelope.
+  walletSign(a) {
+    const input = new Input()
+      .text(a.words)
+      .u32(a.index)
+      .u64(a.chainId)
+      .bytes(a.genesis, 32)
+      .u64(a.nonce)
+      .bytes(word(a.maxPriorityFeePerGas))
+      .bytes(word(a.maxFeePerGas))
+      .u64(a.gasLimit);
+    if (a.to === null) input.u8(0);
+    else input.u8(1).bytes(a.to, 20);
+    input.bytes(word(a.value)).u32(a.data.length).bytes(a.data).bytes(a.seed, 32);
+    const out = new Output(this.call("ghost_wallet_sign", input.build()));
+    return { txHash: out.take(32), sender: out.take(20), envelope: out.rest() };
+  }
+
+  // An account transaction decoded and checked as the node's signer does.
+  accountTxVerify({ chainId, genesis, envelope }) {
+    const input = new Input().u64(chainId).bytes(genesis, 32).bytes(envelope).build();
+    const out = new Output(this.call("ghost_account_tx_verify", input));
+    const txHash = out.take(32);
+    const sender = out.take(20);
+    const nonce = out.u64();
+    const gasLimit = out.u64();
+    const maxPriorityFeePerGas = fromWord(out.take(32));
+    const maxFeePerGas = fromWord(out.take(32));
+    const hasTo = out.take(1)[0] === 1;
+    const to = out.take(20);
+    return {
+      txHash,
+      sender,
+      nonce,
+      gasLimit,
+      maxPriorityFeePerGas,
+      maxFeePerGas,
+      to: hasTo ? to : null,
+      value: fromWord(out.take(32)),
+      data: out.rest(),
+    };
+  }
+
   keccak256(bytes) {
     return this.call("ghost_keccak256", Uint8Array.from(bytes));
   }

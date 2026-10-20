@@ -12,7 +12,13 @@
 // (ghost-node docs/trees-and-headers.md, "Tree page methods").
 // A reveal is decoded and its proof verified with the real verifier, then
 // checked as a node admits it: fee in force, root of an earlier canonical
-// block, marker unused. Commits arrive through the scripted wallet below.
+// block, marker unused. Commits arrive as account transactions (type 0x52,
+// ghost-node docs/account-transactions.md), decoded and their ML-DSA-44
+// signature checked by the client library against this chain's identifier
+// and genesis hash, with the sender's nonce and balance checked as the node
+// checks them; `fund` gives an account its balance. A scripted sender of
+// plain commits (`wallet` below) is kept for the stand-in's own checks of a
+// commit's fields.
 //
 // Importing this file runs nothing; the tests start the server.
 
@@ -38,6 +44,13 @@ export const COMMIT_DATA_ERROR = "commit data is not 190 bytes of version 1";
 // The node's refusal of a reveal whose checks saw a new head every time
 // (ghost-node core/txpool/ghostpool): a transient bound on work per reveal.
 export const HEAD_MOVED_ERROR = "chain head kept moving while the reveal was checked";
+// An account transaction's intrinsic gas: a type 0x02 transfer's 21,000 and
+// the 62,744 of its scheme, key, signature and check (ghost-node
+// docs/account-transactions.md), and the gas the stand-in's eth_estimateGas
+// answers for a commit, which leaves out the 62,744 as the node's does.
+export const ACCOUNT_INTRINSIC_GAS = 21_000n + 62_744n;
+export const COMMIT_ESTIMATE_GAS = 60_000n;
+export const PRIORITY_FEE = 1_000_000_000n;
 
 const sha256 = (...parts) => {
   const h = createHash("sha256");
@@ -114,6 +127,9 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   const requests = [];
   const reveals = [];
   const commits = [];
+  // Account transactions taken, and the next nonce of each sender.
+  const accountTxs = [];
+  const nonces = new Map();
   // What a dishonest endpoint does, for the tests that play one:
   // `note(position, note)` replaces each note it serves; with `withhold`
   // set a reveal is not executed: its hash is returned and its receipt
@@ -123,6 +139,12 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   // headers carry that tree's root but keep their real hash.
   const dishonest = { note: null, withhold: null, forge: null };
   const withheld = [];
+  // With `errorAfterAccountTx` set, an account transaction is taken and
+  // answered with an error, as ghost-node answers one; with
+  // `refuseAccountTx` set, it is refused and not taken.
+  // `priorityFee` and `estimateGas`, when set, replace the answers of
+  // eth_maxPriorityFeePerGas and eth_estimateGas.
+  const quirks = { errorAfterAccountTx: false, refuseAccountTx: false, priorityFee: null, estimateGas: null };
   // A fast-mining node, for the tests that play one: the next `count` sends
   // of a valid reveal are refused with HEAD_MOVED_ERROR, each after
   // `blocks` empty blocks are mined, as the node's head moves meanwhile.
@@ -260,15 +282,21 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   }
 
   // A commit in a new block, or, with `pooled`, in the pool until the next.
-  function appendCommit(fingerprint, value, note, { pooled = false } = {}) {
+  function appendCommit(fingerprint, value, note, { pooled = false, txHash = null } = {}) {
     const commitment = ghost.coinCommitment(fingerprint, value);
-    const hash = toHex(sha256("fake commit", String((nonce += 1))));
+    const hash = txHash ?? toHex(sha256("fake commit", String((nonce += 1))));
     const entry = {
       hash,
       marker: null,
       apply: (n) => leaves.push({ commitment, note, block: n }),
       after: (n) =>
-        receipts.set(hash, { transactionHash: hash, blockNumber: q(n), blockHash: toHex(blocks[n].hash), status: "0x1", type: "0x2" }),
+        receipts.set(hash, {
+          transactionHash: hash,
+          blockNumber: q(n),
+          blockHash: toHex(blocks[n].hash),
+          status: "0x1",
+          type: txHash ? "0x52" : "0x2",
+        }),
     };
     if (pooled) pool.entries.push(entry);
     else entry.after(mine((n) => entry.apply(n)));
@@ -285,7 +313,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   // version 0x0001 (2 bytes), F (32), the note (156); the amount is the
   // value. It refuses what the real node refuses, in its words where it has
   // them, and anything it cannot read as a commit.
-  function walletCommit({ to, value, data }) {
+  function walletCommit({ to, value, data }, txHash = null) {
     if (typeof to !== "string" || to.toLowerCase() !== String(commitEntry).toLowerCase()) {
       throw new Error("not the commit entry address");
     }
@@ -307,12 +335,39 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     if (v < 1n || v >= 1n << 96n) throw new Error("commit amount out of range");
     const fingerprint = payload.slice(2, 34);
     if (fingerprint.every((b) => b === 0)) throw new Error("all-zero fingerprint");
-    const result = appendCommit(fingerprint, v, payload.slice(34), { pooled: pool.on });
+    const result = appendCommit(fingerprint, v, payload.slice(34), { pooled: pool.on, txHash });
     commits.push({ ...result, value: v });
     return result.hash;
   }
 
+  // An account transaction to the commit entry address: the signature
+  // checked for this chain and its genesis hash, then the sender's nonce,
+  // intrinsic gas and balance as the node checks them, then the commit.
+  function accountTx(envelope) {
+    if (quirks.refuseAccountTx) throw Object.assign(new Error("txpool is full"), { code: SERVER_ERROR });
+    const tx = ghost.accountTxVerify({ chainId, genesis: blocks[0].hash, envelope });
+    const from = toHex(tx.sender);
+    const next = nonces.get(from) || 0n;
+    if (tx.nonce < next) throw new Error(`nonce too low: address ${from}, tx: ${tx.nonce} state: ${next}`);
+    if (tx.nonce > next) throw new Error(`nonce too high: address ${from}, tx: ${tx.nonce} state: ${next}`);
+    if (tx.gasLimit < ACCOUNT_INTRINSIC_GAS) throw new Error("intrinsic gas too low");
+    const balance = balances.get(from) || 0n;
+    if (balance < tx.value + tx.gasLimit * tx.maxFeePerGas) throw new Error("insufficient funds for gas * price + value");
+    const hash = walletCommit({ to: tx.to ? toHex(tx.to) : null, value: q(tx.value), data: toHex(tx.data) }, toHex(tx.txHash));
+    nonces.set(from, next + 1n);
+    balances.set(from, balance - tx.value);
+    accountTxs.push({ ...tx, hash, from });
+    if (quirks.errorAfterAccountTx) {
+      // As ghost-node answers eth_sendRawTransaction of type 0x52 after its
+      // pool took it: its log line recovers the sender with the plain signer.
+      throw Object.assign(new Error("transaction type not supported"), { code: SERVER_ERROR });
+    }
+    return hash;
+  }
+
   function sendRaw(hex) {
+    const raw = fromHex(hex);
+    if (raw[0] === 0x52) return accountTx(raw);
     const tip = blocks.length - 1;
     const reveal = ghost.decodeEnvelope({ chainId, domain: blocks[0].hash, envelope: fromHex(hex) });
     const fee = nodeFee(blocks, tip + 1);
@@ -399,6 +454,10 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       return receipt ? { hash: h, blockNumber: receipt.blockNumber } : null;
     },
     eth_sendRawTransaction: ([hex]) => sendRaw(hex),
+    eth_getTransactionCount: ([address]) => q(nonces.get(String(address).toLowerCase()) || 0n),
+    eth_getBalance: ([address]) => q(balances.get(String(address).toLowerCase()) || 0n),
+    eth_maxPriorityFeePerGas: () => q(quirks.priorityFee ?? PRIORITY_FEE),
+    eth_estimateGas: () => q(quirks.estimateGas ?? COMMIT_ESTIMATE_GAS),
     // The page roots of a tree as a plain array of 32-byte roots, `[]` for an
     // empty tree. No data commitment is made here, so `data` has none.
     ghost_getPageRoots: (params) => {
@@ -487,6 +546,12 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     requests,
     reveals,
     commits,
+    accountTxs,
+    quirks,
+    // Gives `address` a balance of `wei`.
+    fund(address, wei) {
+      balances.set(String(address).toLowerCase(), wei);
+    },
     dishonest,
     withheld,
     balances,
@@ -553,7 +618,8 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       for (let i = 0; i < count; i += 1) foreignCommit();
     },
     fee: (height) => nodeFee(blocks, height),
-    // A scripted EIP-1193 provider holding one account on this chain.
+    // A scripted sender of plain commits from one account, for the stand-in's
+    // own checks of a commit's fields; the app sends account transactions.
     wallet(account) {
       const calls = [];
       return {

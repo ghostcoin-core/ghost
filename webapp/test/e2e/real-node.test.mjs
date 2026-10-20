@@ -1,11 +1,14 @@
 // Vanish, a partial Summon and a Claim with the real prover against a real
 // release `geth` of ghost-node, not the stand-in: a one-node internal
 // network (chain 6777971) that mines its own blocks. The web app's flow
-// controller drives it exactly as the page does; the wallet is the node's
-// own unlocked miner account, through eth_sendTransaction as a browser
-// wallet would send it. The test then reads the chain itself: the commit's
-// 190 bytes and its leaf, the reveal's marker, the remainder's leaf, the
-// recipient's balance, and the claim.
+// controller drives it exactly as the page does, with its built-in wallet:
+// the commit is an account transaction (type 0x52) signed in the worker
+// with the ML-DSA-44 key of the tests' seed, sent with
+// eth_sendRawTransaction. That account is the miner's etherbase, so block
+// rewards fund it; no elliptic-curve key or keystore is used. The test then reads
+// the chain itself: the commit transaction's type and sender, its 190 bytes
+// and its leaf, the reveal's marker, the remainder's leaf, the recipient's
+// balance, and the claim.
 //
 // GHOST_NODE_GETH is the path to the geth binary (webapp/scripts/build-node.sh
 // builds one at the commit in NODE_COMMIT). Without it the test prints
@@ -14,8 +17,7 @@
 //
 // The genesis is the internal network's (params/ghost InternalNetGenesis in
 // ghost-node, written out in its scripts/internal-net.sh, which a test in
-// ghost-node keeps equal to it); the miner key is that script's fixed test
-// key, the number 6777971.
+// ghost-node keeps equal to it).
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -26,8 +28,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { concat, fromHex, toHex, toQuantity } from "../../src/bytes.mjs";
-import { DEFAULT_COMMIT_ENTRY, WaitError, createFlow } from "../../src/flow.mjs";
-import { loadModule, nodeProver } from "../support/env.mjs";
+import { ACCOUNT_EXTRA_GAS, DEFAULT_COMMIT_ENTRY, WaitError, createFlow } from "../../src/flow.mjs";
+import { TEST_WALLET_ADDRESS, TEST_WALLET_WORDS, loadModule, nodeProver } from "../support/env.mjs";
 
 const GETH = process.env.GHOST_NODE_GETH;
 const NETWORK_ID = 6_777_971n;
@@ -36,9 +38,6 @@ const NOTE_BYTES = 156;
 const PAGE = 4096;
 // A reveal proves against the root of the block this many below the tip.
 const SETTLE_DEPTH = 2;
-// Test-only miner key and keystore password, as in ghost-node's script.
-const MINER_KEY_NUMBER = 6_777_971;
-const KEYSTORE_PASSWORD = "internal-net-test-only";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -62,8 +61,9 @@ function rpcClient(url) {
   };
 }
 
-// A one-node internal network in a temporary directory: init, the miner key
-// imported, then geth mining with HTTP JSON-RPC on a port the system picks.
+// A one-node internal network in a temporary directory: init, then geth
+// mining to the tests' wallet account with HTTP JSON-RPC on a port the
+// system picks.
 async function startGeth() {
   const dir = await mkdtemp(join(tmpdir(), "ghost-real-node-"));
   const log = [];
@@ -75,14 +75,9 @@ async function startGeth() {
   };
   const genesis = join(dir, "genesis.json");
   await writeFile(genesis, await readFile(new URL("./internal-genesis.json", import.meta.url)));
-  await writeFile(join(dir, "miner.key"), `${MINER_KEY_NUMBER.toString(16).padStart(64, "0")}\n`);
-  await writeFile(join(dir, "password"), `${KEYSTORE_PASSWORD}\n`);
   const datadir = join(dir, "node");
   run(["--datadir", datadir, "init", genesis]);
-  const imported = run(["--datadir", datadir, "--lightkdf", "account", "import", "--password", join(dir, "password"), join(dir, "miner.key")]);
-  const found = /Address: \{([0-9a-fA-F]{40})\}/.exec(imported);
-  if (!found) throw new Error(`could not read the miner address from: ${imported}`);
-  const miner = `0x${found[1].toLowerCase()}`;
+  const miner = TEST_WALLET_ADDRESS;
 
   const child = spawn(
     GETH,
@@ -98,10 +93,6 @@ async function startGeth() {
       "--http", "--http.addr", "127.0.0.1", "--http.port", "0",
       "--http.api", "eth,net,web3,ghost",
       "--mine", "--miner.threads", "1", "--miner.etherbase", miner,
-      "--unlock", miner, "--password", join(dir, "password"),
-      // The miner account is the test's wallet; the endpoint listens on
-      // 127.0.0.1 only.
-      "--allow-insecure-unlock",
       "--verbosity", "3",
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
@@ -199,15 +190,39 @@ if (!GETH) {
       return { leaves, markers };
     }
 
-    // A commit by someone else, from the miner: a random F and a note no key
-    // opens. It puts a leaf after ours, which the tree-state rule waits for.
+    // A commit by someone else: a random F and a note no key opens. It puts
+    // a leaf after ours, which the tree-state rule waits for. It is an
+    // account transaction from the funded account, signed here with the
+    // module directly rather than through the flow.
     async function strangerCommit() {
       const data = concat([Uint8Array.of(0x00, 0x01), randomBytes(32), randomBytes(NOTE_BYTES)]);
-      const hash = await rpc("eth_sendTransaction", [
-        { from: node.miner, to: DEFAULT_COMMIT_ENTRY, value: toQuantity(GHOST / 100n), data: toHex(data) },
-      ]);
+      const value = GHOST / 100n;
+      const call = { from: node.miner, to: DEFAULT_COMMIT_ENTRY, value: toQuantity(value), data: toHex(data) };
+      const tip = await rpc("eth_getBlockByNumber", ["latest", false]);
+      const priority = BigInt(await rpc("eth_maxPriorityFeePerGas"));
+      const signed = ghost.walletSign({
+        words: TEST_WALLET_WORDS,
+        index: 0,
+        chainId: NETWORK_ID,
+        genesis: fromHex((await rpc("eth_getBlockByNumber", ["0x0", false])).hash, 32),
+        nonce: BigInt(await rpc("eth_getTransactionCount", [node.miner, "pending"])),
+        maxPriorityFeePerGas: priority,
+        maxFeePerGas: 2n * BigInt(tip.baseFeePerGas) + priority,
+        gasLimit: BigInt(await rpc("eth_estimateGas", [call])) + ACCOUNT_EXTRA_GAS,
+        to: fromHex(DEFAULT_COMMIT_ENTRY, 20),
+        value,
+        data,
+        seed: randomBytes(32),
+      });
+      const hash = toHex(signed.txHash);
+      // The node answers an error once its pool has taken a type 0x52
+      // transaction (its RPC log line recovers the sender with the plain
+      // signer); what counts is that it holds the transaction.
+      await rpc("eth_sendRawTransaction", [toHex(signed.envelope)]).catch(() => null);
+      assert.ok(await rpc("eth_getTransactionByHash", [hash]), "the node holds the stranger's commit");
       const receipt = await receiptOf(hash);
       assert.equal(receipt.status, "0x1", "the stranger's commit is executed");
+      assert.equal(receipt.type, "0x52");
       return Number(BigInt(receipt.blockNumber));
     }
 
@@ -216,18 +231,6 @@ if (!GETH) {
     async function waitSettledAfter(block) {
       await waitFor(`block ${block + SETTLE_DEPTH}`, async () => (await blockNumber()) >= block + SETTLE_DEPTH);
     }
-
-    // The wallet: the node's unlocked miner account, as an EIP-1193 provider.
-    const walletCalls = [];
-    const wallet = {
-      async request({ method, params }) {
-        walletCalls.push({ method, params });
-        if (method === "eth_requestAccounts" || method === "eth_accounts") return [node.miner];
-        if (method === "eth_chainId") return rpc("eth_chainId");
-        if (method === "eth_sendTransaction") return rpc("eth_sendTransaction", params);
-        throw Object.assign(new Error("unsupported"), { code: 4200 });
-      },
-    };
 
     // Each stage the flow reports is logged once, so a resend of a reveal the
     // node refused while its head kept moving shows in the job's log.
@@ -252,7 +255,7 @@ if (!GETH) {
     // is sent again after a short wait, or proved again against the settled
     // root of the tip by then, and that gets the Summon and the Claim
     // through.
-    const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 1000, maxPolls: 1800, onChange });
+    const flow = createFlow({ prover, endpoint: node.url, pollMs: 1000, maxPolls: 1800, onChange });
 
     // A stranger's commit, then the tip 2 blocks past it: from then on the
     // settled block's tree holds a leaf after the coin, and the coin can be
@@ -267,11 +270,14 @@ if (!GETH) {
     try {
       assert.equal(BigInt(await rpc("eth_chainId")), NETWORK_ID);
       assert.equal((await rpc("eth_getBlockByNumber", ["0x0", false])).timestamp, "0x6abda280", "the internal network's genesis");
-      // Test funds come only from block rewards.
-      await waitFor("the miner's funds", async () => (await balance(node.miner)) >= 2n * GHOST);
+      // Test funds come only from block rewards, to the wallet's account.
+      await waitFor("the wallet's funds", async () => (await balance(node.miner)) >= 2n * GHOST);
+
+      // --- The wallet: restored from its 24 words ---
+      assert.equal(await flow.walletRestore(TEST_WALLET_WORDS), TEST_WALLET_ADDRESS);
+      assert.ok(flow.state.wallet.balance >= 2n * GHOST, "the wallet shows the account's balance");
 
       // --- Vanish: 1 GHOST into a new key ---
-      await flow.connectWallet();
       const key = await flow.vanishStart("1");
       const positions = flow.vanishSaved();
       const sent = await flow.vanishCheck(answersFor(key, positions));
@@ -282,6 +288,9 @@ if (!GETH) {
       // data is the 190 bytes of ghostpriv.CommitData, version 0x0001, and a
       // new leaf C = K(tag, COIN, F, v).
       const commitTx = await rpc("eth_getTransactionByHash", [sent.txHash]);
+      assert.equal(commitTx.type, "0x52", "a quantum-safe account transaction");
+      // The sender is derived from the key: the wallet's nonce moved.
+      assert.equal(BigInt(await rpc("eth_getTransactionCount", [TEST_WALLET_ADDRESS, "latest"])), 1n);
       assert.equal(String(commitTx.to).toLowerCase(), DEFAULT_COMMIT_ENTRY);
       assert.equal(BigInt(commitTx.value), GHOST);
       const data = fromHex(commitTx.input);
@@ -385,7 +394,9 @@ if (!GETH) {
       assert.equal(s.status, "unclaimed");
       assert.equal(s.current.amount, claimed.amount);
       flow.summonClose();
-      assert.equal(walletCalls.filter((c) => c.method === "eth_sendTransaction").length, 1, "the wallet sent the commit only");
+      // The account sent the commit and the two strangers' commits, all type
+      // 0x52, and nothing else.
+      assert.equal(BigInt(await rpc("eth_getTransactionCount", [TEST_WALLET_ADDRESS, "latest"])), 3n);
     } catch (err) {
       console.error(`--- last lines of geth's log ---\n${node.tail()}`);
       throw err;

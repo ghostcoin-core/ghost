@@ -17,12 +17,11 @@ import test from "node:test";
 
 import { fromHex } from "../src/bytes.mjs";
 import { DEFAULT_COMMIT_ENTRY, HEAD_MOVED_SENDS, createFlow } from "../src/flow.mjs";
-import { loadModule, nodeProver } from "./support/env.mjs";
+import { loadModule, nodeProver, openTestWallet } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
 
 const GHOST = 10n ** 18n;
 const GWEI = 10n ** 9n;
-const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const RECIPIENT = "0x2222222222222222222222222222222222222222";
 // The whole Summon, from the click to its settled block. A few proofs, a few
 // short waits before a resend and the reveal's own block take well under this; a wait for a
@@ -32,7 +31,6 @@ const BOUND_MS = 240_000;
 test("a Summon reveal on a node that mines every 20 ms, refuses, changes its fee and drops a taken send completes, paid once", { timeout: 600_000 }, async () => {
   const ghost = await loadModule();
   const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
-  const wallet = node.wallet(ACCOUNT);
   const worker = nodeProver();
   const proofs = [];
   const prover = {
@@ -48,7 +46,8 @@ test("a Summon reveal on a node that mines every 20 ms, refuses, changes its fee
   const fetch = async (url, init) => {
     const call = JSON.parse(init.body);
     const response = await globalThis.fetch(url, init);
-    if (call.method === "eth_sendRawTransaction") {
+    // Reveals only (type 0x50); the commit is an account transaction.
+    if (call.method === "eth_sendRawTransaction" && call.params[0].startsWith("0x50")) {
       const { error } = await response.clone().json();
       sends.push({ envelope: call.params[0], error: error?.message ?? null });
       if (error && sends.length === 1) node.setBaseFee(2n * GWEI);
@@ -58,7 +57,6 @@ test("a Summon reveal on a node that mines every 20 ms, refuses, changes its fee
   const stages = [];
   const flow = createFlow({
     prover,
-    wallet,
     endpoint: node.url,
     fetch,
     pollMs: 1000,
@@ -68,6 +66,7 @@ test("a Summon reveal on a node that mines every 20 ms, refuses, changes its fee
       if (stage && stages[stages.length - 1] !== stage) stages.push(stage);
     },
   });
+  await openTestWallet(flow, node);
   try {
     // A block every 20 ms throughout, a stranger's commit in every 8th, so
     // a settled block soon holds a commitment after the coin and a proof

@@ -27,12 +27,46 @@
         </label>
         <button type="submit">Use this network</button>
       </form>
-      <p><button id="connect" type="button">Connect wallet</button> <span id="wallet-status"></span></p>
+    </section>
+
+    <section id="wallet">
+      <h2>Wallet</h2>
+      <p>The app's own wallet, with a quantum-safe account key (ML-DSA-44). Its seed is 24 words: they are the only backup of the account. The app keeps them in this page's memory while the wallet is open and never stores them. A Phantom Key's digits never open a wallet, and these words never open a coin.</p>
+      <div id="wallet-closed">
+        <p><button id="wallet-create" type="button">Create a new wallet</button></p>
+        <form id="wallet-restore-form">
+          <label>Restore a wallet from its 24 words
+            <textarea id="wallet-restore-words" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+          </label>
+          <button type="submit">Restore</button>
+        </form>
+      </div>
+      <div id="wallet-words" class="key-panel" hidden>
+        <p>Your wallet's 24 words. Write them down in order and keep them safe: anyone who has them controls the account.</p>
+        <p id="wallet-words-text" class="secret blurred"></p>
+        <p>
+          <button id="wallet-show" type="button">Show</button>
+          <button id="wallet-saved" type="button">I have written them down</button>
+        </p>
+      </div>
+      <form id="wallet-check" class="check" hidden>
+        <p>Save check: type these words of your seed. The wallet opens only when all three match.</p>
+        <div id="wallet-check-words" class="groups"></div>
+        <button type="submit">Open the wallet</button>
+      </form>
+      <div id="wallet-open" hidden>
+        <p>Account address: <code id="wallet-address"></code></p>
+        <p>
+          Balance: <span id="wallet-balance"></span> GHOST
+          <button id="wallet-refresh" type="button">Refresh</button>
+          <button id="wallet-close" type="button">Close the wallet</button>
+        </p>
+      </div>
     </section>
 
     <section id="vanish">
       <h2>Vanish</h2>
-      <p>Commit GHOST from your wallet to a new Phantom Key. The key is the only authority over the coin: save it before anything is sent.</p>
+      <p>Commit GHOST from your wallet to a new Phantom Key. The key is the only authority over the coin: save it before anything is sent. The commit's gas costs at most 0.01 GHOST; the app refuses to sign one that could cost more.</p>
       <form id="vanish-form">
         <label>Amount (GHOST)
           <input id="vanish-amount" type="text" inputmode="decimal" autocomplete="off">
@@ -115,7 +149,7 @@
   </main>
 
   <footer>
-    <p>No key is stored: not in the browser, not in a file, not on a server. Proofs are made in this browser in a background worker; there is no proving key to download. Every request goes to the endpoint above, and none names your key or your coin.</p>
+    <p>No key or wallet seed is stored: not in the browser, not in a file, not on a server. Proofs are made in this browser in a background worker; there is no proving key to download. Every request goes to the endpoint above, and none names your key or your coin.</p>
   </footer>
 </body>
 </html>

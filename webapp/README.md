@@ -1,6 +1,6 @@
 # Ghost web app
 
-A web app for committing and revealing GHOST with the link between the two hidden on chain (amounts, timing and network address can still give it away, and one block holding a transaction is neither final settlement nor privacy; see [privacy under attack](../docs/research/privacy-under-attack.md)): connect a browser wallet, **Vanish**
+A web app for committing and revealing GHOST with the link between the two hidden on chain (amounts, timing and network address can still give it away, and one block holding a transaction is neither final settlement nor privacy; see [privacy under attack](../docs/research/privacy-under-attack.md)): open its quantum-safe wallet, **Vanish**
 GHOST into a new Phantom Key, **Summon** any amount of a key's coin to any
 address, and **Claim** a received key's coin to a new key. It is plain ES
 modules with no framework and no npm dependencies, on top of the client
@@ -16,13 +16,17 @@ The design, the node methods it calls and its limits are in
 
 - It stores no key or secret: not in the browser, not in a file, not in a
   cookie, not on a server. A key exists only in the page's memory for the
-  step that needs it. The key image is drawn in the page and saved only when
-  you press the button.
+  step that needs it, and the wallet's 24 words only while the wallet is
+  open. The key image is drawn in the page and saved only when you press the
+  button.
+- It uses no elliptic-curve key. The wallet's account key is ML-DSA-44,
+  derived from the wallet's seed, and every commit is a quantum-safe account
+  transaction signed in the background worker.
 - It downloads no proving key. The prover needs none: the statement is
   built into the WebAssembly module, which proves in a background worker.
-- It talks to two things only: the node endpoint you choose (JSON-RPC) and
-  the wallet your browser injects (`window.ethereum`). No request names your
-  key, your commitment, its position or its marker.
+- It talks to one thing only: the node endpoint you choose (JSON-RPC). No
+  request names your key, your seed, your commitment, its position or its
+  marker.
 
 ## Build it yourself
 
