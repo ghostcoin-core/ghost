@@ -134,7 +134,11 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   // held and then dropped at the next block, as the node's pool drops a held
   // reveal that fails its check on a new head (ghostpool Reset): no block
   // holds them and their lookup finds nothing.
-  const headMoving = { count: 0, blocks: 0, refused: 0, miner: null, refuseWhileMining: true, drops: 0 };
+  // With `stale` set, the first valid reveal sent from then on becomes the
+  // stale envelope: that send and every later send of the same envelope is
+  // refused the same way, each after `stale.blocks` empty blocks, while any
+  // other valid reveal (a fresh proof) is taken. `stale.refused` counts them.
+  const headMoving = { count: 0, blocks: 0, refused: 0, miner: null, refuseWhileMining: true, drops: 0, stale: null };
   const held = new Map();
   const dropped = [];
   let nonce = 0;
@@ -264,6 +268,14 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     if (reveal.fee !== fee) throw new Error(`fee ${reveal.fee} is not the fee in force, ${fee}`);
     if (!blocks.some((b) => toHex(b.coinTreeRoot) === toHex(reveal.root))) throw new Error("root not eligible");
     if (spent.some((s) => toHex(s.marker) === toHex(reveal.marker))) throw new Error("marker already spent");
+    const { stale } = headMoving;
+    if (stale && (stale.envelope === null || stale.envelope === String(hex).toLowerCase())) {
+      stale.envelope = String(hex).toLowerCase();
+      stale.refused += 1;
+      headMoving.refused += 1;
+      for (let i = 0; i < stale.blocks; i += 1) mine();
+      throw Object.assign(new Error(HEAD_MOVED_ERROR), { code: SERVER_ERROR });
+    }
     if (headMoving.count > 0 || (headMoving.miner && headMoving.refuseWhileMining)) {
       if (headMoving.count > 0) headMoving.count -= 1;
       headMoving.refused += 1;
@@ -427,6 +439,12 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     moveHeadOnReveal(count, { blocks = 0 } = {}) {
       headMoving.count = count;
       headMoving.blocks = blocks;
+    },
+    // The next valid reveal sent, and every resend of that same envelope, is
+    // refused as the node does when its head keeps moving, each after
+    // `blocks` new empty blocks; a freshly proved reveal is taken.
+    refuseStaleEnvelope({ blocks = 0 } = {}) {
+      headMoving.stale = { envelope: null, blocks, refused: 0 };
     },
     // An empty block every `everyMs` ms until stopMining(); meanwhile every
     // send of a valid reveal is refused as the node does when its head keeps

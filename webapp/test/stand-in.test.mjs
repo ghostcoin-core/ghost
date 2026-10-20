@@ -182,6 +182,19 @@ test("the stand-in refuses with the head-moving error only a reveal it would tak
     assert.equal(node.tip(), tip, "no block mined");
   }));
 
+// The stale-envelope switch, likewise, picks no envelope from a malformed
+// reveal: it still gets its own refusal and nothing is mined.
+test("the stand-in's stale-envelope switch refuses only a reveal it would take", () =>
+  withNode(async (node) => {
+    node.refuseStaleEnvelope({ blocks: 2 });
+    const tip = node.tip();
+    const reply = await rpcCall(node, "eth_sendRawTransaction", ["0x50c0"]);
+    assert.notEqual(reply.error.message, HEAD_MOVED_ERROR);
+    assert.equal(node.headMoving.stale.envelope, null, "no envelope picked yet");
+    assert.equal(node.headMoving.stale.refused, 0);
+    assert.equal(node.tip(), tip, "no block mined");
+  }));
+
 // The stand-in's own miner seals blocks on a timer until it is stopped;
 // meanwhile a malformed reveal still gets its own refusal.
 test("the stand-in's miner moves the head until it is stopped", () =>
