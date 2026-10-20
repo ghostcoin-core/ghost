@@ -239,8 +239,9 @@ if (!GETH) {
       lastStage = stage;
     };
     // The node keeps sealing a block about every 20 ms throughout, so the
-    // flow's resend of a reveal refused while its head kept moving is what
-    // gets the Summon and the Claim through.
+    // flow's resend of a reveal refused while its head kept moving, and its
+    // new proof for the tip by then once one proof's sends are all refused,
+    // is what gets the Summon and the Claim through.
     const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 1000, maxPolls: 1800, onChange });
 
     // The last block at which a commit in block `block` can still let a coin

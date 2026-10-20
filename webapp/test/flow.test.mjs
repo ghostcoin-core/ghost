@@ -13,7 +13,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { toHex } from "../src/bytes.mjs";
-import { DEFAULT_COMMIT_ENTRY, ZERO_ADDRESS, createFlow } from "../src/flow.mjs";
+import { DEFAULT_COMMIT_ENTRY, HEAD_MOVED_PROOFS, HEAD_MOVED_SENDS, ZERO_ADDRESS, createFlow } from "../src/flow.mjs";
 import { DEFAULT_ENDPOINT } from "../src/rpc.mjs";
 import { loadModule, nodeProver, webappDir } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
@@ -226,7 +226,15 @@ async function setUp({ fetch = globalThis.fetch, now = () => Date.now() } = {}) 
       const at = node.requests.length;
       const started = performance.now();
       return worker.request(op, args, onProgress).finally(() => {
-        work.push({ op, decoy: Boolean(args && args.decoy), at, end: node.requests.length, ms: performance.now() - started });
+        work.push({
+          op,
+          decoy: Boolean(args && args.decoy),
+          position: args?.position,
+          number: args?.number,
+          at,
+          end: node.requests.length,
+          ms: performance.now() - started,
+        });
       });
     },
   };
@@ -792,19 +800,30 @@ test("a reveal refused while the node keeps mining is sent once its head holds s
   }
 });
 
-test("a proof refused 5 times while the head keeps moving surfaces the node's refusal", async () => {
+test("a reveal refused on every send of every proof while the head keeps moving surfaces the node's refusal", async () => {
   const { node, flow, work, done } = await setUp();
   try {
     await readyToReveal(node, flow);
-    node.moveHeadOnReveal(100, { blocks: 1 });
+    node.moveHeadOnReveal(1000, { blocks: 1 });
     const from = node.requests.length;
     const fromWork = work.length;
     await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), /kept moving/);
     const asked = node.requests.slice(from);
-    assert.equal(sendsIn(asked).length, 5, "at most 5 sends of one proof");
-    assert.equal(node.headMoving.refused, 5);
+    const sends = sendsIn(asked);
+    assert.equal(sends.length, HEAD_MOVED_SENDS * HEAD_MOVED_PROOFS, "at most 5 sends of each of the proofs");
+    assert.equal(node.headMoving.refused, HEAD_MOVED_SENDS * HEAD_MOVED_PROOFS);
     assert.equal(asked.at(-1).method, "eth_sendRawTransaction", "nothing is asked after the last refusal");
-    assert.equal(work.slice(fromWork).filter((w) => w.op === "prove").length, 1);
+    const proofs = work.slice(fromWork).filter((w) => w.op === "prove");
+    assert.equal(proofs.length, HEAD_MOVED_PROOFS, "proved again after each proof's 5 refused sends, up to the bound");
+    assert.ok(
+      proofs.every((w) => !w.decoy && w.position === proofs[0].position && w.number === proofs[0].number),
+      "each time of the same coin",
+    );
+    for (let p = 0; p < HEAD_MOVED_PROOFS; p += 1) {
+      const own = sends.slice(p * HEAD_MOVED_SENDS, (p + 1) * HEAD_MOVED_SENDS).map((r) => r.params[0]);
+      assert.equal(new Set(own).size, 1, `proof ${p + 1}'s envelope, 5 times`);
+      if (p > 0) assert.notEqual(own[0], sends[(p - 1) * HEAD_MOVED_SENDS].params[0], `proof ${p + 1} is a new envelope`);
+    }
     assert.equal(node.reveals.length, 0);
     assert.match(flow.state.error, /kept moving/);
   } finally {

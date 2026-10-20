@@ -50,6 +50,12 @@ const FEE_ATTEMPTS = 3;
 // can only take a reveal while its head holds still for one check.
 export const HEAD_MOVED = "chain head kept moving while the reveal was checked";
 export const HEAD_MOVED_SENDS = 5;
+// A node whose head keeps moving can refuse every send of one proof: the
+// same envelope then never lands. Once a proof's HEAD_MOVED_SENDS sends are
+// all refused (or taken and let go), the reveal is proved again, of the same
+// coin, for the tree state and fee of the tip by then; at most
+// HEAD_MOVED_PROOFS proofs are made so before the last refusal surfaces.
+export const HEAD_MOVED_PROOFS = 4;
 const STILL_MS = 250;
 const STILL_POLLS = 8;
 // The node can also take a reveal and let it go before any block holds it:
@@ -526,8 +532,11 @@ export function createFlow({
   // the reveal (HEAD_MOVED) is the only one followed by more requests: the
   // tip until it holds still, its header and the fee for the next block,
   // then the same envelope while that fee is still the proof's, or a new
-  // proof once it is not. The refusal of a proof's HEAD_MOVED_SENDS-th send
-  // surfaces, with nothing asked after it; any other refusal is final. Every
+  // proof once it is not. After a proof's HEAD_MOVED_SENDS-th refused send
+  // the reveal is proved again for the tip by then, since a node that
+  // refused one envelope that often may never take it; the refusal of the
+  // last send of the HEAD_MOVED_PROOFS-th such proof surfaces, with nothing
+  // asked after it. Any other refusal is final. Every
   // proof after the first is of the first proof's input coin (`pinned`), so
   // an endpoint that took a send and still answered with the refusal cannot
   // have the remainder pay the same reveal again.
@@ -540,7 +549,13 @@ export function createFlow({
   // result carries the receipt.
   async function revealAndSend(request) {
     let pinned = null;
-    attempts: for (let attempt = 0; attempt < FEE_ATTEMPTS; attempt += 1) {
+    // Proofs whose every send the node refused or let go, and the sends it
+    // took and let go, across all proofs.
+    let refusedProofs = 0;
+    let letGo = 0;
+    let feeChanges = 0;
+    attempts: for (;;) {
+      if (feeChanges >= FEE_ATTEMPTS) throw new Error("the fee changed every time a proof was ready; try again");
       const scan = await scanKey(request.key);
       let args = null;
       let failure = null;
@@ -562,7 +577,10 @@ export function createFlow({
       }
       let tip = await headerAt(await blockNumber());
       const { fee } = await feeForNextBlock(tip, headerAt);
-      if (fee !== scan.fee) continue;
+      if (fee !== scan.fee) {
+        feeChanges += 1;
+        continue;
+      }
       if (failure) throw failure;
       progress("sending the reveal");
       for (let sends = 1; ; sends += 1) {
@@ -572,7 +590,13 @@ export function createFlow({
           hash = await rpc.call("eth_sendRawTransaction", [toHex(proved.envelope)]);
           taken = true;
         } catch (err) {
-          if (!isHeadMoved(err) || sends >= HEAD_MOVED_SENDS) throw err;
+          if (!isHeadMoved(err)) throw err;
+          if (sends >= HEAD_MOVED_SENDS) {
+            refusedProofs += 1;
+            if (refusedProofs >= HEAD_MOVED_PROOFS) throw err;
+            progress("the node kept refusing this proof; proving again for its new tip");
+            continue attempts;
+          }
         }
         if (taken) {
           if (String(hash).toLowerCase() !== toHex(proved.txHash)) {
@@ -581,8 +605,14 @@ export function createFlow({
           progress("waiting for a block");
           const receipt = await waitTaken(hash, tip.number);
           if (receipt) return { hash, fee: scan.fee, remainder: proved.remainder, sentAfter: tip.number, receipt };
+          letGo += 1;
           if (sends >= HEAD_MOVED_SENDS) {
-            throw new Error(`the node took the reveal and let it go before a block held it, ${sends} times; nothing was spent; try again`);
+            refusedProofs += 1;
+            if (refusedProofs >= HEAD_MOVED_PROOFS) {
+              throw new Error(`the node took the reveal and let it go before a block held it, ${letGo} times; nothing was spent; try again`);
+            }
+            progress("the node kept letting this proof go; proving again for its new tip");
+            continue attempts;
           }
           progress("the node let the reveal go; waiting for a still tip");
         } else {
@@ -596,11 +626,13 @@ export function createFlow({
           number = next;
         }
         tip = await headerAt(number);
-        if ((await feeForNextBlock(tip, headerAt)).fee !== scan.fee) continue attempts;
+        if ((await feeForNextBlock(tip, headerAt)).fee !== scan.fee) {
+          feeChanges += 1;
+          continue attempts;
+        }
         progress("sending the reveal again");
       }
     }
-    throw new Error("the fee changed every time a proof was ready; try again");
   }
 
   async function connect() {
