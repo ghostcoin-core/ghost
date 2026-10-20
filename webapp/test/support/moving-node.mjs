@@ -36,8 +36,10 @@ const fromHexBytes = (hex) => Uint8Array.from(Buffer.from(hex.slice(2), "hex"));
 // whenever its proof's root is more than `deepest` blocks below the tip.
 // With `refuseEnvelope`, the first envelope sent is refused on that send and
 // on every later send of it (`stale.refused` counts them), while any other
-// envelope is judged as above.
-export function movingNode({ step, proveBlocks, refuseFirst = 0, deepest = STALE_ROOT_DEPTH, refuseEnvelope = false }) {
+// envelope is judged as above. `clock.ms` is the flow's time (see flowOn); a
+// proof moves it on by `proveMs`.
+export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, deepest = STALE_ROOT_DEPTH, refuseEnvelope = false }) {
+  const clock = { ms: 0 };
   const leaves = [];
   const blocks = [];
   const receipts = new Map();
@@ -203,6 +205,7 @@ export function movingNode({ step, proveBlocks, refuseFirst = 0, deepest = STALE
           proofs.push(proof);
           byEnvelope.set(proof.envelope, proof);
           for (let i = 0; i < proveBlocks; i += 1) mine();
+          clock.ms += proveMs;
           return { envelope: fromHexBytes(proof.envelope), txHash: fromHexBytes(proof.txHash), remainder: proof.remainder };
         }
         default:
@@ -211,11 +214,12 @@ export function movingNode({ step, proveBlocks, refuseFirst = 0, deepest = STALE
     },
   };
 
-  return { fetch, prover, requests, sends, proofs, reveals, balances, coins, stale, tip };
+  return { fetch, prover, requests, sends, proofs, reveals, balances, coins, stale, tip, clock };
 }
 
-// A flow on the stand-in whose waits take no time and are recorded.
-export function flowOn(node) {
+// A flow on the stand-in whose waits are recorded and pass at once, moving
+// only the stand-in's clock, with any other createFlow options given.
+export function flowOn(node, options = {}) {
   const waits = [];
   const stages = [];
   const flow = createFlow({
@@ -224,9 +228,12 @@ export function flowOn(node) {
     endpoint: "http://127.0.0.1:1/",
     pollMs: 7,
     maxPolls: 50,
+    now: () => node.clock.ms,
     sleep: async (ms) => {
       waits.push(ms);
+      node.clock.ms += ms;
     },
+    ...options,
     onChange: (s) => {
       const stage = s.progress?.stage;
       if (stage && stages.at(-1) !== stage) stages.push(stage);

@@ -56,9 +56,13 @@ export const HEAD_MOVED_SENDS = 5;
 // A node whose head keeps moving can refuse every send of one proof: the
 // same envelope then never lands. Once a proof's HEAD_MOVED_SENDS sends are
 // all refused (or taken and let go), the reveal is proved again, of the same
-// coin, for the tree state and fee of the tip by then; at most
-// HEAD_MOVED_PROOFS proofs are made so before the last refusal surfaces.
-export const HEAD_MOVED_PROOFS = 4;
+// coin, for the tree state and fee of the tip by then. The app keeps going so
+// for up to HEAD_MOVED_MS from the first proof, and at most HEAD_MOVED_PROOFS
+// proofs, before the last refusal surfaces: a node that seals a block every
+// 20 ms can refuse dozens of sends in a row and still take a later one, so
+// the bound is a generous wait, not a few seconds.
+export const HEAD_MOVED_PROOFS = 200;
+export const HEAD_MOVED_MS = 600_000;
 const RESEND_MS = 250;
 // A refused proof is proved again at once, rather than sent again, when the
 // block whose root it proves against is more than this many blocks below the
@@ -255,6 +259,8 @@ export function createFlow({
   pollMs = 3000,
   maxPolls = 600,
   resendMs = RESEND_MS,
+  headMovedMs = HEAD_MOVED_MS,
+  headMovedProofs = HEAD_MOVED_PROOFS,
   endpoint = DEFAULT_ENDPOINT,
   commitEntry = DEFAULT_COMMIT_ENTRY,
   onChange = () => {},
@@ -586,12 +592,13 @@ export function createFlow({
   // the reveal (HEAD_MOVED) is the only one followed by more requests: after
   // a fixed `resendMs`, the tip once, its header and the fee for the next
   // block, then the same envelope while that fee is still the proof's and
-  // its root is at most STALE_ROOT_DEPTH blocks below the tip, or a new
-  // proof otherwise. The tip need not hold still. After a proof's
+  // its root has not gone stale (STALE_ROOT_DEPTH), or a new proof
+  // otherwise. The tip need not hold still. After a proof's
   // HEAD_MOVED_SENDS-th refused send the reveal is proved again for the tip
   // by then, since a node that refused one envelope that often may never
-  // take it; the refusal of the last send of the HEAD_MOVED_PROOFS-th proof
-  // surfaces, with nothing asked after it. Any other refusal is final. Every
+  // take it. A refusal surfaces, with nothing asked after it, only once
+  // `headMovedMs` has passed since the first proof or on the last send of
+  // the `headMovedProofs`-th proof. Any other refusal is final. Every
   // proof after the first is of the first proof's input coin (`pinned`), so
   // an endpoint that took a send and still answered with the refusal cannot
   // have the remainder pay the same reveal again.
@@ -609,6 +616,8 @@ export function createFlow({
     let refusedProofs = 0;
     let letGo = 0;
     let feeChanges = 0;
+    const started = now();
+    const outOfTime = () => now() - started >= headMovedMs;
     attempts: for (;;) {
       if (feeChanges >= FEE_ATTEMPTS) throw new Error("the fee changed every time a proof was ready; try again");
       const scan = await scanKey(request.key);
@@ -656,14 +665,12 @@ export function createFlow({
           if (receipt) return { hash, fee: scan.fee, remainder: proved.remainder, sentAfter: tip.number, receipt };
           letGo += 1;
         }
+        const giveUp = () =>
+          refusal ?? new Error(`the node took the reveal and let it go before a block held it, ${letGo} times; nothing was spent; try again`);
+        if (outOfTime()) throw giveUp();
         if (sends >= HEAD_MOVED_SENDS) {
           refusedProofs += 1;
-          if (refusedProofs >= HEAD_MOVED_PROOFS) {
-            throw (
-              refusal ??
-              new Error(`the node took the reveal and let it go before a block held it, ${letGo} times; nothing was spent; try again`)
-            );
-          }
+          if (refusedProofs >= headMovedProofs) throw giveUp();
           progress(
             refusal
               ? "the node kept refusing this proof; proving again for its new tip"
@@ -678,7 +685,7 @@ export function createFlow({
           feeChanges += 1;
           continue attempts;
         }
-        if (tip.number - scan.chain.settled > STALE_ROOT_DEPTH && refusedProofs + 1 < HEAD_MOVED_PROOFS) {
+        if (tip.number - scan.chain.settled > STALE_ROOT_DEPTH && refusedProofs + 1 < headMovedProofs) {
           refusedProofs += 1;
           progress("the proof's tree state is far below the node's tip; proving again for its new tip");
           continue attempts;

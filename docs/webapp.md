@@ -186,9 +186,11 @@ app makes no data commitments.
    32 headers a scan reads), it proves again against the settled root of
    the tip by then rather than send an envelope whose root is far behind.
    Otherwise it sends the same envelope again. It sends one proof at most
-   5 times and then proves again; it makes at most 4 proofs, sends the last
-   one 5 times whatever its root, and the refusal of that last send
-   surfaces, with nothing asked after it. A new proof is only ever of the first proof's
+   5 times and then proves again. A node sealing a block every 20 ms can
+   refuse dozens of sends in a row and still take a later one, so the app
+   keeps going like this for up to 10 minutes from the first proof and at
+   most 200 proofs (the last sent 5 times whatever its root); only then does
+   the refusal surface, with nothing asked after it. A new proof is only ever of the first proof's
    input coin: an endpoint can take a send and still answer with this
    refusal, so once that coin is spent or no longer the key's current coin
    the app stops with an error instead of spending the remainder on the
@@ -292,8 +294,10 @@ app makes no data commitments.
   sent again after one look at the tip, never after waiting for a still tip,
   and goes through; a refused proof whose root has fallen more than 34
   blocks below the tip is proved again for the tip instead of sent again;
-  and a node that refuses every send stops the reveal at 4 proofs of at most
-  5 sends each.
+  a node that refuses 40 sends in a row with the head-moving error over
+  minutes of proving still gets the reveal, paid once; and a node that
+  refuses every send stops the reveal after 10 minutes, or at 200 proofs, of
+  at most 5 sends each.
 - `stand-in.test.mjs`: the stand-in refuses what the node refuses for a
   commit (not to the commit entry address, data not 190 bytes, a version
   other than `0x0001`, among them the old 189-byte layout) and accepts the
