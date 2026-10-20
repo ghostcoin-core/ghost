@@ -141,6 +141,16 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   const headMoving = { count: 0, blocks: 0, refused: 0, miner: null, refuseWhileMining: true, drops: 0, stale: null };
   const held = new Map();
   const dropped = [];
+  // With `pool.on` set, a commit from the wallet or a valid reveal the node
+  // takes waits in the pool, its hash returned and no block mined, and the
+  // next block holds it, as a node that seals blocks on its own schedule.
+  // `pool.entries` are those waiting: `{ hash, marker, apply(n), after(n) }`.
+  const pool = { on: false, entries: [] };
+  // Transactions a reorganisation took out of the chain (reorg below).
+  const reorged = [];
+  // Raised on each reorganisation, so a replacing block never has the hash
+  // of the block it replaces.
+  let fork = 0;
   let nonce = 0;
   // The base fee of the blocks mined from now on.
   let baseFee = GWEI;
@@ -151,7 +161,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       parentHash: toHex(parentHash),
       sha3Uncles: EMPTY_LIST_HASH,
       miner: toHex(new Uint8Array(20)),
-      stateRoot: toHex(sha256("state", String(number))),
+      stateRoot: toHex(fork === 0 ? sha256("state", String(number)) : sha256("state", String(number), `fork ${fork}`)),
       transactionsRoot: toHex(sha256("transactions", String(number))),
       receiptsRoot: toHex(sha256("receipts", String(number))),
       logsBloom: toHex(new Uint8Array(256)),
@@ -185,10 +195,13 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     return json;
   }
 
-  // One new block holding `apply`'s changes.
+  // One new block holding `apply`'s changes and every transaction waiting
+  // in the pool.
   function mine(apply = () => {}) {
     const number = blocks.length;
     apply(number);
+    const pooled = pool.entries.splice(0);
+    for (const entry of pooled) entry.apply(number);
     const leafCount = leaves.length;
     const coinTreeRoot = ghost.treeRoots(concat(leaves.map((l) => l.commitment))).root;
     const parentHash = number === 0 ? new Uint8Array(32) : blocks[number - 1].hash;
@@ -205,7 +218,37 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     });
     for (const hash of held.keys()) dropped.push(hash);
     held.clear();
+    for (const entry of pooled) entry.after(number);
     return number;
+  }
+
+  // Takes the last `depth` blocks out of the chain, with every commit and
+  // reveal they held, and mines `depth + 1` empty blocks in their place: a
+  // reorganisation onto a longer chain that holds none of those
+  // transactions. Nothing taken out comes back. Returns the first height
+  // replaced.
+  function reorg(depth = 1) {
+    const cut = blocks.length - depth;
+    if (cut < 1) throw new Error("cannot replace genesis");
+    blocks.length = cut;
+    while (leaves.length > 0 && leaves[leaves.length - 1].block >= cut) leaves.pop();
+    while (spent.length > 0 && spent[spent.length - 1].block >= cut) spent.pop();
+    for (const [hash, receipt] of receipts) {
+      if (receipt.blockNumber !== undefined && Number(BigInt(receipt.blockNumber)) >= cut) {
+        receipts.delete(hash);
+        reorged.push(hash);
+      }
+    }
+    for (let i = reveals.length - 1; i >= 0; i -= 1) {
+      const reveal = reveals[i];
+      if (reveal.block < cut) continue;
+      const recipient = toHex(reveal.recipient);
+      if (reveal.out > 0n) balances.set(recipient, balances.get(recipient) - reveal.out);
+      reveals.splice(i, 1);
+    }
+    fork += 1;
+    for (let i = 0; i <= depth; i += 1) mine();
+    return cut;
   }
 
   mine();
@@ -216,11 +259,19 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     return block;
   }
 
-  function appendCommit(fingerprint, value, note) {
+  // A commit in a new block, or, with `pooled`, in the pool until the next.
+  function appendCommit(fingerprint, value, note, { pooled = false } = {}) {
     const commitment = ghost.coinCommitment(fingerprint, value);
     const hash = toHex(sha256("fake commit", String((nonce += 1))));
-    const number = mine((n) => leaves.push({ commitment, note, block: n }));
-    receipts.set(hash, { transactionHash: hash, blockNumber: q(number), status: "0x1", type: "0x2" });
+    const entry = {
+      hash,
+      marker: null,
+      apply: (n) => leaves.push({ commitment, note, block: n }),
+      after: (n) =>
+        receipts.set(hash, { transactionHash: hash, blockNumber: q(n), blockHash: toHex(blocks[n].hash), status: "0x1", type: "0x2" }),
+    };
+    if (pooled) pool.entries.push(entry);
+    else entry.after(mine((n) => entry.apply(n)));
     return { hash, commitment };
   }
 
@@ -256,7 +307,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     if (v < 1n || v >= 1n << 96n) throw new Error("commit amount out of range");
     const fingerprint = payload.slice(2, 34);
     if (fingerprint.every((b) => b === 0)) throw new Error("all-zero fingerprint");
-    const result = appendCommit(fingerprint, v, payload.slice(34));
+    const result = appendCommit(fingerprint, v, payload.slice(34), { pooled: pool.on });
     commits.push({ ...result, value: v });
     return result.hash;
   }
@@ -297,25 +348,37 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       receipts.set(hash, dishonest.withhold(hash, reveal));
       return hash;
     }
-    const number = mine((n) => {
-      leaves.push({ commitment: reveal.remainder, note: reveal.note, block: n });
-      spent.push({ marker: reveal.marker, block: n });
-    });
-    const recipient = toHex(reveal.recipient);
-    if (reveal.out > 0n) balances.set(recipient, (balances.get(recipient) || 0n) + reveal.out);
-    receipts.set(hash, {
-      transactionHash: hash,
-      blockNumber: q(number),
-      blockHash: toHex(blocks[number].hash),
-      status: "0x1",
-      type: "0x50",
-      marker: toHex(reveal.marker),
-      remainder: toHex(reveal.remainder),
-      treeIndex: "0x0",
-      position: q(leaves.length - 1),
-      note: toHex(reveal.note),
-    });
-    reveals.push({ ...reveal, hash, block: number });
+    if (pool.entries.some((e) => e.hash === hash)) throw new Error("already known");
+    if (pool.entries.some((e) => e.marker && toHex(e.marker) === toHex(reveal.marker))) throw new Error("marker already pending");
+    let position = null;
+    const entry = {
+      hash,
+      marker: reveal.marker,
+      apply: (n) => {
+        leaves.push({ commitment: reveal.remainder, note: reveal.note, block: n });
+        spent.push({ marker: reveal.marker, block: n });
+        position = leaves.length - 1;
+      },
+      after: (number) => {
+        const recipient = toHex(reveal.recipient);
+        if (reveal.out > 0n) balances.set(recipient, (balances.get(recipient) || 0n) + reveal.out);
+        receipts.set(hash, {
+          transactionHash: hash,
+          blockNumber: q(number),
+          blockHash: toHex(blocks[number].hash),
+          status: "0x1",
+          type: "0x50",
+          marker: toHex(reveal.marker),
+          remainder: toHex(reveal.remainder),
+          treeIndex: "0x0",
+          position: q(position),
+          note: toHex(reveal.note),
+        });
+        reveals.push({ ...reveal, hash, block: number });
+      },
+    };
+    if (pool.on) pool.entries.push(entry);
+    else entry.after(mine((n) => entry.apply(n)));
     return hash;
   }
 
@@ -331,7 +394,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     // for one it never took or let go.
     eth_getTransactionByHash: ([hash]) => {
       const h = String(hash).toLowerCase();
-      if (held.has(h)) return { hash: h, blockNumber: null };
+      if (held.has(h) || pool.entries.some((e) => e.hash === h)) return { hash: h, blockNumber: null };
       const receipt = receipts.get(h);
       return receipt ? { hash: h, blockNumber: receipt.blockNumber } : null;
     },
@@ -472,6 +535,13 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       headMoving.drops = count;
     },
     dropped,
+    // With `on`, a commit or reveal waits in the pool for the next block
+    // (`pool.entries`) instead of a block of its own at once.
+    pool,
+    // The last `depth` blocks replaced by `depth + 1` empty ones; the hashes
+    // of the transactions taken out are in `reorged`.
+    reorg,
+    reorged,
     // Blocks mined from now on carry base fee `wei` (each still half full).
     setBaseFee(wei) {
       baseFee = wei;

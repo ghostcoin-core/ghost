@@ -2,7 +2,7 @@
 // input to it. All logic is in flow.mjs; nothing here keeps a key beyond
 // the element that shows it, which is emptied when the step ends.
 
-import { CONFIRMATIONS, formatGhost } from "./chain.mjs";
+import { formatGhost } from "./chain.mjs";
 import { DEFAULT_COMMIT_ENTRY, createFlow } from "./flow.mjs";
 import { downloadKeyImage } from "./keyimage.mjs";
 import { browserProver } from "./prover.mjs";
@@ -96,15 +96,17 @@ function describeSummon(s) {
   const lines = [];
   if (s.status === "scanning") return "Reading the chain…";
   if (s.status === "not-found") lines.push("No coin for this key yet. A commit shows once its block is in.");
-  if (s.status === "claimed") lines.push(`Claimed: this key's coin was moved or revealed ${CONFIRMATIONS} or more blocks ago.`);
-  if (s.status === "pending") lines.push(`A transaction of this key is waiting for its block and ${CONFIRMATIONS} more on top.`);
+  if (s.status === "claimed") lines.push("Claimed: a block of the chain holds the move or reveal of this key's coin.");
   if (s.status === "unclaimed" && s.current) {
     lines.push(`Unclaimed: ${formatGhost(s.current.amount)} GHOST.`);
     lines.push(`Fee now: ${formatGhost(s.fee)} GHOST; at most ${formatGhost(s.available)} GHOST can go out.`);
   }
-  if (s.lastReveal && s.lastReveal.block) {
-    lines.push(`Revealed ${formatGhost(s.lastReveal.out)} GHOST to ${s.lastReveal.recipient} in block ${s.lastReveal.block}.`);
+  const r = s.lastReveal;
+  if (r && r.stage === "sent") {
+    lines.push(`Sent: ${formatGhost(r.out)} GHOST to ${r.recipient}, transaction ${r.txHash}. Done once a block holds it.`);
   }
+  if (r && r.stage === "done") lines.push(`Done: revealed ${formatGhost(r.out)} GHOST to ${r.recipient} in block ${r.block}.`);
+  if (r && r.stage === "dropped") lines.push(`Reveal dropped: ${r.dropped}.`);
   lines.push(`Chain tip: block ${s.tip ?? "?"}. Notes are not yet checked against block receipts.`);
   lines.push(SEAL_TRUST);
   return lines.join(" ");
@@ -139,11 +141,14 @@ function render(state) {
   const v = state.vanish;
   renderKeyStep("vanish", v);
   const vanishStatus = {
-    pending: () => `Commit sent (${v.txHash}); waiting for its block and ${CONFIRMATIONS} more on top.`,
-    confirmed: () =>
-      `Committed ${formatGhost(v.amount)} GHOST in block ${v.block}, with ${CONFIRMATIONS} blocks on top. Keep your key safe; the app has forgotten it. ${SEAL_TRUST}`,
+    sent: () => `Sent: a commit of ${formatGhost(v.amount)} GHOST, transaction ${v.txHash}. Done once a block holds it.`,
+    done: () =>
+      `Done: committed ${formatGhost(v.amount)} GHOST in block ${v.block}. Keep your key safe; the app has forgotten it. ${SEAL_TRUST}`,
+    dropped: () =>
+      `Commit dropped: ${v.dropped}. Your wallet may send it again by itself; if it does not, start Vanish again. The key you saved still holds the coin if the commit comes back.`,
   };
   $("vanish-status").textContent = v && vanishStatus[v.stage] ? vanishStatus[v.stage]() : "";
+  $("vanish-recheck").hidden = !v || (v.stage !== "done" && v.stage !== "dropped");
 
   const s = state.summon;
   $("summon-panel").hidden = !s;
@@ -155,16 +160,16 @@ function render(state) {
     $("summon-cover").classList.toggle("warning", Boolean(cover && cover.warning));
     $("reveal-form").hidden = !s.current;
     $("reveal-submit").disabled = Boolean(s.wait);
-    $("claim").hidden = !s.current && !(s.claim && s.claim.stage === "confirmed");
+    $("claim").hidden = !s.current && !(s.claim && (s.claim.stage === "done" || s.claim.stage === "dropped"));
     renderKeyStep("claim", s.claim);
     const c = s.claim;
     const claimStatus = {
-      pending: () => `Claim sent (${c.txHash}); waiting for its block and ${CONFIRMATIONS} more on top.`,
-      confirmed: () =>
-        `Claimed ${formatGhost(c.amount)} GHOST to the new key in block ${c.block}, with ${CONFIRMATIONS} blocks on top. ${SEAL_TRUST}`,
+      sent: () => `Sent: a claim of ${formatGhost(c.amount)} GHOST to the new key, transaction ${c.txHash}. Done once a block holds it.`,
+      done: () => `Done: claimed ${formatGhost(c.amount)} GHOST to the new key in block ${c.block}. ${SEAL_TRUST}`,
+      dropped: () => `Claim dropped: ${c.dropped}. Press Refresh, then Claim again.`,
     };
     $("claim-status").textContent = c && claimStatus[c.stage] ? claimStatus[c.stage]() : "";
-    $("claim-start").disabled = Boolean((c && c.stage !== "confirmed") || s.wait);
+    $("claim-start").disabled = Boolean((c && c.stage !== "done" && c.stage !== "dropped") || s.wait);
   }
 
   const p = state.progress;
@@ -216,6 +221,7 @@ $("vanish-form").addEventListener("submit", act(() => flow.vanishStart($("vanish
 wireKeyButtons("vanish", () => flow.state.vanish);
 $("vanish-saved").addEventListener("click", act(() => flow.vanishSaved()));
 $("vanish-check").addEventListener("submit", act(() => flow.vanishCheck(answers($("vanish-check-groups")))));
+$("vanish-recheck").addEventListener("click", act(() => flow.vanishRecheck()));
 
 $("summon-form").addEventListener(
   "submit",

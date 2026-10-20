@@ -18,10 +18,17 @@ supported EVM wallet and uses GHOST privately. It does three things.
   the rest, minus the fee, stays under the same key as the next commitment.
 - **Claim.** The app creates a new key, shows it and runs the same save
   check on it, then moves the coin's value minus the fee to the new key. A
-  received key shows **unclaimed** until the claim is in a block with 6
-  verified blocks on top; then it shows **claimed**, and the new key holds the
-  coin. Confirmation trusts the chosen endpoint for the proof-of-work seal of
-  each block, which the app does not verify.
+  received key shows **unclaimed** until a verified block holds the claim;
+  from that block on it shows **claimed**, and the new key holds the coin.
+  Confirmation trusts the chosen endpoint for the proof-of-work seal of each
+  block, which the app does not verify.
+
+A commit, reveal or claim shows **Sent**, with its amount and transaction
+hash, as soon as the wallet or the node takes it, and **Done** at the first
+block that holds it, with no block on top waited for (founder decision,
+2026-10-20: at 30-second blocks a wait for more blocks kept the holder
+waiting minutes). If a later reorganisation drops that block, the app says
+so plainly and the holder can send again (see Status below).
 
 ## Layout
 
@@ -115,9 +122,9 @@ app makes no data commitments.
 
 1. **Restore.** The app reads the coin tree as of the tip in whole pages and
    checks each page against the page-root list and the list against the tip's
-   `coinTreeRoot`. It reads the spent markers the same way, as of the block
-   6 below the tip, so a key shows claimed only once its spend has 6 blocks
-   on top. The worker tries the key's note key on every note and recomputes
+   `coinTreeRoot`. It reads the spent markers the same way, as of the tip
+   (the depth of Done, the block itself), so a key shows claimed as soon as
+   a block holds its spend. The worker tries the key's note key on every note and recomputes
    each found commitment (spec 01, section 8). The current coin is the found
    commitment whose marker is not spent. Notes are not checked against the
    tree, so an endpoint can alter them; the app therefore asks for everything
@@ -207,18 +214,46 @@ app makes no data commitments.
    otherwise a new proof of the same coin. Every such envelope spends the
    same marker, so at most one of them can ever be executed. A reveal the
    node still holds is waited for as before.
-7. **Status.** The app polls the receipt, but a receipt is only the
-   endpoint's word. A receipt naming a block that was already in the chain
-   when the transaction was sent, or one past the tip, is refused before any
-   header is read for it. The app then waits until the receipt's block has 6 blocks on
-   top. A commit, reveal or claim counts as confirmed only when the coin tree
-   as of the tip, checked against the tip's coin root, holds the new leaf the
-   transaction appends, at a position added by the receipt's block, read
-   from the coin roots of that block and its parent in the verified header
-   chain leading to the tip. Until then a claim stays pending and the old key
-   unclaimed. After that the old key shows claimed because its marker is
-   spent 6 or more blocks below the tip. Confirmation trusts the chosen
-   endpoint for the proof-of-work seal, which the app does not verify.
+7. **Status.** As soon as the wallet returns the commit's hash, or the node
+   takes a reveal or claim, the page shows it **Sent**, with the amount and
+   the transaction hash; nothing is waited for first. The app then polls the
+   receipt, but a receipt is only the endpoint's word. A receipt naming a
+   block that was already in the chain when the transaction was sent, or one
+   past the tip, is refused before any header is read for it. The first
+   block that holds the transaction is enough (`CONFIRMATIONS` is 1, the
+   transaction's own block): no block on top is waited for. A commit,
+   reveal or claim shows **Done** only when the coin tree as of the tip,
+   checked against the tip's coin root, holds the new leaf the transaction
+   appends, at a position added by the receipt's block, read from the coin
+   roots of that block and its parent in the verified header chain leading
+   to the tip. Until then a claim stays Sent and the old key unclaimed. From
+   that block on the old key shows claimed, because the markers are read at
+   the tip. Confirmation trusts the chosen endpoint for the proof-of-work
+   seal, which the app does not verify.
+8. **Reorganisation.** Done comes at the first block, so a reorganisation
+   can still replace that block. A receipt, or a missing one, is never the
+   evidence that a transaction is gone: an endpoint can answer null for a
+   transaction that went through. The chain is. If the receipt names a
+   block that is no longer the chain's block of that number while the app
+   checks it, the app reads the coin tree as of the tip, checked against
+   the tip's verified header: when it holds the transaction's new coin the
+   receipt is read again to find its block, and only when it does not does
+   the step show dropped. After Done, Refresh (Summon and Claim) and "Check
+   the commit is still in the chain" (Vanish) look again: while the chain's
+   verified header at the Done block is still that block, the step stays
+   Done; otherwise it shows dropped only when the tip's verified coin tree
+   no longer holds its new coin, and Done again, in its new block, when it
+   does. Then the page says plainly that the chain was reorganised, that
+   the block no longer holds it and that nothing it did stands, and the
+   holder can send again: the coin shows unspent, so Reveal and Claim are
+   open again, and Vanish can start again. From the moment the node takes a
+   reveal or claim until it is Done, its input coin stays pinned for the
+   open key, across a drop and the sends after it: a send again may only
+   spend that same coin, whose marker is the one dropped, so at most one of
+   them is ever executed. If the dropped reveal comes back before the send
+   again, that coin is spent and the app stops with an error instead of
+   paying again from the remainder; a Refresh that finds it Done again
+   releases the pin. The pinned-coin guard of step 6 is unchanged.
 
 ## Limits of this version
 
@@ -250,7 +285,9 @@ app makes no data commitments.
 - **The zero address.** The app refuses it as a reveal's recipient and as
   the commit entry address, because what it is credited cannot be spent.
 - **One tree.** Only coin tree 0 is read; a rollover is 2^32 leaves away.
-- **No reorganisation handling** beyond rereading everything on each step.
+- **Reorganisations are found when asked.** A step shown Done is checked
+  again only on Refresh or "Check the commit is still in the chain"; the
+  page does not watch the chain on its own.
 
 ## Tests
 
@@ -268,8 +305,8 @@ app makes no data commitments.
   and where the worker's proof falls among them, the same whether the key
   owns the targeted coin or not, up to the reveal itself; that a fabricated receipt for a withheld claim confirms nothing;
   that headers whose `coinTreeRoot` was changed under their real hash are
-  refused; and that a claim is not confirmed, nor the old key claimed,
-  before 6 blocks are on top. It also summons a coin 2 blocks after a
+  refused; and that a claim is Done, and the old key claimed, at the first
+  block that holds it, with no block on top. It also summons a coin 2 blocks after a
   stranger's later commit, against that commit's block root, after the same
   coin, with nobody committed since, was shown the plain warning and refused.
 - `wasm.test.mjs`: the module against the golden vectors of spec 01 and
@@ -302,6 +339,19 @@ app makes no data commitments.
   commit (not to the commit entry address, data not 190 bytes, a version
   other than `0x0001`, among them the old 189-byte layout) and accepts the
   190-byte payload.
+- `sent-and-done.test.mjs`: against the stand-in holding each transaction
+  in its pool until the next block, Vanish, a partial Summon and a Claim
+  show Sent, with the amount and hash, while no block holds the
+  transaction, and Done in the block that holds it, with no later block
+  mined. A reorganisation that drops a reveal or commit shown Done is found
+  on Refresh or Check and said plainly; the coin can be revealed again, and
+  an endpoint that takes the resend and still answers that its head moved
+  gets no second payment from the remainder. An endpoint that hides the
+  receipt of a reveal the chain still holds, in its block or moved to
+  another, never makes it show dropped; a dropped reveal that comes back
+  before the send again is not paid again from the remainder, and a Refresh
+  then shows it Done and releases the pin. A receipt from a block replaced
+  while the app checks it shows the claim dropped.
 - `units.test.mjs`: the fee against the worked examples of spec 07, the
   base fee rule, the settled height, amounts and the save check.
 - `early-reveal.test.mjs`, with nothing built: the tree-state choice with a
@@ -326,7 +376,8 @@ claimed coin. It also checks the tree-state rule: opened before anyone else
 commits, the coin waits with the plain warning and its reveal is refused;
 once a stranger's commit is 2 blocks deep the Summon goes out with no
 further wait, and so does the Claim after another stranger's commit follows
-the remainder. Without `GHOST_NODE_GETH` it prints
+the remainder. The commit, the reveal and the claim each show Sent with
+their hash and amount, and Done at the block their receipt names. Without `GHOST_NODE_GETH` it prints
 `SKIP: GHOST_NODE_GETH is not set` and runs nothing.
 `webapp/scripts/build-node.sh` clones ghost-node at the commit in
 `test/e2e/NODE_COMMIT`, builds it and prints the path to its `geth`:

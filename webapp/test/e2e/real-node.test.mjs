@@ -232,10 +232,20 @@ if (!GETH) {
     // Each stage the flow reports is logged once, so a resend of a reveal the
     // node refused while its head kept moving shows in the job's log.
     let lastStage = null;
+    // The Sent state of the commit, the reveal and the claim (the last one,
+    // should a reveal be proved again), as the page shows it: the
+    // transaction hash and amount, before its block.
+    const sentSeen = { vanish: null, reveal: null, claim: null };
     const onChange = (state) => {
       const stage = state.progress?.stage ?? null;
       if (stage !== null && stage !== lastStage) console.log(`flow: ${stage}`);
       lastStage = stage;
+      const v = state.vanish;
+      const r = state.summon?.lastReveal;
+      const c = state.summon?.claim;
+      if (v?.stage === "sent" && !sentSeen.vanish) sentSeen.vanish = { txHash: v.txHash, amount: v.amount };
+      if (r?.stage === "sent" && sentSeen.reveal?.txHash !== r.txHash) sentSeen.reveal = { txHash: r.txHash, out: r.out };
+      if (c?.stage === "sent" && sentSeen.claim?.txHash !== c.txHash) sentSeen.claim = { txHash: c.txHash, amount: c.amount };
     };
     // The node keeps sealing a block about every 20 ms throughout, so its
     // tip never holds still: a reveal it refuses while its head kept moving
@@ -266,7 +276,7 @@ if (!GETH) {
       const positions = flow.vanishSaved();
       const sent = await flow.vanishCheck(answersFor(key, positions));
       assert.equal(sent.ok, true);
-      assert.equal(flow.state.vanish.stage, "confirmed");
+      assert.equal(flow.state.vanish.stage, "done");
 
       // On chain: a transaction to the commit entry address of 1 GHOST whose
       // data is the 190 bytes of ghostpriv.CommitData, version 0x0001, and a
@@ -279,6 +289,9 @@ if (!GETH) {
       assert.equal(toHex(data.slice(0, 2)), "0x0001");
       const commitReceipt = await rpc("eth_getTransactionReceipt", [sent.txHash]);
       assert.equal(commitReceipt.status, "0x1");
+      // Sent as soon as the wallet had it, Done in the block that holds it.
+      assert.deepEqual(sentSeen.vanish, { txHash: sent.txHash, amount: GHOST });
+      assert.equal(flow.state.vanish.block, Number(BigInt(commitReceipt.blockNumber)), "Done at the commit's own block");
       const coin = toHex(ghost.coinCommitment(data.slice(2, 34), GHOST));
       let tree = await chainTree();
       assert.ok(tree.leaves.includes(coin), "the commit's leaf is in the coin tree");
@@ -324,6 +337,9 @@ if (!GETH) {
       const revealReceipt = await rpc("eth_getTransactionReceipt", [reveal.txHash]);
       assert.equal(revealReceipt.status, "0x1");
       assert.equal(revealReceipt.type, "0x50", "a private transaction");
+      assert.deepEqual(sentSeen.reveal, { txHash: reveal.txHash, out: GHOST / 4n }, "shown Sent with the amount and hash");
+      assert.equal(reveal.stage, "done");
+      assert.equal(reveal.block, Number(BigInt(revealReceipt.blockNumber)), "Done at the reveal's own block");
       // Log data: tree index (4), position (4), remainder (32), note (156),
       // recipient (20), out (32).
       const revealLog = fromHex(revealReceipt.logs[0].data);
@@ -353,6 +369,8 @@ if (!GETH) {
       const claimReceipt = await rpc("eth_getTransactionReceipt", [claimed.txHash]);
       assert.equal(claimReceipt.status, "0x1");
       assert.equal(claimReceipt.type, "0x50");
+      assert.deepEqual(sentSeen.claim, { txHash: claimed.txHash, amount: claimed.amount }, "shown Sent with the amount and hash");
+      assert.equal(claimed.block, Number(BigInt(claimReceipt.blockNumber)), "Done at the claim's own block");
       const claimLog = fromHex(claimReceipt.logs[0].data);
       assert.equal(toHex(claimLog.slice(196, 216)), "0x0000000000000000000000000000000000000000");
       assert.equal(BigInt(toHex(claimLog.slice(216, 248))), 0n, "a claim sends nothing out");

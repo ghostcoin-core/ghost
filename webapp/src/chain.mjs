@@ -12,9 +12,11 @@ export const TIP_DIVISOR = 10n;
 // A root a reveal proves against is at least this many blocks below the tip
 // (spec 02, section 8; client/src/tree_state.rs SETTLE_DEPTH).
 export const SETTLE_DEPTH = 2;
-// Blocks on top of a transaction's block before the app shows it confirmed,
-// and on top of a spent marker before a key shows claimed.
-export const CONFIRMATIONS = 6;
+// Blocks, the transaction's own block included, before the app shows a
+// commit, reveal or claim Done: the first block that holds it is enough, and
+// no block on top is waited for. Spent markers are read at the same depth,
+// the tip itself, so a key shows claimed once a block holds its spend.
+export const CONFIRMATIONS = 1;
 // Base units in one GHOST.
 export const DECIMALS = 18;
 const ONE = 10n ** BigInt(DECIMALS);
