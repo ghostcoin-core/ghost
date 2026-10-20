@@ -39,9 +39,9 @@ It writes no code. The node, proof, wallet and transport build tickets do.
 | Account scheme at launch | ML-DSA-44 (FIPS 204), pure mode, scheme ID `0x0001` | Founder decision; ID **Proposed** |
 | Second scheme | SLH-DSA-SHAKE-128s (FIPS 205), pure mode, scheme ID `0x0002`, accepted from genesis | Founder decision (defined by scheme ID); acceptance from genesis **Proposed** (question 2) |
 | Refused schemes | Every unknown or reserved scheme ID; every stateful or one-time signature scheme; every elliptic-curve scheme | Founder decision |
-| Account transaction | New EIP-2718 type `0x51` carrying scheme ID, public key and signature; canonical RLP | Founder decision; type byte **Proposed** |
+| Account transaction | New EIP-2718 type `0x52` carrying scheme ID, public key and signature; canonical RLP | Founder decision; type byte front desk decision (question 6) |
 | Sender | First 20 bytes of a domain-separated hash of (scheme ID, public key); no key registry | Founder decision; tag **Proposed** |
-| Legacy transactions | Types `0x00` to `0x04` (every secp256k1 type) refused from genesis; the native reveal `0x50` stays | Founder decision; spec 07 |
+| Legacy transactions | Types `0x00` to `0x04` (every secp256k1 type) refused from genesis; the native reveals `0x50` (coin) and `0x51` (data) stay | Founder decision; spec 07 |
 | Addresses | 20 bytes, unchanged; spec 02's `recipient` and spec 06's `coinbase` keep their width | Front desk decision (section 4.3) |
 | Precompiles | ecrecover, BN254, the BLS12-381 point evaluation removed; BLS12-381 and P-256 never added; one signature-verify precompile added at `0x51` | Founder decision; address **Proposed** |
 | Gas | Signature bytes in intrinsic gas at 16 gas per byte; a verification charge per scheme, set by measurement | Founder decision; byte price **Proposed** |
@@ -79,7 +79,7 @@ transaction is invalid and changes no state. In addition:
 
 | Name | Value | Meaning |
 |---|---|---|
-| `ACCOUNT_TX_TYPE` | `0x51` | EIP-2718 type of the account transaction (**Proposed**) |
+| `ACCOUNT_TX_TYPE` | `0x52` | EIP-2718 type of the account transaction (front desk decision, question 6) |
 | `SIG_BYTE_GAS` | 16 | Gas per byte of scheme ID, public key and signature, the base client's price of a non-zero calldata byte (EIP-2028), as spec 07's `BYTE_GAS` (**Proposed**) |
 | `GAS_PER_MS` | 10,000 | Spec 07, section 4: 30,000,000 gas mapped onto a 3,000 ms verification budget per block |
 | `VERIFY_GAS[0x0001]` | Set by measurement | Gas for one ML-DSA-44 verification (section 8.2) |
@@ -348,7 +348,7 @@ creation, a commit) is an account transaction. It is a new EIP-2718 typed
 transaction:
 
 ```text
-tx = 0x51 || rlp([chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas,
+tx = 0x52 || rlp([chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas,
                  gas_limit, to, value, data, access_list,
                  scheme, public_key, signature])
 ```
@@ -381,7 +381,7 @@ and `signature` have their exact widths. Anything else is rejected.
 ```text
 unsigned = rlp([chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas,
                 gas_limit, to, value, data, access_list, scheme, public_key])
-sighash  = K("ghost/account-tx/v1", 0x51, genesis_hash, keccak256(unsigned))
+sighash  = K("ghost/account-tx/v1", 0x52, genesis_hash, keccak256(unsigned))
 signature = Sign(secret_key, message = sighash, context = "ghost/tx/v1")
 ```
 
@@ -406,7 +406,7 @@ key, and the node derives the sender from it each time. That costs the public
 key's bytes in every transaction (section 8.1) and keeps the state free of key
 records, rotation rules and a first-use special case.
 
-**Hash.** The transaction hash is `keccak256(0x51 || rlp([...]))` over the
+**Hash.** The transaction hash is `keccak256(0x52 || rlp([...]))` over the
 whole envelope, signature included, as for every typed transaction. Hedged
 signing gives one transaction several valid signatures and so several hashes;
 the pool keeps at most one transaction per sender and nonce, with the base
@@ -415,12 +415,12 @@ client's replacement rule, so this changes nothing.
 **Order of checks.** The node checks an account transaction in this order, in
 the pool and in a block, and stops at the first failure:
 
-1. The type byte is `0x51`. Types `0x00` (legacy, with or without EIP-155),
+1. The type byte is `0x52`. Types `0x00` (legacy, with or without EIP-155),
    `0x01` (EIP-2930), `0x02` (EIP-1559), `0x03` (EIP-4844) and `0x04`
    (EIP-7702), every type the base client signs with secp256k1, are rejected
-   from genesis. Type `0x50`, the native reveal, has no account and no
-   signature and is checked by spec 07 instead; it stays. Every other type
-   byte is rejected.
+   from genesis. Types `0x50` and `0x51`, the native coin and data reveals,
+   have no account and no signature and are checked by spec 07 instead; they
+   stay. Every other type byte except `0x52` is rejected.
 2. The envelope is at most `TX_MAX_BYTES` and decodes canonically.
 3. `scheme` is a scheme accepted at this height, and `public_key` and
    `signature` have its lengths.
@@ -442,7 +442,7 @@ section.
 **Genesis.** The genesis allocation is empty (spec 06, section 7), so no
 account exists that was made under another scheme, and none needs migrating.
 
-**JSON-RPC.** `eth_sendRawTransaction` accepts type `0x51`. Methods that sign
+**JSON-RPC.** `eth_sendRawTransaction` accepts type `0x52`. Methods that sign
 with a key held by the node (`eth_sign`, `eth_sendTransaction`,
 `personal_*`) use secp256k1 keystores in the base client and are removed.
 Responses show `scheme` and `public_key` and derive `from` as above.
@@ -777,7 +777,7 @@ For other chapters to take when next revised:
   target until it supports these scheme IDs.
 - **Decision 0003:** the security level is stated with its quantum figures.
 - **The first product** ([webapp](../webapp.md)): a "supported EVM wallet" must
-  sign type `0x51` under a scheme ID of section 5; standard Ethereum wallets do
+  sign type `0x52` under a scheme ID of section 5; standard Ethereum wallets do
   not, so the app needs a wallet that does.
 
 ## 12. Properties
@@ -849,6 +849,9 @@ Each has a default that this document already applies.
    Default: yes, once, before the software freeze.
 5. **Gas limit cap.** A consensus maximum gas limit under section 8.4's bound,
    or a higher zero-byte price? Default: a consensus maximum, set in spec 05.
-6. **Numbers proposed here.** Type byte `0x51`, scheme IDs `0x0001` and
-   `0x0002`, the precompile at `0x51`, the tags of section 11 and the 24-word
-   seed. Default: as proposed.
+6. **Numbers proposed here.** Scheme IDs `0x0001` and `0x0002`, the
+   precompile at `0x51`, the tags of section 11 and the 24-word seed. Default:
+   as proposed. The account transaction type byte is
+   settled by the front desk: `0x52`, because the native coin and data
+   reveals already hold `0x50` and `0x51` (section 6, step 1). A precompile
+   address is not a transaction type, so the precompile keeps its address.
