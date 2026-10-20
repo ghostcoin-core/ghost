@@ -1078,6 +1078,8 @@ Each has a default that this document already applies.
 4. **Restore cost.** A full scan downloads 188 bytes per leaf, about 807 GB for
    a full tree. Any shortcut that skips pages tells an endpoint where to look.
    Default: the full scan from page 0, with the computed cost stated.
+   Measured cost, with the receipts the scan also needs, and the designs that
+   cut it: [recovery cost](../research/recovery-cost.md).
 5. **Leaves of the filling block.** Their only root is their own block's (section
    13, item 4). Default (review 01, F1): the wallet waits until the next tree
    has started and proves against the final root, which every leaf of the full
