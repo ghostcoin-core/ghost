@@ -26,7 +26,7 @@ formulas in this document and no node code (section 9).
 | Timestamp rule | Strictly greater than the parent's; at most 30 seconds ahead of the node's clock | **Proposed** |
 | Departure scenario | 99% of hashrate leaves at once; first block after takes over 2 hours with probability 0.56% | **Proposed** |
 | Emission | 6.92356 GHOST at the start, half-life 2 years, tail 0.2 GHOST; the tail starts at year 10.2, not year 8 | **Proposed fix** (section 6) |
-| Reward recipient | The whole reward and the priority fees go to the block finder; no uncles | Outline |
+| Reward recipient | The whole reward and the priority fees go to the block finder; no uncles; the 20-byte `coinbase` names a quantum-safe account (spec 09) | Outline; spec 09 |
 | Genesis | Derived from the first Bitcoin block at or after a stated time, once it has 6 confirmations | **Proposed** |
 
 ## 2. Conventions
@@ -646,6 +646,16 @@ is lower than cumulative issuance.
 - The whole block reward, `reward(h)`, and the priority fees of the block's
   transactions go to the block's `coinbase` address. Nothing is diverted to a
   treasury, a developer address or any other account.
+- **The `coinbase` field stays 20 bytes** and names an account of
+  [spec 09](09-quantum-safe-accounts.md): the first 20 bytes of a tagged hash
+  of a scheme ID and public key. Only a transaction signed under an accepted
+  scheme can move the reward, and every secp256k1 transaction type is refused
+  from genesis, so a coinbase that is an Ethereum address derived from a
+  secp256k1 key is credited and can never be spent. The chain cannot tell where
+  an address came from and does not check it. The reference mining software
+  derives the coinbase itself from a wallet account (spec 09, section 9) or
+  from a scheme ID and public key it is given, and takes a bare address only
+  when the operator states explicitly that it is a contract.
 - The base fee is burned, as decision 0001 specifies. It is not part of the
   reward.
 - **No uncles.** The header's uncle hash must equal the hash of the empty list

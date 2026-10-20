@@ -657,7 +657,10 @@ consideration uses (31-bit and 64-bit fields) does. The six equations with
 below `2^96`.
 
 **Fields other than amounts.** `recipient` is 20 bytes and enters the digest as
-20 bytes; there are no other bits to set. `chain_id`, `version` and all codes
+20 bytes; there are no other bits to set. Quantum-safe accounts keep this width:
+an account address is the first 20 bytes of a tagged hash of its scheme ID and
+public key ([spec 09](09-quantum-safe-accounts.md), sections 4.3 and 6), so the
+recipient field and its place in the coin reveal binding are unchanged. `chain_id`, `version` and all codes
 are fixed-width bytes. Hashes, roots and markers are 32-byte strings with no
 modulus check (spec 01, section 12, item 2).
 
@@ -948,6 +951,12 @@ difference is listed here for the founder's review.
    identical size and shape. The coin and data bindings have different
    layouts; the transaction encoding must still give both the same size (spec
    04, section 6, step 1).
+9. **Recipient under quantum-safe accounts.** [Spec 09](09-quantum-safe-accounts.md)
+   replaces secp256k1 accounts with ML-DSA-44 and SLH-DSA accounts from
+   genesis and keeps addresses at 20 bytes (its section 4.3). Confirmed: the
+   coin `recipient` stays 20 bytes at offset 143 of the coin reveal binding,
+   and no binding layout here changes. A reveal still carries no account
+   signature; the proof is its authorization.
 
 ## 15. Questions for the founder
 
