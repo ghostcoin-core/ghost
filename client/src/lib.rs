@@ -4,6 +4,9 @@
 //!
 //! This crate implements specification 01 (`docs/spec/01-commitments-and-keys.md`):
 //!
+//! - [`account`]: the wallet seed and its 24 words, the quantum-safe account
+//!   keys it derives, the account address and the signed account transaction
+//!   (spec 09, sections 5, 6 and 9).
 //! - [`key`]: generating, formatting and parsing a Phantom Key, as 24 words
 //!   (the default) or as digit groups, with its check (sections 5 and 6).
 //! - [`derive`]: every secret derived from the digits: the key bytes, `s`,
@@ -48,6 +51,7 @@
 //! The crate has no network code. Restore and the choice of tree state are
 //! pure functions over data the caller fetched in bulk.
 
+pub mod account;
 pub mod commit;
 pub mod derive;
 pub mod hash;
@@ -63,6 +67,10 @@ pub mod tree_state;
 mod wipe;
 pub mod wordlist;
 
+pub use account::{
+    account_address, AccountKey, AccountTx, AccountTxError, SeedError, SeedWords, SignedAccountTx,
+    VerifiedAccountTx, WalletSeed,
+};
 pub use commit::{
     Amount, CoinCommit, Commitment, CommitError, Content, ContentFingerprint, DataCommit,
     Fingerprint, Marker, Rule, TypeTag, COIN, DATA, V_MAX,

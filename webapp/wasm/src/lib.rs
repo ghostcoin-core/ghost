@@ -18,12 +18,15 @@
 //!   ever asked for a path;
 //! - the commit payload sent to the commit entry address;
 //! - the private transaction envelope of spec 07, section 3, and its
-//!   decoding and verification, which the test's stand-in node uses.
+//!   decoding and verification, which the test's stand-in node uses;
+//! - the built-in wallet (spec 09, section 9): a new seed as 24 words, the
+//!   account a seed derives, and the account transaction (type 0x52) signed
+//!   with ML-DSA-44, plus its decoding and check for the stand-in node.
 //!
 //! # Secrets
 //!
-//! Nothing here is stored: a key exists in memory only during the call that
-//! received its digits, and the result buffer is overwritten with zeros
+//! Nothing here is stored: a key or a wallet seed exists in memory only
+//! during the call that received its digits or words, and the result buffer is overwritten with zeros
 //! before it is replaced and when [`ghost_clear`] is called. Random bytes
 //! come from the caller (`crypto.getRandomValues` in the worker), as a seed
 //! for the generator the proofs crate already uses; its state is not wiped.
@@ -33,6 +36,7 @@
 
 #![allow(static_mut_refs)]
 
+use ghost_client::account::{AccountTx, WalletSeed, verify_envelope};
 use ghost_client::reveal::{ChainParams, CoinReveal, Proof, TREE_DEPTH};
 use ghost_client::{
     Amount, Commitment, HeaderRoot, KeyFormat, Marker, NOTE_BYTES, NoteContents, OwnedCoin, PhantomKey,
@@ -751,6 +755,128 @@ pub extern "C" fn ghost_constants(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |_| {
         let mut out = (ENVELOPE_BYTES as u32).to_be_bytes().to_vec();
         out.extend_from_slice(&(COMMIT_PAYLOAD_BYTES as u32).to_be_bytes());
+        Ok(out)
+    })
+}
+
+/// A 256-bit word as a `u128`, refused above 2^128 - 1 (fees and values of an
+/// account transaction).
+fn wide(word: [u8; 32]) -> Result<u128, String> {
+    if word[..16].iter().any(|&byte| byte != 0) {
+        return Err(String::from("a fee or value is above 2^128 - 1 wei"));
+    }
+    Ok(u128::from_be_bytes(word[16..].try_into().expect("16 bytes")))
+}
+
+fn word_of(v: u128) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[16..].copy_from_slice(&v.to_be_bytes());
+    out
+}
+
+fn wallet_seed(text: &str) -> Result<WalletSeed, String> {
+    WalletSeed::from_words(text).map_err(|e| format!("not a valid wallet seed: {e}"))
+}
+
+/// A new wallet seed (spec 09, section 9). Input: 32 random bytes, used as
+/// the seed itself. Output: its 24 words separated by spaces.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_wallet_new(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let mut bytes = input.array::<32>()?;
+        let seed = WalletSeed::from_bytes(bytes);
+        wipe(&mut bytes);
+        Ok(seed.to_words().as_str().as_bytes().to_vec())
+    })
+}
+
+/// An account of a wallet seed. Input: the words (text), the account index
+/// (4). Output: the address (20), then the ML-DSA-44 public key (1,312).
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_wallet_account(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let seed = wallet_seed(input.text()?)?;
+        let account = seed.account(input.u32()?);
+        let mut out = account.address().to_vec();
+        out.extend_from_slice(account.public_key());
+        Ok(out)
+    })
+}
+
+/// Signs an account transaction (type 0x52) with account `index` of a wallet
+/// seed, hedged. Input: the words (text), index (4), chain identifier (8),
+/// genesis hash (32), nonce (8), max priority fee word (32), max fee word
+/// (32), gas limit (8), destination kind (1: 1 for an address, 0 for a
+/// contract creation) and the address (20, present only for kind 1), value
+/// word (32), data (4-byte length and bytes), 32 random bytes. Output: the
+/// transaction hash (32), the sender (20), then the envelope.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_wallet_sign(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let seed = wallet_seed(input.text()?)?;
+        let account = seed.account(input.u32()?);
+        drop(seed);
+        let chain_id = input.u64()?;
+        let genesis = input.array::<32>()?;
+        let nonce = input.u64()?;
+        let max_priority_fee_per_gas = wide(input.array()?)?;
+        let max_fee_per_gas = wide(input.array()?)?;
+        let gas_limit = input.u64()?;
+        let to = match input.u8()? {
+            0 => None,
+            1 => Some(input.array::<20>()?),
+            _ => return Err(String::from("unknown destination kind")),
+        };
+        let value = wide(input.array()?)?;
+        let n = input.count()?;
+        let data = input.take(n)?.to_vec();
+        let mut rng = rng(input.array()?);
+        if max_priority_fee_per_gas > max_fee_per_gas {
+            return Err(String::from("the priority fee is above the fee cap"));
+        }
+        let tx = AccountTx {
+            chain_id,
+            nonce,
+            max_priority_fee_per_gas,
+            max_fee_per_gas,
+            gas_limit,
+            to,
+            value,
+            data,
+            access_list: Vec::new(),
+        };
+        let signed = account.sign(&tx, &genesis, &mut rng);
+        let mut out = Vec::with_capacity(52 + signed.envelope.len());
+        out.extend_from_slice(&signed.hash);
+        out.extend_from_slice(&signed.sender);
+        out.extend_from_slice(&signed.envelope);
+        Ok(out)
+    })
+}
+
+/// Decodes and checks an account transaction as the node's signer does
+/// (for the test's stand-in node). Input: chain identifier (8), genesis hash
+/// (32), the envelope. Output: hash (32), sender (20), nonce (8), gas limit
+/// (8), max priority fee word (32), max fee word (32), destination kind (1)
+/// and address (20, zeros for a creation), value word (32), then the data.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_account_tx_verify(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let chain_id = input.u64()?;
+        let genesis = input.array::<32>()?;
+        let checked = verify_envelope(input.rest(), chain_id, &genesis).map_err(|e| e.to_string())?;
+        let tx = &checked.tx;
+        let mut out = Vec::new();
+        out.extend_from_slice(&checked.hash);
+        out.extend_from_slice(&checked.sender);
+        out.extend_from_slice(&tx.nonce.to_be_bytes());
+        out.extend_from_slice(&tx.gas_limit.to_be_bytes());
+        out.extend_from_slice(&word_of(tx.max_priority_fee_per_gas));
+        out.extend_from_slice(&word_of(tx.max_fee_per_gas));
+        out.push(u8::from(tx.to.is_some()));
+        out.extend_from_slice(&tx.to.unwrap_or([0; 20]));
+        out.extend_from_slice(&word_of(tx.value));
+        out.extend_from_slice(&tx.data);
         Ok(out)
     })
 }

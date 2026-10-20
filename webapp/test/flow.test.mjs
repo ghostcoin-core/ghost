@@ -4,8 +4,9 @@
 // running in a worker_threads worker through the browser worker's message
 // interface, against the scripted node stand-in. The stand-in verifies each
 // reveal's proof with the real verifier before it accepts it, and records
-// every request so the test can check that no key digit or secret reached
-// the endpoint or the wallet.
+// every request so the test can check that no key digit, seed word or secret
+// reached the endpoint. The commit is an account transaction (type 0x52)
+// signed by the app's own wallet, which the stand-in checks as the node does.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -14,20 +15,22 @@ import test from "node:test";
 
 import { toHex } from "../src/bytes.mjs";
 import {
+  ACCOUNT_EXTRA_GAS,
+  COMMIT_GAS_CAP,
   DEFAULT_COMMIT_ENTRY,
+  PRIORITY_FEE_CAP,
   HEAD_MOVED_SENDS,
   WaitError,
   ZERO_ADDRESS,
   createFlow,
 } from "../src/flow.mjs";
 import { DEFAULT_ENDPOINT } from "../src/rpc.mjs";
-import { loadModule, nodeProver, webappDir } from "./support/env.mjs";
-import { startFakeNode } from "./support/fake-node.mjs";
+import { TEST_WALLET_ADDRESS, TEST_WALLET_WORDS, loadModule, nodeProver, openTestWallet, webappDir } from "./support/env.mjs";
+import { COMMIT_ESTIMATE_GAS, PRIORITY_FEE, startFakeNode } from "./support/fake-node.mjs";
 
 const GHOST = 10n ** 18n;
 // Spec 07, vector window-genesis: the fee at a base fee of 1 gwei.
 const SPEC_FEE = 33_036_375_802_978_007n;
-const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const RECIPIENT = "0x2222222222222222222222222222222222222222";
 const ENDPOINT_METHODS = new Set([
   "eth_chainId",
@@ -35,6 +38,10 @@ const ENDPOINT_METHODS = new Set([
   "eth_getBlockByNumber",
   "eth_getTransactionReceipt",
   "eth_sendRawTransaction",
+  "eth_getTransactionCount",
+  "eth_getBalance",
+  "eth_maxPriorityFeePerGas",
+  "eth_estimateGas",
   "ghost_getPageRoots",
   "ghost_getTreePage",
 ]);
@@ -61,12 +68,10 @@ function digitRuns(key) {
 test("Vanish, a partial Summon and a Claim against the node stand-in", async () => {
   const ghost = await loadModule();
   const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
-  const wallet = node.wallet(ACCOUNT);
   const prover = nodeProver();
   const stages = [];
   const flow = createFlow({
     prover,
-    wallet,
     endpoint: node.url,
     pollMs: 5,
     // While the app waits, the chain grows by a block.
@@ -78,8 +83,35 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
   try {
     // Strangers' coins before ours.
     node.foreignCommits(3);
-    await flow.connectWallet();
-    assert.equal(flow.state.wallet.account, ACCOUNT);
+    // --- The wallet: a new seed, its save check, then the tests' funded seed ---
+    await assert.rejects(flow.vanishStart("1"), /open a wallet first/);
+    assert.equal(flow.state.vanish, null, "no key is made before a wallet is open");
+    const words = await flow.walletCreate();
+    assert.match(words, /^[a-z]+( [a-z]+){23}$/, "24 words");
+    assert.equal(flow.state.wallet.stage, "shown");
+    const wordPositions = flow.walletSaved();
+    assert.equal(wordPositions.length, 3);
+    for (const p of wordPositions) assert.ok(p >= 1 && p <= 24);
+    const seedWords = words.split(" ");
+    const badWords = wordPositions.map((p) => seedWords[p - 1]);
+    badWords[0] = badWords[0] === "zoo" ? "abandon" : "zoo";
+    assert.deepEqual(await flow.walletCheck(badWords), { ok: false, wrong: [wordPositions[0]] });
+    assert.equal(flow.state.wallet.stage, "check");
+    const created = await flow.walletCheck(wordPositions.map((p) => seedWords[p - 1].toUpperCase()));
+    assert.equal(created.ok, true);
+    assert.match(created.address, /^0x[0-9a-f]{40}$/);
+    assert.equal(flow.state.wallet.words, null, "the words leave the state once the wallet is open");
+    assert.equal(flow.state.wallet.balance, 0n);
+    flow.walletClose();
+    assert.equal(flow.state.wallet, null);
+    // A Phantom Key's digits never open a wallet.
+    await assert.rejects(flow.walletRestore("1234 5678 9012 3456 7890 1234 5678 9012 3456 7890 1234 5678"), /not digits/);
+    // The same words open the same account again.
+    assert.equal(await flow.walletRestore(`  ${words.replaceAll(" ", "\n")} `), created.address);
+    flow.walletClose();
+    const address = await openTestWallet(flow, node);
+    assert.equal(address, TEST_WALLET_ADDRESS);
+    assert.equal(flow.state.wallet.balance, 100n * GHOST);
 
     // --- Vanish ---
     const key = await flow.vanishStart("1");
@@ -101,7 +133,7 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
     const refused = await flow.vanishCheck(wrong);
     assert.deepEqual(refused, { ok: false, wrong: [positions[1]] });
     assert.equal(flow.state.vanish.stage, "check");
-    assert.equal(wallet.calls.filter((c) => c.method === "eth_sendTransaction").length, 0);
+    assert.equal(node.accountTxs.length, 0);
     assert.equal(node.leaves.length, leavesBefore);
     assert.equal(node.commits.length, 0);
 
@@ -110,10 +142,20 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
     assert.equal(sent.ok, true);
     assert.equal(flow.state.vanish.stage, "done");
     assert.equal(flow.state.vanish.key, null, "the app drops the key once the commit is sent");
-    const sends = wallet.calls.filter((c) => c.method === "eth_sendTransaction");
-    assert.equal(sends.length, 1);
-    assert.equal(sends[0].params[0].to, DEFAULT_COMMIT_ENTRY);
-    assert.equal(BigInt(sends[0].params[0].value), GHOST);
+    // One account transaction, signed by the wallet's key and checked by the
+    // stand-in for this chain: to the commit entry, 1 GHOST, nonce 0, with
+    // the gas of its signature on top of the estimate.
+    assert.equal(node.accountTxs.length, 1);
+    const commitTx = node.accountTxs[0];
+    assert.equal(commitTx.from, TEST_WALLET_ADDRESS);
+    assert.equal(toHex(commitTx.to), DEFAULT_COMMIT_ENTRY);
+    assert.equal(commitTx.value, GHOST);
+    assert.equal(commitTx.nonce, 0n);
+    assert.equal(commitTx.gasLimit, COMMIT_ESTIMATE_GAS + ACCOUNT_EXTRA_GAS);
+    assert.equal(commitTx.maxPriorityFeePerGas, PRIORITY_FEE);
+    assert.equal(commitTx.hash, sent.txHash);
+    assert.equal(flow.state.wallet.balance, 99n * GHOST, "the balance is read again after the commit");
+    assert.equal(node.requests.filter((r) => r.method === "eth_sendTransaction").length, 0);
     assert.equal(node.commits.length, 1);
     const ourCommitment = toHex(node.commits[0].commitment);
 
@@ -185,7 +227,7 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
     flow.summonClose();
 
     // --- Nothing secret left the app ---
-    const traffic = [...node.requests, ...wallet.calls];
+    const traffic = node.requests;
     assert.ok(node.requests.length > 0);
     for (const r of node.requests) assert.ok(ENDPOINT_METHODS.has(r.method), `unexpected method ${r.method}`);
     for (const secretKey of [key, newKey]) {
@@ -196,6 +238,7 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
     }
     for (const r of node.requests) {
       assert.ok(!r.body.toLowerCase().includes(ourCommitment.slice(2)), `${r.method} named the coin's commitment`);
+      for (const w of TEST_WALLET_WORDS.split(" ").slice(0, 3)) assert.ok(!r.body.includes(`${w} `), `${r.method} held a seed word`);
     }
     // Tree data only ever in whole pages from page 0, as of a block hash.
     for (const r of node.requests.filter((x) => x.method === "ghost_getTreePage")) {
@@ -222,7 +265,6 @@ const PROOFS = 4;
 async function setUp({ fetch = globalThis.fetch, now = () => Date.now() } = {}) {
   const ghost = await loadModule();
   const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
-  const wallet = node.wallet(ACCOUNT);
   const worker = nodeProver();
   // Every worker request, with how many endpoint requests came before it
   // started and after it ended, and how long it took.
@@ -255,7 +297,8 @@ async function setUp({ fetch = globalThis.fetch, now = () => Date.now() } = {}) 
     if (ms === RESEND_MS) return new Promise((resolve) => setTimeout(resolve, ms));
     if (chain.mining) node.mine();
   };
-  const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, headMovedProofs: PROOFS, sleep, now, fetch });
+  const flow = createFlow({ prover, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, headMovedProofs: PROOFS, sleep, now, fetch });
+  await openTestWallet(flow, node);
   node.foreignCommits(2);
   const done = async () => {
     worker.terminate();
@@ -616,7 +659,9 @@ async function readyToReveal(node, flow) {
   assert.equal((await flow.summonOpen(key)).status, "unclaimed");
 }
 
-const sendsIn = (requests) => requests.filter((r) => r.method === "eth_sendRawTransaction");
+// A reveal or claim sent (type 0x50), not the commit's account transaction.
+const isRevealSend = (call) => call.method === "eth_sendRawTransaction" && String(call.params?.[0]).startsWith("0x50");
+const sendsIn = (requests) => requests.filter(isRevealSend);
 
 // The node refuses a reveal it could not check on a head that stayed put
 // (`chain head kept moving while the reveal was checked`); the app sends it
@@ -663,7 +708,7 @@ test("the stand-in refuses a reveal while its head moves with geth's JSON-RPC re
   const fetch = async (url, init) => {
     const response = await globalThis.fetch(url, init);
     const call = JSON.parse(init.body);
-    if (call.method === "eth_sendRawTransaction") {
+    if (isRevealSend(call)) {
       replies.push({ id: call.id, status: response.status, text: await response.clone().text() });
     }
     return response;
@@ -687,7 +732,7 @@ test("a reveal refused with geth's own reply bytes is sent again", async () => {
   const sends = [];
   const fetch = async (url, init) => {
     const call = JSON.parse(init.body);
-    if (call.method === "eth_sendRawTransaction") {
+    if (isRevealSend(call)) {
       sends.push(call.params[0]);
       if (sends.length === 1) {
         // The head moves while geth checks the reveal; the fee window stays.
@@ -721,7 +766,7 @@ test("a reveal the endpoint took before it answered that the head moved is not p
   const sends = [];
   const fetch = async (url, init) => {
     const call = JSON.parse(init.body);
-    if (call.method === "eth_sendRawTransaction") {
+    if (isRevealSend(call)) {
       sends.push(call.params[0]);
       const response = await globalThis.fetch(url, init);
       if (sends.length === 1) {
@@ -815,13 +860,13 @@ test("a reveal refused while the node keeps mining goes through without its head
   let takenWhileMining = null;
   const fetch = async (url, init) => {
     const call = JSON.parse(init.body);
-    if (call.method === "eth_sendRawTransaction" && node.headMoving.refused === 0 && !node.headMoving.miner) {
+    if (isRevealSend(call) && node.headMoving.refused === 0 && !node.headMoving.miner) {
       node.startMining(2, { refuse: false });
       node.moveHeadOnReveal(2, { blocks: 1 });
     }
-    const mining = node.headMoving.miner !== null;
+    const mining = node !== null && node.headMoving.miner !== null;
     const response = await globalThis.fetch(url, init);
-    if (call.method === "eth_sendRawTransaction" && !(await response.clone().json()).error) takenWhileMining = mining;
+    if (isRevealSend(call) && !(await response.clone().json()).error) takenWhileMining = mining;
     return response;
   };
   const set = await setUp({ fetch });
@@ -880,7 +925,7 @@ test("any other refusal of a reveal is final", async () => {
   let node = null;
   // An endpoint that refuses each reveal with another -32000 error.
   const fetch = async (url, init) => {
-    if (JSON.parse(init.body).method === "eth_sendRawTransaction") {
+    if (isRevealSend(JSON.parse(init.body))) {
       refusals += 1;
       askedBefore = node.requests.length;
       const error = { code: -32000, message: "chain head moved" };
@@ -897,6 +942,50 @@ test("any other refusal of a reveal is final", async () => {
     assert.equal(refusals, 1, "sent once");
     assert.equal(node.requests.length, askedBefore, "nothing is asked after the refusal");
     assert.equal(node.reveals.length, 0);
+  } finally {
+    await done();
+  }
+});
+
+test("a commit the node takes but answers with an error is shown Sent, and one it does not take is refused", async () => {
+  const { node, flow, done } = await setUp();
+  try {
+    node.quirks.errorAfterAccountTx = true;
+    const key = await flow.vanishStart("1");
+    const sent = await flow.vanishCheck(answersFor(key, flow.vanishSaved()));
+    assert.equal(sent.ok, true);
+    assert.equal(sent.txHash, node.accountTxs[0].hash);
+    assert.equal(flow.state.vanish.stage, "done");
+    // A refusal the node means: nothing is held, the error stands.
+    node.quirks.errorAfterAccountTx = false;
+    node.quirks.refuseAccountTx = true;
+    const again = await flow.vanishStart("1");
+    await assert.rejects(flow.vanishCheck(answersFor(again, flow.vanishSaved())), /txpool is full/);
+    assert.equal(node.accountTxs.length, 1);
+    // An endpoint that asks for a large priority fee or gas: the priority
+    // fee is held at its cap, and gas above the cap is refused unsigned.
+    node.quirks.refuseAccountTx = false;
+    node.quirks.priorityFee = 1000n * PRIORITY_FEE_CAP;
+    const capped = await flow.vanishStart("1");
+    assert.equal((await flow.vanishCheck(answersFor(capped, flow.vanishSaved()))).ok, true);
+    assert.equal(node.accountTxs[1].maxPriorityFeePerGas, PRIORITY_FEE_CAP);
+    node.quirks.estimateGas = COMMIT_GAS_CAP;
+    const heavy = await flow.vanishStart("1");
+    await assert.rejects(flow.vanishCheck(answersFor(heavy, flow.vanishSaved())), /more than the 500000 the app signs/);
+    node.quirks.estimateGas = null;
+    node.setBaseFee(10n ** 12n);
+    node.mine();
+    const pricey = await flow.vanishStart("1");
+    await assert.rejects(flow.vanishCheck(answersFor(pricey, flow.vanishSaved())), /more than the 0\.01 GHOST the app signs/);
+    assert.equal(node.accountTxs.length, 2);
+    // A balance that cannot pay: nothing is signed or sent.
+    node.setBaseFee(10n ** 9n);
+    node.mine();
+    node.fund(TEST_WALLET_ADDRESS, 0n);
+    const sends = node.requests.filter((r) => r.method === "eth_sendRawTransaction").length;
+    const third = await flow.vanishStart("1");
+    await assert.rejects(flow.vanishCheck(answersFor(third, flow.vanishSaved())), /less than the amount/);
+    assert.equal(node.requests.filter((r) => r.method === "eth_sendRawTransaction").length, sends);
   } finally {
     await done();
   }
