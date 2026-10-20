@@ -3,15 +3,15 @@
 Status: first version, 2026-10-18. Experimental and unaudited. How to build,
 check and run it is in [webapp/README.md](../webapp/README.md).
 
-The web app is the first product on the client library: a user connects a
-supported EVM wallet and uses GHOST privately. It does three things.
+The web app is the first product on the client library: a user opens the
+app's own quantum-safe wallet and uses GHOST privately. It does three things.
 
 - **Vanish.** It creates a standard Phantom Key, shows it (blurred until
   asked), and lets the user copy it, write it down or download it as an
   image. Before the commit is sent, the **save check** asks for three of the
   key's twelve groups, chosen at random with `crypto.getRandomValues`, shown by
-  position and asked in order. The commit goes to the wallet only when all
-  three match; a wrong group sends nothing. Once the wallet has the commit,
+  position and asked in order. The commit is signed and sent only when all
+  three match; a wrong group sends nothing. Once the node has the commit,
   the app forgets the key.
 - **Summon.** The user types any valid standard or long key. The app finds
   the key's coin on the chain and reveals any available amount to any address;
@@ -24,7 +24,7 @@ supported EVM wallet and uses GHOST privately. It does three things.
   block, which the app does not verify.
 
 A commit, reveal or claim shows **Sent**, with its amount and transaction
-hash, as soon as the wallet or the node takes it, and **Done** at the first
+hash, as soon as the node takes it, and **Done** at the first
 block that holds it, with no block on top waited for (founder decision,
 2026-10-20: at 30-second blocks a wait for more blocks kept the holder
 waiting minutes). If a later reorganisation drops that block, the app says
@@ -63,7 +63,11 @@ network, `http://127.0.0.1:8545`. The app sends only these requests:
 | `ghost_getPageRoots` | `"coin"`, tree index, anchor block hash | An array of 32-byte page roots, of pages 0 to the last page with a leaf (`[]` for an empty tree) |
 | `ghost_getTreePage` | `"coin"`, tree index, page, anchor block hash | `{ kind, treeIndex, page, filled, entries }`: `filled` positions of the page, and `entries`, one `{ leaf, note }` (32 and 156 bytes of hex) per filled position, in order |
 | `ghost_getTreePage` | `"coin-markers"`, tree index, page, anchor block hash | `{ count, markers }`: a page of 4,096 spent coin markers in inclusion order |
-| `eth_sendRawTransaction` | the reveal envelope | The transaction hash |
+| `eth_sendRawTransaction` | the reveal envelope, or the commit's account transaction | The transaction hash |
+| `eth_getBalance` | the wallet's address, `"latest"` | The account's balance |
+| `eth_getTransactionCount` | the wallet's address, `"pending"` | The account's next nonce |
+| `eth_maxPriorityFeePerGas` | none | The priority fee of the commit |
+| `eth_estimateGas` | the commit as a call from the wallet's address | The commit's gas, without the account transaction's extra 62,744 |
 | `eth_getTransactionReceipt` | a transaction hash | `null` until the transaction is in a block |
 
 The page and marker requests follow [spec 05](spec/05-trees-and-headers.md),
@@ -72,7 +76,8 @@ expects to find. The headers asked for depend only on the tip: every block
 from `S - 32` to the tip for the settled block `S`, 2 below the tip (from
 genesis while `S` is below 32), and genesis. No request names a key, a commitment, a position or
 a marker, and the app never asks for a witness; it computes its own from the
-pages. The only request that carries a coin's data is the reveal itself,
+pages. The wallet's requests name its address, which the commit transaction
+shows anyway. The only request that carries a coin's data is the reveal itself,
 whose fields are public; sending it, though, links the connection to the
 coin it spends.
 
@@ -98,19 +103,57 @@ well-formed headers no miner sealed.
 
 ## Wallet
 
-Only the injected EIP-1193 provider (`window.ethereum`) is used:
-`eth_requestAccounts`, `eth_chainId` (it must equal the endpoint's) and
-`eth_sendTransaction` for the commit. The commit is a normal transaction to
-the commit entry address whose value is the amount and whose data is the
-commit payload of [spec 03](spec/03-coin-rules.md), section 6, in the layout
+The wallet is built in (spec 09, section 9); no browser wallet and no
+elliptic-curve key is used. Its seed is 32 bytes from
+`crypto.getRandomValues`, shown as 24 words of the BIP-39 English list (the
+256 bits and an 8-bit SHA-256 checksum; no PBKDF2 and no passphrase). A new
+wallet shows its words (blurred until asked) and opens only after the same
+save check as a key, on three of the 24 words. A saved wallet is restored by
+typing its words. The words are kept in the flow controller's memory while
+the wallet is open, never in its rendered state, browser storage, a file or a
+server, and are dropped when it is closed. Digits are refused as a seed, and
+words as a Phantom Key.
+
+The account is index 0 of the seed:
+
+```text
+key_seed = X("ghost/wallet-account/v1", 32, seed, 0x0001, 0 as 4 bytes)
+(sk, pk) = ML-DSA-44.KeyGen_internal(key_seed)
+address  = first 20 bytes of K("ghost/account-address/v1", 0x0001, pk)
+```
+
+The page shows the address and its balance. The commit is an account
+transaction, type `0x52` in ghost-node (`docs/account-transactions.md` there;
+spec 09 proposes `0x51`, which is the node's data reveal), to the commit
+entry address, whose value is the amount and whose data is the commit
+payload of [spec 03](spec/03-coin-rules.md), section 6, in the layout
 of [spec 07](spec/07-private-transaction.md) that the node reads as
 `ghostpriv.CommitData`: the 2-byte version `0x0001` (`TX_VERSION`), the
 fingerprint `F` (32 bytes) and the encrypted note of commitment number 0
 (156 bytes), 190 bytes in all. The node refuses any other length or version
 (`commit data is not 190 bytes of version 1`).
 `webapp/test/vectors/commit-payload.json` holds one such payload, built from
-spec 01, vector coin-commit. A reveal is a native transaction with no
-account, so it needs no wallet.
+spec 01, vector coin-commit.
+
+The worker signs it with the client library (`client/src/account.rs`,
+RustCrypto's `ml-dsa` 0.1.1): hedged ML-DSA-44 in pure mode with the context
+`ghost/tx/v1`, over `K("ghost/account-tx/v1", 0x52, genesis_hash,
+keccak256(unsigned))`. The genesis hash is block 0's, from a header checked
+against its hash as below. The nonce is `eth_getTransactionCount` of the
+pending block, the priority fee `eth_maxPriorityFeePerGas` held at 2 gwei at
+most, the fee cap twice the next block's base fee plus the priority fee, and
+the gas limit `eth_estimateGas` plus 62,744, the gas the node adds for the
+scheme, key and signature bytes and the check. Those answers come from the
+endpoint, so the app bounds what they can make it sign: it refuses a gas
+limit above 500,000 and a commit whose gas could cost more than 0.01 GHOST
+(`maxCommitFee`, a setting of the flow controller). A commit the balance
+cannot pay for is not signed either. When `eth_sendRawTransaction` answers the commit with an error, the
+app asks `eth_getTransactionByHash` and counts the commit as sent only if the
+node holds it: ghost-node at the pinned commit takes a type `0x52`
+transaction into its pool and still answers `transaction type not supported`,
+and its JSON shows such a transaction's `from` as the zero address until its
+RPC derives it from the public key. A reveal is a native transaction with no account, so Summon and
+Claim need no wallet, and Summon pays to any 20-byte address as before.
 
 The commit entry address defaults to the internal network's coin commit
 entry, `0x67686f7374000000000000000000000000000005` ("ghost" in ASCII, then
@@ -214,8 +257,7 @@ app makes no data commitments.
    otherwise a new proof of the same coin. Every such envelope spends the
    same marker, so at most one of them can ever be executed. A reveal the
    node still holds is waited for as before.
-7. **Status.** As soon as the wallet returns the commit's hash, or the node
-   takes a reveal or claim, the page shows it **Sent**, with the amount and
+7. **Status.** As soon as the node takes the commit, a reveal or a claim, the page shows it **Sent**, with the amount and
    the transaction hash; nothing is waited for first. The app then polls the
    receipt, but a receipt is only the endpoint's word. A receipt naming a
    block that was already in the chain when the transaction was sent, or one
@@ -299,8 +341,8 @@ app makes no data commitments.
   (`test/support/fake-node.mjs`). The stand-in verifies every reveal's proof
   with the real verifier, checks the fee, the root and the marker as a node
   admits a reveal, and records every request. The test checks that no run of
-  a key's digits and no commitment of the key reached the endpoint or the
-  wallet, and that `index.html` loads only same-origin scripts. Playing a
+  a key's digits, no seed word and no commitment of the key reached the
+  endpoint, and that `index.html` loads only same-origin scripts. Playing a
   dishonest endpoint, it also checks that altered notes leave the requests,
   and where the worker's proof falls among them, the same whether the key
   owns the targeted coin or not, up to the reveal itself; that a fabricated receipt for a withheld claim confirms nothing;
@@ -369,8 +411,11 @@ by the headless tests.
 the release `geth` named by `GHOST_NODE_GETH` as a one-node internal network
 (network 6777971, mining, the internal network's genesis, JSON-RPC
 `eth,net,web3,ghost` over HTTP on a port the system picks) and runs Vanish, a
-partial Summon and a Claim with the real prover. The wallet is the node's
-unlocked miner account. It checks on chain the commit's 190 bytes and its
+partial Summon and a Claim with the real prover. The wallet is restored from
+the tests' seed words; its account is the miner's etherbase, so block rewards
+fund it, and the commit and the strangers' commits are account transactions
+it signs. It checks on chain that the commit is type `0x52` from the wallet's
+address, the commit's 190 bytes and its
 leaf, the spent marker, the remainder's leaf, the recipient's balance and the
 claimed coin. It also checks the tree-state rule: opened before anyone else
 commits, the coin waits with the plain warning and its reveal is refused;

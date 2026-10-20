@@ -57,3 +57,28 @@ pub fn k(tag: &str, parts: &[&[u8]]) -> [u8; 32] {
 pub fn s(tag: &str, parts: &[&[u8]]) -> [u8; 32] {
     tagged(Sha3::v256(), tag, parts)
 }
+
+/// `X(tag, n, parts...)`: SHAKE256 (FIPS 202) over `tagbytes(tag)` followed by
+/// the parts, with `N` bytes of output (spec 09, section 2).
+pub fn x<const N: usize>(tag: &str, parts: &[&[u8]]) -> [u8; N] {
+    let mut hasher = tiny_keccak::Shake::v256();
+    let len = u8::try_from(tag.len()).expect("a tag is shorter than 256 bytes");
+    hasher.update(&[len]);
+    hasher.update(tag.as_bytes());
+    for part in parts {
+        hasher.update(part);
+    }
+    let mut out = [0u8; N];
+    hasher.finalize(&mut out);
+    out
+}
+
+/// Keccak-256 with the original padding and no tag: transaction hashes and
+/// the hash of an RLP encoding.
+pub fn keccak256(data: &[u8]) -> [u8; 32] {
+    let mut hasher = Keccak::v256();
+    hasher.update(data);
+    let mut out = [0u8; 32];
+    hasher.finalize(&mut out);
+    out
+}

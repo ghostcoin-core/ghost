@@ -13,11 +13,10 @@ import test from "node:test";
 import { toHex } from "../src/bytes.mjs";
 import { CONFIRMATIONS } from "../src/chain.mjs";
 import { DEFAULT_COMMIT_ENTRY, createFlow } from "../src/flow.mjs";
-import { loadModule, nodeProver } from "./support/env.mjs";
+import { loadModule, nodeProver, openTestWallet } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
 
 const GHOST = 10n ** 18n;
-const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const RECIPIENT = "0x2222222222222222222222222222222222222222";
 const RESEND_MS = 3;
 
@@ -26,14 +25,16 @@ function answersFor(key, positions) {
   return positions.map((p) => groups[p - 1]);
 }
 
-// A stand-in node, its wallet and a flow on them. While the app waits for a
-// block, the chain grows by one block (holding whatever waits in the pool),
-// unless `chain.mining` is false. `snapshots` holds, for every state the
+// A reveal or claim sent (type 0x50), not the commit's account transaction.
+const isRevealSend = (call) => call.method === "eth_sendRawTransaction" && String(call.params?.[0]).startsWith("0x50");
+
+// A stand-in node and a flow on it, with the tests' wallet open. While the
+// app waits for a block, the chain grows by one block (holding whatever
+// waits in the pool), unless `chain.mining` is false. `snapshots` holds, for every state the
 // flow emits, what the test checks of it and of the node at that moment.
 async function setUp({ fetch = globalThis.fetch } = {}) {
   const ghost = await loadModule();
   const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
-  const wallet = node.wallet(ACCOUNT);
   const worker = nodeProver();
   const work = [];
   const prover = {
@@ -60,13 +61,14 @@ async function setUp({ fetch = globalThis.fetch } = {}) {
       reveals: node.reveals.length,
     });
   };
-  const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, sleep, fetch, onChange });
+  const flow = createFlow({ prover, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, sleep, fetch, onChange });
+  await openTestWallet(flow, node);
   node.foreignCommits(2);
   const done = async () => {
     worker.terminate();
     await node.close();
   };
-  return { node, wallet, flow, chain, snapshots, work, done };
+  return { node, flow, chain, snapshots, work, done };
 }
 
 async function vanish(flow, amount) {
@@ -84,13 +86,13 @@ test("the done depth is the transaction's own block", () => {
 });
 
 test("Vanish, a reveal and a claim show Sent when the node takes them and Done at the first block", async () => {
-  const { node, wallet, flow, snapshots, done } = await setUp();
+  const { node, flow, snapshots, done } = await setUp();
   try {
     node.pool.on = true;
 
     // --- Vanish ---
     const { key, sent } = await vanish(flow, "1");
-    assert.equal(wallet.calls.filter((c) => c.method === "eth_sendTransaction").length, 1);
+    assert.equal(node.accountTxs.length, 1, "one account transaction from the app's wallet");
     const walletHash = sent.txHash;
     const vSent = firstAt(snapshots, "vanish", "sent");
     assert.ok(vSent, "the commit is shown Sent");
@@ -164,7 +166,7 @@ test("a reorganisation that drops a reveal shown Done is said plainly, and it ca
   const lie = { from: Infinity, sends: [] };
   const fetch = async (url, init) => {
     const call = JSON.parse(init.body);
-    if (call.method !== "eth_sendRawTransaction") return globalThis.fetch(url, init);
+    if (!isRevealSend(call)) return globalThis.fetch(url, init);
     lie.sends.push(call.params[0]);
     const response = await globalThis.fetch(url, init);
     if (lie.sends.length < lie.from) return response;
@@ -243,7 +245,7 @@ test("an endpoint's missing receipt never shows a reveal dropped, and a dropped 
     if (call.method === "eth_getTransactionReceipt" && endpoint.hide) {
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: call.id, result: null }), { status: 200 });
     }
-    if (call.method === "eth_sendRawTransaction") endpoint.envelopes.push(call.params[0]);
+    if (isRevealSend(call)) endpoint.envelopes.push(call.params[0]);
     return globalThis.fetch(url, init);
   };
   const { node, flow, chain, work, done } = await setUp({ fetch });

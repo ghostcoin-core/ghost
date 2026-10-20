@@ -9,15 +9,22 @@ description = "Ghost client library: Phantom Keys, derivation from the digits, c
 # Its own workspace, so it builds on its own and never joins another one.
 [workspace]
 
-# Only crates already pinned in the repository's lock files and the shared
-# cargo home. The random source is the caller's, so the crate never needs an
-# operating system source: the cipher has its default features (and with them
-# `getrandom`) off, and the proofs crate is used without features (no threads).
+# The random source is the caller's, so the crate never needs an operating
+# system source: the cipher and the signature scheme have their default
+# features (and with them `getrandom`) off, and the proofs crate is used
+# without features (no threads).
+#
+# Account keys (spec 09): `ml-dsa` is RustCrypto's pure-Rust ML-DSA (FIPS 204),
+# pinned exactly; `rand_core` gives it the caller's generator for hedged
+# signing and `zeroize` wipes its keys on drop. `sha2` is RustCrypto's SHA-256,
+# only for the checksum of the wallet seed's words (BIP-39).
 [dependencies]
 chacha20poly1305 = { version = "0.11.0", default-features = false }
 ghost-proofs = { path = "../proofs" }
+ml-dsa = { version = "=0.1.1", default-features = false, features = ["alloc", "rand_core", "zeroize"] }
 rand_core = { version = "0.10.1", default-features = false }
-tiny-keccak = { version = "2.0.2", features = ["keccak", "sha3"] }
+sha2 = { version = "=0.11.1", default-features = false }
+tiny-keccak = { version = "2.0.2", features = ["keccak", "sha3", "shake"] }
 
 [dev-dependencies]
 rand = { version = "0.10.1", default-features = false, features = ["std_rng"] }

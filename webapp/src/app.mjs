@@ -21,7 +21,6 @@ const IN_A_BLOCK =
 
 const flow = createFlow({
   prover: browserProver(),
-  wallet: window.ethereum || null,
   endpoint: DEFAULT_ENDPOINT,
   commitEntry: DEFAULT_COMMIT_ENTRY,
   onChange: render,
@@ -42,17 +41,20 @@ function act(step) {
   };
 }
 
-function checkInputs(container, positions, wrong) {
+// `words`: the inputs ask for seed words rather than a key's digit groups.
+function checkInputs(container, positions, wrong, { words = false } = {}) {
   if (container.dataset.positions !== positions.join(",")) {
     container.replaceChildren(
       ...positions.map((p) => {
         const label = document.createElement("label");
-        label.textContent = `Group ${p}`;
+        label.textContent = words ? `Word ${p}` : `Group ${p}`;
         const input = document.createElement("input");
         input.type = "text";
-        input.inputMode = "numeric";
+        input.inputMode = words ? "text" : "numeric";
         input.autocomplete = "off";
-        input.maxLength = 4;
+        input.autocapitalize = "off";
+        input.spellcheck = false;
+        input.maxLength = words ? 8 : 4;
         input.dataset.position = String(p);
         label.appendChild(input);
         return label;
@@ -140,9 +142,33 @@ function describeCover(s) {
   };
 }
 
+// The wallet: new words and their save check, or the open account.
+function renderWallet(w) {
+  $("wallet-closed").hidden = Boolean(w);
+  const text = $("wallet-words-text");
+  const showing = Boolean(w && w.words && (w.stage === "shown" || w.stage === "check"));
+  $("wallet-words").hidden = !showing;
+  if (showing) {
+    if (text.textContent !== w.words) {
+      text.textContent = w.words;
+      text.classList.add("blurred");
+      $("wallet-show").textContent = "Show";
+    }
+  } else {
+    text.textContent = "";
+  }
+  $("wallet-saved").disabled = !w || w.stage !== "shown";
+  $("wallet-check").hidden = !w || w.stage !== "check";
+  if (w && w.stage === "check") checkInputs($("wallet-check-words"), w.groups, w.wrong, { words: true });
+  else clearCheck($("wallet-check-words"));
+  const open = Boolean(w && w.stage === "open");
+  $("wallet-open").hidden = !open;
+  $("wallet-address").textContent = open ? w.address : "";
+  $("wallet-balance").textContent = open && w.balance !== null ? formatGhost(w.balance) : "?";
+}
+
 function render(state) {
-  const w = state.wallet;
-  $("wallet-status").textContent = w ? `${w.account} on chain ${w.chainId}` : "";
+  renderWallet(state.wallet);
 
   const v = state.vanish;
   renderKeyStep("vanish", v);
@@ -151,7 +177,7 @@ function render(state) {
     done: () =>
       `Done: committed ${formatGhost(v.amount)} GHOST in block ${v.block}. Keep your key safe; the app has forgotten it. ${SEAL_TRUST}`,
     dropped: () =>
-      `Commit dropped: ${v.dropped}. Your wallet may send it again by itself; if it does not, start Vanish again. The key you saved still holds the coin if the commit comes back.`,
+      `Commit dropped: ${v.dropped}. Start Vanish again. The key you saved still holds the coin if the commit comes back.`,
   };
   $("vanish-status").textContent = v && vanishStatus[v.stage] ? vanishStatus[v.stage]() : "";
   $("vanish-recheck").hidden = !v || (v.stage !== "done" && v.stage !== "dropped");
@@ -221,7 +247,31 @@ $("network-form").addEventListener(
     $("endpoint").value = flow.state.endpoint;
   }),
 );
-$("connect").addEventListener("click", act(() => flow.connectWallet()));
+$("wallet-create").addEventListener("click", act(() => flow.walletCreate()));
+$("wallet-show").addEventListener("click", () => {
+  const hidden = $("wallet-words-text").classList.toggle("blurred");
+  $("wallet-show").textContent = hidden ? "Show" : "Hide";
+});
+$("wallet-saved").addEventListener("click", act(() => flow.walletSaved()));
+$("wallet-check").addEventListener("submit", act(() => flow.walletCheck(answers($("wallet-check-words")))));
+$("wallet-restore-form").addEventListener(
+  "submit",
+  act(async () => {
+    // The words leave the field once the wallet is open; a typo stays there
+    // to be corrected.
+    const field = $("wallet-restore-words");
+    const text = field.value;
+    field.value = "";
+    try {
+      await flow.walletRestore(text);
+    } catch (err) {
+      if (!flow.state.wallet) field.value = text;
+      throw err;
+    }
+  }),
+);
+$("wallet-refresh").addEventListener("click", act(() => flow.walletRefresh()));
+$("wallet-close").addEventListener("click", act(() => flow.walletClose()));
 
 $("vanish-form").addEventListener("submit", act(() => flow.vanishStart($("vanish-amount").value)));
 wireKeyButtons("vanish", () => flow.state.vanish);

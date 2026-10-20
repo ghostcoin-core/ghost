@@ -8,8 +8,8 @@
 //             { id, type: "error", message }
 //
 // Every random byte comes from crypto.getRandomValues. Nothing is kept
-// between requests except the compiled module: a key's digits arrive with a
-// request and are gone when it is answered.
+// between requests except the compiled module: a key's digits or a wallet
+// seed's words arrive with a request and are gone when it is answered.
 
 import { loadGhost } from "./wasm.mjs";
 
@@ -39,6 +39,18 @@ const OPS = {
 
   prefixRoots(ghost, { leaves, from, to }) {
     return { roots: ghost.prefixRoots(leaves, from, to) };
+  },
+
+  walletNew(ghost) {
+    return { words: ghost.walletNew(random(32)) };
+  },
+
+  walletAccount(ghost, { words, index }) {
+    return ghost.walletAccount(words, index);
+  },
+
+  walletSign(ghost, args) {
+    return ghost.walletSign({ ...args, seed: random(32) });
   },
 
   keccak256(ghost, { bytes }) {

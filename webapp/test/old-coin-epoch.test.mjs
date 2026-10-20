@@ -15,7 +15,7 @@ import test from "node:test";
 
 import { toHex } from "../src/bytes.mjs";
 import { DEFAULT_COMMIT_ENTRY, WaitError, createFlow, leafBlock } from "../src/flow.mjs";
-import { loadModule, nodeProver, wasmPath } from "./support/env.mjs";
+import { loadModule, nodeProver, openTestWallet, wasmPath } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
 
 const BUILT = existsSync(wasmPath) ? false : `no WebAssembly module built at ${wasmPath}`;
@@ -74,7 +74,6 @@ test("a leaf in S - 32 to S keeps its first header's root", () => {
 });
 
 const GHOST = 10n ** 18n;
-const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const RECIPIENT = "0x2222222222222222222222222222222222222222";
 const RESEND_MS = 3;
 // At tip 76 the settled block is 74 and the headers read start at block 42.
@@ -85,7 +84,6 @@ const FIRST = SETTLED - 32;
 async function setUp() {
   const ghost = await loadModule();
   const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
-  const wallet = node.wallet(ACCOUNT);
   const worker = nodeProver();
   const asked = [];
   const prover = {
@@ -99,7 +97,8 @@ async function setUp() {
     if (ms === RESEND_MS) return new Promise((resolve) => setTimeout(resolve, ms));
     node.mine();
   };
-  const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, sleep });
+  const flow = createFlow({ prover, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, sleep });
+  await openTestWallet(flow, node);
   const done = async () => {
     worker.terminate();
     await node.close();
