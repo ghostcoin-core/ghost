@@ -24,8 +24,8 @@ const GHOST = 10n ** 18n;
 const GWEI = 10n ** 9n;
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const RECIPIENT = "0x2222222222222222222222222222222222222222";
-// The whole Summon, from the click to its settled block. Two proofs, a few
-// still-tip waits and the 6 blocks on top take well under this; a wait for a
+// The whole Summon, from the click to its settled block. A few proofs, a few
+// short waits before a resend and the 6 blocks on top take well under this; a wait for a
 // block that never comes takes the 1,800 polls of a second each.
 const BOUND_MS = 240_000;
 
