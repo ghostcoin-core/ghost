@@ -449,8 +449,8 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     // An empty block every `everyMs` ms until stopMining(); meanwhile every
     // send of a valid reveal is refused as the node does when its head keeps
     // moving, unless `refuse` is false. With `commitEvery` set, every
-    // `commitEvery`-th block holds a stranger's commit instead, so each epoch
-    // window holds a commitment after any older coin.
+    // `commitEvery`-th block holds a stranger's commit instead, so a settled
+    // block soon holds a commitment after any older coin.
     startMining(everyMs, { refuse = true, commitEvery = 0 } = {}) {
       clearInterval(headMoving.miner);
       headMoving.refuseWhileMining = refuse;

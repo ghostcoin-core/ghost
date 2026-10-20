@@ -116,13 +116,14 @@ test("keys: new keys are standard, typed keys are checked, errors hold no digit"
   assert.notEqual(ghost.newKey(crypto.getRandomValues(new Uint8Array(32))), key);
 });
 
-test("the epoch rule refuses the leaf's own root and a shallow candidate", () => {
+test("the tree-state rule refuses the leaf's own root and an unsettled candidate", () => {
   const a = new Uint8Array(32).fill(1);
   const b = new Uint8Array(32).fill(2);
-  assert.equal(ghost.chooseTreeState({ tip: 44, leafHeight: 4, leafRoot: a, height: 32, root: b }), true);
-  assert.equal(ghost.chooseTreeState({ tip: 44, leafHeight: 4, leafRoot: a, height: 32, root: a }), false);
-  assert.equal(ghost.chooseTreeState({ tip: 43, leafHeight: 4, leafRoot: a, height: 32, root: b }), false);
-  assert.equal(ghost.chooseTreeState({ tip: 44, leafHeight: 32, leafRoot: a, height: 32, root: b }), false);
+  // Two blocks deep is enough, at any height: no epoch block.
+  assert.equal(ghost.chooseTreeState({ tip: 7, leafHeight: 4, leafRoot: a, height: 5, root: b }), true);
+  assert.equal(ghost.chooseTreeState({ tip: 7, leafHeight: 4, leafRoot: a, height: 5, root: a }), false);
+  assert.equal(ghost.chooseTreeState({ tip: 6, leafHeight: 4, leafRoot: a, height: 5, root: b }), false);
+  assert.equal(ghost.chooseTreeState({ tip: 7, leafHeight: 5, leafRoot: a, height: 5, root: b }), false);
 });
 
 test("a malformed envelope is refused before any proof work", () => {

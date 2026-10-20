@@ -485,10 +485,11 @@ pub extern "C" fn ghost_prefix_roots(ptr: *const u8, len: usize) -> u32 {
     })
 }
 
-/// Whether the shared epoch rule of spec 02, section 8 picks the candidate.
-/// Input: tip (8), the leaf's block height (8) and coin root (32), the
-/// candidate's height (8) and coin root (32). Output: 1 if it is the epoch
-/// root to prove against, 0 to wait.
+/// Whether the tree-state rule of spec 02, section 8 picks the candidate: a
+/// root at least SETTLE_DEPTH below the tip, above the leaf's block, and not
+/// that block's root. Input: tip (8), the leaf's block height (8) and coin
+/// root (32), the candidate's height (8) and coin root (32). Output: 1 if it
+/// is a root to prove against, 0 to wait.
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_choose_tree_state(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
@@ -497,7 +498,7 @@ pub extern "C" fn ghost_choose_tree_state(ptr: *const u8, len: usize) -> u32 {
         let candidate = HeaderRoot { height: input.u64()?, root: input.array()? };
         let chosen = matches!(
             choose_tree_state(&[candidate], tip, &leaf_block, None),
-            TreeStateChoice::Epoch(header) if header == candidate
+            TreeStateChoice::Settled(header) if header == candidate
         );
         Ok(vec![u8::from(chosen)])
     })

@@ -19,12 +19,12 @@
 import { concat, equalBytes, fromHex, quantity, toHex, toQuantity } from "./bytes.mjs";
 import {
   CONFIRMATIONS,
-  EPOCH_BLOCKS,
-  epochHeight,
+  SETTLE_DEPTH,
   feeForNextBlock,
   formatGhost,
   parseAddress,
   parseGhost,
+  settledHeight,
 } from "./chain.mjs";
 import { readHeader } from "./header.mjs";
 import { DEFAULT_ENDPOINT, SERVER_ERROR, createRpc } from "./rpc.mjs";
@@ -36,6 +36,9 @@ export const DEFAULT_COMMIT_ENTRY = "0x67686f7374000000000000000000000000000005"
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 // Leaves (or markers) per page of wallet tree data (spec 05, section 8).
 export const PAGE_LEAVES = 4096;
+// Every scan reads the headers from this many blocks below the settled
+// block S (SETTLE_DEPTH below the tip) up to the tip, to find a leaf's block.
+export const LEAF_WINDOW = 32;
 const NOTE_BYTES = 156;
 // Groups the user re-types before a key is used, out of a key's twelve.
 export const SAVE_CHECK_GROUPS = 3;
@@ -72,7 +75,21 @@ export function isHeadMoved(err) {
 }
 
 // The reveal cannot be made yet; the message says what it waits for.
-export class WaitError extends Error {}
+// `alone` is set when nobody has committed a coin since the holder's.
+export class WaitError extends Error {
+  constructor(message, { alone = false } = {}) {
+    super(message);
+    this.alone = alone;
+  }
+}
+
+// The plain warning for a coin no later leaf follows yet. The only tree that
+// holds it then ends with its own block, and a reveal against that root would
+// tie the reveal to its commit, so the app waits instead.
+export const ALONE_WARNING =
+  "nobody has committed a coin since this one. A reveal now could only prove against the coin tree that ends with " +
+  "this coin's own block, which ties the reveal to its commit, so the app waits: this coin can be revealed " +
+  `${SETTLE_DEPTH} blocks after anyone else commits one`;
 
 // Three distinct group positions (1 to 12), drawn without bias from the
 // secure random source and returned in order.
@@ -141,20 +158,85 @@ export async function fetchTree(rpc, prover, anchor) {
   return { count: leaves.length, leaves: leafBytes, records: concat(records) };
 }
 
-// A leaf's block, `{ height, root }`, as chooseTreeState is asked about it,
-// from what a scan reads for every key: headers of blocks E - 32 to E,
-// each one's leaf count and a root for every prefix of coin tree 0. Null
-// when a leaf is past E's tree. A leaf in E - 32 to E takes its first
-// header holding it. A leaf older than E - 32 has no header here: it takes
-// block E - 32's height and a root of a tree ending at it. Its real block's
-// tree holds at least that many leaves, so E's tree follows such a coin
-// when it holds a later leaf (a count above position + 1), even if no
-// commitment came in E - 32 to E.
-export function leafBlock({ epochHeaders: headers, epochCounts: counts, prefixRoots }, position) {
+// A leaf's block, `{ height, root, count }`, as chooseTreeState is asked
+// about it, from what a scan reads for every key: headers of blocks S - 32
+// to the tip (S the settled block), each one's leaf count and a root for
+// every prefix of coin tree 0. Null when a leaf is past the tip's tree. A
+// leaf in S - 32 to the tip takes its first header holding it, and `count`
+// is that header's leaf count. A leaf older than S - 32 has no header here:
+// it takes block S - 32's height and a root of a tree ending at it (a count
+// of position + 1). Its real block's tree holds at least that many leaves,
+// so S's tree follows such a coin when it holds a later leaf, even if no
+// commitment came in S - 32 to S.
+export function leafBlock({ rootHeaders: headers, rootCounts: counts, prefixRoots }, position) {
   const at = counts.findIndex((count) => count > position);
   if (at === -1) return null;
-  if (at > 0) return { height: headers[at].number, root: headers[at].coinTreeRoot };
-  return { height: headers[0].number, root: prefixRoots[position + 1] };
+  if (at > 0) return { height: headers[at].number, root: headers[at].coinTreeRoot, count: counts[at] };
+  return { height: headers[0].number, root: prefixRoots[position + 1], count: position + 1 };
+}
+
+// The tree state to prove `coin` against (spec 02, section 8): the root of
+// the settled block S, SETTLE_DEPTH below the tip, if the shared rule
+// (tree_state.rs, through the worker) picks it, that is if S's tree holds a
+// leaf added after the coin's block. There is no forced wait beyond that:
+// the plan says how many coins S's tree covers (`covers`), and whether to
+// reveal now or wait for more is the holder's choice. It sends no request:
+// the scan fetched everything it reads.
+//
+// When S's tree holds no later leaf, it throws a WaitError: one that names
+// the block from which the coin can be revealed when a later leaf is not
+// settled yet, or the plain warning ALONE_WARNING (`alone`) when nobody has
+// committed since the coin. It never proves against the coin's own block
+// root.
+export async function planReveal(prover, scan, coin, progress = () => {}) {
+  const { chain, rootHeaders: headers, rootCounts: counts, settledAt } = scan;
+  if (settledAt === null) {
+    throw new WaitError(`no block is ${SETTLE_DEPTH} blocks deep yet; wait until the chain passes block ${SETTLE_DEPTH}`);
+  }
+  progress("choosing the tree state");
+  const settled = headers[settledAt];
+  const leaf = leafBlock(scan, coin.position);
+  if (!leaf) throw new Error("the coin is not in the tip's coin tree; refresh");
+  scan.askedRule = true;
+  const { chosen } = await prover.request("chooseTreeState", {
+    tip: chain.tip.number,
+    leafHeight: leaf.height,
+    leafRoot: leaf.root,
+    height: settled.number,
+    root: settled.coinTreeRoot,
+  });
+  if (!chosen) {
+    const later = counts.findIndex((count) => count > leaf.count);
+    if (later === -1) throw new WaitError(ALONE_WARNING, { alone: true });
+    const block = headers[later].number;
+    throw new WaitError(
+      `a coin was committed after this one in block ${block}; this coin can be revealed from block ${block + SETTLE_DEPTH}, once that block is ${SETTLE_DEPTH} deep`,
+    );
+  }
+  return {
+    root: settled.coinTreeRoot,
+    leaves: scan.settledLeaves,
+    fee: scan.fee,
+    domain: chain.genesis.hash,
+    height: settled.number,
+    covers: counts[settledAt],
+  };
+}
+
+// The rule asked once for a scan that proves a decoy, as it is asked for a
+// coin, so the worker's work does not depend on what restore found.
+async function askRuleForDecoy(prover, scan) {
+  const { chain, rootHeaders: headers, settledAt } = scan;
+  if (settledAt === null || scan.askedRule) return;
+  scan.askedRule = true;
+  const settled = headers[settledAt];
+  await prover.request("chooseTreeState", {
+    tip: chain.tip.number,
+    leafHeight: headers[0].number,
+    leafRoot: headers[0].coinTreeRoot,
+    height: settled.number,
+    root: settled.coinTreeRoot,
+  });
 }
 
 export function createFlow({
@@ -239,21 +321,21 @@ export function createFlow({
   }
 
   // The chain as of its tip: verified headers, each the parent of the next,
-  // from 32 blocks below the epoch block (or from genesis) up to the tip,
-  // which covers the epoch window, the fee window and the block 6 below the
-  // tip. Which blocks are asked for depends on the tip alone.
+  // from LEAF_WINDOW blocks below the settled block (or from genesis) up to
+  // the tip, which covers the settled block, the fee window and the block 6
+  // below the tip. Which blocks are asked for depends on the tip alone.
   async function readChain() {
     const chainId = quantity(await rpc.call("eth_chainId"));
     const top = await blockNumber();
-    const epoch = epochHeight(top);
-    const low = epoch === null || epoch < EPOCH_BLOCKS ? 0 : epoch - EPOCH_BLOCKS;
+    const settled = settledHeight(top);
+    const low = settled === null || settled < LEAF_WINDOW ? 0 : settled - LEAF_WINDOW;
     const headers = await headerRange(low, top);
     const at = (n) => {
       if (n < low || n > top) throw new Error(`block ${n} is outside the headers read`);
       return headers[n - low];
     };
     const genesis = low === 0 ? headers[0] : await headerAt(0);
-    return { chainId, epoch, headers, at, tip: headers[headers.length - 1], genesis };
+    return { chainId, settled, low, headers, at, tip: headers[headers.length - 1], genesis };
   }
 
   // Consecutive verified headers, each the parent of the next.
@@ -293,30 +375,28 @@ export function createFlow({
   // claimed only once its coin's spend has 6 blocks on top.
   //
   // The work in the worker is the same whatever the key finds too: the leaf
-  // count of each epoch header, read from the roots of every prefix of the
+  // count of each header read, from the roots of every prefix of the
   // fetched leaves, is computed here for every key, not only for one with a
-  // coin to reveal.
+  // coin to reveal. The headers are always blocks S - 32 to the tip,
+  // verified and linked to the tip, whatever the coin, so the requests say
+  // nothing about where the coin is; leafBlock picks a leaf's block from
+  // those headers.
   async function scanKey(key) {
     const chain = await readChain();
     progress("reading the coin tree");
     const tree = await fetchTree(rpc, prover, chain.tip);
     const spent = await fetchSpent(chain.at(Math.max(0, chain.tip.number - CONFIRMATIONS)));
-    const { epoch } = chain;
-    const epochHeaders = epoch === null || epoch < EPOCH_BLOCKS ? null : chain.headers.slice(0, EPOCH_BLOCKS + 1);
     const fee = (await feeForNextBlock(chain.tip, async (n) => chain.at(n))).fee;
-    let epochCounts = null;
-    let prefixRoots = null;
-    if (epochHeaders) {
-      const { roots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
-      prefixRoots = roots;
-      const countOf = new Map(roots.map((root, count) => [toHex(root), count]));
-      epochCounts = epochHeaders.map((header) => {
-        const count = countOf.get(toHex(header.coinTreeRoot));
-        if (count === undefined) throw new Error(`the endpoint's tree does not match the header of block ${header.number}`);
-        return count;
-      });
-    }
-    const epochLeaves = epochCounts ? tree.leaves.slice(0, epochCounts[epochCounts.length - 1] * 32) : tree.leaves;
+    const { roots: prefixRoots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
+    const countOf = new Map(prefixRoots.map((root, count) => [toHex(root), count]));
+    const rootHeaders = chain.headers;
+    const rootCounts = rootHeaders.map((header) => {
+      const count = countOf.get(toHex(header.coinTreeRoot));
+      if (count === undefined) throw new Error(`the endpoint's tree does not match the header of block ${header.number}`);
+      return count;
+    });
+    const settledAt = chain.settled === null ? null : chain.settled - chain.low;
+    const settledLeaves = settledAt === null ? tree.leaves : tree.leaves.slice(0, rootCounts[settledAt] * 32);
     progress("looking for the key's coins");
     const { found } = await prover.request("restore", {
       chainId: chain.chainId,
@@ -324,46 +404,7 @@ export function createFlow({
       records: tree.records,
       markers: spent,
     });
-    return { chain, tree, epochHeaders, epochCounts, prefixRoots, epochLeaves, fee, found };
-  }
-
-  // The tree state to prove `coin` against (spec 02, section 8): the epoch
-  // root E of the tip, if the shared epoch rule picks it. It sends no
-  // request: the scan fetched everything it reads.
-  //
-  // The headers are always blocks E - 32 to E, verified and linked to the
-  // tip, whatever the coin, so the requests say nothing about where the
-  // coin is; leafBlock picks a leaf's block from those headers.
-  async function planReveal(scan, coin) {
-    const { chain, epochHeaders: headers, epochLeaves } = scan;
-    const { epoch } = chain;
-    if (!headers) {
-      throw new WaitError(`the first epoch block is block ${EPOCH_BLOCKS}; wait until the chain passes block ${EPOCH_BLOCKS + 12}`);
-    }
-    progress("choosing the tree state");
-    const epochHeader = headers[headers.length - 1];
-    const nextEpoch = epoch + EPOCH_BLOCKS + 12;
-    const leaf = leafBlock(scan, coin.position);
-    if (!leaf) {
-      throw new WaitError(`the coin is newer than epoch block ${epoch}; it can be revealed after block ${nextEpoch}`);
-    }
-    scan.askedEpochRule = true;
-    const { chosen } = await prover.request("chooseTreeState", {
-      tip: chain.tip.number,
-      leafHeight: leaf.height,
-      leafRoot: leaf.root,
-      height: epoch,
-      root: epochHeader.coinTreeRoot,
-    });
-    if (!chosen) {
-      throw new WaitError(`no commitment followed the coin before epoch block ${epoch}; wait until after block ${nextEpoch}`);
-    }
-    return {
-      root: epochHeader.coinTreeRoot,
-      leaves: epochLeaves,
-      fee: scan.fee,
-      domain: chain.genesis.hash,
-    };
+    return { chain, tree, rootHeaders, rootCounts, prefixRoots, settledAt, settledLeaves, fee, found };
   }
 
   // The receipt of `hash`, or null while no block holds it.
@@ -469,7 +510,7 @@ export function createFlow({
     if (pinned && !sameCoin(current, pinned)) {
       throw new Error("the coin this reveal spends is no longer unspent: the reveal sent before may have gone through; refresh");
     }
-    const plan = await planReveal(scan, current);
+    const plan = await planReveal(prover, scan, current, progress);
     const paid = (kind === "claim" ? 0n : out) + plan.fee;
     if (paid > current.amount) {
       throw new Error(
@@ -495,20 +536,12 @@ export function createFlow({
 
   // The worker's input for a decoy of the same kind over the same leaves
   // (lib.rs, ghost_prove): a throwaway key's coin of the fee plus 1 wei at
-  // the last position, proved as a real reveal would be. The epoch rule is
-  // asked once too, as it is for a coin, whenever the scan has epoch headers.
+  // the last position, proved as a real reveal would be. The tree-state rule
+  // is asked once too, as it is for a coin, whenever the scan has a settled
+  // block.
   async function decoyArgs(scan, { kind, recipient }) {
-    const { chain, epochHeaders: headers, epochLeaves } = scan;
-    if (headers && !scan.askedEpochRule) {
-      const epochHeader = headers[headers.length - 1];
-      await prover.request("chooseTreeState", {
-        tip: chain.tip.number,
-        leafHeight: headers[0].number,
-        leafRoot: headers[0].coinTreeRoot,
-        height: epochHeader.number,
-        root: epochHeader.coinTreeRoot,
-      });
-    }
+    const { chain, settledLeaves } = scan;
+    await askRuleForDecoy(prover, scan);
     const claim = kind === "claim";
     return {
       decoy: true,
@@ -521,8 +554,8 @@ export function createFlow({
       fee: scan.fee,
       number: 0n,
       amount: scan.fee + (claim ? 1n : 2n),
-      position: Math.max(epochLeaves.length / 32 - 1, 0),
-      leaves: epochLeaves,
+      position: Math.max(settledLeaves.length / 32 - 1, 0),
+      leaves: settledLeaves,
       key: "",
       newKey: "",
     };
@@ -671,6 +704,21 @@ export function createFlow({
     s.fee = fee;
     s.available = current && current.amount > fee ? current.amount - fee : 0n;
     s.tip = scan.chain.tip.number;
+    // What a reveal now would prove against, for the holder to choose: the
+    // block and how many coins its tree covers, or why the app waits. The
+    // rule is asked for every key, a coin or not.
+    s.cover = null;
+    s.wait = null;
+    if (current) {
+      try {
+        const plan = await planReveal(prover, scan, current);
+        s.cover = { height: plan.height, covers: plan.covers, total: scan.tree.count };
+      } catch (err) {
+        if (!(err instanceof WaitError)) throw err;
+        s.wait = { message: err.message, alone: err.alone };
+      }
+    }
+    await askRuleForDecoy(prover, scan);
     emit();
     return s;
   }
@@ -774,7 +822,17 @@ export function createFlow({
       return run("opening the key", async () => {
         const key = String(keyText).trim();
         const { groups } = await prover.request("checkKey", { key });
-        state.summon = { key, groups, status: "scanning", coins: [], current: null, claim: null, lastReveal: null };
+        state.summon = {
+          key,
+          groups,
+          status: "scanning",
+          coins: [],
+          current: null,
+          cover: null,
+          wait: null,
+          claim: null,
+          lastReveal: null,
+        };
         return refreshSummon();
       });
     },
