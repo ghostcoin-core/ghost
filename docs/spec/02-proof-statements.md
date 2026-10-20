@@ -451,7 +451,10 @@ through the shortest reorganisations; a reveal whose root is reorganised away
 is refused by the node, spends nothing, and can be proved again.
 
 - **The holder chooses the cover.** The settled root covers every leaf of the
-  tree up to block `h`; that leaf count is the anonymity set of the reveal.
+  tree up to block `h`; that leaf count is an upper bound on the anonymity set
+  of the reveal. It is a count of commitments, not of people or of coins that
+  look like the holder's, and one party can create many of them
+  ([privacy under attack](../research/privacy-under-attack.md)).
   The wallet shows it and lets the holder reveal now or wait for more leaves.
   It never forces a wait: in the founder's words, a holder who does not want
   the coin to be traced can wait their own blocks, and one who wants to reveal
@@ -501,7 +504,11 @@ which the epoch root blurred to its window (threat model C17).
 - **What it does not hide.** A root protects only as far as the tree under it
   is large: with little traffic the anonymity set is small, and a holder who
   reveals soon after their commit has few leaves to hide among. The wallet
-  shows the leaf count so that the holder can judge (threat model C17).
+  shows the leaf count so that the holder can judge (threat model C17). The
+  public amounts, the timing and the network route can narrow the set far
+  below the leaf count, and the 2-block depth is about keeping the root
+  canonical, not about settlement or privacy
+  ([privacy under attack](../research/privacy-under-attack.md)).
 
 ## 9. Conservation
 

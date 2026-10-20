@@ -1,6 +1,6 @@
 # Ghost web app
 
-A web app for using GHOST privately: connect a browser wallet, **Vanish**
+A web app for committing and revealing GHOST with the link between the two hidden on chain (amounts, timing and network address can still give it away, and one block holding a transaction is neither final settlement nor privacy; see [privacy under attack](../docs/research/privacy-under-attack.md)): connect a browser wallet, **Vanish**
 GHOST into a new Phantom Key, **Summon** any amount of a key's coin to any
 address, and **Claim** a received key's coin to a new key. It is plain ES
 modules with no framework and no npm dependencies, on top of the client
