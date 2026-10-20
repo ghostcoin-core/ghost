@@ -20,6 +20,9 @@
 //!   proved by the proofs crate (section 8; spec 02, section 4).
 //! - [`restore`]: finding the key's current coin from the digits and the
 //!   chain's leaves, notes and spent markers (section 8).
+//! - [`receipts`]: a block's receipts checked against its header's
+//!   `receiptsRoot`, and the coin tree's leaves, notes and spent markers
+//!   checked against the records in them (spec 05, section 8, item 5).
 //! - [`tree_state`]: the tree state a reveal proves against, the newest
 //!   settled root that holds a later leaf (spec 02, section 8).
 //! - [`seal`]: the RandomX block seal of a header, checked in light
@@ -60,6 +63,7 @@ pub mod key;
 mod key_words;
 pub mod note;
 pub mod randomx;
+pub mod receipts;
 pub mod restore;
 pub mod reveal;
 pub mod seal;
@@ -81,6 +85,10 @@ pub use header_chain::{
 };
 pub use key::{check_groups, FormattedKey, KeyError, KeyFormat, PhantomKey};
 pub use note::{decrypt_note, encrypt_note, NoteContents, NoteError, NOTE_BYTES};
+pub use receipts::{
+    check_block_receipts, check_block_receipts_against_header, check_leaves, check_markers, receipts_root,
+    AppendedLeaf, CheckedBlock, CoinRecord, ReceiptError,
+};
 pub use restore::{restore_coins, Current, DiscardReason, DiscardedNote, FoundCoin, Restored, TreeLeaf};
 pub use reveal::{
     claim_to_new_key, full_reveal, partial_reveal, prove_reveal, BuiltReveal, OwnedCoin,
