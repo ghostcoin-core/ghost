@@ -56,6 +56,7 @@ pub mod reveal;
 pub mod seal;
 pub mod tree_state;
 mod wipe;
+pub mod wordlist;
 
 pub use commit::{
     Amount, CoinCommit, Commitment, CommitError, Content, ContentFingerprint, DataCommit,
