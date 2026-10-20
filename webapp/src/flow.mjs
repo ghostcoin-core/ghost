@@ -141,6 +141,22 @@ export async function fetchTree(rpc, prover, anchor) {
   return { count: leaves.length, leaves: leafBytes, records: concat(records) };
 }
 
+// A leaf's block, `{ height, root }`, as chooseTreeState is asked about it,
+// from what a scan reads for every key: headers of blocks E - 32 to E,
+// each one's leaf count and a root for every prefix of coin tree 0. Null
+// when a leaf is past E's tree. A leaf in E - 32 to E takes its first
+// header holding it. A leaf older than E - 32 has no header here: it takes
+// block E - 32's height and a root of a tree ending at it. Its real block's
+// tree holds at least that many leaves, so E's tree follows such a coin
+// when it holds a later leaf (a count above position + 1), even if no
+// commitment came in E - 32 to E.
+export function leafBlock({ epochHeaders: headers, epochCounts: counts, prefixRoots }, position) {
+  const at = counts.findIndex((count) => count > position);
+  if (at === -1) return null;
+  if (at > 0) return { height: headers[at].number, root: headers[at].coinTreeRoot };
+  return { height: headers[0].number, root: prefixRoots[position + 1] };
+}
+
 export function createFlow({
   prover,
   wallet = null,
@@ -289,8 +305,10 @@ export function createFlow({
     const epochHeaders = epoch === null || epoch < EPOCH_BLOCKS ? null : chain.headers.slice(0, EPOCH_BLOCKS + 1);
     const fee = (await feeForNextBlock(chain.tip, async (n) => chain.at(n))).fee;
     let epochCounts = null;
+    let prefixRoots = null;
     if (epochHeaders) {
       const { roots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
+      prefixRoots = roots;
       const countOf = new Map(roots.map((root, count) => [toHex(root), count]));
       epochCounts = epochHeaders.map((header) => {
         const count = countOf.get(toHex(header.coinTreeRoot));
@@ -306,7 +324,7 @@ export function createFlow({
       records: tree.records,
       markers: spent,
     });
-    return { chain, tree, epochHeaders, epochCounts, epochLeaves, fee, found };
+    return { chain, tree, epochHeaders, epochCounts, prefixRoots, epochLeaves, fee, found };
   }
 
   // The tree state to prove `coin` against (spec 02, section 8): the epoch
@@ -315,28 +333,25 @@ export function createFlow({
   //
   // The headers are always blocks E - 32 to E, verified and linked to the
   // tip, whatever the coin, so the requests say nothing about where the
-  // coin is. The leaf's block is the first of those headers whose tree
-  // holds the leaf; for a leaf older than E - 32 that is block E - 32
-  // itself, which only makes the rule stricter, never looser.
+  // coin is; leafBlock picks a leaf's block from those headers.
   async function planReveal(scan, coin) {
-    const { chain, epochHeaders: headers, epochCounts: counts, epochLeaves } = scan;
+    const { chain, epochHeaders: headers, epochLeaves } = scan;
     const { epoch } = chain;
     if (!headers) {
       throw new WaitError(`the first epoch block is block ${EPOCH_BLOCKS}; wait until the chain passes block ${EPOCH_BLOCKS + 12}`);
     }
     progress("choosing the tree state");
     const epochHeader = headers[headers.length - 1];
-    const epochCount = counts[counts.length - 1];
     const nextEpoch = epoch + EPOCH_BLOCKS + 12;
-    if (epochCount <= coin.position) {
+    const leaf = leafBlock(scan, coin.position);
+    if (!leaf) {
       throw new WaitError(`the coin is newer than epoch block ${epoch}; it can be revealed after block ${nextEpoch}`);
     }
-    const leafHeader = headers[counts.findIndex((count) => count > coin.position)];
     scan.askedEpochRule = true;
     const { chosen } = await prover.request("chooseTreeState", {
       tip: chain.tip.number,
-      leafHeight: leafHeader.number,
-      leafRoot: leafHeader.coinTreeRoot,
+      leafHeight: leaf.height,
+      leafRoot: leaf.root,
       height: epoch,
       root: epochHeader.coinTreeRoot,
     });
