@@ -14,6 +14,11 @@ const $ = (id) => document.getElementById(id);
 const SEAL_TRUST =
   "Confirmation trusts the chosen endpoint for the proof-of-work seal of each block, which the app does not verify.";
 
+// A sent transaction is marked Done when a block holds it. That block is
+// neither final settlement nor privacy, and the text says so.
+const IN_A_BLOCK =
+  "Marked Done when a block holds it. One block is not final: each block after it makes it harder to undo, and blocks add no privacy.";
+
 const flow = createFlow({
   prover: browserProver(),
   wallet: window.ethereum || null,
@@ -103,7 +108,7 @@ function describeSummon(s) {
   }
   const r = s.lastReveal;
   if (r && r.stage === "sent") {
-    lines.push(`Sent: ${formatGhost(r.out)} GHOST to ${r.recipient}, transaction ${r.txHash}. Done once a block holds it.`);
+    lines.push(`Sent: ${formatGhost(r.out)} GHOST to ${r.recipient}, transaction ${r.txHash}. ${IN_A_BLOCK}`);
   }
   if (r && r.stage === "done") lines.push(`Done: revealed ${formatGhost(r.out)} GHOST to ${r.recipient} in block ${r.block}.`);
   if (r && r.stage === "dropped") lines.push(`Reveal dropped: ${r.dropped}.`);
@@ -112,8 +117,8 @@ function describeSummon(s) {
   return lines.join(" ");
 }
 
-// What a reveal or claim now would hide the coin among, or why the app
-// waits. The holder decides whether that cover is enough or to wait for more.
+// How many coins the settled tree holds, or why the app waits. The count is
+// of commitments, not people; the holder decides whether to wait for more.
 function describeCover(s) {
   if (s.status !== "unclaimed" || !s.current) return null;
   if (s.wait && s.wait.alone) {
@@ -129,7 +134,8 @@ function describeCover(s) {
   return {
     warning: false,
     text:
-      `A reveal or claim now hides this coin among the ${covers} coins in the tree as of block ${height}.${more} ` +
+      `The tree holds ${covers} coins as of block ${height}.${more} ` +
+      "That is a count of commitments, not of people, and not a promise of anonymity: one party can make many of them, and amounts or timing can still match your reveal to your commit. " +
       "Fewer coins make it easier to link the reveal to your commit: reveal now, or wait for more coins and press Refresh. The choice is yours.",
   };
 }
@@ -141,7 +147,7 @@ function render(state) {
   const v = state.vanish;
   renderKeyStep("vanish", v);
   const vanishStatus = {
-    sent: () => `Sent: a commit of ${formatGhost(v.amount)} GHOST, transaction ${v.txHash}. Done once a block holds it.`,
+    sent: () => `Sent: a commit of ${formatGhost(v.amount)} GHOST, transaction ${v.txHash}. ${IN_A_BLOCK}`,
     done: () =>
       `Done: committed ${formatGhost(v.amount)} GHOST in block ${v.block}. Keep your key safe; the app has forgotten it. ${SEAL_TRUST}`,
     dropped: () =>
@@ -164,7 +170,7 @@ function render(state) {
     renderKeyStep("claim", s.claim);
     const c = s.claim;
     const claimStatus = {
-      sent: () => `Sent: a claim of ${formatGhost(c.amount)} GHOST to the new key, transaction ${c.txHash}. Done once a block holds it.`,
+      sent: () => `Sent: a claim of ${formatGhost(c.amount)} GHOST to the new key, transaction ${c.txHash}. ${IN_A_BLOCK}`,
       done: () => `Done: claimed ${formatGhost(c.amount)} GHOST to the new key in block ${c.block}. ${SEAL_TRUST}`,
       dropped: () => `Claim dropped: ${c.dropped}. Press Refresh, then Claim again.`,
     };
