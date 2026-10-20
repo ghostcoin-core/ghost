@@ -13,7 +13,14 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { toHex } from "../src/bytes.mjs";
-import { DEFAULT_COMMIT_ENTRY, HEAD_MOVED_PROOFS, HEAD_MOVED_SENDS, ZERO_ADDRESS, createFlow } from "../src/flow.mjs";
+import {
+  DEFAULT_COMMIT_ENTRY,
+  HEAD_MOVED_PROOFS,
+  HEAD_MOVED_SENDS,
+  WaitError,
+  ZERO_ADDRESS,
+  createFlow,
+} from "../src/flow.mjs";
 import { DEFAULT_ENDPOINT } from "../src/rpc.mjs";
 import { loadModule, nodeProver, webappDir } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
@@ -111,7 +118,7 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
     assert.equal(node.commits.length, 1);
     const ourCommitment = toHex(node.commits[0].commitment);
 
-    // Strangers' coins after ours, then enough blocks for epoch block 32.
+    // Strangers' coins after ours, then more blocks than the 2 that settle them.
     node.foreignCommits(2);
     node.mineTo(44);
 
@@ -144,7 +151,7 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
     assert.equal(s.current.amount, left);
     assert.equal(s.current.number, 1n);
 
-    // More coins after the remainder, then epoch block 64.
+    // More coins after the remainder, then block 76.
     node.foreignCommits(1);
     node.mineTo(76);
 
@@ -269,7 +276,7 @@ function timeline(node, work, from, fromWork) {
 
 // A timeline with block hashes left out and block numbers (but genesis)
 // counted from block `base`, so that runs from tips the same distance past
-// an epoch block and a fee window compare.
+// the start of a fee window compare.
 function relative(events, base) {
   return events.map((e) =>
     e
@@ -329,7 +336,7 @@ test("altered notes cannot make the requests depend on whether the key owns a co
     fromWork = work.length;
     await assert.rejects(flow.summonReveal({ amount: "5", recipient: RECIPIENT }), /at most/);
     const owned = seen(node, from);
-    assert.ok(owned.some((r) => r.startsWith('["eth_getBlockByNumber"')), "the epoch and fee headers are fetched");
+    assert.ok(owned.some((r) => r.startsWith('["eth_getBlockByNumber"')), "the settled and fee headers are fetched");
     assert.deepEqual(owned, notOwner, "a failed reveal asks the same whether the key owns the coin or not");
     assert.deepEqual(
       timeline(node, work, from, fromWork),
@@ -378,8 +385,7 @@ test("a refused proof and a fee change leave the requests and their timing as fo
     const target = node.leaves.findIndex((l) => toHex(l.commitment) === toHex(node.commits[0].commitment));
     const other = await vanish(flow, "1");
     node.foreignCommits(1);
-    // Each attempt starts 12 blocks past an epoch block, at the start of a
-    // fee window.
+    // Each attempt starts at the start of a fee window.
     node.mineTo(76);
     assert.equal((await flow.summonOpen(other)).status, "unclaimed");
     node.dishonest.note = (position, note) => (position === target ? note : new Uint8Array(note.length));
@@ -466,7 +472,7 @@ test("a fabricated receipt does not confirm a claim the chain does not hold", as
   const { node, flow, done } = await setUp();
   try {
     const key = await vanish(flow, "1");
-    // A later commitment inside epoch window 32 to 64, then block 77 and on.
+    // A later commitment after block 40, then block 77 and on.
     node.mineTo(40);
     node.foreignCommits(1);
     node.mineTo(80);
@@ -557,6 +563,41 @@ test("a claim is confirmed, and the old key claimed, only with 6 blocks on top",
     assert.equal((await flow.summonRefresh()).status, "unclaimed", "five blocks on top are not enough");
     node.mineTo(block + 6);
     assert.equal((await flow.summonRefresh()).status, "claimed");
+  } finally {
+    await done();
+  }
+});
+
+test("a coin is summoned 2 blocks after a later commit, and a coin nobody followed waits", async () => {
+  const { node, flow, done } = await setUp();
+  try {
+    const lonely = await vanish(flow, "1");
+    // Nobody has committed since: the app warns plainly and waits.
+    node.mineTo(node.tip() + 10);
+    let s = await flow.summonOpen(lonely);
+    assert.equal(s.status, "unclaimed");
+    assert.equal(s.cover, null);
+    assert.equal(s.wait.alone, true);
+    assert.match(s.wait.message, /^nobody has committed a coin since this one/);
+    await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), (err) => err instanceof WaitError && err.alone);
+    assert.equal(node.reveals.length, 0, "never proved against its own block root");
+
+    // A stranger commits in block `block`; one block later it is not yet
+    // settled, two blocks later the coin can be revealed against its root.
+    node.foreignCommits(1);
+    const block = node.tip();
+    s = await flow.summonOpen(lonely);
+    assert.equal(s.wait.alone, false);
+    assert.match(s.wait.message, new RegExp(`revealed from block ${block + 2}`));
+    node.mineTo(block + 2);
+    s = await flow.summonOpen(lonely);
+    assert.equal(s.wait, null);
+    assert.deepEqual(s.cover, { height: block, covers: node.leaves.length, total: node.leaves.length });
+    const reveal = await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
+    assert.equal(node.reveals.length, 1);
+    assert.equal(toHex(node.reveals[0].root), toHex(node.blocks[block].coinTreeRoot), "the root of the stranger's block");
+    assert.ok(reveal.block > block + 2);
+    assert.equal(node.balances.get(RECIPIENT), GHOST / 4n);
   } finally {
     await done();
   }

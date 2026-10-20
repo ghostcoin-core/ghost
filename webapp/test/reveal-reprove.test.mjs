@@ -47,7 +47,7 @@ test("a Summon whose first proof the node refuses on every send is proved again 
   const flow = createFlow({ prover, wallet, endpoint: node.url, fetch, pollMs: 20, maxPolls: 3000, stillMs: 10 });
   try {
     // A block every 20 ms throughout, a stranger's commit in every 8th, so
-    // every epoch window holds a commitment after the coin.
+    // a settled block soon holds a commitment after the coin.
     node.foreignCommits(2);
     node.startMining(20, { refuse: false, commitEvery: 8 });
     const key = await flow.vanishStart("1");

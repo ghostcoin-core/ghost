@@ -17,8 +17,8 @@
 //!   proved by the proofs crate (section 8; spec 02, section 4).
 //! - [`restore`]: finding the key's current coin from the digits and the
 //!   chain's leaves, notes and spent markers (section 8).
-//! - [`tree_state`]: the shared tree state a reveal proves against (spec 02,
-//!   section 8).
+//! - [`tree_state`]: the tree state a reveal proves against, the newest
+//!   settled root that holds a later leaf (spec 02, section 8).
 //! - [`seal`]: the RandomX block seal of a header, checked in light
 //!   verification mode (spec 08), on [`randomx`], a Rust port of RandomX v1
 //!   light-mode hashing.
@@ -70,4 +70,4 @@ pub use reveal::{
     RemainderCoin, RevealError, RevealTerms,
 };
 pub use seal::{check_seal, seal_hash, seed_height, verify_seal, HeaderError, SealError, SealKey};
-pub use tree_state::{choose_tree_state, HeaderRoot, TreeStateChoice};
+pub use tree_state::{choose_tree_state, HeaderRoot, TreeStateChoice, SETTLE_DEPTH};

@@ -110,6 +110,28 @@ function describeSummon(s) {
   return lines.join(" ");
 }
 
+// What a reveal or claim now would hide the coin among, or why the app
+// waits. The holder decides whether that cover is enough or to wait for more.
+function describeCover(s) {
+  if (s.status !== "unclaimed" || !s.current) return null;
+  if (s.wait && s.wait.alone) {
+    return {
+      warning: true,
+      text: `Not yet: ${s.wait.message}. Press Refresh after someone else has committed.`,
+    };
+  }
+  if (s.wait) return { warning: true, text: `Not yet: ${s.wait.message}. Press Refresh to check again.` };
+  if (!s.cover) return null;
+  const { height, covers, total } = s.cover;
+  const more = total > covers ? ` ${total - covers} more are in newer blocks and will count once they are settled.` : "";
+  return {
+    warning: false,
+    text:
+      `A reveal or claim now hides this coin among the ${covers} coins in the tree as of block ${height}.${more} ` +
+      "Fewer coins make it easier to link the reveal to your commit: reveal now, or wait for more coins and press Refresh. The choice is yours.",
+  };
+}
+
 function render(state) {
   const w = state.wallet;
   $("wallet-status").textContent = w ? `${w.account} on chain ${w.chainId}` : "";
@@ -127,7 +149,12 @@ function render(state) {
   $("summon-panel").hidden = !s;
   if (s) {
     $("summon-status").textContent = describeSummon(s);
+    const cover = describeCover(s);
+    $("summon-cover").hidden = !cover;
+    $("summon-cover").textContent = cover ? cover.text : "";
+    $("summon-cover").classList.toggle("warning", Boolean(cover && cover.warning));
     $("reveal-form").hidden = !s.current;
+    $("reveal-submit").disabled = Boolean(s.wait);
     $("claim").hidden = !s.current && !(s.claim && s.claim.stage === "confirmed");
     renderKeyStep("claim", s.claim);
     const c = s.claim;
@@ -137,7 +164,7 @@ function render(state) {
         `Claimed ${formatGhost(c.amount)} GHOST to the new key in block ${c.block}, with ${CONFIRMATIONS} blocks on top. ${SEAL_TRUST}`,
     };
     $("claim-status").textContent = c && claimStatus[c.stage] ? claimStatus[c.stage]() : "";
-    $("claim-start").disabled = Boolean(c && c.stage !== "confirmed");
+    $("claim-start").disabled = Boolean((c && c.stage !== "confirmed") || s.wait);
   }
 
   const p = state.progress;

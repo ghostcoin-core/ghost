@@ -36,7 +36,7 @@ It chooses nothing inside the proof system beyond what the statements need.
 | Binding | One binding digest per statement, computed by the node or verifier from its own values, never taken from the prover | Outline ("Core protocol" 10); base client plan 7.3; spec 03, section 7, step 6 |
 | Binding layouts | Fixed-width fields in a fixed order under the three binding tags of spec 01 | **Proposed** (section 7) |
 | Domain tag | The genesis block hash of the chain | **Proposed** (question 1) |
-| Tree state | A shared epoch root, never the root of the block that added the wallet's own leaf, except a full tree's shared final root (section 8) | Outline ("Core protocol" 10); epoch rule **Proposed** (question 4) |
+| Tree state | By default the newest root at least 2 blocks below the tip that is not the root of the block that added the wallet's own leaf, except a full tree's shared final root; no forced wait, the holder chooses the cover (section 8) | Outline ("Core protocol" 10); founder decision 2026-10-20 (question 4) |
 | Conservation | `v = out + v' + fee` over the integers, on every coin reveal, including the full reveal | Outline ("Coin rules"); spec 03, section 7 |
 | Amount encoding | One 32-byte big-endian word for Go, the wire, the binding digest and the proof; valid only below `2^96` | **Proposed** (section 10) |
 | Range constraints in the proof | Six 16-bit limbs per amount, limb-wise conservation with bounded carries | **Proposed** (section 10, question 6) |
@@ -133,7 +133,7 @@ amount `v`, the fingerprint `F`, the leaf `C`, its position and the note `N`.
 | `statement_version` | 1 | Node | `0x01`, the same in every coin reveal |
 | `type` | 2 | Transaction, must be `COIN` | The same in every coin reveal |
 | `purpose` | 1 | Node, `0x01` spend | The same in every coin reveal |
-| `root` | 32 | Transaction, checked against a canonical header | The shared epoch root of section 8, used by every wallet that reveals in that window and never the root of the block that added the wallet's own leaf, except a full tree's shared final root. The commit transaction does not contain it |
+| `root` | 32 | Transaction, checked against a canonical header | The settled root of section 8, a root of the chain shared by every wallet that proves against it and never the root of the block that added the wallet's own leaf, except a full tree's shared final root. The commit transaction does not contain it |
 | `marker` | 32 | Transaction | `K("ghost/coin-marker/v1", r, b)` was never published before. It has a tag of its own, so it equals no `F`, `C` or tree node, and computing it from `F` or `C`, or `F` or `C` from it, needs `r` and `b` (preimage resistance, threat model A1) |
 | `remainder` | 32 | Transaction | A new leaf `C'` built from fresh blinding `b'` (spec 01, section 8). It differs from `C` and from every earlier leaf, and hides `s'`, `r'`, `b'` and `v'` |
 | `remainder_note` | 156 | Transaction | A new ciphertext under a fresh random nonce, unreadable without `k_note`, with the fixed length of every note (spec 01, section 9) |
@@ -199,7 +199,7 @@ creates no remainder and carries no amount out. Its binding tag is
 | `statement_version` | 1 | Node | `0x01`, the same in every data reveal |
 | `type` | 2 | Transaction, must be `DATA` | The same in every data reveal |
 | `purpose` | 1 | Transaction, `0x02` reveal or `0x03` revoke | One of two values, shared by every data reveal of that purpose |
-| `root` | 32 | Transaction, checked against a canonical header | The shared epoch root of the data tree (section 8), never the root of the block that added the wallet's own leaf, except a full tree's shared final root |
+| `root` | 32 | Transaction, checked against a canonical header | The settled root of the data tree (section 8), never the root of the block that added the wallet's own leaf, except a full tree's shared final root |
 | `marker` | 32 | Transaction | `K("ghost/data-marker/v1", r, b)`, never published before and not computable from `F_d` or `C` without `r` and `b`, as for S1 |
 | `party` | 32 | Transaction | The verifier or recipient the ticket is for, or zero for none (spec 04, section 6). Chosen by the user; nothing is credited to it |
 | `fee` | 32 | Node | Not settled; every data reveal is rejected at spec 04, section 6, step 6 until it is |
@@ -261,7 +261,7 @@ place in the header are fixed (section 13).
 | `statement_version` | 1 | Verifier | `0x01` |
 | `type` | 2 | Proof, `DATA` (or `COIN` once settled) | The same in every proof of holding of that type |
 | `purpose` | 1 | Verifier, `0x04` hold | The same in every proof of holding |
-| `root` | 32 | Verifier, from a header it trusts | The shared epoch root of the tree of `type` (section 8), the same for every prover in that window |
+| `root` | 32 | Verifier, from a header it trusts | The settled root of the tree of `type` (section 8), a root of the chain that any prover may use |
 | `marker_set_root` | 32 | Verifier, from a header it accepts as current | The root of the spent-marker set of `type`, a chain-wide value |
 | `verifier` | 32 | Verifier | The verifier's own identity; it names the verifier, not the commitment |
 | `challenge` | 32 | Verifier, fresh and random | Chosen by the verifier, at least 256 bits from a secure random source (spec 04, question 7) |
@@ -310,7 +310,7 @@ review.
 
 The verifier makes the checks of spec 04, section 5, in that order. It takes
 `marker_set_root` from a header it trusts at a height it accepts as current,
-and `root` from a header of the same chain at or below that height: the epoch
+and `root` from a header of the same chain at or below that height: the settled
 root of section 8, or the final root of a full tree once the next tree has
 started. The two roots need not come from one header, so a leaf of a full tree
 is still checked against current marker status (review 01, N2). An on-chain verifier is a contract that
@@ -429,12 +429,13 @@ link them (outline, "Core protocol" 10; threat model C17). The root in the
 header of the block that added a leaf is the first root that contains it; a
 reveal against that root names the block of the commit.
 
-**Rule (Proposed).** The wallet proves against the **epoch root**: the root of
-the tree of its type in the header of the most recent canonical block whose
-height `h` satisfies
+**Rule (founder decision, 2026-10-20).** There is no forced wait. By default
+the wallet proves against the **settled root**: the root of the tree of its
+type in the header of the most recent canonical block whose height `h`
+satisfies
 
 ```text
-h mod 32 = 0   and   h <= tip - 12   and   h > h_leaf
+h <= tip - SETTLE_DEPTH   and   h > h_leaf        (SETTLE_DEPTH = 2)
 ```
 
 where `tip` is the wallet's current best height and `h_leaf` is the height of
@@ -443,11 +444,33 @@ the remainder), **and** whose root is not byte-equal to the root in the header
 of block `h_leaf` (review 01, F1). A later header carries the same root
 whenever no leaf of that type was added in between (spec 05, section 4), so a
 height test alone could select the very root the leaf's own block created; the
-value test rules that out. If no such block exists yet, the wallet waits. At
-30-second blocks a new epoch root appears every 16 minutes, so every wallet
-that proves within one 16-minute window uses the same root, and no wallet ever
-uses the root its own leaf's block created. The 12-block depth keeps the root
-on the canonical chain through ordinary reorganisations.
+value test rules that out. A reveal is possible as soon as such a block
+exists: two blocks after anyone else adds a leaf of the type, about one minute
+at 30-second blocks. The 2-block depth keeps the root on the canonical chain
+through the shortest reorganisations; a reveal whose root is reorganised away
+is refused by the node, spends nothing, and can be proved again.
+
+- **The holder chooses the cover.** The settled root covers every leaf of the
+  tree up to block `h`; that leaf count is the anonymity set of the reveal.
+  The wallet shows it and lets the holder reveal now or wait for more leaves.
+  It never forces a wait: in the founder's words, a holder who does not want
+  the coin to be traced can wait their own blocks, and one who wants to reveal
+  two blocks later can do that.
+- **Nobody committed since.** If no block other than the leaf's own block, or
+  one carrying its root, is settled, the only tree that holds the leaf ends
+  with that block, and a reveal against it would tie the reveal to its commit.
+  The wallet then says so plainly and waits, rather than prove against the
+  leaf's own block root; this keeps the linkage test of the outline ("First
+  milestone" 7) meaningful. Proving against that root is never the default; a
+  later decision may let a holder do it knowingly.
+
+This replaces the proposed epoch rule (`h mod 32 = 0` and `h <= tip - 12`),
+which made a new coin wait about 6 to 22 minutes for an epoch root and which
+the founder did not accept. Wallets no longer share one root per 16-minute
+window: two reveals a minute apart may prove against different settled roots.
+A settled root still covers every earlier leaf, so the anonymity set is no
+smaller, but the root now tells within a few blocks when a reveal was proved,
+which the epoch root blurred to its window (threat model C17).
 
 - **A leaf of a full tree.** Once the tree that holds the leaf is full and the
   next tree has started, no later root contains the leaf, and the wallet proves
@@ -464,10 +487,10 @@ on the canonical chain through ordinary reorganisations.
 
 - **The same rule for S1, S2 and S3.** For S3 the spent-marker-set root comes
   from a header the verifier accepts as current, at or above the header of the
-  tree root (section 6). A verifier that wants current status accepts the
-  latest epoch header as current; a revocation therefore reaches verifiers
-  after at most about 22 minutes (one epoch plus the depth), which is the price
-  of a shared state, and this holds for a leaf of a full tree too.
+  tree root (section 6). A verifier that wants current status accepts a
+  header `SETTLE_DEPTH` below its tip as current; a revocation therefore
+  reaches verifiers after about two blocks, and this holds for a leaf of a
+  full tree too.
 - **Each hop.** A remainder is a new leaf with its own `h_leaf`, so a reveal of
   a remainder also never uses the root of the reveal that created it, with the
   same full-tree exception (outline, "First milestone" 7: three hops).
@@ -475,9 +498,10 @@ on the canonical chain through ordinary reorganisations.
   opened; it accepts any canonical root of the right tree
   ([spec 03](03-coin-rules.md), question 4). The rule is the wallet's, and the
   linkage test (PS-18) checks it.
-- **What it does not hide.** A root shared by many wallets protects only while
-  many wallets reveal in the same window; with little traffic the anonymity set
-  is small (threat model C17).
+- **What it does not hide.** A root protects only as far as the tree under it
+  is large: with little traffic the anonymity set is small, and a holder who
+  reveals soon after their commit has few leaves to hide among. The wallet
+  shows the leaf count so that the holder can judge (threat model C17).
 
 ## 9. Conservation
 
@@ -694,7 +718,7 @@ removed does not count ([spec 03](03-coin-rules.md), section 10).
   S2 equals the commit's `F`, `F_d`, `C`, position, note or any value computed
   from them without the digits. Check: the linkage test pulls the raw commit
   and reveal transactions and finds no byte string of 16 bytes or more in both,
-  apart from the whitelisted chain constants, codes and shared epoch root; it
+  apart from the whitelisted chain constants, codes and settled root; it
   fails against a build whose reveal publishes `C`.
 - **PS-2. Proofs of holding share nothing.** Two proofs of holding of one
   commitment, and a proof of holding and the later reveal of it, share no public
@@ -762,11 +786,13 @@ removed does not count ([spec 03](03-coin-rules.md), section 10).
 - **PS-18. Shared tree state.** A wallet never proves against a root at or below
   the height of the block that added its own leaf, nor against any root
   byte-equal to that block's root, except the final root of a full tree once
-  the next tree has started; it proves against the epoch root of section 8.
-  Check: across three hops (commit, partial reveal, reveal of the remainder),
-  no reveal's root equals the header root of the block that added the leaf it
-  opens, including when no other leaf of that type is added for 40 blocks after
-  the commit; the linkage test fails against a wallet that uses that root.
+  the next tree has started; it proves against the settled root of section 8,
+  and while no such root exists it waits. Check: across three hops (commit,
+  partial reveal, reveal of the remainder), no reveal's root equals the header
+  root of the block that added the leaf it opens, including when no other leaf
+  of that type is added for 40 blocks after the commit (the wallet waits) and
+  when a reveal is made 2 blocks after a later leaf; the linkage test fails
+  against a wallet that uses that root.
 - **PS-19. Roots come from the canonical chain.** A root from a discarded
   branch, or from the other tree, is rejected. Check: spec 03, CR-10; spec 04,
   CR-D13.
@@ -838,7 +864,7 @@ threat model C16 and C22 is here.
   verifier; a proof answers a challenge the verifier never issued. Expected:
   rejected by the verifier (PS-16).
 - **AV-11. Linked tree state.** A wallet proves against the root of the block
-  that added its own leaf, either directly or through a later epoch header that
+  that added its own leaf, either directly or through a later header that
   carries the same root because no leaf was added in between. Expected: the
   linkage test finds the shared root and fails (PS-1, PS-18).
 - **AV-12. Revoked commitment still held.** After commitment A is revoked, its
@@ -936,8 +962,11 @@ Each has a default that this document already applies.
 3. **Binding the remainder note.** Binding the note costs one permutation and
    stops a relay from replacing it, which would hide the remainder from restore.
    Default: bound.
-4. **Epoch length and depth.** 32 blocks and 12 blocks trade a wait of up to
-   about 22 minutes against a larger shared set. Default: 32 and 12.
+4. **Tree-state wait.** Decided 2026-10-20: no forced wait. The wallet proves
+   against the newest root 2 blocks below the tip that holds a later leaf, shows
+   the leaf count it covers, and the holder chooses to reveal or wait (section
+   8). Still open: whether a holder may knowingly prove against the leaf's own
+   block root when nobody has committed since. Default: the wallet waits.
 5. **Protocol version width.** Two bytes. Default: two bytes, `0x0001`.
 6. **Limb width.** Six 16-bit limbs suit both 31-bit and 64-bit fields. A
    proof system with a field above `2^98` could check the sum directly. Default:

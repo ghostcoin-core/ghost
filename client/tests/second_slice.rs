@@ -12,7 +12,7 @@ use ghost_client::note::{
     chacha20poly1305_open, chacha20poly1305_seal, note_associated_data, NOTE_PLAINTEXT_BYTES,
 };
 use ghost_client::reveal::{ChainParams, CoinReveal, Proof, ProofError, TREE_DEPTH};
-use ghost_client::tree_state::{EPOCH_BLOCKS, EPOCH_DEPTH};
+use ghost_client::tree_state::SETTLE_DEPTH;
 use ghost_client::{
     choose_tree_state, decrypt_note, encrypt_note, full_reveal, partial_reveal,
     restore_coins, Amount, Commitment, ContentFingerprint, Current, DiscardReason, HeaderRoot,
@@ -445,34 +445,36 @@ fn restore_ignores_notes_for_other_keys() {
 fn tree_state_choice_never_picks_wallets_own_commit_block() {
     let root = |byte: u8| [byte; 32];
     let leaf_block = HeaderRoot { height: 100, root: root(0xaa) };
-    // Height 128 carries the leaf block's root: no coin leaf was added in
-    // between. 150 is not an epoch height; 64 and 96 are before the leaf.
+    // Heights 101 and 102 carry the leaf block's root: no coin leaf was added
+    // in between. 64 and 96 are before the leaf.
     let candidates = [
         HeaderRoot { height: 64, root: root(1) },
         HeaderRoot { height: 96, root: root(2) },
         HeaderRoot { height: 100, root: root(0xaa) },
-        HeaderRoot { height: 128, root: root(0xaa) },
-        HeaderRoot { height: 150, root: root(3) },
-        HeaderRoot { height: 160, root: root(4) },
-        HeaderRoot { height: 192, root: root(5) },
+        HeaderRoot { height: 101, root: root(0xaa) },
+        HeaderRoot { height: 102, root: root(0xaa) },
+        HeaderRoot { height: 103, root: root(3) },
+        HeaderRoot { height: 150, root: root(4) },
     ];
     let pick = |tip: u64| choose_tree_state(&candidates, tip, &leaf_block, None);
 
-    // Only 128 is deep enough, and it carries the leaf block's root: wait.
-    assert_eq!(pick(140), TreeStateChoice::Wait);
-    assert_eq!(pick(171), TreeStateChoice::Wait);
-    // 160 is buried 12 deep at tip 172; 192 is not until tip 204.
-    assert_eq!(pick(172), TreeStateChoice::Epoch(candidates[5]));
-    assert_eq!(pick(203), TreeStateChoice::Epoch(candidates[5]));
-    assert_eq!(pick(204), TreeStateChoice::Epoch(candidates[6]));
-    assert_eq!(pick(5), TreeStateChoice::Wait);
+    // Only the leaf block's root is settled: wait.
+    assert_eq!(pick(100), TreeStateChoice::Wait);
+    assert_eq!(pick(104), TreeStateChoice::Wait);
+    // 103 is settled at tip 105; 150 is not until tip 152.
+    assert_eq!(pick(105), TreeStateChoice::Settled(candidates[5]));
+    assert_eq!(pick(151), TreeStateChoice::Settled(candidates[5]));
+    assert_eq!(pick(152), TreeStateChoice::Settled(candidates[6]));
+    assert_eq!(pick(1), TreeStateChoice::Wait);
 
-    // A leaf added at an epoch height never uses that height's root.
-    let at_epoch = HeaderRoot { height: 128, root: root(0xaa) };
-    assert_eq!(choose_tree_state(&candidates[..4], 1_000, &at_epoch, None), TreeStateChoice::Wait);
+    // A later height that carries the leaf's root is never used, however deep.
+    assert_eq!(choose_tree_state(&candidates[..5], 1_000, &leaf_block, None), TreeStateChoice::Wait);
 
-    // Over many chains, the choice is never the leaf block's root, always an
-    // eligible epoch, and always the most recent one.
+    // Over many chains, the choice is never the leaf block's root, always a
+    // settled later root, and always the newest one.
+    let eligible = |h: &HeaderRoot, leaf: &HeaderRoot, tip: u64| {
+        h.height > leaf.height && h.height + SETTLE_DEPTH <= tip && h.root != leaf.root
+    };
     let mut rng = StdRng::seed_from_u64(6);
     for _ in 0..2_000 {
         let h_leaf = rng.random_range(0..400u64);
@@ -487,32 +489,94 @@ fn tree_state_choice_never_picks_wallets_own_commit_block() {
             .collect();
         let tip = rng.random_range(0..520u64);
         match choose_tree_state(&headers, tip, &leaf, None) {
-            TreeStateChoice::Epoch(chosen) => {
+            TreeStateChoice::Settled(chosen) => {
                 assert_ne!(chosen.root, leaf.root);
-                assert_eq!(chosen.height % EPOCH_BLOCKS, 0);
-                assert!(chosen.height > leaf.height && chosen.height + EPOCH_DEPTH <= tip);
-                assert!(!headers.iter().any(|h| h.height > chosen.height
-                    && h.height % EPOCH_BLOCKS == 0
-                    && h.height + EPOCH_DEPTH <= tip
-                    && h.root != leaf.root));
+                assert!(eligible(&chosen, &leaf, tip));
+                assert!(!headers.iter().any(|h| h.height > chosen.height && eligible(h, &leaf, tip)));
             }
-            TreeStateChoice::Wait => assert!(!headers.iter().any(|h| h.height > leaf.height
-                && h.height % EPOCH_BLOCKS == 0
-                && h.height + EPOCH_DEPTH <= tip
-                && h.root != leaf.root)),
+            TreeStateChoice::Wait => assert!(!headers.iter().any(|h| eligible(h, &leaf, tip))),
             TreeStateChoice::FinalRoot(_) => panic!("no final root was given"),
         }
     }
 
-    // The full-tree exception is used only when given, and only once buried.
+    // The full-tree exception is used only when given, and only once settled.
     let final_root = HeaderRoot { height: 100, root: root(0xaa) };
     assert_eq!(
         choose_tree_state(&candidates, 300, &leaf_block, Some(&final_root)),
         TreeStateChoice::FinalRoot(final_root)
     );
-    assert_eq!(choose_tree_state(&candidates, 111, &leaf_block, Some(&final_root)), TreeStateChoice::Wait);
+    assert_eq!(
+        choose_tree_state(&candidates, 102, &leaf_block, Some(&final_root)),
+        TreeStateChoice::FinalRoot(final_root)
+    );
+    assert_eq!(choose_tree_state(&candidates, 101, &leaf_block, Some(&final_root)), TreeStateChoice::Wait);
     let earlier_tree = HeaderRoot { height: 99, root: root(1) };
     assert_eq!(choose_tree_state(&candidates, 300, &leaf_block, Some(&earlier_tree)), TreeStateChoice::Wait);
+}
+
+/// The coin roots of blocks 0 to `tip` of a chain on which block `n` holds
+/// `count(n)` leaves; a tree of `c` leaves has a root of bytes all `c`.
+fn chain_roots(tip: u64, count: impl Fn(u64) -> u8) -> Vec<HeaderRoot> {
+    (0..=tip).map(|height| HeaderRoot { height, root: [count(height); 32] }).collect()
+}
+
+#[test]
+fn early_reveal_two_blocks_after_a_later_commit() {
+    assert_eq!(SETTLE_DEPTH, 2);
+    // The wallet's coin is leaf 2, added at block 50; a stranger commits
+    // leaf 3 at block 51.
+    let count = |n: u64| -> u8 {
+        if n >= 51 {
+            4
+        } else if n >= 50 {
+            3
+        } else {
+            2
+        }
+    };
+    let leaf_block = HeaderRoot { height: 50, root: [3; 32] };
+    // Block 51 is not settled until tip 53.
+    for tip in 50..53 {
+        let headers = chain_roots(tip, count);
+        assert_eq!(choose_tree_state(&headers, tip, &leaf_block, None), TreeStateChoice::Wait, "tip {tip}");
+    }
+    // At tip 53 the coin can be revealed against block 51's root, two blocks
+    // after the later commit: no epoch block, no 12-block depth.
+    let headers = chain_roots(53, count);
+    assert_eq!(
+        choose_tree_state(&headers, 53, &leaf_block, None),
+        TreeStateChoice::Settled(HeaderRoot { height: 51, root: [4; 32] })
+    );
+    // Later, always the newest settled root.
+    let headers = chain_roots(80, count);
+    assert_eq!(
+        choose_tree_state(&headers, 80, &leaf_block, None),
+        TreeStateChoice::Settled(HeaderRoot { height: 78, root: [4; 32] })
+    );
+}
+
+#[test]
+fn early_reveal_waits_without_a_later_leaf_and_never_picks_its_own_block_root() {
+    // The wallet's coin is the last leaf, added at block 50 after an earlier
+    // leaf of the same block; nobody commits after it.
+    let count = |n: u64| -> u8 { if n >= 50 { 3 } else { 1 } };
+    let leaf_block = HeaderRoot { height: 50, root: [3; 32] };
+    for tip in [50, 52, 53, 100, 1_000] {
+        let headers = chain_roots(tip, count);
+        assert_eq!(choose_tree_state(&headers, tip, &leaf_block, None), TreeStateChoice::Wait, "tip {tip}");
+    }
+    // The leaf block itself, offered as a candidate, is never taken either.
+    assert_eq!(choose_tree_state(&[leaf_block], 1_000, &leaf_block, None), TreeStateChoice::Wait);
+    // A stranger's commit at block 200 opens it two blocks later.
+    let later = |n: u64| -> u8 { if n >= 200 { 4 } else { count(n) } };
+    assert_eq!(choose_tree_state(&chain_roots(201, later), 201, &leaf_block, None), TreeStateChoice::Wait);
+    match choose_tree_state(&chain_roots(202, later), 202, &leaf_block, None) {
+        TreeStateChoice::Settled(chosen) => {
+            assert_eq!(chosen.height, 200);
+            assert_ne!(chosen.root, leaf_block.root);
+        }
+        other => panic!("expected a settled root, got {other:?}"),
+    }
 }
 
 #[test]

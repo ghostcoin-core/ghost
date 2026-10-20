@@ -1,6 +1,6 @@
 // Chain arithmetic the wallet does from headers alone: the private
 // transaction fee of spec 07, sections 4 and 5, the base client's EIP-1559
-// base fee, the epoch height of spec 02, section 8, and GHOST amounts.
+// base fee, the settled height of spec 02, section 8, and GHOST amounts.
 
 // Gas of every private transaction (spec 07, sections 2 and 4), the node's
 // GhostRevealGas: BYTE_GAS * ENVELOPE_BYTES + BASE_TX_GAS + VERIFY_GAS.
@@ -9,10 +9,9 @@ export const G_PRIV = 21_090_372n;
 export const FEE_WINDOW = 4;
 // The tip is the base-fee part divided by this, rounded up.
 export const TIP_DIVISOR = 10n;
-// Every epoch root is at a height that is a multiple of this...
-export const EPOCH_BLOCKS = 32;
-// ...and at least this many blocks below the tip.
-export const EPOCH_DEPTH = 12;
+// A root a reveal proves against is at least this many blocks below the tip
+// (spec 02, section 8; client/src/tree_state.rs SETTLE_DEPTH).
+export const SETTLE_DEPTH = 2;
 // Blocks on top of a transaction's block before the app shows it confirmed,
 // and on top of a spent marker before a key shows claimed.
 export const CONFIRMATIONS = 6;
@@ -64,11 +63,10 @@ export async function feeForNextBlock(tipHeader, headerAt) {
   return { window: start / FEE_WINDOW, ...feeForPrice(windowPrice(bRef)) };
 }
 
-// The height of the epoch root for this tip, or null when there is none yet.
-export function epochHeight(tip) {
-  if (tip < EPOCH_DEPTH) return null;
-  const deepest = tip - EPOCH_DEPTH;
-  return deepest - (deepest % EPOCH_BLOCKS);
+// The height of the newest settled block for this tip, the one whose root a
+// reveal proves against, or null when there is none yet.
+export function settledHeight(tip) {
+  return tip < SETTLE_DEPTH ? null : tip - SETTLE_DEPTH;
 }
 
 // "1.25" GHOST to wei. Up to 18 decimals; no exponent, no sign.

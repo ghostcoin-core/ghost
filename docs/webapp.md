@@ -30,7 +30,7 @@ supported EVM wallet and uses GHOST privately. It does three things.
 | `webapp/index.html`, `style.css` | The page; loads one same-origin module and names no external URL |
 | `webapp/src/flow.mjs` | The flow controller: every step above, with no DOM |
 | `webapp/src/app.mjs`, `keyimage.mjs` | The thin DOM layer and the key image drawn on a canvas |
-| `webapp/src/chain.mjs` | The fee of spec 07, the base fee rule, the epoch height, amounts |
+| `webapp/src/chain.mjs` | The fee of spec 07, the base fee rule, the settled height, amounts |
 | `webapp/src/header.mjs` | The header's 18-field RLP of spec 05, section 10, to recompute a block hash |
 | `webapp/src/rpc.mjs` | JSON-RPC to the chosen endpoint |
 | `webapp/src/prover.mjs`, `worker.mjs`, `worker-core.mjs` | The background worker and its message interface |
@@ -62,8 +62,8 @@ network, `http://127.0.0.1:8545`. The app sends only these requests:
 The page and marker requests follow [spec 05](spec/05-trees-and-headers.md),
 section 8: whole pages from page 0, as of a block hash, whatever the wallet
 expects to find. The headers asked for depend only on the tip: every block
-from `E - 32` to the tip for the epoch block `E` (from genesis while `E` is
-below 32), and genesis. No request names a key, a commitment, a position or
+from `S - 32` to the tip for the settled block `S`, 2 below the tip (from
+genesis while `S` is below 32), and genesis. No request names a key, a commitment, a position or
 a marker, and the app never asks for a witness; it computes its own from the
 pages. The only request that carries a coin's data is the reveal itself,
 whose fields are public; sending it, though, links the connection to the
@@ -135,27 +135,40 @@ app makes no data commitments.
    balance) proves a decoy in its place and only then returns the refusal.
    So the time before them is a proof's on every path, refusals and fee
    retries included. The worker's other work
-   (the leaf count of every epoch header, restore, the epoch rule) is the
+   (the leaf count of every header read, restore, the tree-state rule) is the
    same on every path too. Only after these requests does a failure surface
    or the reveal go out. Found or not, failing or not, the endpoint sees the
    same requests at the same pace up to the reveal; the reveal itself tells
    it the connection holds a coin.
-3. **Tree state.** The proof uses the epoch root of
+3. **Tree state.** There is no forced wait (founder decision, 2026-10-20).
+   The proof uses the settled root of
    [spec 02](spec/02-proof-statements.md), section 8, through the client
-   library's `choose_tree_state`. The epoch block is `E`, the highest
-   multiple of 32 at least 12 blocks below the tip. The app takes the
-   verified headers of blocks `E - 32` to `E`, reads each one's leaf count from the roots of every prefix
-   of the leaves it already has, and takes as the leaf's block the first of
-   them whose tree holds the leaf. For a leaf older than `E - 32` that is
-   block `E - 32`, which makes the rule stricter, never looser: if no leaf was
-   added between it and `E`, the app waits for the next epoch. A coin newer
-   than `E` waits too.
+   library's `choose_tree_state`: the root of block `S`, 2 blocks below the
+   tip (`SETTLE_DEPTH`), if its tree holds a leaf added after the coin's
+   block. The app takes the verified headers of blocks `S - 32` to the tip,
+   reads each one's leaf count from the roots of every prefix of the leaves
+   it already has, and takes as the leaf's block the first of them whose tree
+   holds the leaf. For a leaf older than `S - 32` it takes block `S - 32` and
+   the tree that ends at the leaf, so a leaf added before `S - 32` still
+   counts as following it. So a coin can be revealed 2 blocks after anyone
+   else commits.
+   - **Holder's choice.** Opening a key shows, for its coin, the block whose
+     root a reveal or claim made now would use and how many coins that tree
+     covers (its leaf count), and how many newer coins are not settled yet.
+     Fewer coins make the reveal easier to link to the commit; the holder
+     reveals now or waits and presses Refresh. The app never makes them wait.
+   - **Nobody committed since.** When no leaf follows the coin, the only tree
+     that holds it ends with the coin's own block, and a reveal against that
+     root would tie it to its commit. The app says so plainly, keeps Reveal
+     and Claim off, and waits; it never proves against the coin's own block
+     root. When a later leaf exists but is not yet 2 blocks deep, the app
+     names the block from which the coin can be revealed.
 4. **Fee.** The fee is the formula of [spec 07](spec/07-private-transaction.md),
    section 4, for the window of the next block, from headers alone. If the
    window's fee changes while the proof is made, the app proves again; on
    every path, so the abort path also scans again.
 5. **Proof.** The worker computes the witness from the leaves under the
-   epoch root, proves with the client library (partial reveal or claim to a
+   settled root, proves with the client library (partial reveal or claim to a
    new key), verifies the proof itself, and builds the envelope of spec 07,
    section 3. A claim sends nothing out and names the zero address.
 6. **Send.** A node that mines fast can refuse the reveal with `chain head
@@ -248,7 +261,9 @@ app makes no data commitments.
   owns the targeted coin or not, up to the reveal itself; that a fabricated receipt for a withheld claim confirms nothing;
   that headers whose `coinTreeRoot` was changed under their real hash are
   refused; and that a claim is not confirmed, nor the old key claimed,
-  before 6 blocks are on top.
+  before 6 blocks are on top. It also summons a coin 2 blocks after a
+  stranger's later commit, against that commit's block root, after the same
+  coin, with nobody committed since, was shown the plain warning and refused.
 - `wasm.test.mjs`: the module against the golden vectors of spec 01 and
   spec 05, the header's RLP and hash included.
 - `commit-layout.test.mjs`: the commit payload against spec 07's layout and
@@ -265,7 +280,12 @@ app makes no data commitments.
   other than `0x0001`, among them the old 189-byte layout) and accepts the
   190-byte payload.
 - `units.test.mjs`: the fee against the worked examples of spec 07, the
-  base fee rule, the epoch height, amounts and the save check.
+  base fee rule, the settled height, amounts and the save check.
+- `early-reveal.test.mjs`, with nothing built: the tree-state choice with a
+  stub prover. A coin is revealed against the root 2 blocks below the tip
+  right after a later commit, the plan reports the leaf count that root
+  covers, and a coin nobody followed waits with the plain warning and is
+  never proved against its own block root.
 
 The key image download is drawn on a canvas in the page and is not covered
 by the headless tests.

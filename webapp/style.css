@@ -74,6 +74,15 @@ button {
   color: #dc2626;
 }
 
+.cover {
+  border-left: 3px solid #8888;
+  padding-left: 0.75rem;
+}
+
+.cover.warning {
+  border-left-color: #d97706;
+}
+
 footer {
   border-top: 1px solid #8884;
   font-size: 0.9rem;

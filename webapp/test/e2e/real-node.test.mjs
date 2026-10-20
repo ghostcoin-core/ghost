@@ -34,8 +34,8 @@ const NETWORK_ID = 6_777_971n;
 const GHOST = 10n ** 18n;
 const NOTE_BYTES = 156;
 const PAGE = 4096;
-const EPOCH = 32;
-const EPOCH_DEPTH = 12;
+// A reveal proves against the root of the block this many below the tip.
+const SETTLE_DEPTH = 2;
 // Test-only miner key and keystore password, as in ghost-node's script.
 const MINER_KEY_NUMBER = 6_777_971;
 const KEYSTORE_PASSWORD = "internal-net-test-only";
@@ -200,7 +200,7 @@ if (!GETH) {
     }
 
     // A commit by someone else, from the miner: a random F and a note no key
-    // opens. It puts a leaf after ours, which the epoch rule waits for.
+    // opens. It puts a leaf after ours, which the tree-state rule waits for.
     async function strangerCommit() {
       const data = concat([Uint8Array.of(0x00, 0x01), randomBytes(32), randomBytes(NOTE_BYTES)]);
       const hash = await rpc("eth_sendTransaction", [
@@ -211,11 +211,10 @@ if (!GETH) {
       return Number(BigInt(receipt.blockNumber));
     }
 
-    // Until the epoch block at or after `block` is 12 blocks deep, so that
-    // the epoch tree holds a leaf added after the coin's.
-    async function waitEpochAfter(block) {
-      const epoch = Math.ceil(block / EPOCH) * EPOCH;
-      await waitFor(`block ${epoch + EPOCH_DEPTH}`, async () => (await blockNumber()) >= epoch + EPOCH_DEPTH);
+    // Until `block` is 2 blocks deep, so that the settled tree holds a leaf
+    // added after the coin's.
+    async function waitSettledAfter(block) {
+      await waitFor(`block ${block + SETTLE_DEPTH}`, async () => (await blockNumber()) >= block + SETTLE_DEPTH);
     }
 
     // The wallet: the node's unlocked miner account, as an EIP-1193 provider.
@@ -244,48 +243,40 @@ if (!GETH) {
     // is what gets the Summon and the Claim through.
     const flow = createFlow({ prover, wallet, endpoint: node.url, pollMs: 1000, maxPolls: 1800, onChange });
 
-    // The last block at which a commit in block `block` can still let a coin
-    // before it be revealed: the epoch window ending at the epoch block E
-    // after it holds the commit until E + 32 is the epoch block, which the
-    // app picks from block E + 32 + 12 on.
-    const lastUsefulBlock = (block) => Math.ceil(block / EPOCH) * EPOCH + EPOCH + EPOCH_DEPTH - 1;
+    // Blocks past the tip when the first wait starts after which a wait for
+    // a later leaf to settle gives up: the step before it proves for tens of
+    // seconds while blocks keep coming, so a tip read before it is long gone.
+    const WAIT_BLOCKS = 32;
 
-    // A reveal or claim, again whenever the epoch rule says to wait. Each
-    // reason is logged. The wait is bounded in blocks: past the next epoch
-    // block and its depth, plus one epoch window, from the tip when the
-    // first wait starts: the step before it proves for tens of seconds while
-    // blocks keep coming, so a tip read before it is long gone. When no
-    // commitment followed the coin inside the window, a stranger commits
-    // again and the step waits for that commit's epoch; that is done at most
-    // STRANGER_COMMITS times, so the wait ends.
+    // A reveal or claim, again whenever the tree-state rule says to wait.
+    // Each reason is logged. When nobody has committed since the coin, a
+    // stranger commits and the step waits until that commit is settled; that
+    // is done at most STRANGER_COMMITS times, so the wait ends. Any other
+    // wait is bounded by WAIT_BLOCKS.
     const STRANGER_COMMITS = 3;
-    async function untilEpoch(step) {
-      let startTip = null;
+    async function untilSettled(step) {
       let deadline = null;
       let commits = 0;
       for (;;) {
-        assert.ok(node.alive(), "geth stopped while waiting for the epoch rule");
+        assert.ok(node.alive(), "geth stopped while waiting for the tree-state rule");
         try {
           return await step();
         } catch (err) {
           if (!(err instanceof WaitError)) throw err;
-          if (startTip === null) {
-            startTip = await blockNumber();
-            deadline = lastUsefulBlock(startTip + 1);
-          }
           const tip = await blockNumber();
-          console.log(`epoch rule holds: ${err.message} (tip ${tip}, gives up after block ${deadline})`);
-          if (err.message.startsWith("no commitment followed the coin")) {
+          deadline ??= tip + WAIT_BLOCKS;
+          console.log(`tree-state rule holds: ${err.message} (tip ${tip}, gives up after block ${deadline})`);
+          if (err.alone) {
             if (commits === STRANGER_COMMITS) {
-              throw new Error(`the epoch rule never let the coin be revealed after ${commits} more stranger commits: ${err.message}`);
+              throw new Error(`the tree-state rule never let the coin be revealed after ${commits} more stranger commits: ${err.message}`);
             }
             commits += 1;
             const block = await strangerCommit();
-            console.log(`a stranger committed in block ${block}; waiting for its epoch block`);
-            deadline = lastUsefulBlock(block);
-            await waitEpochAfter(block);
+            console.log(`a stranger committed in block ${block}; waiting until it is settled`);
+            deadline = block + WAIT_BLOCKS;
+            await waitSettledAfter(block);
           } else if (tip > deadline) {
-            throw new Error(`the epoch rule never let the coin be revealed by block ${deadline}: ${err.message}`);
+            throw new Error(`the tree-state rule never let the coin be revealed by block ${deadline}: ${err.message}`);
           } else {
             await sleep(5000);
           }
@@ -334,8 +325,8 @@ if (!GETH) {
       const marker = toHex(ghost.commit({ chainId: NETWORK_ID, amount: GHOST, seed: new Uint8Array(32), key }).marker);
       assert.ok(!tree.markers.includes(marker));
 
-      // A leaf after ours, then an epoch block that holds both.
-      await waitEpochAfter(await strangerCommit());
+      // A leaf after ours, then a settled block that holds both.
+      await waitSettledAfter(await strangerCommit());
 
       // --- Summon: 0.25 GHOST to a fresh address ---
       const recipient = toHex(randomBytes(20));
@@ -343,7 +334,7 @@ if (!GETH) {
       let s = await flow.summonOpen(key);
       assert.equal(s.status, "unclaimed");
       assert.equal(s.current.amount, GHOST);
-      const reveal = await untilEpoch(() => flow.summonReveal({ amount: "0.25", recipient }));
+      const reveal = await untilSettled(() => flow.summonReveal({ amount: "0.25", recipient }));
       const left = GHOST - GHOST / 4n - reveal.fee;
 
       const revealReceipt = await rpc("eth_getTransactionReceipt", [reveal.txHash]);
@@ -364,12 +355,12 @@ if (!GETH) {
       assert.equal(s.current.number, 1n);
       assert.equal(s.current.amount, left, "the remainder is the coin less what went out and the fee");
 
-      await waitEpochAfter(await strangerCommit());
+      await waitSettledAfter(await strangerCommit());
 
       // --- Claim: the remainder to a new key ---
       const newKey = await flow.claimStart();
       const claimPositions = flow.claimSaved();
-      const claimed = await untilEpoch(() => flow.claimCheck(answersFor(newKey, claimPositions)));
+      const claimed = await untilSettled(() => flow.claimCheck(answersFor(newKey, claimPositions)));
       assert.equal(claimed.ok, true);
       assert.ok(claimed.amount > 0n && claimed.amount < left, "the claim pays its fee from the remainder");
       const claimReceipt = await rpc("eth_getTransactionReceipt", [claimed.txHash]);

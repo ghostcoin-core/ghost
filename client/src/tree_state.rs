@@ -1,17 +1,24 @@
 //! Choosing the tree state a reveal proves against (spec 02, section 8).
 //!
-//! The wallet proves against the epoch root: the root of the tree of its type
-//! in the header of the most recent canonical block whose height `h` satisfies
+//! By default the wallet proves against the newest root of the tree of its
+//! type in a canonical header whose height `h` satisfies
 //!
 //! ```text
-//! h mod 32 = 0   and   h <= tip - 12   and   h > h_leaf
+//! h <= tip - SETTLE_DEPTH   and   h > h_leaf
 //! ```
 //!
 //! and whose root is not byte-equal to the root of block `h_leaf`, the block
 //! that added the wallet's leaf. A later header carries that same root
 //! whenever no leaf of the type was added in between, so the value test is
-//! needed as well as the height test. If no such block exists yet, the wallet
-//! waits.
+//! needed as well as the height test. A reveal is possible as soon as such a
+//! header exists: there is no forced wait. If none exists yet (nobody added a
+//! leaf of the type since the wallet's block, or that block is not yet
+//! settled), the wallet waits rather than prove against its own block's
+//! root, which would tie the reveal to its commit.
+//!
+//! How much cover a root gives is the number of leaves under it; the holder
+//! may wait for more before revealing. That choice is the holder's, not this
+//! rule's.
 //!
 //! The caller supplies the candidate canonical headers; this module fetches
 //! nothing. The one exception, the final root of a full tree once the next
@@ -19,10 +26,9 @@
 
 use core::fmt;
 
-/// Every epoch root is at a height that is a multiple of this.
-pub const EPOCH_BLOCKS: u64 = 32;
-/// An epoch root is at least this many blocks below the tip.
-pub const EPOCH_DEPTH: u64 = 12;
+/// A root the wallet proves against is at least this many blocks below the
+/// tip, so that a short reorganisation of the newest blocks does not drop it.
+pub const SETTLE_DEPTH: u64 = 2;
 
 /// The root of the tree of the reveal's type in one canonical header.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -36,12 +42,13 @@ pub struct HeaderRoot {
 /// The tree state to prove against.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TreeStateChoice {
-    /// The epoch root.
-    Epoch(HeaderRoot),
+    /// The newest settled root that holds a leaf added after the wallet's
+    /// block.
+    Settled(HeaderRoot),
     /// The final root of the full tree that holds the leaf (spec 02,
     /// section 8, "A leaf of a full tree"), given by the caller.
     FinalRoot(HeaderRoot),
-    /// No eligible root yet: wait for the next epoch.
+    /// No eligible root yet: wait until a later leaf is added and settled.
     Wait,
 }
 
@@ -58,7 +65,7 @@ impl fmt::Debug for HeaderRoot {
 impl fmt::Debug for TreeStateChoice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Epoch(header) => write!(f, "Epoch({header:?})"),
+            Self::Settled(header) => write!(f, "Settled({header:?})"),
             Self::FinalRoot(header) => write!(f, "FinalRoot({header:?})"),
             Self::Wait => f.write_str("Wait"),
         }
@@ -72,14 +79,14 @@ impl fmt::Debug for TreeStateChoice {
 /// of the tree that holds the leaf, and the caller passes it only once that
 /// tree is full and the next tree has started; it is used when it is at least
 /// as high as the leaf's block and buried by the same depth. The root of
-/// `leaf_block` is never chosen as an epoch root, whatever height carries it.
+/// `leaf_block` is never chosen as a settled root, whatever height carries it.
 pub fn choose_tree_state(
     candidates: &[HeaderRoot],
     tip: u64,
     leaf_block: &HeaderRoot,
     full_tree_final_root: Option<&HeaderRoot>,
 ) -> TreeStateChoice {
-    let Some(deepest) = tip.checked_sub(EPOCH_DEPTH) else {
+    let Some(deepest) = tip.checked_sub(SETTLE_DEPTH) else {
         return TreeStateChoice::Wait;
     };
     if let Some(final_root) = full_tree_final_root {
@@ -91,11 +98,10 @@ pub fn choose_tree_state(
     candidates
         .iter()
         .filter(|header| {
-            header.height % EPOCH_BLOCKS == 0
-                && header.height <= deepest
+            header.height <= deepest
                 && header.height > leaf_block.height
                 && header.root != leaf_block.root
         })
         .max_by_key(|header| header.height)
-        .map_or(TreeStateChoice::Wait, |header| TreeStateChoice::Epoch(*header))
+        .map_or(TreeStateChoice::Wait, |header| TreeStateChoice::Settled(*header))
 }

@@ -70,14 +70,15 @@ test("a Summon reveal on a node that mines every 20 ms, refuses, changes its fee
   });
   try {
     // A block every 20 ms throughout, a stranger's commit in every 8th, so
-    // every epoch window holds a commitment after the coin and a proof made
-    // later can still be made.
+    // a settled block soon holds a commitment after the coin and a proof
+    // made later can still be made.
     node.foreignCommits(2);
     node.startMining(20, { refuse: false, commitEvery: 8 });
     const key = await flow.vanishStart("1");
     const vanished = await flow.vanishCheck(flow.vanishSaved().map((p) => key.split(" ")[p - 1]));
     assert.equal(vanished.ok, true);
-    // Until an epoch block 12 deep holds the coin and a later commitment.
+    // Until well past a settled block that holds the coin and a later
+    // commitment.
     while (node.tip() < vanished.block + 3 * 32) await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal((await flow.summonOpen(key)).status, "unclaimed");
 

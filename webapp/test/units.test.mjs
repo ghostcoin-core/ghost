@@ -1,11 +1,10 @@
 // The flow's pure parts: the fee of spec 07 against its worked examples, the
-// base client's base fee, the epoch height, amounts and the save check.
+// base client's base fee, the settled height, amounts and the save check.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  epochHeight,
   feeForNextBlock,
   feeForPrice,
   formatGhost,
@@ -13,6 +12,8 @@ import {
   nextBaseFee,
   parseAddress,
   parseGhost,
+  SETTLE_DEPTH,
+  settledHeight,
   windowPrice,
 } from "../src/chain.mjs";
 import { keyStatus, pickGroups, wrongGroups } from "../src/flow.mjs";
@@ -79,13 +80,13 @@ test("the fee uses the window's first block", async () => {
   assert.equal(fee.window, 2);
 });
 
-test("the epoch height is a multiple of 32 at least 12 below the tip", () => {
-  assert.equal(epochHeight(11), null);
-  assert.equal(epochHeight(12), 0);
-  assert.equal(epochHeight(43), 0);
-  assert.equal(epochHeight(44), 32);
-  assert.equal(epochHeight(75), 32);
-  assert.equal(epochHeight(76), 64);
+test("the settled height is 2 below the tip, at any height", () => {
+  assert.equal(SETTLE_DEPTH, 2);
+  assert.equal(settledHeight(1), null);
+  assert.equal(settledHeight(2), 0);
+  assert.equal(settledHeight(43), 41);
+  assert.equal(settledHeight(44), 42);
+  assert.equal(settledHeight(77), 75);
 });
 
 test("GHOST amounts and addresses", () => {
