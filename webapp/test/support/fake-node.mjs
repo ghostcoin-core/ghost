@@ -3,6 +3,17 @@
 // the coin tree's leaves and notes, the spent coin markers and receipts, and
 // records every request it is sent.
 //
+// Every block carries real receipts, one per transaction it holds, in the
+// node's log layout (as the client library reads it, after ghost-node
+// docs/private-transactions.md, "Receipts"): a commit's log has the coin
+// tree account as address, the topic K("ghost/commit-receipt/v1") and the
+// tree index, position, leaf, value and note, then the salt of a version 2
+// commit; a reveal's log has K("ghost/reveal-receipt/v1") and the marker as
+// topics and the tree index, position, remainder, note, recipient and amount
+// out. The header's receiptsRoot is computed from their consensus encoding
+// (written here apart from the app's) by the module's ghost_receipts_root,
+// and eth_getBlockReceipts serves them by block hash, as geth does.
+//
 // It follows the specifications of this repository: whole pages of 4,096
 // leaves with their notes and the page-root list (spec 05, section 8), the
 // header roots of spec 05, section 4, the header encoding and hash of spec 05,
@@ -114,12 +125,57 @@ function prefixed(payload, short) {
   return concat([Uint8Array.of(short + 55 + size.length), size, payload]);
 }
 
+const rlpBytes = (bytes) => (bytes.length === 1 && bytes[0] < 0x80 ? bytes : prefixed(bytes, 0x80));
+const rlpItems = (items) => prefixed(concat(items), 0xc0);
+
 function headerRlp(json) {
-  const items = HEADER_ORDER.map((name) => {
-    const bytes = HEADER_INTS.has(name) ? bigEndian(BigInt(json[name])) : fromHex(json[name]);
-    return bytes.length === 1 && bytes[0] < 0x80 ? bytes : prefixed(bytes, 0x80);
-  });
-  return prefixed(concat(items), 0xc0);
+  const items = HEADER_ORDER.map((name) => rlpBytes(HEADER_INTS.has(name) ? bigEndian(BigInt(json[name])) : fromHex(json[name])));
+  return rlpItems(items);
+}
+
+// The coin tree account, the address of every commit and reveal log.
+export const COIN_TREE_ACCOUNT = "0x67686f7374000000000000000000000000000001";
+// Gas each transaction of a block adds to the receipts' cumulative gas.
+const RECEIPT_GAS = 100_000n;
+
+const u32 = (n) => {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setUint32(0, n);
+  return out;
+};
+
+// A receipt's consensus encoding: the type byte (none for type 0), then the
+// RLP of [status, cumulativeGasUsed, logsBloom, logs].
+function receiptRlp({ type, status, cumulativeGasUsed, logsBloom, logs }) {
+  const body = rlpItems([
+    rlpBytes(status ? Uint8Array.of(1) : new Uint8Array(0)),
+    rlpBytes(bigEndian(cumulativeGasUsed)),
+    rlpBytes(logsBloom),
+    rlpItems(logs.map((log) => rlpItems([rlpBytes(log.address), rlpItems(log.topics.map(rlpBytes)), rlpBytes(log.data)]))),
+  ]);
+  return type === 0 ? body : concat([Uint8Array.of(type), body]);
+}
+
+// A receipt as geth's JSON-RPC returns it.
+function receiptJson(receipt, { index, blockNumber, blockHash }) {
+  const where = { blockNumber: q(blockNumber), blockHash: toHex(blockHash), transactionHash: receipt.hash, transactionIndex: q(index) };
+  return {
+    ...where,
+    type: q(receipt.type),
+    status: receipt.status ? "0x1" : "0x0",
+    cumulativeGasUsed: q(receipt.cumulativeGasUsed),
+    gasUsed: q(RECEIPT_GAS),
+    logsBloom: toHex(receipt.logsBloom),
+    contractAddress: null,
+    logs: receipt.logs.map((log, i) => ({
+      ...where,
+      address: toHex(log.address),
+      topics: log.topics.map(toHex),
+      data: toHex(log.data),
+      logIndex: q(i),
+      removed: false,
+    })),
+  };
 }
 
 // The node's own fee of spec 07, section 4, written apart from the app's.
@@ -174,7 +230,22 @@ export async function startFakeNode({
   // headers carry that tree's root but keep their real hash; `salt(position,
   // salt)` replaces the salt it serves beside each leaf (bytes, a hex text
   // as it is sent, or null to leave it out).
-  const dishonest = { note: null, withhold: null, forge: null, salt: null };
+  // `pageRoots(roots)` replaces the page-root list it serves, and
+  // `page(p, honest, honestPage)` the coin page `p` (`honestPage(q)` is the
+  // honest page q), to drop or reorder pages; `markers(list)` replaces the
+  // spent markers (hex) it serves as of an anchor, before they are cut into
+  // pages; `receipts(number, list)` replaces the receipts (JSON) it serves
+  // for block `number`, null for none.
+  const dishonest = {
+    note: null,
+    withhold: null,
+    forge: null,
+    salt: null,
+    pageRoots: null,
+    page: null,
+    markers: null,
+    receipts: null,
+  };
   const withheld = [];
   // With `errorAfterAccountTx` set, an account transaction is taken and
   // answered with an error, as ghost-node answers one; with
@@ -213,16 +284,38 @@ export async function startFakeNode({
   let nonce = 0;
   // The base fee of the blocks mined from now on.
   let baseFee = GWEI;
+  // The receipts of the block being mined, one per transaction it holds, in
+  // order: { hash, type, logs }.
+  const blockReceipts = [];
+  const tagTopic = (tag) => ghost.keccak256(concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]));
+  const COMMIT_TOPIC = tagTopic("ghost/commit-receipt/v1");
+  const REVEAL_TOPIC = tagTopic("ghost/reveal-receipt/v1");
+  const coinTreeAccount = fromHex(COIN_TREE_ACCOUNT, 20);
+
+  // A commit's log: tree index, position, leaf, value and note, then the
+  // salt of a version 2 commit (228 or 244 bytes).
+  const commitLog = (position, commitment, value, note, salt) => ({
+    address: coinTreeAccount,
+    topics: [COMMIT_TOPIC],
+    data: concat([u32(0), u32(position), commitment, word(value), note, ...(salt ? [salt] : [])]),
+  });
+  // A reveal's log: the marker as second topic; tree index, position,
+  // remainder, note, recipient and amount out (248 bytes).
+  const revealLog = (position, reveal) => ({
+    address: coinTreeAccount,
+    topics: [REVEAL_TOPIC, reveal.marker],
+    data: concat([u32(0), u32(position), reveal.remainder, reveal.note, reveal.recipient, word(reveal.out)]),
+  });
 
   // A block's header fields, with the names of the base client's JSON-RPC.
-  function headerFields(number, parentHash, coinTreeRoot) {
+  function headerFields(number, parentHash, coinTreeRoot, receiptsRoot) {
     return {
       parentHash: toHex(parentHash),
       sha3Uncles: EMPTY_LIST_HASH,
       miner: toHex(new Uint8Array(20)),
       stateRoot: toHex(fork === 0 ? sha256("state", String(number)) : sha256("state", String(number), `fork ${fork}`)),
       transactionsRoot: toHex(sha256("transactions", String(number))),
-      receiptsRoot: toHex(sha256("receipts", String(number))),
+      receiptsRoot: toHex(receiptsRoot),
       logsBloom: toHex(new Uint8Array(256)),
       difficulty: q(number === 0 ? 1n : (difficultyOverride ?? scheduled)),
       number: q(number),
@@ -265,16 +358,25 @@ export async function startFakeNode({
     const leafCount = leaves.length;
     const coinTreeRoot = ghost.treeRoots(concat(leaves.map((l) => l.commitment))).root;
     const parentHash = number === 0 ? new Uint8Array(32) : blocks[number - 1].hash;
-    const json = headerFields(number, parentHash, coinTreeRoot);
+    const txReceipts = blockReceipts.splice(0).map((r, i) => ({
+      ...r,
+      status: true,
+      cumulativeGasUsed: RECEIPT_GAS * BigInt(i + 1),
+      logsBloom: new Uint8Array(256),
+    }));
+    const receiptsRoot = ghost.receiptsRoot(txReceipts.map(receiptRlp));
+    const json = headerFields(number, parentHash, coinTreeRoot, receiptsRoot);
+    const hash = ghost.keccak256(headerRlp(json));
     blocks.push({
       number,
       parentHash,
       json,
-      hash: ghost.keccak256(headerRlp(json)),
+      hash,
       baseFee,
       coinTreeRoot,
       leafCount,
       spentCount: spent.length,
+      receipts: txReceipts.map((r, index) => receiptJson(r, { index, blockNumber: number, blockHash: hash })),
     });
     for (const hash of held.keys()) dropped.push(hash);
     held.clear();
@@ -328,7 +430,10 @@ export async function startFakeNode({
     const entry = {
       hash,
       marker: null,
-      apply: (n) => leaves.push({ commitment, note, salt, block: n }),
+      apply: (n) => {
+        leaves.push({ commitment, note, salt, block: n });
+        blockReceipts.push({ hash, type: txHash ? 0x52 : 0x02, logs: [commitLog(leaves.length - 1, commitment, value, note, salt)] });
+      },
       after: (n) =>
         receipts.set(hash, {
           transactionHash: hash,
@@ -345,10 +450,12 @@ export async function startFakeNode({
 
   // A commit by a stranger: a random fingerprint and salt and a note no key
   // opens, of version 2 as the app's are.
-  function foreignCommit(value = 10n ** 18n) {
+  // With `pooled`, it waits in the pool for the next block.
+  function foreignCommit(value = 10n ** 18n, { pooled = false } = {}) {
     nonce += 1;
     return appendCommit(sha256("stranger", String(nonce)), value, concat([sha256("n1", String(nonce)), new Uint8Array(NOTE_BYTES - 32)]), {
       salt: sha256("stranger salt", String(nonce)).slice(0, SALT_BYTES),
+      pooled,
     });
   }
 
@@ -461,6 +568,7 @@ export async function startFakeNode({
         leaves.push({ commitment: reveal.remainder, note: reveal.note, salt: null, block: n });
         spent.push({ marker: reveal.marker, block: n });
         position = leaves.length - 1;
+        blockReceipts.push({ hash, type: 0x50, logs: [revealLog(position, reveal)] });
       },
       after: (number) => {
         const recipient = toHex(reveal.recipient);
@@ -512,7 +620,16 @@ export async function startFakeNode({
       const [kind, block] = treeArgs(params, 3, 2);
       if (MARKER_KINDS.has(kind)) throw invalid(0, "no page roots for a marker kind");
       if (kind === "data") return [];
-      return ghost.treeRoots(servedLeaves(block)).pageRoots.map(toHex);
+      const roots = ghost.treeRoots(servedLeaves(block)).pageRoots.map(toHex);
+      return dishonest.pageRoots ? dishonest.pageRoots(roots) : roots;
+    },
+    // The receipts of the block of that hash, in transaction order, as
+    // geth's eth_getBlockReceipts returns them; null for a block it does not
+    // know.
+    eth_getBlockReceipts: ([hash]) => {
+      const block = blocks.find((b) => toHex(b.hash) === String(hash).toLowerCase());
+      if (!block) return null;
+      return dishonest.receipts ? dishonest.receipts(block.number, structuredClone(block.receipts)) : block.receipts;
     },
     // A coin or data page as `{ kind, treeIndex, page, filled, entries }`; a
     // marker page as `{ count, markers }`. An entry is `{ leaf, note }`, with
@@ -529,20 +646,30 @@ export async function startFakeNode({
       if (page >= MAX_PAGES) throw new Error("page number beyond the tree");
       const start = page * PAGE;
       if (kind === "coin" || kind === "data") {
-        const part = kind === "coin" ? served(block).slice(start, start + PAGE) : [];
-        const note = (l, i) => (dishonest.note ? dishonest.note(start + i, l.note) : l.note);
-        const entries = part.map((l, i) => {
-          const entry = { leaf: toHex(l.commitment), note: toHex(note(l, i)) };
-          const salt = dishonest.salt ? dishonest.salt(start + i, l.salt) : l.salt;
-          if (salt) entry.salt = typeof salt === "string" ? salt : toHex(salt);
-          return entry;
-        });
-        return { kind, treeIndex: "0x0", page: q(page), filled: q(entries.length), entries };
+        const honest = treePage(kind, block, page);
+        return dishonest.page && kind === "coin" ? dishonest.page(page, honest, (p) => treePage(kind, block, p)) : honest;
       }
-      const part = kind === "coin-markers" ? spent.slice(start, Math.min(start + PAGE, block.spentCount)) : [];
-      return { count: q(part.length), markers: part.map((s) => toHex(s.marker)) };
+      let listed = kind === "coin-markers" ? spent.slice(0, block.spentCount).map((s) => toHex(s.marker)) : [];
+      if (dishonest.markers && kind === "coin-markers") listed = dishonest.markers(listed);
+      const part = listed.slice(start, start + PAGE);
+      return { count: q(part.length), markers: part };
     },
   };
+
+  // Coin or data page `page` as of `block`, with the dishonest notes and
+  // salts, if any.
+  function treePage(kind, block, page) {
+    const start = page * PAGE;
+    const part = kind === "coin" ? served(block).slice(start, start + PAGE) : [];
+    const note = (l, i) => (dishonest.note ? dishonest.note(start + i, l.note) : l.note);
+    const entries = part.map((l, i) => {
+      const entry = { leaf: toHex(l.commitment), note: toHex(note(l, i)) };
+      const salt = dishonest.salt ? dishonest.salt(start + i, l.salt) : l.salt;
+      if (salt) entry.salt = typeof salt === "string" ? salt : toHex(salt);
+      return entry;
+    });
+    return { kind, treeIndex: "0x0", page: q(page), filled: q(entries.length), entries };
+  }
 
   // The checks the node makes on a tree page request, in its words: the
   // number of parameters, the kind, the tree index (only 0 exists) and the
@@ -693,6 +820,11 @@ export async function startFakeNode({
     },
     foreignCommits(count) {
       for (let i = 0; i < count; i += 1) foreignCommit();
+    },
+    // `count` strangers' commits in one new block, one receipt each.
+    foreignCommitsInOneBlock(count) {
+      for (let i = 0; i < count; i += 1) foreignCommit(10n ** 18n, { pooled: true });
+      return mine();
     },
     fee: (height) => nodeFee(blocks, height),
     // A scripted sender of plain commits from one account, for the stand-in's

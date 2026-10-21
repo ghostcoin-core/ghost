@@ -7,9 +7,14 @@
 // - the chosen node endpoint, by JSON-RPC: headers, which the worker's header
 //   chain adopts only once their difficulty and proof-of-work seal check,
 //   from the start this build pins for the network; the coin tree in whole
-//   pages, the spent markers in whole pages, receipts, and the reveal
-//   transaction. No request names a key, a commitment, a position or a
-//   marker; the reveal itself carries only public fields;
+//   pages, the spent markers in whole pages, the block receipts of every
+//   block of the page's header chain (eth_getBlockReceipts by block hash),
+//   transaction receipts, and the reveal transaction. No request names a
+//   key, a commitment, a position or a marker; the reveal itself carries
+//   only public fields. Every leaf, note, salt and spent marker a scan reads
+//   is checked against the block receipts, and those against the
+//   receiptsRoot of the headers the page's chain holds, before the key is
+//   tried on a note;
 // - the background worker (prover.mjs), which holds the WebAssembly module
 //   and receives a key's words (or the digits of a key issued before the
 //   words) or the words of the wallet's seed for the length of one request.
@@ -44,7 +49,7 @@ import {
   parseGhost,
   settledHeight,
 } from "./chain.mjs";
-import { NETWORKS, networkOf, readHeader } from "./header.mjs";
+import { NETWORKS, networkOf, readHeader, rlpList, rlpString } from "./header.mjs";
 import { DEFAULT_ENDPOINT, SERVER_ERROR, createRpc } from "./rpc.mjs";
 
 // The coin commit entry address of the internal network ("ghost" in ASCII,
@@ -147,6 +152,56 @@ function powFailed(detail) {
   return new ChainRefused(`${POW_FAILED} (${detail}), ${NO_CONFIRMATIONS}`);
 }
 
+// What the page says when the endpoint's coin tree or spent markers do not
+// match the block receipts of the page's header chain: a leaf, note, salt or
+// marker the receipts do not show, a missing, repeated or reordered page, a
+// receipts root that differs, a block whose receipts cannot be fetched, or a
+// start the page cannot place in the tree. Uncertain means refused: the scan
+// stops before the key is tried on any note, so nothing the endpoint sees
+// afterwards depends on the key.
+export const RECEIPTS_FAILED = "the endpoint's coin tree or spent markers do not match the block receipts";
+const KEY_UNUSED = "so the app takes nothing from it and uses the key for nothing";
+
+function receiptsRefused(detail) {
+  return new ChainRefused(`${RECEIPTS_FAILED} (${detail}), ${KEY_UNUSED}`);
+}
+
+// The big-endian bytes of an integer, with no leading zero byte.
+function intBytes(value) {
+  const out = [];
+  for (let v = value; v > 0n; v >>= 8n) out.unshift(Number(v & 0xffn));
+  return Uint8Array.from(out);
+}
+
+// A receipt as eth_getBlockReceipts returns it, in its consensus encoding
+// (the one its block's receiptsRoot covers): the type byte for a typed
+// receipt, then the RLP of [status, cumulativeGasUsed, logsBloom, logs],
+// each log [address, topics, data]. Anything not in that shape is refused;
+// whether the bytes are the block's is the receipts root's to say.
+export function receiptBytes(receipt) {
+  if (!receipt || typeof receipt !== "object") throw new Error("a receipt is not an object");
+  const type = quantity(receipt.type);
+  if (type > 0x7fn) throw new Error("a receipt's type is out of range");
+  const status = quantity(receipt.status);
+  if (status > 1n) throw new Error("a receipt's status is not 0 or 1");
+  if (!Array.isArray(receipt.logs)) throw new Error("a receipt's logs are not a list");
+  const logs = receipt.logs.map((log) => {
+    if (!log || !Array.isArray(log.topics)) throw new Error("a log's topics are not a list");
+    return rlpList([
+      rlpString(fromHex(log.address, 20)),
+      rlpList(log.topics.map((topic) => rlpString(fromHex(topic, 32)))),
+      rlpString(fromHex(log.data)),
+    ]);
+  });
+  const body = rlpList([
+    rlpString(status === 1n ? Uint8Array.of(1) : new Uint8Array(0)),
+    rlpString(intBytes(quantity(receipt.cumulativeGasUsed))),
+    rlpString(fromHex(receipt.logsBloom, 256)),
+    rlpList(logs),
+  ]);
+  return type === 0n ? body : concat([Uint8Array.of(Number(type)), body]);
+}
+
 // That refusal as it arrives over JSON-RPC: code -32000 and the node's
 // words. It is told by its shape on the wire, not by the class of the error
 // object, so a second copy of rpc.mjs (a bundle, a test) still matches.
@@ -245,9 +300,12 @@ function sameCoin(a, b) {
 // `salt` is the 16-byte salt a version 2 commit published beside its leaf;
 // the node leaves it out for a version 1 commit and for a reveal's
 // remainder. Every page but the last is full and the last holds 1 to 4,096
-// leaves; the page roots and leaves are checked against the anchor's coin
-// root. Anything else, a salt that is not 16 bytes of hex among it, is
-// refused, never guessed at. `salts` holds each leaf's salt or null.
+// leaves, and each page is the one asked for (its kind, tree index and page
+// number), so no page is missing, repeated or out of order; the page roots
+// and leaves are checked against the anchor's coin root. Anything else, a
+// salt that is not 16 bytes of hex among it, is refused, never guessed at.
+// `salts` holds each leaf's salt or null. The notes and salts are checked
+// against the block receipts by the scan (scanKey), not here.
 export async function fetchTree(rpc, prover, anchor) {
   const anchorHash = toHex(anchor.hash);
   const list = await rpc.call("ghost_getPageRoots", ["coin", "0x0", anchorHash]);
@@ -263,6 +321,9 @@ export async function fetchTree(rpc, prover, anchor) {
     if (!whole || !Array.isArray(page.entries) || page.entries.length !== filled) {
       throw new Error(`page ${p} from the endpoint is not a whole page`);
     }
+    if (page.kind !== "coin" || !sameQuantity(page.treeIndex, 0) || !sameQuantity(page.page, p)) {
+      throw new Error(`page ${p} from the endpoint is not the page asked for: a page is missing, repeated or out of order`);
+    }
     for (const entry of page.entries) {
       const leaf = fromHex(entry?.leaf, 32);
       leaves.push(leaf);
@@ -273,6 +334,11 @@ export async function fetchTree(rpc, prover, anchor) {
   const leafBytes = concat(leaves);
   await prover.request("treeCheck", { pageRoots: concat(pageRoots), leaves: leafBytes, root: anchor.coinTreeRoot });
   return { count: leaves.length, leaves: leafBytes, records: concat(records), salts };
+}
+
+// Whether `text` is a hex quantity of value `n`.
+function sameQuantity(text, n) {
+  return typeof text === "string" && /^0x[0-9a-fA-F]+$/.test(text) && BigInt(text) === BigInt(n);
 }
 
 // The `salt` of an entry of page `p`: 16 bytes of hex, or the page is
@@ -391,8 +457,9 @@ export function createFlow({
   // The open wallet's seed words, never in `state`.
   let walletWords = null;
   // The page's header chain, held in the worker: the network it is of, the
-  // endpoint it was last read from, its start height, and every header the
-  // worker adopted, by hash. One per page session; another network starts
+  // endpoint it was last read from, its start height, every header the
+  // worker adopted, by hash, and the hashes of the blocks whose receipts the
+  // worker checked and keeps. One per page session; another network starts
   // it again.
   let headerChain = null;
   const state = {
@@ -500,6 +567,7 @@ export function createFlow({
       endpoint: rpc.url,
       startHeight: height,
       known: new Map([[startHash, { ...header, rlpHex: toHex(rlp) }]]),
+      receipts: new Set(),
     };
     return headerChain;
   }
@@ -616,11 +684,12 @@ export function createFlow({
       return headers[n - low];
     };
     const genesis = { hash: fromHex(hc.network.genesisHash, 32) };
-    return { chainId, settled, low, headers, at, tip, genesis };
+    return { hc, chainId, settled, low, headers, at, tip, genesis };
   }
 
-  // Every spent coin marker as of `anchor`, in whole marker pages. They are
-  // hints, not checked against a header (spec 05, section 8).
+  // Every spent coin marker as of `anchor`, in whole marker pages. No header
+  // root covers them (spec 05, section 8), so the scan checks them against
+  // the reveal receipts of the blocks up to `anchor` before they are used.
   async function fetchSpent(anchor) {
     const markers = [];
     for (let p = 0; ; p += 1) {
@@ -632,11 +701,92 @@ export function createFlow({
     }
   }
 
+  // Checks a scan's tree and markers against the block receipts (spec 05,
+  // section 8, item 5 and "Marker status"). The blocks are those of the
+  // page's header chain from its start (genesis, or the pinned header) to
+  // the tip, each the parent of the next. The receipts of each block the
+  // worker does not hold yet are asked for by its hash, one block after
+  // another in chain order, whatever the key; a block's receipts are fixed by
+  // its header's receiptsRoot, so each block is asked for once per page
+  // session and a later scan asks only for the blocks added since. The
+  // worker checks each block's receipts against the receiptsRoot of the
+  // header the page's chain holds for that hash, then the leaves, notes and
+  // salts from the start's leaf count (placed by its coin root among the
+  // prefix roots of the leaves, 0 at genesis) to the tip against the leaves
+  // and notes the receipts appended, and the markers against the reveal
+  // receipts of the blocks up to the block they were read at. Any mismatch
+  // is refused.
+  async function checkReceipts(chain, tree, spent, countOf, markerAnchor) {
+    const { hc, tip } = chain;
+    progress("checking the coin tree against the block receipts");
+    const blocks = await chainRange(hc.startHeight, tip.number, hc);
+    if (blocks.length === 0 || blocks.some((block) => !block)) {
+      throw receiptsRefused("the page's chain does not hold every block from its start to the tip");
+    }
+    for (let i = 1; i < blocks.length; i += 1) {
+      if (toHex(blocks[i].parentHash) !== toHex(blocks[i - 1].hash)) {
+        throw receiptsRefused(`block ${hc.startHeight + i} of the page's chain does not follow the one before`);
+      }
+    }
+    if (toHex(blocks.at(-1).hash) !== toHex(tip.hash)) throw receiptsRefused("the page's chain does not end at the tip read");
+    const start = countOf.get(toHex(blocks[0].coinTreeRoot));
+    if (start === undefined) {
+      throw receiptsRefused(`the start of the page's chain, block ${hc.startHeight}, cannot be placed in the endpoint's coin tree`);
+    }
+    const missing = blocks.filter((block) => !hc.receipts.has(toHex(block.hash)));
+    for (let i = 0; i < missing.length; i += CHAIN_BATCH) {
+      const part = missing.slice(i, i + CHAIN_BATCH);
+      const fetched = [];
+      for (const block of part) {
+        let list;
+        try {
+          list = await rpc.call("eth_getBlockReceipts", [toHex(block.hash)]);
+        } catch (err) {
+          throw receiptsRefused(`the endpoint did not return the receipts of block ${block.number}: ${err.message}`);
+        }
+        if (!Array.isArray(list)) throw receiptsRefused(`the endpoint did not return the receipts of block ${block.number}`);
+        let receipts;
+        try {
+          receipts = list.map(receiptBytes);
+        } catch (err) {
+          throw receiptsRefused(`a receipt of block ${block.number} is malformed: ${err.message}`);
+        }
+        fetched.push({ header: fromHex(block.rlpHex), receipts });
+      }
+      try {
+        await prover.request("receiptsAdd", { blocks: fetched });
+      } catch (err) {
+        throw receiptsRefused(err.message);
+      }
+      for (const block of part) hc.receipts.add(toHex(block.hash));
+    }
+    const markerBlocks = markerAnchor.number - hc.startHeight + 1;
+    if (markerBlocks < 1) throw receiptsRefused(`the markers were read at block ${markerAnchor.number}, below the chain's start`);
+    try {
+      await prover.request("receiptsCheck", {
+        hashes: blocks.map((block) => block.hash),
+        fromGenesis: hc.startHeight === 0,
+        start,
+        records: tree.records.slice(start * (32 + NOTE_BYTES)),
+        salts: tree.salts.slice(start),
+        markerBlocks,
+        markers: spent,
+      });
+    } catch (err) {
+      throw receiptsRefused(err.message);
+    }
+  }
+
   // Everything the endpoint is asked for a key is asked before the key is
-  // tried on a note: the headers, the tree and the markers, all fixed by the
-  // tip alone. Notes are not checked against the tree (an endpoint can alter
-  // them), so no request may follow from what restore found; on every path,
-  // found or not, the requests are the same.
+  // tried on a note: the headers, the tree, the markers and the block
+  // receipts, all fixed by the tip and by what the page already holds, never
+  // by the key. The page roots and leaves are checked against the tip's coin
+  // root; no header root covers the notes, salts and markers, so the leaves,
+  // notes and salts from the chain's start on, and the markers, are checked
+  // against the block receipts (checkReceipts). An endpoint that altered,
+  // dropped, reordered, hid or invented any of them is refused there, before
+  // restore, so nothing it sees depends on the key; on every path after
+  // restore, found or not, the requests are the same too.
   //
   // The markers are those as of the tip (CONFIRMATIONS blocks, the tip's own
   // included), so a key shows claimed as soon as a block holds its coin's
@@ -653,7 +803,8 @@ export function createFlow({
     const chain = await readChain();
     progress("reading the coin tree");
     const tree = await fetchTree(rpc, prover, chain.tip);
-    const spent = await fetchSpent(chain.at(Math.max(0, chain.tip.number - (CONFIRMATIONS - 1))));
+    const markerAnchor = chain.at(Math.max(0, chain.tip.number - (CONFIRMATIONS - 1)));
+    const spent = await fetchSpent(markerAnchor);
     const fee = (await feeForNextBlock(chain.tip, async (n) => chain.at(n))).fee;
     const { roots: prefixRoots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
     const countOf = new Map(prefixRoots.map((root, count) => [toHex(root), count]));
@@ -663,6 +814,7 @@ export function createFlow({
       if (count === undefined) throw new Error(`the endpoint's tree does not match the header of block ${header.number}`);
       return count;
     });
+    await checkReceipts(chain, tree, spent, countOf, markerAnchor);
     const settledAt = chain.settled === null ? null : chain.settled - chain.low;
     const settledLeaves = settledAt === null ? tree.leaves : tree.leaves.slice(0, rootCounts[settledAt] * 32);
     progress("looking for the key's coins");

@@ -11,9 +11,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { concat, fromHex, toHex, toQuantity } from "../src/bytes.mjs";
-import { DEFAULT_COMMIT_ENTRY } from "../src/flow.mjs";
+import { DEFAULT_COMMIT_ENTRY, receiptBytes } from "../src/flow.mjs";
 import { loadModule } from "./support/env.mjs";
-import { COMMIT_DATA_ERROR, HEAD_MOVED_ERROR, startFakeNode } from "./support/fake-node.mjs";
+import { COIN_TREE_ACCOUNT, COMMIT_DATA_ERROR, HEAD_MOVED_ERROR, startFakeNode } from "./support/fake-node.mjs";
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const GHOST = 10n ** 18n;
@@ -203,6 +203,51 @@ test("the stand-in refuses the tree page requests the node refuses, in its words
     const last = await rpcCall(node, "ghost_getTreePage", ["coin", "0x0", "0xfffff", anchor]);
     assert.equal(last.result.filled, "0x0");
     assert.deepEqual(last.result.entries, []);
+  }));
+
+// The stand-in serves every block's receipts by block hash, as geth's
+// eth_getBlockReceipts does, in the node's log layout (as the client library
+// reads it), and each header's receiptsRoot is the root of those receipts.
+test("the stand-in serves each block's receipts by hash, in the node's log layout, under its header's receiptsRoot", () =>
+  withNode(async (node, wallet) => {
+    const ghost = await loadModule();
+    const topic = (tag) => toHex(ghost.keccak256(concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)])));
+    await send(wallet, { data: vector.data });
+    await send(wallet, { data: salted });
+    node.mine();
+    const [v1, v2] = node.leaves;
+    for (const block of node.blocks) {
+      const reply = await rpcCall(node, "eth_getBlockReceipts", [toHex(block.hash)]);
+      assert.ok(Array.isArray(reply.result));
+      assert.equal(reply.result.length, block === node.blocks[v1.block] || block === node.blocks[v2.block] ? 1 : 0);
+      assert.equal(toHex(ghost.receiptsRoot(reply.result.map(receiptBytes))), block.json.receiptsRoot, `block ${block.number}`);
+      for (const receipt of reply.result) {
+        assert.equal(receipt.blockHash, toHex(block.hash));
+        assert.equal(receipt.status, "0x1");
+      }
+    }
+    assert.equal(node.blocks[0].json.receiptsRoot, "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421", "genesis: the empty trie");
+    // A version 1 commit's log: 228 bytes, no salt; a version 2 commit's:
+    // 244 bytes, its salt last.
+    const logOf = async (leaf) => (await rpcCall(node, "eth_getBlockReceipts", [toHex(node.blocks[leaf.block].hash)])).result[0].logs;
+    for (const [leaf, position, bytes] of [
+      [v1, 0, 228],
+      [v2, 1, 244],
+    ]) {
+      const logs = await logOf(leaf);
+      assert.equal(logs.length, 1);
+      assert.equal(logs[0].address, COIN_TREE_ACCOUNT);
+      assert.deepEqual(logs[0].topics, [topic("ghost/commit-receipt/v1")]);
+      const data = fromHex(logs[0].data);
+      assert.equal(data.length, bytes);
+      assert.equal(toHex(data.slice(0, 8)), toHex(Uint8Array.of(0, 0, 0, 0, 0, 0, 0, position)), "tree 0, its position");
+      assert.equal(toHex(data.slice(8, 40)), toHex(leaf.commitment));
+      assert.equal(toHex(data.slice(40, 72)), toHex(node.word(GHOST)));
+      assert.equal(toHex(data.slice(72, 228)), toHex(leaf.note));
+      assert.equal(toHex(data.slice(228)), leaf.salt ? toHex(leaf.salt) : "0x");
+    }
+    // A block the stand-in does not know has no receipts.
+    assert.equal((await rpcCall(node, "eth_getBlockReceipts", [`0x${"ee".repeat(32)}`])).result, null);
   }));
 
 // The head-moving switch refuses only a reveal the stand-in would take: one

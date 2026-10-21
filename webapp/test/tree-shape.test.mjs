@@ -147,6 +147,18 @@ test("fetchTree reads the optional salt beside a leaf and refuses one that is no
   }
 });
 
+// Each page must be the one asked for, so none is missing, repeated or out
+// of order behind a whole page of the right size.
+test("fetchTree refuses a page that is not the one asked for", async () => {
+  const notAsked = /page 0 from the endpoint is not the page asked for: a page is missing, repeated or out of order/;
+  for (const change of [{ page: "0x1" }, { page: undefined }, { page: "1" }, { treeIndex: "0x1" }, { kind: "data" }, { kind: undefined }]) {
+    await assert.rejects(fetchTree(endpoint(docsPageRoots(), [{ ...docsPage(), ...change }]), prover, anchor()), notAsked, JSON.stringify(change));
+  }
+  // The same page number written with a leading zero is still that page.
+  const tree = await fetchTree(endpoint(docsPageRoots(), [{ ...docsPage(), page: "0x00" }]), prover, anchor());
+  assert.equal(tree.count, 2);
+});
+
 test("fetchTree checks the page roots and leaves against the anchor's coin root", async () => {
   const changed = docsPage();
   changed.entries[1] = { ...changed.entries[1], leaf: LEAF_B.replace(/5$/, "4") };

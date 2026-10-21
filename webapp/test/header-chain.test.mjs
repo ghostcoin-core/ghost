@@ -252,6 +252,33 @@ test("the same pinned start with honest seals is followed to Done", async () => 
   }
 });
 
+// The block receipts come from the page's own header chain: from a pinned
+// start, every block from the pin to the tip, none below it, and the leaves
+// are checked from the pin's leaf count, found among the prefix roots.
+test("from a pinned start, the receipts of every block from the pin to the tip are checked", async () => {
+  const { node, flow, done } = await setUp({ networks: (n) => n.networks({ pinAt: 1 }) });
+  try {
+    const { key } = await vanish(flow);
+    node.foreignCommits(1);
+    node.mineTo(node.tip() + 3);
+    const from = node.requests.length;
+    assert.equal((await flow.summonOpen(key)).status, "unclaimed");
+    const asked = node.requests.slice(from).filter((r) => r.method === "eth_getBlockReceipts");
+    assert.deepEqual(
+      asked.map((r) => r.params[0]),
+      node.blocks.slice(1).map((b) => toHex(b.hash)),
+      "blocks 1 (the pin) to the tip, each by its hash",
+    );
+    // An altered note after the pin is refused before restore.
+    const position = node.leaves.length - 2;
+    node.dishonest.note = (at, note) => (at === position ? new Uint8Array(note.length) : note);
+    await assert.rejects(flow.summonRefresh(), new RegExp(`the note at position ${position} differs from its receipt`));
+    assert.equal(flow.state.summon.status, "refused");
+  } finally {
+    await done();
+  }
+});
+
 test("a chain whose headers carry a wrong difficulty is refused: the commit in it is never Done", async () => {
   const { node, flow, done } = await setUp();
   try {

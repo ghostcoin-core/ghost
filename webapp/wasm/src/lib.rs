@@ -34,7 +34,12 @@
 //!   pinned header), to which the page adds every header the endpoint
 //!   returns. Each header is adopted only once its difficulty (spec 06,
 //!   section 4.3) and its RandomX seal (spec 08) check; the best chain is
-//!   the one with the most work.
+//!   the one with the most work;
+//! - the block receipts, over the client library's `receipts`: each block's
+//!   receipts checked against its header's `receiptsRoot`, and the coin
+//!   tree's leaves, notes, salts and the spent markers the page downloaded
+//!   checked against the records of those receipts, so an endpoint cannot
+//!   alter, drop, reorder, hide or invent any of them.
 //!
 //! # Secrets
 //!
@@ -44,13 +49,17 @@
 //! come from the caller (`crypto.getRandomValues` in the worker), as a seed
 //! for the generator the proofs crate already uses; its state is not wiped.
 //!
-//! The header chain is the only state kept between calls. It holds public
-//! headers only, never a key or a seed, and lives as long as the module.
+//! The header chain, and the coin tree records of the blocks whose receipts
+//! were checked, are the only state kept between calls. They hold public
+//! data only, never a key or a seed, and live as long as the module (the
+//! records until the chain is started again).
 //!
 //! A WebAssembly module runs on one thread, so the `static mut` state below
 //! is never touched concurrently.
 
 #![allow(static_mut_refs)]
+
+use std::collections::BTreeMap;
 
 use ghost_client::account::{AccountTx, WalletSeed, verify_envelope};
 use ghost_client::header_chain::{
@@ -59,9 +68,10 @@ use ghost_client::header_chain::{
 use ghost_client::seal::header_fields;
 use ghost_client::reveal::{ChainParams, CoinReveal, Proof, TREE_DEPTH};
 use ghost_client::{
-    Amount, Commitment, HeaderRoot, Marker, NOTE_BYTES, NoteContents, OwnedCoin, PhantomKey, RevealTerms, Rule,
-    SALT_BYTES, SALTED_COMMIT_DATA_BYTES, SALTED_COMMIT_FORMAT_VERSION, Salt, TreeLeaf, TreeStateChoice,
-    choose_tree_state, claim_to_new_key, encrypt_note, partial_reveal, restore_coins, salted_commit_data,
+    Amount, CheckedBlock, Commitment, HeaderRoot, Marker, NOTE_BYTES, NoteContents, OwnedCoin, PhantomKey,
+    ReceiptError, RevealTerms, Rule, SALT_BYTES, SALTED_COMMIT_DATA_BYTES, SALTED_COMMIT_FORMAT_VERSION, Salt,
+    TreeLeaf, TreeStateChoice, check_block_receipts_against_header, check_leaves, check_markers, choose_tree_state,
+    claim_to_new_key, encrypt_note, partial_reveal, receipts_root, restore_coins, salted_commit_data,
 };
 use ghost_proofs::{
     PROTOCOL_VERSION_1, Tree, empty_leaf, keccak256, tree_node, verify_coin_reveal, verify_salted_coin_reveal,
@@ -112,6 +122,17 @@ static mut OUT: Vec<u8> = Vec::new();
 static mut ERROR: String = String::new();
 /// The page's header chain, from [`ghost_chain_start`] on.
 static mut CHAIN: Option<HeaderChain> = None;
+/// The blocks whose receipts matched their header's `receiptsRoot`, by block
+/// hash, from [`ghost_receipts_add`]; emptied when the chain is started.
+static mut RECEIPTS: BTreeMap<[u8; 32], ReceiptBlock> = BTreeMap::new();
+
+/// A block whose receipts were checked: its number, its parent's hash and
+/// the coin tree records its receipts hold.
+struct ReceiptBlock {
+    number: u64,
+    parent: [u8; 32],
+    checked: CheckedBlock,
+}
 
 /// Reads the fields of one input buffer in order.
 struct Input<'a> {
@@ -1085,8 +1106,12 @@ pub extern "C" fn ghost_chain_start(ptr: *const u8, len: usize) -> u32 {
         };
         let chain = started.map_err(|e| format!("the start header is refused: {e}"))?;
         let hash = chain.start_hash().to_vec();
-        // SAFETY: one thread; see the module documentation.
-        unsafe { CHAIN = Some(chain) };
+        // SAFETY: one thread; see the module documentation. A new chain
+        // starts with no checked receipts.
+        unsafe {
+            CHAIN = Some(chain);
+            RECEIPTS.clear();
+        }
         Ok(hash)
     })
 }
@@ -1196,5 +1221,131 @@ pub extern "C" fn ghost_chain_view(ptr: *const u8, len: usize) -> u32 {
             }
         }
         Ok(out)
+    })
+}
+
+/// Reads a list of byte strings: a count (4), then each as a 4-byte length
+/// and its bytes.
+fn byte_strings<'a>(input: &mut Input<'a>) -> Result<Vec<&'a [u8]>, String> {
+    let count = input.count()?;
+    let mut out = Vec::new();
+    for _ in 0..count {
+        let n = input.count()?;
+        out.push(input.take(n)?);
+    }
+    Ok(out)
+}
+
+/// The receipts root of a block's receipts, each its consensus encoding (the
+/// type byte, then the RLP, for a typed receipt). Input: the receipts
+/// (count, then a 4-byte length and the bytes of each). Output: the root
+/// (32). The stand-in nodes compute their headers' `receiptsRoot` with it.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_receipts_root(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| Ok(receipts_root(&byte_strings(input)?).to_vec()))
+}
+
+/// Checks blocks' receipts against their headers' `receiptsRoot` and keeps
+/// the coin tree records of each, by block hash, for
+/// [`ghost_receipts_check`]. Input: the number of blocks (4), then per block
+/// its header's RLP (4-byte length and bytes; the page passes the header its
+/// chain holds) and its receipts (count, then a 4-byte length and the
+/// consensus encoding of each, in block order). Refused at the first block
+/// whose header does not decode, whose receipts do not give its
+/// `receiptsRoot`, or one of whose coin tree logs is not exactly the node's
+/// layout; the blocks before it are kept. Output: nothing.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_receipts_add(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let count = input.count()?;
+        for _ in 0..count {
+            let n = input.count()?;
+            let header = input.take(n)?;
+            let receipts = byte_strings(input)?;
+            let fields = header_fields(header).map_err(|e| format!("a block header does not decode: {e:?}"))?;
+            let checked = check_block_receipts_against_header(header, &receipts)
+                .map_err(|e| format!("the receipts of block {}: {e}", fields.number))?;
+            let block = ReceiptBlock { number: fields.number, parent: fields.parent_hash, checked };
+            // SAFETY: one thread; see the module documentation.
+            unsafe { RECEIPTS.insert(fields.hash, block) };
+        }
+        Ok(Vec::new())
+    })
+}
+
+/// Checks a scan's downloaded coin tree and spent markers against the
+/// receipts of its blocks (spec 05, section 8, item 5 and "Marker status").
+///
+/// Input: the hashes of the scan's blocks, from the start of the page's
+/// header chain to the tip in chain order (count, 32 each), each one's
+/// receipts already checked by [`ghost_receipts_add`]; whether that start
+/// is genesis (1); the leaf count of the start block (4); the leaves from
+/// that position to the tip's last, with their notes (count, 32 + 156 each)
+/// and the salt read beside each (count, 1 + 16 each: 0 and zeros for none);
+/// how many of the blocks, from the first, are up to the block the markers
+/// were read at (4); the spent markers read there (count, 32 each).
+///
+/// The blocks must each follow the one before. The leaves, notes and salts
+/// must be exactly those the receipts appended from the start's leaf count
+/// on, none missing, repeated, reordered or invented. The markers must be
+/// exactly those of the reveal receipts of those blocks, in order: the whole
+/// list when the chain starts at genesis, and its last ones when it starts at
+/// a pinned header, whose earlier markers no header of the chain covers.
+/// Output: nothing.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_receipts_check(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let hashes = input.records::<32>()?;
+        let from_genesis = match input.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(String::from("unknown kind of start")),
+        };
+        let start = input.u32()?;
+        let records = input.records::<LEAF_RECORD_BYTES>()?;
+        let salts = input.records::<SALT_RECORD_BYTES>()?;
+        if salts.len() != records.len() {
+            return Err(String::from("the salts do not match the leaves one for one"));
+        }
+        let marker_blocks = input.count()?;
+        let markers: Vec<Marker> = input.records::<32>()?.into_iter().map(Marker::from_bytes).collect();
+        if hashes.is_empty() || marker_blocks == 0 || marker_blocks > hashes.len() {
+            return Err(String::from("the blocks do not cover the scan"));
+        }
+        let mut blocks: Vec<CheckedBlock> = Vec::with_capacity(hashes.len());
+        let mut last: Option<(u64, [u8; 32])> = None;
+        for hash in &hashes {
+            // SAFETY: one thread; see the module documentation.
+            let block = unsafe { RECEIPTS.get(hash) }
+                .ok_or_else(|| String::from("the receipts of a block of the scan have not been checked"))?;
+            if let Some((number, parent)) = last {
+                if block.parent != parent || block.number != number + 1 {
+                    return Err(format!("block {} does not follow block {number}", block.number));
+                }
+            }
+            last = Some((block.number, *hash));
+            blocks.push(block.checked.clone());
+        }
+        let mut run = Vec::with_capacity(records.len());
+        for (record, salt) in records.iter().zip(&salts) {
+            run.push(TreeLeaf {
+                commitment: Commitment::from_bytes(record[..32].try_into().expect("32 bytes")),
+                note: record[32..].try_into().expect("note bytes"),
+                salt: salt_of(salt)?,
+            });
+        }
+        check_leaves(&blocks, 0, start, &run).map_err(|e| e.to_string())?;
+        let up_to = &blocks[..marker_blocks];
+        let listed = if from_genesis {
+            &markers[..]
+        } else {
+            let held = up_to.iter().flat_map(|b| b.records()).filter(|r| r.marker().is_some()).count();
+            if markers.len() < held {
+                return Err(ReceiptError::MarkerMissing { index: markers.len() }.to_string());
+            }
+            &markers[markers.len() - held..]
+        };
+        check_markers(up_to, listed).map_err(|e| e.to_string())?;
+        Ok(Vec::new())
     })
 }
