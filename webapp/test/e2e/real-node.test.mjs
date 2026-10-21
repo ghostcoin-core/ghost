@@ -101,6 +101,9 @@ async function startGeth() {
       // Not mining from the start: the block pacer starts and stops the
       // miner through the node's own RPC.
       "--miner.threads", "1", "--miner.etherbase", miner,
+      // No empty pre-seal block: a pending reveal lands in the next sealed
+      // block instead of racing an empty one sealed while it is verified.
+      "--miner.noempty",
       "--verbosity", "3",
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
