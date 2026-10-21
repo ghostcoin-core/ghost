@@ -73,6 +73,7 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
   const flow = createFlow({
     prover,
     endpoint: node.url,
+    networks: node.networks(),
     pollMs: 5,
     // While the app waits, the chain grows by a block.
     sleep: async () => node.mine(),
@@ -297,7 +298,18 @@ async function setUp({ fetch = globalThis.fetch, now = () => Date.now() } = {}) 
     if (ms === RESEND_MS) return new Promise((resolve) => setTimeout(resolve, ms));
     if (chain.mining) node.mine();
   };
-  const flow = createFlow({ prover, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, headMovedProofs: PROOFS, sleep, now, fetch });
+  const flow = createFlow({
+    prover,
+    endpoint: node.url,
+    networks: node.networks(),
+    pollMs: 5,
+    maxPolls: 20,
+    resendMs: RESEND_MS,
+    headMovedProofs: PROOFS,
+    sleep,
+    now,
+    fetch,
+  });
   await openTestWallet(flow, node);
   node.foreignCommits(2);
   const done = async () => {
@@ -852,16 +864,19 @@ test("a reveal the node refuses 4 times while its head moves is taken on its fif
   }
 });
 
-// A node that keeps sealing a block every 2 ms and refuses the first sends:
-// its head never holds still, and the app's reveal is still taken while the
-// node mines, without waiting for a still tip.
+// A node that keeps sealing a block every MINING_MS and refuses the first
+// sends: its head never holds still, and the app's reveal is still taken
+// while the node mines, without waiting for a still tip. (The page checks
+// the seal of every header it adopts, about a quarter of a second each here,
+// so the stand-in seals more slowly than that.)
+const MINING_MS = 400;
 test("a reveal refused while the node keeps mining goes through without its head holding still", async () => {
   let node = null;
   let takenWhileMining = null;
   const fetch = async (url, init) => {
     const call = JSON.parse(init.body);
     if (isRevealSend(call) && node.headMoving.refused === 0 && !node.headMoving.miner) {
-      node.startMining(2, { refuse: false });
+      node.startMining(MINING_MS, { refuse: false });
       node.moveHeadOnReveal(2, { blocks: 1 });
     }
     const mining = node !== null && node.headMoving.miner !== null;

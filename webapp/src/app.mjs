@@ -10,9 +10,11 @@ import { DEFAULT_ENDPOINT } from "./rpc.mjs";
 
 const $ = (id) => document.getElementById(id);
 
-// Headers are checked against their hashes and each other, not their seals.
+// Every block the app counts is one this page checked itself: its hash, its
+// difficulty and its proof-of-work seal, on the chain with the most work
+// from the start this build pins.
 const SEAL_TRUST =
-  "Confirmation trusts the chosen endpoint for the proof-of-work seal of each block, which the app does not verify.";
+  "Confirmation comes only from blocks this page checked itself, proof-of-work seal and difficulty included, on the heaviest chain from the start this build pins for the network.";
 
 // A sent transaction is marked Done when a block holds it. That block is
 // neither final settlement nor privacy, and the text says so.
@@ -102,6 +104,7 @@ function renderKeyStep(prefix, holder) {
 function describeSummon(s) {
   const lines = [];
   if (s.status === "scanning") return "Reading the chain…";
+  if (s.status === "refused") return `No confirmations: ${s.refusal ?? "the endpoint's chain failed the proof-of-work check"}.`;
   if (s.status === "not-found") lines.push("No coin for this key yet. A commit shows once its block is in.");
   if (s.status === "claimed") lines.push("Claimed: a block of the chain holds the move or reveal of this key's coin.");
   if (s.status === "unclaimed" && s.current) {
@@ -203,6 +206,8 @@ function render(state) {
     $("claim-status").textContent = c && claimStatus[c.stage] ? claimStatus[c.stage]() : "";
     $("claim-start").disabled = Boolean((c && c.stage !== "done" && c.stage !== "dropped") || s.wait);
   }
+
+  $("chain-status").textContent = state.chainRefused ? `No confirmations: ${state.chainRefused}.` : "";
 
   const p = state.progress;
   $("progress").textContent = p ? `${p.stage}… ${Math.round((Date.now() - p.since) / 1000)} s` : state.busy ? `${state.busy}…` : "";

@@ -97,7 +97,7 @@ async function setUp() {
     if (ms === RESEND_MS) return new Promise((resolve) => setTimeout(resolve, ms));
     node.mine();
   };
-  const flow = createFlow({ prover, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, sleep });
+  const flow = createFlow({ prover, endpoint: node.url, networks: node.networks(), pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, sleep });
   await openTestWallet(flow, node);
   const done = async () => {
     worker.terminate();

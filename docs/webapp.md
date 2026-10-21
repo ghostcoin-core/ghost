@@ -20,8 +20,8 @@ app's own quantum-safe wallet and uses GHOST privately. It does three things.
   check on it, then moves the coin's value minus the fee to the new key. A
   received key shows **unclaimed** until a verified block holds the claim;
   from that block on it shows **claimed**, and the new key holds the coin.
-  Confirmation trusts the chosen endpoint for the proof-of-work seal of each
-  block, which the app does not verify.
+  Every block the app counts is one the page checked itself, its
+  proof-of-work seal and difficulty included (see Headers).
 
 A commit, reveal or claim shows **Sent**, with its amount and transaction
 hash, as soon as the node takes it, and **Done** at the first
@@ -38,7 +38,7 @@ so plainly and the holder can send again (see Status below).
 | `webapp/src/flow.mjs` | The flow controller: every step above, with no DOM |
 | `webapp/src/app.mjs`, `keyimage.mjs` | The thin DOM layer and the key image drawn on a canvas |
 | `webapp/src/chain.mjs` | The fee of spec 07, the base fee rule, the settled height, amounts |
-| `webapp/src/header.mjs` | The header's 18-field RLP of spec 05, section 10, to recompute a block hash |
+| `webapp/src/header.mjs` | The header's 18-field RLP of spec 05, section 10, and the table of networks this build knows, with the start of each one's header chain |
 | `webapp/src/rpc.mjs` | JSON-RPC to the chosen endpoint |
 | `webapp/src/prover.mjs`, `worker.mjs`, `worker-core.mjs` | The background worker and its message interface |
 | `webapp/src/wasm.mjs` | The WebAssembly module's plain exports, with no bindings generator |
@@ -72,9 +72,10 @@ network, `http://127.0.0.1:8545`. The app sends only these requests:
 
 The page and marker requests follow [spec 05](spec/05-trees-and-headers.md),
 section 8: whole pages from page 0, as of a block hash, whatever the wallet
-expects to find. The headers asked for depend only on the tip: every block
-from `S - 32` to the tip for the settled block `S`, 2 below the tip (from
-genesis while `S` is below 32), and genesis. No request names a key, a commitment, a position or
+expects to find. The headers asked for depend only on the tip and on the
+headers the page already holds: from the tip down to the first block its
+header chain holds (see Headers), so the first time every block from the
+pinned start (genesis on a network with no pin). No request names a key, a commitment, a position or
 a marker, and the app never asks for a witness; it computes its own from the
 pages. The wallet's requests name its address, which the commit transaction
 shows anyway. The only request that carries a coin's data is the reveal itself,
@@ -90,16 +91,60 @@ must then give the anchor header's coin root.
 
 ## Headers
 
-The app keeps a header only if keccak256 of its RLP, the list of the 18
-fields of [spec 05](spec/05-trees-and-headers.md), section 10 (fields 0 to
-14 of the base header, the base fee, `coinTreeRoot`, `dataTreeRoot`), is the
-hash the endpoint returned with it, and only if each header's `parentHash` is
-the hash of the one before it, up to the tip. The worker computes the hash
-with the client library's keccak256; `webapp/src/header.mjs` builds the RLP.
-Every coin root the app uses comes from such a header. The app does not
-check the proof-of-work seal or the difficulty, so it trusts the chosen
-endpoint for the seal: an endpoint can still serve a whole chain of
-well-formed headers no miner sealed.
+The page keeps its own header chain, in the background worker's memory for
+the length of the page session: the client library's
+`client/src/header_chain.rs`, exported by `webapp/wasm` (`ghost_chain_start`,
+`ghost_chain_add`, `ghost_chain_view`). It holds public headers only. The app
+adopts a header only through it:
+
+- **Start.** The released build holds a table of networks in
+  `webapp/src/header.mjs`, keyed by chain identifier. An entry has the chain
+  constants of [spec 06](spec/06-consensus-and-emission.md), section 4.2
+  (block time, half-life, start and minimum difficulty, future drift), the
+  genesis timestamp, the genesis hash and the start: genesis for a network
+  with no pin, or a pinned header (its hash, height, total work and the key
+  blocks below it). The page fetches the start header from the endpoint and
+  keeps it only if its hash is the pinned one. **The table is empty today**:
+  no launch network or pinned start exists yet, so on any network this build
+  shows no confirmations and says, in plain words, that it has no pinned
+  start for the network. `createFlow` takes another table; the stand-in tests
+  and the real-node test add their own entry (the real-node test reads the
+  genesis hash from the node it started).
+- **Every header after it.** The endpoint's headers are read from its tip
+  down to the first one the chain holds, then added from there up, with the
+  page's clock in Unix seconds. A header is adopted only if keccak256 of its
+  RLP, the list of the 18 fields of
+  [spec 05](spec/05-trees-and-headers.md), section 10 (`webapp/src/header.mjs`
+  builds it), is the hash the endpoint returned with it; its parent is a
+  header the chain holds and its number the parent's plus one; its
+  timestamp is after the parent's and at most the future drift ahead of the
+  clock; its difficulty is the one the ASERT rule of spec 06, section 4.3,
+  requires; and its RandomX seal is valid under the key block on its own
+  branch ([spec 08](spec/08-randomx-seal.md)). No seal after the start is
+  skipped. A header that is only ahead of the clock is offered again after a
+  short wait, three times at most.
+- **Most work.** The best chain is the one with the most total work. The
+  endpoint's tip must be on it: a tip on a lighter branch is refused, with
+  the heavier chain kept, and a reorganisation is followed as soon as the
+  endpoint's branch is the heavier one. Every height, coin root, fee input,
+  settled height and confirmation count the app uses comes from headers on
+  the best chain, up to the endpoint's tip.
+- **Uncertain means refused.** A start whose hash is not the pinned one, a
+  header the chain cannot place, a seal that is not valid, a wrong
+  difficulty or any other failure of the check: the app shows no
+  confirmation, takes no step that depends on the headers (it signs no
+  commit and proves no reveal on them), and says that the endpoint's chain
+  failed the proof-of-work check.
+
+Each RandomX cache takes 256 MiB of the worker's memory; the chain holds at
+most two. Checking a seal takes about a quarter of a second in the
+WebAssembly module on a desktop, so the first visit to a long chain reads
+and checks every header since the start, and a node that seals blocks
+faster than that cannot be followed.
+
+Querying more than one endpoint and refusing on conflict is not built
+(front-desk decision, 2026-10-20): agreement between endpoints would be extra
+evidence, never a substitute for the checks above.
 
 ## Wallet
 
@@ -138,8 +183,9 @@ spec 01, vector coin-commit.
 The worker signs it with the client library (`client/src/account.rs`,
 RustCrypto's `ml-dsa` 0.1.1): hedged ML-DSA-44 in pure mode with the context
 `ghost/tx/v1`, over `K("ghost/account-tx/v1", 0x52, genesis_hash,
-keccak256(unsigned))`. The genesis hash is block 0's, from a header checked
-against its hash as below. The nonce is `eth_getTransactionCount` of the
+keccak256(unsigned))`. The genesis hash is the one this build's table holds
+for the network (see Headers), and the base fee is read from the tip the
+page's header chain adopted. The nonce is `eth_getTransactionCount` of the
 pending block, the priority fee `eth_maxPriorityFeePerGas` held at 2 gwei at
 most, the fee cap twice the next block's base fee plus the priority fee, and
 the gas limit `eth_estimateGas` plus 62,744, the gas the node adds for the
@@ -267,11 +313,11 @@ app makes no data commitments.
    reveal or claim shows **Done** only when the coin tree as of the tip,
    checked against the tip's coin root, holds the new leaf the transaction
    appends, at a position added by the receipt's block, read from the coin
-   roots of that block and its parent in the verified header chain leading
-   to the tip. Until then a claim stays Sent and the old key unclaimed. From
-   that block on the old key shows claimed, because the markers are read at
-   the tip. Confirmation trusts the chosen endpoint for the proof-of-work
-   seal, which the app does not verify.
+   roots of that block and its parent on the page's header chain leading
+   to the tip, the one with the most work. Until then a claim stays Sent and
+   the old key unclaimed. From that block on the old key shows claimed,
+   because the markers are read at the tip. An endpoint whose chain fails
+   the check of Headers gets no step past Sent.
 8. **Reorganisation.** Done comes at the first block, so a reorganisation
    can still replace that block. A receipt, or a missing one, is never the
    evidence that a transaction is gone: an endpoint can answer null for a
@@ -310,11 +356,21 @@ app makes no data commitments.
 - **Commit entry address.** It is a setting next to the endpoint, with the
   internal network's coin commit entry as its default; another network
   needs its own.
-- **The seal is the endpoint's word.** The app recomputes each header's hash
-  and checks parent links up to the tip, but not the proof-of-work seal, and
-  there is no header chain kept in the page. An endpoint that fabricates
-  sealless headers can make a reveal fail at the node or a status wrong,
-  never move a coin.
+- **The pinned start is the one assumption left.** Every header after it
+  is checked in the page, seal and difficulty included (see Headers), so an
+  endpoint cannot show confirmations no miner sealed; it can still withhold
+  blocks, or serve a chain that real miners sealed and outworked. What the
+  chain rests on is the start header in this build's table (genesis, or a
+  pinned header with its total work and key blocks): a build with a wrong
+  pin would follow the wrong chain. The table is empty today, so the
+  released build shows no confirmations on any network until a launch
+  network and its start are added.
+- **One endpoint.** The page asks one endpoint. Asking several and refusing
+  on conflict is not built; agreement between endpoints would be extra
+  evidence, never a substitute for the checks of Headers.
+- **The chain lives as long as the page.** The header chain is held in the
+  worker's memory only, so each new page session reads and checks every
+  header from the start again.
 - **Notes and markers are not checked against receipts** (spec 05, section 8,
   item 5): the page says so next to the status. Marker pages are hints.
 - **An endpoint can test for a coin, one bit at a time.** An altered note
@@ -351,13 +407,31 @@ app makes no data commitments.
   block that holds it, with no block on top. It also summons a coin 2 blocks after a
   stranger's later commit, against that commit's block root, after the same
   coin, with nobody committed since, was shown the plain warning and refused.
+  The stand-in's headers follow the internal network's test constants
+  (difficulty 1 on the 30-second schedule, an all-zero mix digest), so the
+  page's header chain checks the seal of every one of them.
+- `header-chain.test.mjs`: the module's chain exports directly (sealed
+  headers adopted; a wrong hash, a wrong difficulty, an unmined seal above a
+  pinned start stamped ahead of the schedule and a header ahead of the clock
+  refused; the heavier of two branches kept and the reorganisation to it
+  reported), then the app against the stand-in. A chain whose seals are not
+  valid (every block 32 half-lives ahead of the schedule, carrying the 2^32
+  that requires, with an unmined nonce, above a pinned block 1) and a chain
+  whose headers carry a wrong difficulty are both refused: no coin, tip or
+  Done is shown, the page says the endpoint's chain failed the proof-of-work
+  check, and no commit is signed on them. A lighter competing chain is
+  refused and the heavier one kept, the commit shown Done staying Done,
+  until the competing chain outweighs it and the page follows the
+  reorganisation. An empty table, and a start whose hash is not the pinned
+  one, show no confirmations either.
 - `wasm.test.mjs`: the module against the golden vectors of spec 01 and
   spec 05, the header's RLP and hash included.
 - `commit-layout.test.mjs`: the commit payload against spec 07's layout and
   the shared vector `test/vectors/commit-payload.json`, and the default
   commit entry address.
 - `reveal-fast-node.test.mjs`: a Summon reveal against the stand-in playing
-  the CI node: a block about every 20 ms, a send refused because the head
+  a fast-mining node: a block every 500 ms (the page checks each seal, so a
+  node much faster than that cannot be followed), a send refused because the head
   moved, a fee that changes before the resend so the reveal is proved
   again, and a taken send the node drops before any block holds it. The
   reveal must land within a bound, the recipient paid once, every proof of

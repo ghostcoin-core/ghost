@@ -161,10 +161,59 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
     return new Response(JSON.stringify(reply), { status: 200, headers: { "content-type": "application/json" } });
   }
 
+  // The worker's header chain, stubbed in the stand-in's terms: a header is
+  // held when its SHA-256 is the hash given and it is the stand-in's block
+  // of that hash whose parent is held; the best chain is the longest. Its
+  // checks of difficulty and seal are header-chain.test.mjs's, with the
+  // real module.
+  const chain = { held: new Map(), best: null };
+  const blockOf = (hash) => blocks.find((b) => b.json.hash === hash);
+  const heightOf = (hash) => chain.held.get(hash).number;
+  const bestAt = (height) => {
+    let at = chain.best;
+    while (at && heightOf(at) > height) at = chain.held.get(at).parent;
+    return at && heightOf(at) === height ? at : null;
+  };
+  const bestView = () => ({ height: BigInt(heightOf(chain.best)), hash: fromHexBytes(chain.best), work: BigInt(heightOf(chain.best) + 1) });
+
   // The worker, stubbed: what the flow asks of it, in the stand-in's terms.
   const prover = {
     async request(op, args) {
       switch (op) {
+        case "chainStart": {
+          const hash = toHex(sha256(args.start.header));
+          chain.held = new Map([[hash, { number: blockOf(hash).number, parent: null }]]);
+          chain.best = hash;
+          return { startHash: fromHexBytes(hash) };
+        }
+        case "chainAdd": {
+          let adopted = 0;
+          for (const { hash, rlp } of args.headers) {
+            const id = toHex(sha256(rlp));
+            const block = blockOf(id);
+            if (id !== toHex(hash) || !block || !chain.held.has(block.json.parentHash)) {
+              return { adopted, refused: { number: BigInt(block?.number ?? 0), why: "check", reason: "not the stand-in's block" }, best: bestView(), removed: 0n };
+            }
+            chain.held.set(id, { number: block.number, parent: block.json.parentHash });
+            if (block.number > heightOf(chain.best)) chain.best = id;
+            adopted += 1;
+          }
+          return { adopted, refused: null, best: bestView(), removed: 0n };
+        }
+        case "chainView": {
+          const id = toHex(args.hash);
+          const held = chain.held.has(id);
+          const onBest = held && bestAt(heightOf(id)) === id;
+          const hashes = [];
+          for (let h = args.from; h <= args.to; h += 1) hashes.push(fromHexBytes(bestAt(h)));
+          return {
+            best: bestView(),
+            held,
+            work: held ? BigInt(heightOf(id) + 1) : 0n,
+            confirmations: onBest ? BigInt(heightOf(chain.best) - heightOf(id) + 1) : 0n,
+            hashes,
+          };
+        }
         case "checkKey":
           return { groups: 12 };
         case "keccak256":
@@ -214,7 +263,18 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
     },
   };
 
-  return { fetch, prover, requests, sends, proofs, reveals, balances, coins, stale, tip, clock };
+  // The table of networks the flow is given: chain 1, starting at this
+  // stand-in's genesis.
+  const networks = {
+    1: {
+      params: { blockTime: 30, halfLife: 3600, startDifficulty: 1, minDifficulty: 1, futureDrift: 30 },
+      genesisTimestamp: 1_798_767_600,
+      genesisHash: blocks[0].json.hash,
+      pin: null,
+    },
+  };
+
+  return { fetch, prover, networks, requests, sends, proofs, reveals, balances, coins, stale, tip, clock };
 }
 
 // A flow on the stand-in whose waits are recorded and pass at once, moving
@@ -225,6 +285,7 @@ export function flowOn(node, options = {}) {
   const flow = createFlow({
     prover: node.prover,
     fetch: node.fetch,
+    networks: node.networks,
     endpoint: "http://127.0.0.1:1/",
     pollMs: 7,
     maxPolls: 50,

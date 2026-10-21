@@ -3,6 +3,7 @@
 // An ES module, as the web app's package.json sets.
 
 import "./units.test.mjs";
+import "./header-chain.test.mjs";
 import "./early-reveal.test.mjs";
 import "./reveal-moving-head.test.mjs";
 import "./wasm.test.mjs";

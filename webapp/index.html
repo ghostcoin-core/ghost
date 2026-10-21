@@ -27,6 +27,8 @@
         </label>
         <button type="submit">Use this network</button>
       </form>
+      <p>The app checks every block it uses itself: its hash, its difficulty and its proof-of-work seal, from the start this build pins for the network, and keeps the chain with the most work. A chain that fails the check shows no confirmations.</p>
+      <p id="chain-status" role="alert"></p>
     </section>
 
     <section id="wallet">
@@ -120,7 +122,7 @@
         </form>
         <div id="claim">
           <h3>Claim</h3>
-          <p>Move the remaining value, minus the fee, to a new key. The claim shows Sent as soon as the node takes it and Done at the first block that holds it; from that block on the received key shows claimed. If the chain is later reorganised and drops that block, Refresh says so and you can claim again. Confirmation trusts the chosen endpoint for the proof-of-work seal of each block, which the app does not verify.</p>
+          <p>Move the remaining value, minus the fee, to a new key. The claim shows Sent as soon as the node takes it and Done at the first block that holds it; from that block on the received key shows claimed. If the chain is later reorganised and drops that block, Refresh says so and you can claim again. Confirmation comes only from blocks this page checked itself, proof-of-work seal and difficulty included.</p>
           <button id="claim-start" type="button">Claim to a new key</button>
           <div id="claim-key" class="key-panel" hidden>
             <p>Your new Phantom Key. Save it: after the claim it is the only authority over the coin.</p>

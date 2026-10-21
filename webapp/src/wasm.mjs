@@ -287,6 +287,62 @@ export class Ghost {
   keccak256(bytes) {
     return this.call("ghost_keccak256", Uint8Array.from(bytes));
   }
+
+  // Starts the module's header chain, replacing any chain it held. `params`:
+  // the chain constants; `start`: { header } for genesis, or { header,
+  // height, totalWork, genesisTimestamp, keyBlocks: [[height, hash]] } for a
+  // pinned header. Returns the start's hash.
+  chainStart({ params, start }) {
+    const input = new Input()
+      .u64(params.blockTime)
+      .u64(params.halfLife)
+      .u64(params.startDifficulty)
+      .u64(params.minDifficulty)
+      .u64(params.futureDrift);
+    if (start.height === undefined) {
+      input.u8(0);
+    } else {
+      input.u8(1).u64(start.height).bytes(word(start.totalWork)).u64(start.genesisTimestamp);
+      input.u32(start.keyBlocks.length);
+      for (const [height, hash] of start.keyBlocks) input.u64(height).bytes(hash, 32);
+    }
+    return this.call("ghost_chain_start", input.bytes(start.header).build());
+  }
+
+  // Adds `headers` ([{ hash, rlp }], in order) to the chain, with the
+  // page's clock `now` in Unix seconds; stops at the first one refused.
+  chainAdd({ now, headers }) {
+    const input = new Input().u64(now).u32(headers.length);
+    for (const { hash, rlp } of headers) input.bytes(hash, 32).u32(rlp.length).bytes(rlp);
+    const out = new Output(this.call("ghost_chain_add", input.build()));
+    const adopted = out.u32();
+    let refused = null;
+    if (out.take(1)[0] === 1) {
+      const number = out.u64();
+      const why = ["", "hash", "ahead", "check"][out.take(1)[0]];
+      refused = { number, why, reason: decoder.decode(out.take(out.u32())) };
+    }
+    return { adopted, refused, best: readBest(out), removed: out.u64() };
+  }
+
+  // The chain seen from header `hash`: the best tip, whether `hash` is held,
+  // its total work and its confirmations on the best chain (0 when it is
+  // not on it), and the best chain's hashes at heights `from` to `to`.
+  chainView({ hash, from, to }) {
+    const out = new Output(this.call("ghost_chain_view", new Input().bytes(hash, 32).u64(from).u64(to).build()));
+    const best = readBest(out);
+    const held = out.take(1)[0] === 1;
+    const work = fromWord(out.take(32));
+    const confirmations = out.u64();
+    const hashes = [];
+    while (out.at < out.bytes.length) hashes.push(out.take(32));
+    return { best, held, work, confirmations, hashes };
+  }
+}
+
+// The best chain's tip as the module writes it.
+function readBest(out) {
+  return { height: out.u64(), hash: out.take(32), work: fromWord(out.take(32)) };
 }
 
 export async function loadGhost(bytes) {
