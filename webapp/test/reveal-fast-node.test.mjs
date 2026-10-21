@@ -1,5 +1,5 @@
-// A Summon reveal against a stand-in that plays the CI node: a block about
-// every 20 ms, the head-moving refusal of a send, a next-block fee that
+// A Summon reveal against a stand-in that plays a fast-mining node: a block
+// every MINE_MS, the head-moving refusal of a send, a next-block fee that
 // changes between that refusal and the resend (so the reveal is proved
 // again), and a node that takes the new proof's first send and lets it go
 // before any block holds it, as ghost-node's pool drops a held reveal whose
@@ -27,8 +27,13 @@ const RECIPIENT = "0x2222222222222222222222222222222222222222";
 // short waits before a resend and the reveal's own block take well under this; a wait for a
 // block that never comes takes the 1,800 polls of a second each.
 const BOUND_MS = 240_000;
+// The stand-in's block time. The page checks the RandomX seal of every
+// header it adopts, about a quarter of a second each here, so a node that
+// seals blocks faster than that outruns any page; this one seals 60 times
+// faster than the 30-second chain, still many blocks during each proof.
+const MINE_MS = 500;
 
-test("a Summon reveal on a node that mines every 20 ms, refuses, changes its fee and drops a taken send completes, paid once", { timeout: 600_000 }, async () => {
+test(`a Summon reveal on a node that mines every ${MINE_MS} ms, refuses, changes its fee and drops a taken send completes, paid once`, { timeout: 600_000 }, async () => {
   const ghost = await loadModule();
   const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
   const worker = nodeProver();
@@ -58,6 +63,7 @@ test("a Summon reveal on a node that mines every 20 ms, refuses, changes its fee
   const flow = createFlow({
     prover,
     endpoint: node.url,
+    networks: node.networks(),
     fetch,
     pollMs: 1000,
     maxPolls: 1800,
@@ -68,17 +74,17 @@ test("a Summon reveal on a node that mines every 20 ms, refuses, changes its fee
   });
   await openTestWallet(flow, node);
   try {
-    // A block every 20 ms throughout, a stranger's commit in every 8th, so
+    // A block every MINE_MS throughout, a stranger's commit in every 8th, so
     // a settled block soon holds a commitment after the coin and a proof
     // made later can still be made.
     node.foreignCommits(2);
-    node.startMining(20, { refuse: false, commitEvery: 8 });
+    node.startMining(MINE_MS, { refuse: false, commitEvery: 8 });
     const key = await flow.vanishStart("1");
     const vanished = await flow.vanishCheck(flow.vanishSaved().map((p) => key.split(" ")[p - 1]));
     assert.equal(vanished.ok, true);
     // Until well past a settled block that holds the coin and a later
     // commitment.
-    while (node.tip() < vanished.block + 3 * 32) await new Promise((resolve) => setTimeout(resolve, 20));
+    while (node.tip() < vanished.block + 3 * 32) await new Promise((resolve) => setTimeout(resolve, MINE_MS));
     assert.equal((await flow.summonOpen(key)).status, "unclaimed");
 
     // The first send is refused as the head moved; the first send the node

@@ -21,7 +21,13 @@
 //!   decoding and verification, which the test's stand-in node uses;
 //! - the built-in wallet (spec 09, section 9): a new seed as 24 words, the
 //!   account a seed derives, and the account transaction (type 0x52) signed
-//!   with ML-DSA-44, plus its decoding and check for the stand-in node.
+//!   with ML-DSA-44, plus its decoding and check for the stand-in node;
+//! - the page's header chain, over the client library's `header_chain`: one
+//!   chain held in the module's memory from a trusted start (genesis or a
+//!   pinned header), to which the page adds every header the endpoint
+//!   returns. Each header is adopted only once its difficulty (spec 06,
+//!   section 4.3) and its RandomX seal (spec 08) check; the best chain is
+//!   the one with the most work.
 //!
 //! # Secrets
 //!
@@ -31,12 +37,19 @@
 //! come from the caller (`crypto.getRandomValues` in the worker), as a seed
 //! for the generator the proofs crate already uses; its state is not wiped.
 //!
+//! The header chain is the only state kept between calls. It holds public
+//! headers only, never a key or a seed, and lives as long as the module.
+//!
 //! A WebAssembly module runs on one thread, so the `static mut` state below
 //! is never touched concurrently.
 
 #![allow(static_mut_refs)]
 
 use ghost_client::account::{AccountTx, WalletSeed, verify_envelope};
+use ghost_client::header_chain::{
+    Added, ChainError, ChainParams as ChainConstants, HeaderChain, PinnedStart, U256,
+};
+use ghost_client::seal::header_fields;
 use ghost_client::reveal::{ChainParams, CoinReveal, Proof, TREE_DEPTH};
 use ghost_client::{
     Amount, Commitment, HeaderRoot, KeyFormat, Marker, NOTE_BYTES, NoteContents, OwnedCoin, PhantomKey,
@@ -78,6 +91,8 @@ const LEAF_RECORD_BYTES: usize = 32 + NOTE_BYTES;
 
 static mut OUT: Vec<u8> = Vec::new();
 static mut ERROR: String = String::new();
+/// The page's header chain, from [`ghost_chain_start`] on.
+static mut CHAIN: Option<HeaderChain> = None;
 
 /// Reads the fields of one input buffer in order.
 struct Input<'a> {
@@ -877,6 +892,181 @@ pub extern "C" fn ghost_account_tx_verify(ptr: *const u8, len: usize) -> u32 {
         out.extend_from_slice(&tx.to.unwrap_or([0; 20]));
         out.extend_from_slice(&word_of(tx.value));
         out.extend_from_slice(&tx.data);
+        Ok(out)
+    })
+}
+
+/// Why [`ghost_chain_add`] stopped at a header: its RLP does not hash to the
+/// hash the endpoint returned with it.
+const REFUSED_HASH: u8 = 1;
+/// The header passes every check but is more than the future drift ahead of
+/// the page's clock.
+const REFUSED_AHEAD: u8 = 2;
+/// The header fails the chain's check: it does not decode, its parent is not
+/// held, its number or timestamp is wrong, it does not carry the required
+/// difficulty, or its seal is not valid.
+const REFUSED_CHECK: u8 = 3;
+
+fn chain() -> Result<&'static mut HeaderChain, String> {
+    // SAFETY: one thread; see the module documentation.
+    unsafe { CHAIN.as_mut() }.ok_or_else(|| String::from("the page holds no header chain yet"))
+}
+
+/// The best chain's tip: height (8), hash (32), total work (32).
+fn best_of(chain: &HeaderChain, out: &mut Vec<u8>) {
+    out.extend_from_slice(&chain.best_height().to_be_bytes());
+    out.extend_from_slice(&chain.best_hash());
+    out.extend_from_slice(&chain.best_total_work().to_be_bytes());
+}
+
+/// Starts the page's header chain, replacing any chain held before. Input:
+/// the chain constants (block time, half-life, start difficulty, minimum
+/// difficulty, future drift; 8 each), the start's kind (1: 0 genesis, 1 a
+/// pinned header), then for genesis the genesis header's RLP; for a pinned
+/// header its height (8), the total work up to it (32), the genesis
+/// timestamp (8), the key blocks below it (count, then height (8) and hash
+/// (32) each) and its RLP. Output: the start's hash (32).
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_chain_start(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let params = ChainConstants {
+            block_time: input.u64()?,
+            half_life: input.u64()?,
+            start_difficulty: input.u64()?,
+            min_difficulty: input.u64()?,
+            future_drift: input.u64()?,
+        };
+        let started = match input.u8()? {
+            0 => HeaderChain::from_genesis(input.rest(), params),
+            1 => {
+                let height = input.u64()?;
+                let total_work = U256::from_be_bytes(&input.array::<32>()?).expect("32 bytes fit");
+                let genesis_timestamp = input.u64()?;
+                let key_blocks = input
+                    .records::<40>()?
+                    .into_iter()
+                    .map(|record| {
+                        let height = u64::from_be_bytes(record[..8].try_into().expect("8 bytes"));
+                        (height, record[8..].try_into().expect("32 bytes"))
+                    })
+                    .collect();
+                let header = input.rest().to_vec();
+                HeaderChain::from_pinned(PinnedStart { header, height, total_work, genesis_timestamp, key_blocks }, params)
+            }
+            _ => return Err(String::from("unknown kind of start")),
+        };
+        let chain = started.map_err(|e| format!("the start header is refused: {e}"))?;
+        let hash = chain.start_hash().to_vec();
+        // SAFETY: one thread; see the module documentation.
+        unsafe { CHAIN = Some(chain) };
+        Ok(hash)
+    })
+}
+
+/// Adds headers to the page's chain, in order, stopping at the first one
+/// refused. Input: the page's clock in Unix seconds (8), the number of
+/// headers (4), then per header the hash the endpoint returned with it (32)
+/// and its RLP (4-byte length and bytes). Output: how many were adopted
+/// (4), then 0, or 1 and the refused header's number (8, 0 if it does not
+/// decode), why (1: [`REFUSED_HASH`], [`REFUSED_AHEAD`] or
+/// [`REFUSED_CHECK`]) and the reason (text); then the best chain's tip
+/// (height, hash, total work) and how many headers left the best chain in
+/// reorganisations (8).
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_chain_add(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let now = input.u64()?;
+        let count = input.count()?;
+        let chain = chain()?;
+        let mut adopted = 0u32;
+        let mut refused = None;
+        let mut removed = 0u64;
+        for _ in 0..count {
+            let claimed = input.array::<32>()?;
+            let n = input.count()?;
+            let header = input.take(n)?;
+            let fields = match header_fields(header) {
+                Ok(fields) => fields,
+                Err(e) => {
+                    refused = Some((0, REFUSED_CHECK, ChainError::Header(e).to_string()));
+                    break;
+                }
+            };
+            if fields.hash != claimed {
+                refused = Some((fields.number, REFUSED_HASH, String::from("the header does not hash to the block hash returned")));
+                break;
+            }
+            match chain.add_header(header, now) {
+                Ok(added) => {
+                    if let Added::Reorganised { removed: gone, .. } = added {
+                        removed += gone;
+                    }
+                    adopted += 1;
+                }
+                Err(ChainError::TooFarAhead) => {
+                    refused = Some((fields.number, REFUSED_AHEAD, ChainError::TooFarAhead.to_string()));
+                    break;
+                }
+                Err(e) => {
+                    refused = Some((fields.number, REFUSED_CHECK, e.to_string()));
+                    break;
+                }
+            }
+        }
+        if refused.is_some() {
+            // The headers after the refused one are not read.
+            input.rest();
+        }
+        let mut out = adopted.to_be_bytes().to_vec();
+        match refused {
+            None => out.push(0),
+            Some((number, why, reason)) => {
+                out.push(1);
+                out.extend_from_slice(&number.to_be_bytes());
+                out.push(why);
+                out.extend_from_slice(&(reason.len() as u32).to_be_bytes());
+                out.extend_from_slice(reason.as_bytes());
+            }
+        }
+        best_of(chain, &mut out);
+        out.extend_from_slice(&removed.to_be_bytes());
+        Ok(out)
+    })
+}
+
+/// The page's chain as seen from one header. Input: a header hash (32), and
+/// a height range `from` (8) to `to` (8). Output: the best chain's tip
+/// (height, hash, total work), whether the header is held (1), its total
+/// work (32, zero if not held), its confirmations on the best chain (8, 0
+/// when it is not on it), then the best chain's hash at each height from
+/// `from` to `to` (none when `from > to`). Refused when the best chain holds
+/// no header at one of those heights.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_chain_view(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let hash = input.array::<32>()?;
+        let from = input.u64()?;
+        let to = input.u64()?;
+        let chain = chain()?;
+        let mut out = Vec::new();
+        best_of(chain, &mut out);
+        out.push(u8::from(chain.contains(&hash)));
+        out.extend_from_slice(&chain.total_work(&hash).unwrap_or(U256::ZERO).to_be_bytes());
+        out.extend_from_slice(&chain.confirmations(&hash).unwrap_or(0).to_be_bytes());
+        if from <= to {
+            let missing = |height: u64| format!("the best chain holds no header at height {height}");
+            chain.best_hash_at(from).ok_or_else(|| missing(from))?;
+            // One walk down from `to` by parent hashes, rather than one walk
+            // from the tip per height; every header from `from` up is held.
+            let mut hashes = vec![chain.best_hash_at(to).ok_or_else(|| missing(to))?];
+            for _ in from..to {
+                let held = chain.header(hashes.last().expect("one hash")).expect("held");
+                hashes.push(header_fields(held).expect("a held header decodes").parent_hash);
+            }
+            for hash in hashes.iter().rev() {
+                out.extend_from_slice(hash);
+            }
+        }
         Ok(out)
     })
 }

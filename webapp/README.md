@@ -27,6 +27,12 @@ The design, the node methods it calls and its limits are in
 - It talks to one thing only: the node endpoint you choose (JSON-RPC). No
   request names your key, your seed, your commitment, its position or its
   marker.
+- It takes no confirmation on the endpoint's word. The background worker
+  keeps a header chain for the page and checks every header's difficulty
+  and RandomX seal from the start this build pins for the network, keeping
+  the chain with the most work; a chain that fails the check shows no
+  confirmations. This build pins no network yet (`webapp/src/header.mjs`),
+  so it shows none on any network until one is added.
 
 ## Build it yourself
 
@@ -80,7 +86,10 @@ cargo build --release --locked --target wasm32-unknown-unknown --manifest-path w
 node --test --test-timeout=1200000 webapp/test/
 ```
 
-`webapp/test/flow.test.mjs` drives the flow controller through Vanish (a
+`webapp/test/header-chain.test.mjs` checks the page's header chain: chains
+with seals that are not valid or with a wrong difficulty refused with no
+confirmation, and a lighter competing chain refused with the heavier one
+kept. `webapp/test/flow.test.mjs` drives the flow controller through Vanish (a
 wrong save check that sends nothing, then a right one), a partial Summon and a
 Claim, with the real prover in a `worker_threads` worker speaking the browser
 worker's messages, against a scripted stand-in for the node's JSON-RPC that

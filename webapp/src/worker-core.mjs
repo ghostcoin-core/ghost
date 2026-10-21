@@ -8,7 +8,8 @@
 //             { id, type: "error", message }
 //
 // Every random byte comes from crypto.getRandomValues. Nothing is kept
-// between requests except the compiled module: a key's digits or a wallet
+// between requests except the compiled module and, in its memory, the page's
+// header chain, which holds public headers only: a key's digits or a wallet
 // seed's words arrive with a request and are gone when it is answered.
 
 import { loadGhost } from "./wasm.mjs";
@@ -59,6 +60,21 @@ const OPS = {
 
   chooseTreeState(ghost, args) {
     return { chosen: ghost.chooseTreeState(args) };
+  },
+
+  // The page's header chain (lib.rs, ghost_chain_*): started once from the
+  // trusted start, then every header the endpoint returns is added to it.
+  chainStart(ghost, args) {
+    return { startHash: ghost.chainStart(args) };
+  },
+
+  chainAdd(ghost, args, progress) {
+    progress("checking the proof of work of the endpoint's headers");
+    return ghost.chainAdd(args);
+  },
+
+  chainView(ghost, args) {
+    return ghost.chainView(args);
   },
 
   prove(ghost, args, progress) {

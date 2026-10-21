@@ -1,10 +1,39 @@
 // A block header as the endpoint returns it, re-encoded so its hash can be
 // recomputed: the RLP list of the 18 fields of spec 05, section 10 (fields
 // 0 to 14 of the base header, the base fee, coinTreeRoot, dataTreeRoot),
-// whose keccak256 is the block hash. The app hashes it in the worker and
-// keeps a header only when that hash is the one the endpoint returned.
+// whose keccak256 is the block hash. The worker's header chain adopts a
+// header only when that hash is the one the endpoint returned and its
+// difficulty and proof-of-work seal check (lib.rs, ghost_chain_add).
+//
+// It also holds the networks this build knows: where the header chain of
+// each one starts.
 
 import { concat, fromHex, quantity } from "./bytes.mjs";
+
+// The networks of this build, keyed by chain identifier (a decimal string).
+// An entry holds:
+//
+// - `params`: the chain constants of spec 06, section 4.2 (`blockTime`,
+//   `halfLife`, `startDifficulty`, `minDifficulty`, `futureDrift`);
+// - `genesisTimestamp`: the zero of the difficulty schedule;
+// - `genesisHash`: the hash of block 0, also the reveal domain and the
+//   chain the wallet signs for;
+// - `pin`: null, so the chain starts at genesis, or the pinned start
+//   header `{ hash, height, totalWork, keyBlocks: [[height, hash]] }`, its
+//   total work up to and including it and the key blocks below it that the
+//   headers after it use.
+//
+// The page fetches the start header from the endpoint and keeps it only if
+// its hash is the one here; that start is the one assumption the chain
+// rests on. The table is empty: no launch network and no pinned start exist
+// yet, so this build shows no confirmations on any network until one is
+// added. createFlow takes another table (the tests add their own network).
+export const NETWORKS = Object.freeze({});
+
+// The entry of `chainId` in `networks`, or null.
+export function networkOf(networks, chainId) {
+  return Object.hasOwn(networks, String(chainId)) ? networks[String(chainId)] : null;
+}
 
 // In RLP order, with the base client's JSON-RPC names: a "fixed" field has
 // exactly `size` bytes, a "bytes" field at most `size`, an "int" field is

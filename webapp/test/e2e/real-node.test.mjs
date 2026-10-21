@@ -38,6 +38,9 @@ const NOTE_BYTES = 156;
 const PAGE = 4096;
 // A reveal proves against the root of the block this many below the tip.
 const SETTLE_DEPTH = 2;
+// The internal network's chain constants (spec 06, section 4.2, with its
+// genesis difficulty as D_START = D_MIN = 1).
+const INTERNAL_CHAIN_PARAMS = { blockTime: 30, halfLife: 3600, startDifficulty: 1, minDifficulty: 1, futureDrift: 30 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -255,7 +258,21 @@ if (!GETH) {
     // is sent again after a short wait, or proved again against the settled
     // root of the tip by then, and that gets the Summon and the Claim
     // through.
-    const flow = createFlow({ prover, endpoint: node.url, pollMs: 1000, maxPolls: 1800, onChange });
+    //
+    // This build pins no network, so the test adds the internal network's
+    // entry, starting the page's header chain at the genesis of the node it
+    // started itself; every header after it is checked in the worker, seal
+    // and difficulty included, at the internal network's test constants.
+    const genesisBlock = await rpc("eth_getBlockByNumber", ["0x0", false]);
+    const networks = {
+      [String(NETWORK_ID)]: {
+        params: INTERNAL_CHAIN_PARAMS,
+        genesisTimestamp: Number(BigInt(genesisBlock.timestamp)),
+        genesisHash: genesisBlock.hash,
+        pin: null,
+      },
+    };
+    const flow = createFlow({ prover, endpoint: node.url, networks, pollMs: 1000, maxPolls: 1800, onChange });
 
     // A stranger's commit, then the tip 2 blocks past it: from then on the
     // settled block's tree holds a leaf after the coin, and the coin can be
@@ -386,6 +403,9 @@ if (!GETH) {
       tree = await chainTree();
       assert.ok(tree.leaves.includes(toHex(claimLog.slice(8, 40))), "the claimed coin's leaf is in the coin tree");
       assert.equal(await balance(recipient), GHOST / 4n, "the claim leaves the recipient's balance as it was");
+
+      // Every confirmation above came from the page's own header chain.
+      assert.equal(flow.state.chainRefused, null, "the node's chain passed the proof-of-work check");
 
       // The old key shows claimed, the new key holds the claimed amount.
       s = await flow.summonOpen(key);

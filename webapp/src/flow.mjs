@@ -4,7 +4,9 @@
 //
 // What it talks to:
 //
-// - the chosen node endpoint, by JSON-RPC: headers, the coin tree in whole
+// - the chosen node endpoint, by JSON-RPC: headers, which the worker's header
+//   chain adopts only once their difficulty and proof-of-work seal check,
+//   from the start this build pins for the network; the coin tree in whole
 //   pages, the spent markers in whole pages, receipts, and the reveal
 //   transaction. No request names a key, a commitment, a position or a
 //   marker; the reveal itself carries only public fields;
@@ -23,7 +25,7 @@
 // soon as the step that needs it is done; the seed is kept while the wallet
 // is open and dropped when it is closed.
 
-import { concat, equalBytes, fromHex, quantity, toHex, toQuantity } from "./bytes.mjs";
+import { concat, fromHex, quantity, toHex, toQuantity } from "./bytes.mjs";
 import {
   CONFIRMATIONS,
   SETTLE_DEPTH,
@@ -34,7 +36,7 @@ import {
   parseGhost,
   settledHeight,
 } from "./chain.mjs";
-import { readHeader } from "./header.mjs";
+import { NETWORKS, networkOf, readHeader } from "./header.mjs";
 import { DEFAULT_ENDPOINT, SERVER_ERROR, createRpc } from "./rpc.mjs";
 
 // The coin commit entry address of the internal network ("ghost" in ASCII,
@@ -104,6 +106,34 @@ const HELD_BLOCKS = 2;
 // Times a receipt that names a replaced block is read again before the
 // transaction counts as dropped by a reorganisation.
 const REREADS = 3;
+
+// Headers the worker's chain is given in one request at most.
+const CHAIN_BATCH = 256;
+// Times a header dated ahead of the page's clock is offered again, and the
+// longest wait before each, in seconds.
+const AHEAD_WAITS = 3;
+const AHEAD_WAIT_S = 30;
+
+// What the page says when the endpoint's chain does not pass the header
+// chain's check: a seal that is not valid, a wrong difficulty, a start that
+// is not the pinned one, a header the chain cannot place. Uncertain means
+// refused: the app then shows no confirmation and takes no step that
+// depends on the headers.
+export const POW_FAILED = "the endpoint's chain failed the proof-of-work check";
+const NO_CONFIRMATIONS = "so the app shows no confirmations from it and takes no step that depends on its blocks";
+
+export class ChainRefused extends Error {}
+
+export function noPinMessage(chainId) {
+  return (
+    `this build has no pinned start for network ${chainId}: without one the app cannot check the endpoint's chain, ` +
+    "so it shows no confirmations and takes no step that depends on its blocks"
+  );
+}
+
+function powFailed(detail) {
+  return new ChainRefused(`${POW_FAILED} (${detail}), ${NO_CONFIRMATIONS}`);
+}
 
 // That refusal as it arrives over JSON-RPC: code -32000 and the node's
 // words. It is told by its shape on the wire, not by the class of the error
@@ -320,14 +350,27 @@ export function createFlow({
   endpoint = DEFAULT_ENDPOINT,
   commitEntry = DEFAULT_COMMIT_ENTRY,
   maxCommitFee = MAX_COMMIT_FEE,
+  // The networks whose header chain the app can check (header.mjs).
+  networks = NETWORKS,
+  // The page's clock in Unix seconds, against which a header's timestamp
+  // may run at most the network's future drift ahead.
+  clock = () => Math.floor(Date.now() / 1000),
   onChange = () => {},
 } = {}) {
   let rpc = createRpc(endpoint, { fetch });
   // The open wallet's seed words, never in `state`.
   let walletWords = null;
+  // The page's header chain, held in the worker: the network it is of, the
+  // endpoint it was last read from, its start height, and every header the
+  // worker adopted, by hash. One per page session; another network starts
+  // it again.
+  let headerChain = null;
   const state = {
     endpoint: rpc.url,
     commitEntry,
+    // Why the endpoint's chain is refused, while it is: no confirmation is
+    // shown from it.
+    chainRefused: null,
     // The wallet: null, or { stage, words, groups, wrong, address, balance }.
     // `words` is set only while a new seed is shown and checked.
     wallet: null,
@@ -353,6 +396,7 @@ export function createFlow({
       return await task();
     } catch (err) {
       state.error = err.message;
+      if (err instanceof ChainRefused) state.chainRefused = err.message;
       throw err;
     } finally {
       state.busy = null;
@@ -363,67 +407,186 @@ export function createFlow({
 
   // --- The chain, from the endpoint ---
 
-  async function blockNumber() {
-    return Number(quantity(await rpc.call("eth_blockNumber")));
-  }
-
-  // Block `number`'s header, kept only if keccak256 of its 18-field RLP
-  // (spec 05, section 10) is the hash the endpoint returned with it, so no
-  // field, a coin root included, can be changed under a real hash. The
-  // proof-of-work seal is not checked: the endpoint is trusted for it.
-  async function headerAt(number) {
+  // Block `number` as the endpoint returns it: its fields, its 18-field RLP
+  // (spec 05, section 10) and the hash it claims. Nothing here is trusted
+  // yet: the worker's chain checks the hash, the difficulty and the seal.
+  async function fetchHeader(number) {
     const raw = await rpc.call("eth_getBlockByNumber", [toQuantity(number), false]);
     if (!raw) throw new Error(`the endpoint has no block ${number}`);
     const { values, rlp } = readHeader(raw);
-    const hash = fromHex(raw.hash, 32);
-    const { hash: computed } = await prover.request("keccak256", { bytes: rlp });
-    if (!equalBytes(computed, hash)) {
-      throw new Error(`the endpoint's header of block ${number} does not hash to the block hash it returned`);
-    }
     const header = {
       number: Number(values.number),
-      hash,
+      hash: fromHex(raw.hash, 32),
       parentHash: values.parentHash,
       baseFee: values.baseFeePerGas,
       gasUsed: values.gasUsed,
       gasLimit: values.gasLimit,
       coinTreeRoot: values.coinTreeRoot,
+      timestamp: values.timestamp,
     };
     if (header.number !== number) throw new Error(`the endpoint returned block ${header.number} for ${number}`);
-    return header;
+    return { header, rlp };
   }
 
-  // The chain as of its tip: verified headers, each the parent of the next,
-  // from LEAF_WINDOW blocks below the settled block (or from genesis) up to
-  // the tip, which covers the settled block, the fee window and the block
-  // the markers are read at. Which blocks are asked for depends on the tip
-  // alone.
+  const notTheHash = (number) => new Error(`the endpoint's header of block ${number} does not hash to the block hash it returned`);
+
+  // The page's header chain for network `chainId`, started from this
+  // build's start for it the first time: the start header is fetched from
+  // the endpoint and kept only if its hash is the pinned one (genesis on a
+  // network with no pin). A network with no entry is refused.
+  async function chainFor(chainId) {
+    if (headerChain && headerChain.chainId === chainId) {
+      headerChain.endpoint = rpc.url;
+      return headerChain;
+    }
+    const network = networkOf(networks, chainId);
+    if (!network) throw new ChainRefused(noPinMessage(chainId));
+    const { pin } = network;
+    const height = pin ? pin.height : 0;
+    const startHash = String(pin ? pin.hash : network.genesisHash).toLowerCase();
+    const { header, rlp } = await fetchHeader(height);
+    if (toHex(header.hash) !== startHash) {
+      throw powFailed(`its block ${height} is not the start this build pins for network ${chainId}`);
+    }
+    const start = pin
+      ? {
+          header: rlp,
+          height,
+          totalWork: BigInt(pin.totalWork),
+          genesisTimestamp: network.genesisTimestamp,
+          keyBlocks: pin.keyBlocks.map(([h, hash]) => [h, fromHex(hash, 32)]),
+        }
+      : { header: rlp };
+    let started;
+    try {
+      started = await prover.request("chainStart", { params: network.params, start });
+    } catch (err) {
+      throw powFailed(err.message);
+    }
+    if (toHex(started.startHash) !== startHash) throw notTheHash(height);
+    headerChain = {
+      chainId,
+      network,
+      endpoint: rpc.url,
+      startHeight: height,
+      known: new Map([[startHash, { ...header, rlpHex: toHex(rlp) }]]),
+    };
+    return headerChain;
+  }
+
+  // The chain of the current endpoint; its chain identifier is asked once
+  // per endpoint.
+  async function currentChain() {
+    if (headerChain && headerChain.endpoint === rpc.url) return headerChain;
+    return chainFor(quantity(await rpc.call("eth_chainId")));
+  }
+
+  // The endpoint's tip, adopted through the page's header chain. The
+  // endpoint's headers are read from its tip down to the first one the
+  // chain holds, then added to the chain from there up: each is adopted
+  // only if it hashes to the hash returned with it, follows a header the
+  // chain holds, carries the difficulty the schedule requires and has a
+  // valid seal (lib.rs, ghost_chain_add). The tip must then be on the chain
+  // with the most work the page has seen; on a lighter branch it is refused
+  // and the heavier chain kept. A reorganisation is followed as soon as the
+  // endpoint's tip is on the heavier branch. Which blocks are asked for
+  // depends on the tip and on what the chain already holds, never on a key.
+  async function syncTip(hc = null) {
+    hc ??= await currentChain();
+    const top = Number(quantity(await rpc.call("eth_blockNumber")));
+    if (top < hc.startHeight) {
+      throw powFailed(`its tip, block ${top}, is below the start this build pins, block ${hc.startHeight}`);
+    }
+    const pending = [];
+    let tipHash = null;
+    for (let n = top; ; n -= 1) {
+      const fetched = await fetchHeader(n);
+      const id = toHex(fetched.header.hash);
+      tipHash ??= id;
+      const held = hc.known.get(id);
+      if (held) {
+        if (held.rlpHex !== toHex(fetched.rlp)) throw notTheHash(n);
+        break;
+      }
+      if (n <= hc.startHeight) throw powFailed(`its block ${n} does not descend from the start this build pins`);
+      if (pending.length > 0 && toHex(pending[0].header.parentHash) !== id) {
+        throw new Error(`block ${n + 1} does not follow block ${n}`);
+      }
+      pending.unshift(fetched);
+    }
+    let waits = 0;
+    for (let i = 0; i < pending.length; ) {
+      const part = pending.slice(i, i + CHAIN_BATCH);
+      const added = await prover.request("chainAdd", {
+        now: clock(),
+        headers: part.map(({ header, rlp }) => ({ hash: header.hash, rlp })),
+      });
+      for (const { header, rlp } of part.slice(0, added.adopted)) {
+        hc.known.set(toHex(header.hash), { ...header, rlpHex: toHex(rlp) });
+      }
+      i += added.adopted;
+      const { refused } = added;
+      if (!refused) continue;
+      if (refused.why === "hash") throw notTheHash(Number(refused.number));
+      // A header that passes every check but is dated more than the drift
+      // ahead of this clock is offered again once the clock has caught up,
+      // a few times; past that it is refused like any other.
+      if (refused.why === "ahead" && waits < AHEAD_WAITS) {
+        waits += 1;
+        const ahead = Number(pending[i].header.timestamp) - hc.network.params.futureDrift - clock();
+        progress(`waiting for this device's clock to reach block ${refused.number}'s time`);
+        await sleep(Math.min(Math.max(ahead, 0) + 1, AHEAD_WAIT_S) * 1000);
+        continue;
+      }
+      throw powFailed(`block ${refused.number}: ${refused.reason}`);
+    }
+    const view = await prover.request("chainView", { hash: fromHex(tipHash, 32), from: 1, to: 0 });
+    if (view.confirmations === 0n) {
+      throw new ChainRefused(
+        `the endpoint's chain, with its tip at block ${top}, has less proof of work than the chain this page has already checked ` +
+          `(tip at block ${view.best.height}): the app keeps the heavier chain and ${NO_CONFIRMATIONS}`,
+      );
+    }
+    state.chainRefused = null;
+    return hc.known.get(tipHash);
+  }
+
+  async function blockNumber() {
+    return (await syncTip()).number;
+  }
+
+  // The headers of the page's best chain at heights `from` to `to`, which
+  // the last syncTip reached.
+  async function chainRange(from, to, hc = headerChain) {
+    if (!hc) throw new Error("the page holds no header chain yet");
+    if (from < hc.startHeight) throw new Error(`block ${from} is below the start this build pins, block ${hc.startHeight}`);
+    const { hashes } = await prover.request("chainView", { hash: new Uint8Array(32), from, to });
+    return hashes.map((hash) => hc.known.get(toHex(hash)));
+  }
+
+  // Block `number`'s header on the page's best chain.
+  async function headerAt(number) {
+    return (await chainRange(number, number))[0];
+  }
+
+  // The chain as of its tip: headers of the page's best chain, each the
+  // parent of the next, from LEAF_WINDOW blocks below the settled block (or
+  // from the start) up to the tip, which covers the settled block, the fee
+  // window and the block the markers are read at.
   async function readChain() {
     const chainId = quantity(await rpc.call("eth_chainId"));
-    const top = await blockNumber();
+    const hc = await chainFor(chainId);
+    const tip = await syncTip(hc);
+    const top = tip.number;
     const settled = settledHeight(top);
-    const low = settled === null || settled < LEAF_WINDOW ? 0 : settled - LEAF_WINDOW;
-    const headers = await headerRange(low, top);
+    const low = Math.max(settled === null || settled < LEAF_WINDOW ? 0 : settled - LEAF_WINDOW, hc.startHeight);
+    const headers = await chainRange(low, top, hc);
     const at = (n) => {
       if (n < low || n > top) throw new Error(`block ${n} is outside the headers read`);
       return headers[n - low];
     };
-    const genesis = low === 0 ? headers[0] : await headerAt(0);
-    return { chainId, settled, low, headers, at, tip: headers[headers.length - 1], genesis };
-  }
-
-  // Consecutive verified headers, each the parent of the next.
-  async function headerRange(from, to) {
-    const headers = [];
-    for (let n = from; n <= to; n += 1) {
-      const header = await headerAt(n);
-      const parent = headers[headers.length - 1];
-      if (parent && toHex(header.parentHash) !== toHex(parent.hash)) {
-        throw new Error(`block ${n} does not follow block ${n - 1}`);
-      }
-      headers.push(header);
-    }
-    return headers;
+    const genesis = { hash: fromHex(hc.network.genesisHash, 32) };
+    return { chainId, settled, low, headers, at, tip, genesis };
   }
 
   // Every spent coin marker as of `anchor`, in whole marker pages. They are
@@ -528,7 +691,8 @@ export function createFlow({
   // of the tip, checked against the tip's coin root, holds `commitment` (the
   // new leaf every commit, reveal and claim appends) at a position the
   // receipt's block added, read from the coin roots of that block and its
-  // parent in the verified header chain that leads to the tip. The first
+  // parent on the page's header chain, the one with the most work, that
+  // leads to the tip. The first
   // block that holds it is enough (CONFIRMATIONS counts the transaction's own
   // block): no block on top is waited for. `receipt`, when given, is the one
   // already read for `hash`. The result carries the block's number and hash.
@@ -556,7 +720,7 @@ export function createFlow({
       await sleep(pollMs);
       top = await blockNumber();
     }
-    const headers = await headerRange(receipt.blockNumber - 1, top);
+    const headers = await chainRange(receipt.blockNumber - 1, top);
     const [parent, block] = headers;
     const tip = headers[headers.length - 1];
     if (receipt.blockHash && toHex(receipt.blockHash) !== toHex(block.hash)) {
@@ -588,7 +752,7 @@ export function createFlow({
   // header, holds `commitment`. The whole tree is read, so no request names
   // the leaf.
   async function treeHolds(commitment) {
-    const tip = await headerAt(await blockNumber());
+    const tip = await syncTip();
     const tree = await fetchTree(rpc, prover, tip);
     const leaf = toHex(commitment);
     for (let position = 0; position < tree.count; position += 1) {
@@ -767,7 +931,7 @@ export function createFlow({
       } catch (err) {
         failure ??= err;
       }
-      let tip = await headerAt(await blockNumber());
+      let tip = await syncTip();
       const { fee } = await feeForNextBlock(tip, headerAt);
       if (fee !== scan.fee) {
         feeChanges += 1;
@@ -809,7 +973,7 @@ export function createFlow({
         }
         progress(refusal ? "the node's chain moved on; sending again" : "the node let the reveal go; sending again");
         await sleep(resendMs);
-        tip = await headerAt(await blockNumber());
+        tip = await syncTip();
         if ((await feeForNextBlock(tip, headerAt)).fee !== scan.fee) {
           feeChanges += 1;
           continue attempts;
@@ -845,16 +1009,18 @@ export function createFlow({
 
   // Signs and sends an account transaction (type 0x52) from the open
   // wallet's account: the nonce, fee and gas from the endpoint, the genesis
-  // hash from its verified block 0 (the signature binds the chain), signed in
-  // the worker. Returns the transaction hash.
+  // hash from this build's entry for the network (the signature binds the
+  // chain), the base fee from the tip the page's header chain adopted,
+  // signed in the worker. Returns the transaction hash.
   async function sendFromWallet({ chainId, to, value, data }) {
     if (!walletWords || !state.wallet || state.wallet.stage !== "open") {
       throw new Error("open a wallet first: create one, or restore it from its 24 words");
     }
     const from = state.wallet.address;
-    const genesis = (await headerAt(0)).hash;
+    const hc = await chainFor(chainId);
+    const genesis = fromHex(hc.network.genesisHash, 32);
     const nonce = quantity(await rpc.call("eth_getTransactionCount", [from, "pending"]));
-    const tip = await headerAt(await blockNumber());
+    const tip = await syncTip(hc);
     // The endpoint's priority fee, at most PRIORITY_FEE_CAP.
     const asked = quantity(await rpc.call("eth_maxPriorityFeePerGas"));
     const priority = asked < PRIORITY_FEE_CAP ? asked : PRIORITY_FEE_CAP;
@@ -907,7 +1073,28 @@ export function createFlow({
 
   async function refreshSummon() {
     const s = state.summon;
-    const scan = await scanKey(s.key);
+    let scan;
+    try {
+      scan = await scanKey(s.key);
+    } catch (err) {
+      // A chain the page refused shows nothing of the key: no coin, no
+      // status, no tip.
+      if (err instanceof ChainRefused) {
+        Object.assign(s, {
+          status: "refused",
+          refusal: err.message,
+          coins: [],
+          current: null,
+          cover: null,
+          wait: null,
+          tip: null,
+          fee: null,
+          available: 0n,
+        });
+        emit();
+      }
+      throw err;
+    }
     const { status, current } = keyStatus(scan.found);
     const { fee } = scan;
     s.coins = scan.found.map(({ number, amount, position, spent }) => ({ number, amount, position, spent }));
@@ -1005,6 +1192,9 @@ export function createFlow({
       if (state.busy) throw new Error("wait until the current step is done");
       rpc = createRpc(text, { fetch });
       state.endpoint = rpc.url;
+      // The page's header chain stays: a new endpoint's chain is checked
+      // against it, and the heavier one is kept.
+      state.chainRefused = null;
       emit();
       return state.endpoint;
     },

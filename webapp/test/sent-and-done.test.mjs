@@ -61,7 +61,17 @@ async function setUp({ fetch = globalThis.fetch } = {}) {
       reveals: node.reveals.length,
     });
   };
-  const flow = createFlow({ prover, endpoint: node.url, pollMs: 5, maxPolls: 20, resendMs: RESEND_MS, sleep, fetch, onChange });
+  const flow = createFlow({
+    prover,
+    endpoint: node.url,
+    networks: node.networks(),
+    pollMs: 5,
+    maxPolls: 20,
+    resendMs: RESEND_MS,
+    sleep,
+    fetch,
+    onChange,
+  });
   await openTestWallet(flow, node);
   node.foreignCommits(2);
   const done = async () => {

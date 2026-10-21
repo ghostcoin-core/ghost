@@ -32,9 +32,19 @@ const NOTE_BYTES = 156;
 const GWEI = 1_000_000_000n;
 // Spec 05, vector empty-data-tree: no data commitment is ever made here.
 const EMPTY_DATA_ROOT = "0x3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03";
-// Spec 05, section 10: the hash of the empty list, and the start difficulty.
+// Spec 05, section 10: the hash of the empty list.
 const EMPTY_LIST_HASH = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347";
-const D_START = 1n << 24n;
+// The internal network's test constants (spec 06, section 4.2, with
+// D_START = D_MIN = 1): a header stamped on the 30-second schedule, or behind
+// it, requires difficulty 1, so any nonce seals it; one stamped a whole
+// number k of half-lives ahead of it requires 2^k.
+export const TEST_CHAIN_PARAMS = Object.freeze({
+  blockTime: 30,
+  halfLife: 3600,
+  startDifficulty: 1,
+  minDifficulty: 1,
+  futureDrift: 30,
+});
 export const FAKE_CHAIN_ID = 7_777_001n;
 // The commit data the node takes (spec 07; ghostpriv.CommitData): version
 // 0x0001, F and the note, and the node's words for anything else.
@@ -118,7 +128,26 @@ function nodeFee(blocks, height) {
   return base + (base + 9n) / 10n;
 }
 
-export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntry }) {
+// The stand-in's headers follow the internal network's test constants: block
+// n is stamped `genesisTime + 30 n`, on the schedule, so it requires
+// difficulty 1 and carries it, with an all-zero mix digest, and any nonce
+// seals it. The genesis time is in the past (400 days ago by default), so no
+// header runs ahead of the page's clock. With `earlyHalfLives` k, every
+// block after genesis is stamped k half-lives ahead of the schedule and
+// carries the 2^k it then requires, while its nonce is still not mined: its
+// seal fails (a header chain must start above genesis for such a chain,
+// `pinnedNetwork`). `setDifficulty(d)` makes the blocks mined from then on
+// carry difficulty `d` whatever the schedule requires.
+export async function startFakeNode({
+  ghost,
+  chainId = FAKE_CHAIN_ID,
+  commitEntry,
+  genesisTime = Math.floor(Date.now() / 1000) - 400 * 86_400,
+  earlyHalfLives = 0,
+}) {
+  const early = BigInt(earlyHalfLives) * BigInt(TEST_CHAIN_PARAMS.halfLife);
+  const scheduled = 1n << BigInt(earlyHalfLives);
+  let difficultyOverride = null;
   const leaves = []; // { commitment, note, block }
   const spent = []; // { marker, block }
   const blocks = [];
@@ -187,14 +216,15 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       transactionsRoot: toHex(sha256("transactions", String(number))),
       receiptsRoot: toHex(sha256("receipts", String(number))),
       logsBloom: toHex(new Uint8Array(256)),
-      difficulty: q(D_START),
+      difficulty: q(number === 0 ? 1n : (difficultyOverride ?? scheduled)),
       number: q(number),
       gasLimit: q(30_000_000n),
       gasUsed: q(15_000_000n),
-      timestamp: q(1_798_767_600 + number * 30),
+      timestamp: q(BigInt(genesisTime) + 30n * BigInt(number) - (number === 0 ? 0n : early)),
       extraData: "0x",
-      mixHash: toHex(sha256("mix", String(number))),
-      nonce: toHex(sha256("nonce", String(number)).slice(0, 8)),
+      // Spec 08: a sealed header's mix digest is all zero.
+      mixHash: toHex(new Uint8Array(32)),
+      nonce: toHex(sha256("nonce", String(number), `fork ${fork}`).slice(0, 8)),
       baseFeePerGas: q(baseFee),
       coinTreeRoot: toHex(coinTreeRoot),
       dataTreeRoot: EMPTY_DATA_ROOT,
@@ -245,11 +275,12 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
   }
 
   // Takes the last `depth` blocks out of the chain, with every commit and
-  // reveal they held, and mines `depth + 1` empty blocks in their place: a
-  // reorganisation onto a longer chain that holds none of those
-  // transactions. Nothing taken out comes back. Returns the first height
-  // replaced.
-  function reorg(depth = 1) {
+  // reveal they held, and mines `length` empty blocks in their place
+  // (`depth + 1` by default): a reorganisation onto a chain that holds none
+  // of those transactions, heavier than the old one, or lighter with a
+  // `length` of `depth` or less. Nothing taken out comes back. Returns the
+  // first height replaced.
+  function reorg(depth = 1, { length = depth + 1 } = {}) {
     const cut = blocks.length - depth;
     if (cut < 1) throw new Error("cannot replace genesis");
     blocks.length = cut;
@@ -269,7 +300,7 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
       reveals.splice(i, 1);
     }
     fork += 1;
-    for (let i = 0; i <= depth; i += 1) mine();
+    for (let i = 0; i < length; i += 1) mine();
     return cut;
   }
 
@@ -610,6 +641,28 @@ export async function startFakeNode({ ghost, chainId = FAKE_CHAIN_ID, commitEntr
     // Blocks mined from now on carry base fee `wei` (each still half full).
     setBaseFee(wei) {
       baseFee = wei;
+    },
+    // Blocks mined from now on carry difficulty `d` (null: what the
+    // schedule requires).
+    setDifficulty(d) {
+      difficultyOverride = d === null ? null : BigInt(d);
+    },
+    // The table of networks createFlow takes, with this chain's entry: its
+    // constants, genesis and, with `pinAt`, the pinned start at that height
+    // (its total work and genesis, the key block of every header here).
+    networks({ pinAt = null } = {}) {
+      const genesisHash = toHex(blocks[0].hash);
+      const pin =
+        pinAt === null
+          ? null
+          : {
+              hash: toHex(blocks[pinAt].hash),
+              height: pinAt,
+              totalWork: 1n + BigInt(pinAt) * scheduled,
+              keyBlocks: [[0, genesisHash]],
+            };
+      const entry = { params: TEST_CHAIN_PARAMS, genesisTimestamp: genesisTime, genesisHash, pin };
+      return { [String(chainId)]: entry };
     },
     mineTo(height) {
       while (blocks.length - 1 < height) mine();
