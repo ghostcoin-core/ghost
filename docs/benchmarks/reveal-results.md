@@ -129,6 +129,46 @@ the session, saved the records, and took the proofs out of the page for
 `ghost-reveal-verify`. The proof files (about 26 MB a session) are not
 committed; the records carry each proof's size and its native result.
 
+### The session driver
+
+The driver is `benchmarks/web/drive-reveal.mjs` (Node 22 or later, no
+dependencies). Start Chrome yourself with a DevTools port and a fresh
+profile; the driver never launches or closes the browser and closes only the
+tabs it opened:
+
+```sh
+chrome --remote-debugging-port=9222 --user-data-dir="$(mktemp -d)"
+python3 benchmarks/web/serve.py --port 8000
+node benchmarks/web/drive-reveal.mjs --devtools http://localhost:9222 \
+  --page http://localhost:8000/reveal.html --sessions 5 --mode desktop \
+  --commit "$(git rev-parse HEAD)" --out results --proofs
+node benchmarks/web/drive-reveal.mjs --devtools http://localhost:9222 \
+  --page http://localhost:8000/reveal.html --sessions 5 --mode phone \
+  --commit "$(git rev-parse HEAD)" --out results --proofs
+```
+
+For every session it opens a fresh tab, applies Chrome's own CPU throttling
+with `Emulation.setCPUThrottlingRate` (1x for `desktop`, the Mac Studio; 4x
+for `phone`, the emulated mid-range phone) to the tab and to the prover
+worker when Chrome accepts it there, and clears network emulation (no
+latency, no throughput limit: nothing but the CPU is changed). It then sets
+the device, session number, warm runs and commit, starts the session, waits
+for the page to finish, writes the records to
+`<out>/<device>-coin-reveal-session<n>.jsonl` in the format of
+[reveal-results/](reveal-results/), and closes its tab. With `--proofs` it
+also writes the session's proofs for `ghost-reveal-verify`. It rests 180
+seconds before every session after the first (`--rest`); run the two modes
+in turn to interleave the devices. `--help` lists every option.
+
+Each record names the throttle in `cpu_throttling`,
+`cpu_throttling_rate_applied` and `cpu_throttling_worker` (whether Chrome
+accepted the throttle on the worker). The run above used the duty-cycle
+throttle instead, because the DevTools throttle did not reach the worker in
+that Chrome build; with the DevTools throttle, check that the phone's warm
+median is about 4 times the Mac Studio's before using the figures. The
+driver does not read the renderer's `footprint` peak or verify the proofs
+natively: run `ghost-reveal-verify` on the `.proofs` files afterwards.
+
 ## What this run did not cover
 
 - **No real phone.** The phone figures are an emulation: the Mac Studio's CPU
