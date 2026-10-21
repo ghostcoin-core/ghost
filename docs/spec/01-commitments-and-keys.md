@@ -1026,11 +1026,14 @@ that the vectors can be repeated; a wallet draws every salt fresh from its
 secure random source. The same secret under two salts gives unrelated
 fingerprints, commitments and markers, and neither matches the version 1 value
 above, so one guess at a key no longer checks every leaf (section 3,
-"Multi-target guessing").
+"Multi-target guessing"). Their kinds, `salted-coin-commitment` and
+`salted-data-commitment`, are their own: a `coin-commitment` or
+`data-commitment` vector is always version 1, so a reader that knows only
+version 1 never meets a salt.
 
 ```text
 [coin-commit-salted]
-kind = coin-commitment
+kind = salted-coin-commitment
 version = 2
 key = 1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417
 index = 0
@@ -1043,7 +1046,7 @@ commitment = 72ab16e25e13d2101dbfad21972605641aa4f2ea369b7173edd4d3ba2678689d
 marker = 3c282d093fe067c0b1c5a006ad8b63d3f39c7474875a344d403f4c90f67147d7
 
 [coin-commit-salted-other]
-kind = coin-commitment
+kind = salted-coin-commitment
 version = 2
 key = 1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417
 index = 0
@@ -1056,7 +1059,7 @@ commitment = be9a0db30dbd08f5af50b766ceafd3c15f3f843d9cf5122682e002448380bd74
 marker = 9dfea129ee1bc7ed31a2b88898d46086fb3f809cd82c49bffa21f8e08da28a1b
 
 [coin-remainder-salted]
-kind = coin-commitment
+kind = salted-coin-commitment
 version = 2
 key = 1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417
 index = 1
@@ -1069,7 +1072,7 @@ commitment = 7b2269649fa191df18cf80dde1e81f5cf61bb00a7faf17f58aafc197251393ab
 marker = 7815b5757618c80fc7dcc8e65ff2c88a988a44e9a64b1da24442609e81a13c6f
 
 [coin-remainder-salted-other]
-kind = coin-commitment
+kind = salted-coin-commitment
 version = 2
 key = 1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417
 index = 1
@@ -1082,7 +1085,7 @@ commitment = c07b2ff99412387057a171046120ac0d57f63d9516a0bc612089a7cdf0200bf2
 marker = c1a31a5f9b7a063f7fde8892a6ce0ec7633e5a7dd0911865c4b6f9c5b305db4c
 
 [data-commit-salted]
-kind = data-commitment
+kind = salted-data-commitment
 version = 2
 key = 2718 2818 2845 9045 2353 6028 7471 3526 6249 7757 2470 4457
 index = 0
@@ -1097,7 +1100,7 @@ commitment = 324c90dbad0fbecfd82331d087ea216b525e68b8dcb64891aa59322565ebb8b5
 marker = a76b9995583a8c40de091ddd470487840e5f04c77c5944ba62092ea6dc591991
 
 [data-commit-salted-other]
-kind = data-commitment
+kind = salted-data-commitment
 version = 2
 key = 2718 2818 2845 9045 2353 6028 7471 3526 6249 7757 2470 4457
 index = 0
