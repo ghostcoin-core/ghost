@@ -48,6 +48,12 @@
 #                            rollover and commitment-in-full-tree cases run
 #                            only with it, and are skipped with their reason
 #                            without it
+#   GHOST_RECOVERY_TREE_DEPTH
+#                            levels of that node's coin trees, whose roots its
+#                            headers carry (spec 05, RT-1 Part B: 14 for
+#                            16,384 leaves); by default the depth whose 2^depth
+#                            is GHOST_RECOVERY_TREE_LEAVES, or 32 when that is
+#                            not a power of two
 #
 # Usage: scripts/recovery-blackout.sh [--require-all]
 #   --require-all   fail if any case is skipped (the launch gate runs this)
@@ -74,6 +80,24 @@ tree_leaves="${GHOST_RECOVERY_TREE_LEAVES:-}"
 if [ -n "$tree_leaves" ] && ! [[ "$tree_leaves" =~ ^[1-9][0-9]*$ ]]; then
   echo "recovery-blackout: GHOST_RECOVERY_TREE_LEAVES is not a leaf count: $tree_leaves" >&2
   exit 2
+fi
+tree_depth="${GHOST_RECOVERY_TREE_DEPTH:-}"
+if [ -n "$tree_depth" ]; then
+  if ! [[ "$tree_depth" =~ ^[0-9]+$ ]] || [ "$tree_depth" -lt 12 ] || [ "$tree_depth" -gt 32 ]; then
+    echo "recovery-blackout: GHOST_RECOVERY_TREE_DEPTH is not a depth from 12 to 32: $tree_depth" >&2
+    exit 2
+  fi
+  if [ -z "$tree_leaves" ]; then
+    echo "recovery-blackout: GHOST_RECOVERY_TREE_DEPTH needs GHOST_RECOVERY_TREE_LEAVES" >&2
+    exit 2
+  fi
+elif [ -n "$tree_leaves" ]; then
+  tree_depth=32
+  for d in $(seq 12 31); do
+    if [ "$tree_leaves" = "$((1 << d))" ]; then
+      tree_depth=$d
+    fi
+  done
 fi
 
 # The hosts the project runs, or that hold its source and releases: its
@@ -275,6 +299,7 @@ as_user env -i \
   GHOST_NODE_GETH="$geth_a" GHOST_WEBAPP_WASM="$wasm" \
   GHOST_RECOVERY_NETNS="$ns" GHOST_RECOVERY_RESULTS="$results" \
   ${tree_leaves:+GHOST_RECOVERY_TREE_LEAVES="$tree_leaves"} \
+  ${tree_depth:+GHOST_RECOVERY_TREE_DEPTH="$tree_depth"} \
   node --test --test-reporter=spec --test-timeout=7200000 "$webapp/test/e2e/recovery.test.mjs" 2>&1 | tee "$log" >&2
 test_status=${PIPESTATUS[0]}
 set -e

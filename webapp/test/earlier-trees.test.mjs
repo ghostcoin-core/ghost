@@ -16,7 +16,18 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { concat, toHex } from "../src/bytes.mjs";
-import { DEFAULT_COMMIT_ENTRY, RECEIPTS_FAILED, checkTreesAgainstReceipts, createFlow, fetchTrees } from "../src/flow.mjs";
+import {
+  DEFAULT_COMMIT_ENTRY,
+  RECEIPTS_FAILED,
+  SMALL_TREE_REVEAL,
+  checkTreesAgainstReceipts,
+  createFlow,
+  fetchTrees,
+  keccak256,
+  prefixRootsAt,
+  treeCheckAt,
+  treeRootsAt,
+} from "../src/flow.mjs";
 import { loadModule, nodeProver, openTestWallet, wasmPath, webappDir } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
 
@@ -460,6 +471,120 @@ test("a scan of a rolled-over chain refuses a note, salt or marker the receipts 
         Object.assign(node.dishonest, { note: null, salt: null, markers: null });
       }
       assert.equal((await flow.summonOpen(key)).status, "unclaimed", "the honest chain still reads");
+    } finally {
+      prover.terminate();
+    }
+  });
+});
+
+// Trees of 14 levels, as spec 05, RT-1 Part B builds the node for the
+// rollover: 16,384 leaves, four pages.
+const SMALL_DEPTH = 14;
+const SMALL_LEAVES = 2 ** SMALL_DEPTH;
+const tagged = (tag) => concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]);
+// `count` leaves, each the module's Keccak-256 of a few bytes.
+const someLeaves = (count, seed = 0) => concat(Array.from({ length: count }, (_, i) => ghost.keccak256(Uint8Array.of(seed, i & 0xff, i >> 8))));
+
+test("the page's tree hashing is the module's at 32 levels, and a 14-level root is the level-14 node of the same tree", () => {
+  for (const n of [0, 1, 31, 135, 136, 137, 271, 272, 400]) {
+    const msg = Uint8Array.from({ length: n }, (_, i) => (i * 7 + 3) & 0xff);
+    assert.equal(toHex(keccak256(msg)), toHex(ghost.keccak256(msg)), `Keccak-256 of ${n} bytes`);
+  }
+  for (const count of [0, 1, 2, 3, 5, 4097]) {
+    const leaves = someLeaves(count);
+    const module = ghost.treeRoots(leaves);
+    const page = treeRootsAt(32, leaves);
+    assert.equal(toHex(page.root), toHex(module.root), `the 32-level root of ${count} leaves`);
+    assert.deepEqual(page.pageRoots.map(toHex), module.pageRoots.map(toHex));
+  }
+  const nine = someLeaves(9);
+  assert.deepEqual(prefixRootsAt(32, nine, 0, 9).map(toHex), ghost.prefixRoots(nine, 0, 9).map(toHex));
+  assert.deepEqual(prefixRootsAt(32, nine, 4, 7).map(toHex), ghost.prefixRoots(nine, 4, 7).map(toHex));
+
+  // A 14-level root, climbed 18 more levels over empty subtrees with the
+  // module's own hash, is the module's 32-level root of the same leaves.
+  const node = (level, left, right) => ghost.keccak256(concat([tagged("ghost/coin-tree-node/v1"), Uint8Array.of(level), left, right]));
+  const z = [ghost.keccak256(tagged("ghost/empty-leaf/v1"))];
+  for (let level = 0; level < 32; level += 1) z.push(node(level, z[level], z[level]));
+  const full = someLeaves(SMALL_LEAVES, 1);
+  for (const leaves of [someLeaves(0), someLeaves(1), nine, someLeaves(4097), full]) {
+    let root = treeRootsAt(SMALL_DEPTH, leaves).root;
+    assert.notEqual(toHex(root), toHex(ghost.treeRoots(leaves).root), "a 14-level root is not the 32-level one");
+    for (let level = SMALL_DEPTH; level < 32; level += 1) root = node(level, root, z[level]);
+    assert.equal(toHex(root), toHex(ghost.treeRoots(leaves).root), `${leaves.length / 32} leaves`);
+  }
+  // Every prefix root is that prefix's root, the full tree's included.
+  prefixRootsAt(SMALL_DEPTH, nine, 0, 9).forEach((root, count) => {
+    assert.equal(toHex(root), toHex(treeRootsAt(SMALL_DEPTH, nine.slice(0, 32 * count)).root), `prefix of ${count}`);
+  });
+  const fullRoot = treeRootsAt(SMALL_DEPTH, full);
+  assert.equal(toHex(prefixRootsAt(SMALL_DEPTH, full, SMALL_LEAVES, SMALL_LEAVES)[0]), toHex(fullRoot.root));
+  assert.throws(() => prefixRootsAt(SMALL_DEPTH, concat([full, nine.slice(0, 32)]), 0, SMALL_LEAVES + 1), /outside the leaves/);
+
+  // The tree check at 14 levels, in the worker's words.
+  const pageRoots = concat(fullRoot.pageRoots);
+  treeCheckAt(SMALL_DEPTH, { pageRoots, leaves: full, root: fullRoot.root });
+  assert.throws(() => treeCheckAt(SMALL_DEPTH, { pageRoots, leaves: full, root: ghost.treeRoots(full).root }), /does not give the header's coin root/);
+  const changed = full.slice();
+  changed[5] ^= 1;
+  assert.throws(() => treeCheckAt(SMALL_DEPTH, { pageRoots, leaves: changed, root: fullRoot.root }), /page 0 does not match its page root/);
+  assert.throws(() => treeCheckAt(SMALL_DEPTH, { pageRoots, leaves: full.slice(0, -32), root: fullRoot.root }), /page 3 does not match/);
+  assert.throws(() => treeCheckAt(11, { pageRoots, leaves: full, root: fullRoot.root }), /11 levels is not supported/);
+  assert.throws(() => createFlow({ treeDepth: SMALL_DEPTH, treeLeaves: SMALL_LEAVES + 1 }), /cannot hold 16385 leaves/);
+});
+
+test("on a node of 14-level trees the flow checks, follows and restores across trees with that depth's roots, and proves nothing", async () => {
+  await withNode({ treeDepth: SMALL_DEPTH }, async (node) => {
+    const prover = nodeProver();
+    try {
+      const options = { prover, endpoint: node.url, networks: node.networks(), pollMs: 5, sleep: async () => node.mine(), treeDepth: SMALL_DEPTH };
+      const flow = createFlow(options);
+      await openTestWallet(flow, node);
+      const words = (f, key) => f.vanishSaved().map((p) => key.split(" ")[p - 1]);
+      // Strangers' coins in one block, then key KB's coin as tree 0's
+      // second to last leaf; one more fills tree 0, the next starts tree 1.
+      node.foreignCommitsInOneBlock(SMALL_LEAVES - 2);
+      const kb = await flow.vanishStart("1");
+      assert.equal((await flow.vanishCheck(words(flow, kb))).ok, true);
+      assert.equal(toHex(node.leaves[SMALL_LEAVES - 2].commitment), toHex(node.commits.at(-1).commitment));
+      node.foreignCommits(2);
+      node.mineTo(node.tip() + 2);
+
+      // The headers carry 14-level roots: tree 0's final root, in the block
+      // that filled it, is the page's 14-level root of its leaves.
+      const filled = node.blocks.findIndex((b) => b.leafCount === SMALL_LEAVES);
+      const treeZero = leavesOf(node.leaves.slice(0, SMALL_LEAVES));
+      assert.equal(toHex(node.blocks[filled].coinTreeRoot), toHex(treeRootsAt(SMALL_DEPTH, treeZero).root));
+      assert.notEqual(toHex(node.blocks[filled].coinTreeRoot), toHex(ghost.treeRoots(treeZero).root));
+
+      // A device of the release depth refuses those roots.
+      const release = createFlow({ ...options, treeDepth: undefined });
+      await assert.rejects(release.summonOpen(kb), /does not give the header's coin root/);
+
+      // Told the depth, a device reads both trees and finds KB in the full
+      // tree 0, against whose final root it would prove, with no wait.
+      let s = await flow.summonOpen(kb);
+      assert.equal(s.status, "unclaimed");
+      assert.deepEqual([s.current.treeIndex, s.current.position], [0, SMALL_LEAVES - 2]);
+      assert.equal(s.wait, null);
+      assert.deepEqual(s.cover, { height: filled, covers: SMALL_LEAVES, total: SMALL_LEAVES });
+      // The worker proves only against 32-level roots: the reveal is refused
+      // before anything is sent.
+      await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), (err) => err.message === SMALL_TREE_REVEAL);
+      assert.equal(node.reveals.length, 0);
+      flow.summonClose();
+
+      // Key KA commits into tree 1; a clean device restores it there.
+      const ka = await flow.vanishStart("1");
+      assert.equal((await flow.vanishCheck(words(flow, ka))).ok, true);
+      node.mineTo(node.tip() + 2);
+      const clean = createFlow(options);
+      s = await clean.summonOpen(ka);
+      assert.equal(s.status, "unclaimed");
+      assert.deepEqual([s.current.treeIndex, s.current.position, s.current.amount], [1, 1, GHOST]);
+      s = await clean.summonOpen(kb);
+      assert.deepEqual([s.current.treeIndex, s.current.position], [0, SMALL_LEAVES - 2]);
+      assert.equal(clean.state.chainRefused, null);
     } finally {
       prover.terminate();
     }

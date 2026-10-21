@@ -61,8 +61,9 @@ export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 export const PAGE_LEAVES = 4096;
 // Leaves of one coin tree (spec 05, section 3): 2^32. A full tree is final
 // and the next leaf goes to position 0 of the next tree index. createFlow
-// takes another count only to talk to a node whose trees are smaller, as a
-// recovery test of a rollover needs; the release never sets it.
+// takes another count, and another depth (treeDepth, TREE_DEPTH below), only
+// to talk to a node whose trees are smaller, as a recovery test of a
+// rollover needs; the release never sets either.
 export const LEAVES_PER_TREE = 2 ** 32;
 // The coin tree logs of a block's receipts (client/src/receipts.rs, after
 // ghost-node docs/private-transactions.md, "Receipts"): the coin tree
@@ -319,9 +320,10 @@ function sameCoin(a, b) {
 // Every leaf and note of coin tree `treeIndex` (0 unless given) as of
 // `anchor` (a verified header), checked against the anchor's coin root: the
 // tree the anchor's header holds. fetchTrees reads the full trees before it.
-export async function fetchTree(rpc, prover, anchor, treeIndex = 0) {
+// `treeDepth` is the tree's levels (TREE_DEPTH, fewer only on a test node).
+export async function fetchTree(rpc, prover, anchor, treeIndex = 0, { treeDepth = TREE_DEPTH } = {}) {
   const tree = await readTree(rpc, anchor, treeIndex);
-  await prover.request("treeCheck", { pageRoots: tree.pageRoots, leaves: tree.leaves, root: anchor.coinTreeRoot });
+  await checkTree(prover, treeDepth, { pageRoots: tree.pageRoots, leaves: tree.leaves, root: anchor.coinTreeRoot });
   return { count: tree.count, leaves: tree.leaves, records: tree.records, salts: tree.salts };
 }
 
@@ -388,8 +390,12 @@ function ofTree(treeIndex) {
 //   earlier tree's; the next tree is read after it.
 //
 // Anything else, a tree with more leaves than a tree holds, a full tree
-// whose final root no header carries, a tree served twice, is refused.
-export async function fetchTrees(rpc, prover, anchor, { headerWithRoot, treeLeaves = LEAVES_PER_TREE }) {
+// whose final root no header carries, a tree served twice, is refused. The
+// roots are of trees of `treeDepth` levels (TREE_DEPTH unless a test node's
+// trees are smaller), each holding at most 2^treeDepth leaves.
+export async function fetchTrees(rpc, prover, anchor, { headerWithRoot, treeDepth = TREE_DEPTH, treeLeaves = 2 ** treeDepth }) {
+  checkDepth(treeDepth);
+  if (!(treeLeaves >= 1 && treeLeaves <= 2 ** treeDepth)) throw new Error(`a tree of ${treeDepth} levels cannot hold ${treeLeaves} leaves`);
   const trees = [];
   for (let k = 0; ; k += 1) {
     const tree = await readTree(rpc, anchor, k);
@@ -397,12 +403,12 @@ export async function fetchTrees(rpc, prover, anchor, { headerWithRoot, treeLeav
       throw new Error(`coin tree ${k} from the endpoint holds ${tree.count} leaves, more than a tree holds (${treeLeaves})`);
     }
     if (tree.count < treeLeaves) {
-      await prover.request("treeCheck", { pageRoots: tree.pageRoots, leaves: tree.leaves, root: anchor.coinTreeRoot });
+      await checkTree(prover, treeDepth, { pageRoots: tree.pageRoots, leaves: tree.leaves, root: anchor.coinTreeRoot });
       trees.push({ treeIndex: k, root: anchor.coinTreeRoot, ...tree });
       return trees;
     }
-    const [root] = (await prover.request("prefixRoots", { leaves: tree.leaves, from: tree.count, to: tree.count })).roots;
-    await prover.request("treeCheck", { pageRoots: tree.pageRoots, leaves: tree.leaves, root });
+    const [root] = await prefixRootsOf(prover, treeDepth, tree.leaves, tree.count, tree.count);
+    await checkTree(prover, treeDepth, { pageRoots: tree.pageRoots, leaves: tree.leaves, root });
     trees.push({ treeIndex: k, root, ...tree });
     if (toHex(root) === toHex(anchor.coinTreeRoot)) return trees;
     if (trees.slice(0, -1).some((earlier) => toHex(earlier.root) === toHex(root))) {
@@ -655,6 +661,212 @@ export function checkTreesAgainstReceipts({ trees, blockRecords, start, treeLeav
   if (held.length > compared.length) throw new Error(`spent marker ${listed.length} is missing`);
 }
 
+// --- Coin trees of fewer levels, for a test node ---
+//
+// The release's coin tree has 32 levels (proofs/src/hash.rs, TREE_DEPTH),
+// and the worker hashes only that depth. A test node whose trees are smaller
+// so that a rollover is reachable (spec 05, RT-1 Part B: 14 levels, 16,384
+// leaves) carries roots of its own depth in its headers, so for any other
+// depth the page checks trees and computes prefix roots itself, with the
+// same hash: an inner node at `level` is K("ghost/coin-tree-node/v1", level,
+// left, right) and an empty leaf K("ghost/empty-leaf/v1"), K being
+// Keccak-256 over the tag's length byte, the tag and the parts. A page is
+// the subtree of height 12 under each page root whatever the depth, so a
+// depth below 12 is refused.
+export const TREE_DEPTH = 32;
+const PAGE_LEVELS = 12;
+// The worker proves a coin only against the root of a tree of TREE_DEPTH
+// levels (lib.rs, ghost_prove), which no header of a test node of smaller
+// trees carries, so a reveal there is refused before it is proved, as any
+// coin the worker cannot prove: the work done is a decoy's.
+export const SMALL_TREE_REVEAL =
+  "this build proves a coin only against a coin tree of 32 levels; a test node of smaller trees needs a prover of that depth " +
+  "(spec 05, RT-8 Part B)";
+
+// Keccak-256 with the original padding (0x01 ... 0x80), over 64-bit lanes
+// held as two 32-bit halves (low, high).
+const KECCAK_ROUNDS = [
+  "0x0000000000000001", "0x0000000000008082", "0x800000000000808a", "0x8000000080008000",
+  "0x000000000000808b", "0x0000000080000001", "0x8000000080008081", "0x8000000000008009",
+  "0x000000000000008a", "0x0000000000000088", "0x0000000080008009", "0x000000008000000a",
+  "0x000000008000808b", "0x800000000000008b", "0x8000000000008089", "0x8000000000008003",
+  "0x8000000000008002", "0x8000000000000080", "0x000000000000800a", "0x800000008000000a",
+  "0x8000000080008081", "0x8000000000008080", "0x0000000080000001", "0x8000000080008008",
+].map((hex) => [Number(BigInt(hex) & 0xffffffffn), Number(BigInt(hex) >> 32n)]);
+// The rotation of lane x + 5y.
+const KECCAK_ROTATIONS = [0, 1, 62, 28, 27, 36, 44, 6, 55, 20, 3, 10, 43, 25, 39, 41, 45, 15, 21, 8, 18, 2, 61, 56, 14];
+const KECCAK_RATE = 136;
+
+function keccakF(s) {
+  const c = new Uint32Array(10);
+  const b = new Uint32Array(50);
+  for (const [roundLow, roundHigh] of KECCAK_ROUNDS) {
+    for (let x = 0; x < 5; x += 1) {
+      c[2 * x] = s[2 * x] ^ s[2 * x + 10] ^ s[2 * x + 20] ^ s[2 * x + 30] ^ s[2 * x + 40];
+      c[2 * x + 1] = s[2 * x + 1] ^ s[2 * x + 11] ^ s[2 * x + 21] ^ s[2 * x + 31] ^ s[2 * x + 41];
+    }
+    for (let x = 0; x < 5; x += 1) {
+      const l = (x + 4) % 5;
+      const r = (x + 1) % 5;
+      const low = c[2 * l] ^ ((c[2 * r] << 1) | (c[2 * r + 1] >>> 31));
+      const high = c[2 * l + 1] ^ ((c[2 * r + 1] << 1) | (c[2 * r] >>> 31));
+      for (let y = 0; y < 25; y += 5) {
+        s[2 * (x + y)] ^= low;
+        s[2 * (x + y) + 1] ^= high;
+      }
+    }
+    // B[y][2x + 3y] is A[x][y] rotated.
+    for (let x = 0; x < 5; x += 1) {
+      for (let y = 0; y < 5; y += 1) {
+        const i = x + 5 * y;
+        const j = y + 5 * ((2 * x + 3 * y) % 5);
+        const n = KECCAK_ROTATIONS[i];
+        let low = s[2 * i];
+        let high = s[2 * i + 1];
+        if (n >= 32) [low, high] = [high, low];
+        const m = n % 32;
+        b[2 * j] = m === 0 ? low : (low << m) | (high >>> (32 - m));
+        b[2 * j + 1] = m === 0 ? high : (high << m) | (low >>> (32 - m));
+      }
+    }
+    for (let y = 0; y < 25; y += 5) {
+      for (let x = 0; x < 5; x += 1) {
+        const i = x + y;
+        const i1 = ((x + 1) % 5) + y;
+        const i2 = ((x + 2) % 5) + y;
+        s[2 * i] = b[2 * i] ^ (~b[2 * i1] & b[2 * i2]);
+        s[2 * i + 1] = b[2 * i + 1] ^ (~b[2 * i1 + 1] & b[2 * i2 + 1]);
+      }
+    }
+    s[0] ^= roundLow;
+    s[1] ^= roundHigh;
+  }
+}
+
+export function keccak256(msg) {
+  const padded = new Uint8Array((Math.floor(msg.length / KECCAK_RATE) + 1) * KECCAK_RATE);
+  padded.set(msg);
+  padded[msg.length] ^= 0x01;
+  padded[padded.length - 1] ^= 0x80;
+  const view = new DataView(padded.buffer);
+  const s = new Uint32Array(50);
+  for (let at = 0; at < padded.length; at += KECCAK_RATE) {
+    for (let i = 0; i < KECCAK_RATE / 4; i += 1) s[i] ^= view.getUint32(at + 4 * i, true);
+    keccakF(s);
+  }
+  const out = new Uint8Array(32);
+  const outView = new DataView(out.buffer);
+  for (let i = 0; i < 8; i += 1) outView.setUint32(4 * i, s[i], true);
+  return out;
+}
+
+const tagBytes = (tag) => concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]);
+const NODE_TAG = tagBytes("ghost/coin-tree-node/v1");
+const treeNode = (level, left, right) => keccak256(concat([NODE_TAG, Uint8Array.of(level), left, right]));
+
+// Z_0 to Z_depth: the empty subtree of each height.
+const zerosCache = new Map();
+function zerosOf(depth) {
+  if (!zerosCache.has(depth)) {
+    const z = [keccak256(tagBytes("ghost/empty-leaf/v1"))];
+    for (let level = 0; level < depth; level += 1) z.push(treeNode(level, z[level], z[level]));
+    zerosCache.set(depth, z);
+  }
+  return zerosCache.get(depth);
+}
+
+// The nodes of height `to` above `nodes` of height `from`, filled to the
+// right with empty subtrees.
+function climb(nodes, from, to, z) {
+  let list = nodes;
+  for (let level = from; level < to; level += 1) {
+    const next = [];
+    for (let i = 0; i < list.length; i += 2) next.push(treeNode(level, list[i], list[i + 1] ?? z[level]));
+    list = next;
+  }
+  return list;
+}
+
+const split32 = (bytes) => Array.from({ length: bytes.length / 32 }, (_, i) => bytes.slice(32 * i, 32 * i + 32));
+
+function checkDepth(depth) {
+  if (!Number.isInteger(depth) || depth < PAGE_LEVELS || depth > TREE_DEPTH) {
+    throw new Error(`a coin tree of ${depth} levels is not supported: from ${PAGE_LEVELS} to ${TREE_DEPTH}`);
+  }
+}
+
+// The root of a coin tree of `depth` levels holding exactly `leaves`
+// (32 bytes each, concatenated) from position 0, and its page roots.
+export function treeRootsAt(depth, leaves) {
+  checkDepth(depth);
+  const z = zerosOf(depth);
+  const pageRoots = climb(split32(leaves), 0, PAGE_LEVELS, z);
+  return { root: climb(pageRoots, PAGE_LEVELS, depth, z)[0] ?? z[depth], pageRoots };
+}
+
+// The worker's tree check (lib.rs, ghost_tree_check) for a tree of `depth`
+// levels, in its words: the page roots must be those of the leaves, and
+// give `root`.
+export function treeCheckAt(depth, { pageRoots, leaves, root }) {
+  checkDepth(depth);
+  const z = zerosOf(depth);
+  const listed = split32(pageRoots);
+  const count = leaves.length / 32;
+  if (Math.ceil(count / PAGE_LEAVES) !== listed.length) {
+    throw new Error(`${count} leaves do not fill the ${listed.length} pages of the page-root list`);
+  }
+  const computed = climb(split32(leaves), 0, PAGE_LEVELS, z);
+  const page = computed.findIndex((r, i) => toHex(r) !== toHex(listed[i]));
+  if (page !== -1) throw new Error(`page ${page} does not match its page root`);
+  const top = climb(listed, PAGE_LEVELS, depth, z)[0] ?? z[depth];
+  if (toHex(top) !== toHex(root)) throw new Error("the page-root list does not give the header's coin root");
+}
+
+// The roots of a tree of `depth` levels after each number of leaves from
+// `from` to `to` (lib.rs, prefix_roots), with an incremental frontier. A
+// tree that holds 2^depth leaves keeps its root at level `depth`.
+export function prefixRootsAt(depth, leaves, from, to) {
+  checkDepth(depth);
+  if (from > to || to > leaves.length / 32 || to > 2 ** depth) throw new Error("the prefix range is outside the leaves");
+  const z = zerosOf(depth);
+  const branch = new Array(depth + 1);
+  const roots = [];
+  for (let count = 0; count <= to; count += 1) {
+    if (count >= from) {
+      let node = z[0];
+      if (count === 2 ** depth) node = branch[depth];
+      else {
+        for (let level = 0, size = count; level < depth; level += 1, size = Math.floor(size / 2)) {
+          node = size % 2 === 1 ? treeNode(level, branch[level], node) : treeNode(level, node, z[level]);
+        }
+      }
+      roots.push(node);
+    }
+    if (count === to) break;
+    let node = leaves.slice(32 * count, 32 * count + 32);
+    for (let level = 0, size = count + 1; level <= depth; level += 1, size = Math.floor(size / 2)) {
+      if (size % 2 === 1 || level === depth) {
+        branch[level] = node;
+        break;
+      }
+      node = treeNode(level, branch[level], node);
+    }
+  }
+  return roots;
+}
+
+// The tree check and the prefix roots of a tree of `depth` levels: the
+// worker's for the release's 32, the page's own for a test node's.
+async function checkTree(prover, depth, args) {
+  if (depth === TREE_DEPTH) await prover.request("treeCheck", args);
+  else treeCheckAt(depth, args);
+}
+
+async function prefixRootsOf(prover, depth, leaves, from, to) {
+  if (depth === TREE_DEPTH) return (await prover.request("prefixRoots", { leaves, from, to })).roots;
+  return prefixRootsAt(depth, leaves, from, to);
+}
+
 export function createFlow({
   prover,
   fetch = globalThis.fetch,
@@ -674,10 +886,15 @@ export function createFlow({
   // The page's clock in Unix seconds, against which a header's timestamp
   // may run at most the network's future drift ahead.
   clock = () => Math.floor(Date.now() / 1000),
-  // Leaves of one coin tree (LEAVES_PER_TREE; smaller only for a test node).
-  treeLeaves = LEAVES_PER_TREE,
+  // Levels of a coin tree (TREE_DEPTH; fewer only for a test node, whose
+  // headers carry roots of that depth) and the leaves one holds
+  // (LEAVES_PER_TREE, 2^treeDepth; fewer only for a test node).
+  treeDepth = TREE_DEPTH,
+  treeLeaves = 2 ** treeDepth,
   onChange = () => {},
 } = {}) {
+  checkDepth(treeDepth);
+  if (!(treeLeaves >= 1 && treeLeaves <= 2 ** treeDepth)) throw new Error(`a tree of ${treeDepth} levels cannot hold ${treeLeaves} leaves`);
   let rpc = createRpc(endpoint, { fetch });
   // The open wallet's seed words, never in `state`.
   let walletWords = null;
@@ -909,7 +1126,7 @@ export function createFlow({
       if (block) finalAt.set(toHex(root), block.number);
       return Boolean(block);
     };
-    const trees = await fetchTrees(rpc, prover, tip, { headerWithRoot, treeLeaves });
+    const trees = await fetchTrees(rpc, prover, tip, { headerWithRoot, treeDepth, treeLeaves });
     for (const tree of trees) tree.finalHeight = tree === trees.at(-1) ? null : finalAt.get(toHex(tree.root));
     return trees;
   }
@@ -1105,7 +1322,7 @@ export function createFlow({
     let prefixRoots = null;
     const placeOf = new Map();
     for (const t of trees) {
-      const { roots } = await prover.request("prefixRoots", { leaves: t.leaves, from: 0, to: t.count });
+      const roots = await prefixRootsOf(prover, treeDepth, t.leaves, 0, t.count);
       roots.forEach((root, count) => {
         // The empty root is tree 0's before its first leaf: no header
         // carries a later tree with no leaf.
@@ -1247,7 +1464,7 @@ export function createFlow({
   async function appendedBy(trees, parent, block) {
     for (let t = trees.length - 1; t >= 0; t -= 1) {
       const tree = trees[t];
-      const { roots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
+      const roots = await prefixRootsOf(prover, treeDepth, tree.leaves, 0, tree.count);
       const countOf = new Map(roots.map((root, count) => [toHex(root), count]));
       const after = countOf.get(toHex(block.coinTreeRoot));
       if (after === undefined) continue;
@@ -1328,6 +1545,7 @@ export function createFlow({
         `the coin holds ${formatGhost(current.amount)} GHOST; with the fee of ${formatGhost(plan.fee)} GHOST at most ${formatGhost(current.amount > plan.fee ? current.amount - plan.fee : 0n)} can go out`,
       );
     }
+    if (treeDepth !== TREE_DEPTH) throw new Error(SMALL_TREE_REVEAL);
     return {
       chainId: scan.chain.chainId,
       domain: plan.domain,

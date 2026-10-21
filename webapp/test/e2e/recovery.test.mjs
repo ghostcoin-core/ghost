@@ -55,7 +55,11 @@
 // Cases 4 and 5 need a coin tree that can fill: they run only when the
 // script says the node holds GHOST_RECOVERY_TREE_LEAVES leaves per tree,
 // fewer than the release's 2^32 (spec 05, RT-1 Part B), and the devices are
-// told the same count. Otherwise they are skipped with the reason below.
+// told the same count and the trees' depth (GHOST_RECOVERY_TREE_DEPTH, 14
+// in Part B), whose roots they check. Otherwise they are skipped with the
+// reason below. At a depth below 32 both cases fail, not skip, at their
+// reveal: the worker proves only against 32-level roots (SMALL_TREE_REVEAL),
+// and Part B's node takes those reveals with a stub verifier (RT-8).
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -88,6 +92,9 @@ const C_ETHERBASE = "0x00000000000000000000000000000000000c0ffe";
 // release node, whose trees hold 2^32.
 const TREE_LEAVES_SET = process.env.GHOST_RECOVERY_TREE_LEAVES;
 const TREE_LEAVES = TREE_LEAVES_SET ? Number(TREE_LEAVES_SET) : null;
+// Levels of its coin trees, whose roots its headers carry (spec 05, RT-1
+// Part B: 14), from the script: 32 unless set.
+const TREE_DEPTH = process.env.GHOST_RECOVERY_TREE_DEPTH ? Number(process.env.GHOST_RECOVERY_TREE_DEPTH) : 32;
 
 export const ROLLOVER_SKIP =
   "not on main: the node under test holds 2^32 leaves per coin tree (the release's only size: its tree package " +
@@ -400,7 +407,7 @@ if (!GETH || !NETNS) {
           onChange,
           clock,
           ...(fetchFn ? { fetch: fetchFn } : {}),
-          ...(TREE_LEAVES ? { treeLeaves: TREE_LEAVES } : {}),
+          ...(TREE_LEAVES ? { treeLeaves: TREE_LEAVES, treeDepth: TREE_DEPTH } : {}),
         });
       }
 
