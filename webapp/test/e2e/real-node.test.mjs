@@ -272,7 +272,27 @@ if (!GETH) {
         pin: null,
       },
     };
-    const flow = createFlow({ prover, endpoint: node.url, networks, pollMs: 1000, maxPolls: 1800, onChange });
+    // Each block's timestamp must exceed its parent's, so a node sealing a
+    // block about every 20 ms dates its chain ahead of real time by about a
+    // second per block. The page's clock here is the later of the wall clock
+    // and the latest block's timestamp of the node the test started, read
+    // every 250 ms, so the 30-second drift rule holds against the node's own
+    // time; it never runs behind real time.
+    let nodeTime = Number(BigInt((await rpc("eth_getBlockByNumber", ["latest", false])).timestamp));
+    let following = true;
+    const followNodeTime = (async () => {
+      while (following && node.alive()) {
+        try {
+          const latest = await rpc("eth_getBlockByNumber", ["latest", false]);
+          nodeTime = Math.max(nodeTime, Number(BigInt(latest.timestamp)));
+        } catch {
+          // The next read tries again; the node's failures show elsewhere.
+        }
+        await sleep(250);
+      }
+    })();
+    const clock = () => Math.max(Math.floor(Date.now() / 1000), nodeTime);
+    const flow = createFlow({ prover, endpoint: node.url, networks, pollMs: 1000, maxPolls: 1800, onChange, clock });
 
     // A stranger's commit, then the tip 2 blocks past it: from then on the
     // settled block's tree holds a leaf after the coin, and the coin can be
@@ -421,6 +441,8 @@ if (!GETH) {
       console.error(`--- last lines of geth's log ---\n${node.tail()}`);
       throw err;
     } finally {
+      following = false;
+      await followNodeTime;
       prover.terminate();
       await node.stop();
     }
