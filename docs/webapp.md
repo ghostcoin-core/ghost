@@ -665,3 +665,9 @@ their hash and amount, and Done at the block their receipt names. Without `GHOST
 GHOST_NODE_GETH="$(webapp/scripts/build-node.sh)" \
   node --test --test-timeout=3600000 webapp/test/e2e/real-node.test.mjs
 ```
+
+`test/e2e/recovery.test.mjs` runs only under `scripts/recovery-blackout.sh`,
+which blocks every project-run host and runs three nodes, one of them an
+independent node synced from peers only, and a clean device that restores
+keys from their digits alone and spends them; see
+[recovery test](recovery-test.md).
