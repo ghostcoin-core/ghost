@@ -6,17 +6,28 @@
 // block about every 20 ms, far more headers than the page can check in its
 // worker; paced, its chain grows by about one block (a few at most) per cycle.
 //
-// `rpc(method, params)` is the test's JSON-RPC call. `stop()` ends the loop
-// and resolves once the miner is stopped.
+// Before the paced cycles comes a warm-up: the miner runs unpaced until the
+// latest block's baseFeePerGas (eth_getBlockByNumber) equals its parent's.
+// The internal network starts at a base fee of 1 gwei and each empty block
+// lowers it by an eighth, so for about 140 blocks the fee changes on every
+// block; paced, that would be minutes in which every proof sees a new fee.
+// The warm-up ends after at most `warmUpBlocks` blocks or `warmUpMs`, settled
+// or not, and the pacer goes on pacing.
+//
+// `rpc(method, params)` is the test's JSON-RPC call. `warmUp` resolves once
+// the warm-up is over, to `{ settled, blocks, ms, baseFee }` (`baseFee` is
+// the latest block's, a bigint, or null if none was read). `stop()` ends the
+// loop and resolves once the miner is stopped.
 //
 // Importing this file runs nothing.
 
 const POLL_MS = 5;
 const SEAL_LIMIT_MS = 30_000;
+const WARM_UP_POLL_MS = 20;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function startBlockPacer({ rpc, intervalMs = 2000 }) {
+export function startBlockPacer({ rpc, intervalMs = 2000, warmUpBlocks = 1000, warmUpMs = 120_000 }) {
   let running = true;
   let wake = null;
   // A sleep that stop() cuts short.
@@ -56,7 +67,55 @@ export function startBlockPacer({ rpc, intervalMs = 2000 }) {
     }
   }
 
+  // The latest block's number and base fee, and whether that fee equals its
+  // parent's.
+  async function baseFee() {
+    const latest = await rpc("eth_getBlockByNumber", ["latest", false]);
+    const number = BigInt(latest.number);
+    const fee = latest.baseFeePerGas == null ? null : BigInt(latest.baseFeePerGas);
+    if (number === 0n || fee === null) return { number, fee, settled: false };
+    const parent = await rpc("eth_getBlockByNumber", [`0x${(number - 1n).toString(16)}`, false]);
+    const parentFee = parent.baseFeePerGas == null ? null : BigInt(parent.baseFeePerGas);
+    return { number, fee, settled: fee === parentFee };
+  }
+
+  async function warmUp() {
+    const began = Date.now();
+    const deadline = began + warmUpMs;
+    let first = null;
+    let seen = { number: null, fee: null, settled: false };
+    let mining = false;
+    try {
+      while (running) {
+        seen = await baseFee();
+        first ??= seen.number;
+        if (seen.settled) break;
+        if (seen.number - first >= BigInt(warmUpBlocks) || Date.now() >= deadline) break;
+        if (!mining) {
+          mining = true;
+          await rpc("miner_start", [1]);
+        }
+        await sleep(WARM_UP_POLL_MS);
+      }
+    } finally {
+      if (mining) await minerStop();
+    }
+    return {
+      settled: seen.settled,
+      blocks: first === null ? 0 : Number(seen.number - first),
+      ms: Date.now() - began,
+      baseFee: seen.fee,
+    };
+  }
+
+  const warmedUp = warmUp().catch((err) => {
+    // Pacing goes on; the result says the fee was not seen to settle.
+    if (running) console.error(`block pacer: warm-up: ${err.message}`);
+    return { settled: false, blocks: 0, ms: 0, baseFee: null, error: err.message };
+  });
+
   const loop = (async () => {
+    await warmedUp;
     while (running) {
       try {
         await cycle();
@@ -70,6 +129,7 @@ export function startBlockPacer({ rpc, intervalMs = 2000 }) {
   })();
 
   return {
+    warmUp: warmedUp,
     async stop() {
       running = false;
       wake?.();

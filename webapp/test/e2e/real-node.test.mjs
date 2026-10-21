@@ -160,8 +160,20 @@ if (!GETH) {
     // Left mining, the node seals a block about every 20 ms, tens of
     // thousands of headers over the test, each of which the page checks in
     // its worker (seal and difficulty) from genesis on. Paced, the chain
-    // grows by about one block every 2 seconds.
+    // grows by about one block every 2 seconds. First the pacer lets the
+    // node mine unpaced until its base fee settles at the floor (about 140
+    // blocks from the genesis's 1 gwei), so that a proof does not see a new
+    // fee on every paced block.
     const pacer = startBlockPacer({ rpc: node.rpc, intervalMs: 2000 });
+    const warm = await pacer.warmUp;
+    if (warm.settled) {
+      console.log(`block pacer: base fee settled at ${warm.baseFee} wei after ${warm.blocks} blocks (${warm.ms} ms)`);
+    } else {
+      console.log(
+        `block pacer: base fee not settled after ${warm.blocks} blocks (${warm.ms} ms); ` +
+          `latest base fee ${warm.baseFee ?? "unknown"} wei${warm.error ? ` (${warm.error})` : ""}; pacing anyway`,
+      );
+    }
     const { rpc } = node;
     const prover = nodeProver();
 
