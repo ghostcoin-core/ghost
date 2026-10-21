@@ -5,8 +5,9 @@
 // earlier tree against its final root in a header and the last against the
 // tip's root, asks for no index past the tip's tree, and refuses a page or
 // tree that is not the one asked for. The flow follows a commit into a later
-// tree, and stops a scan of a rolled-over chain before the key is tried on a
-// note: the worker checks only tree 0's notes against the receipts.
+// tree, checks every tree's notes, salts and the markers against the block
+// receipts, restores a key's coins across trees and proves a coin of a full
+// earlier tree against that tree's final root.
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -15,7 +16,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 
 import { concat, toHex } from "../src/bytes.mjs";
-import { DEFAULT_COMMIT_ENTRY, LATER_TREES_UNCHECKED, createFlow, fetchTrees } from "../src/flow.mjs";
+import { DEFAULT_COMMIT_ENTRY, RECEIPTS_FAILED, checkTreesAgainstReceipts, createFlow, fetchTrees } from "../src/flow.mjs";
 import { loadModule, nodeProver, openTestWallet, wasmPath, webappDir } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
 
@@ -202,7 +203,7 @@ test("fetchTrees refuses a full tree whose final root no header carries, and a t
   });
 });
 
-test("the flow follows a commit into a later tree, and refuses to scan a rolled-over chain before the key is tried", async () => {
+test("the flow follows a commit into a later tree, and finds a coin in either tree", async () => {
   await withNode({ treeLeaves: TREE_LEAVES }, async (node) => {
     const prover = nodeProver();
     const asked = [];
@@ -255,14 +256,19 @@ test("the flow follows a commit into a later tree, and refuses to scan a rolled-
         assert.equal(fresh.leaves.length, 4);
         assert.equal(toHex(fresh.leaves[3].commitment), toHex(fresh.commits.at(-1).commitment), "the commit is tree 1's first leaf");
 
-        // Its scan reads both trees, then stops: the notes of tree 1 cannot
-        // be checked against the receipts, so the key is tried on nothing.
+        // Its scan reads both trees, checks both against the receipts here
+        // (the worker's check covers tree 0 alone), and tries the key on
+        // each tree's notes: the coin is tree 1's first leaf.
         asked.length = 0;
         fresh.requests.length = 0;
-        await assert.rejects(flow2.summonOpen(key), (err) => err.message.includes(LATER_TREES_UNCHECKED) && /rolled over to coin tree 1/.test(err.message));
-        assert.ok(!asked.includes("restore"), "no note was tried with the key");
-        assert.ok(!asked.includes("receiptsCheck"), "no unchecked note was passed off as checked");
-        assert.equal(flow2.state.chainRefused, null, "the chain itself is not refused");
+        const s = await flow2.summonOpen(key);
+        assert.equal(s.status, "unclaimed");
+        assert.deepEqual([s.current.treeIndex, s.current.position, s.current.amount], [1, 0, 10n ** 18n]);
+        assert.ok(!asked.includes("receiptsCheck"), "the worker's tree 0 check is not asked of a rolled-over chain");
+        assert.equal(asked.filter((op) => op === "restore").length, 2, "one restore per tree");
+        const firstRestore = asked.indexOf("restore");
+        assert.ok(asked.includes("keccak256") && asked.indexOf("keccak256") < firstRestore, "the receipts are read before the key is tried");
+        assert.equal(flow2.state.chainRefused, null);
         const indices = new Set(fresh.requests.filter((r) => r.method === "ghost_getPageRoots").map((r) => r.params[1]));
         assert.deepEqual([...indices], ["0x0", "0x1"], "both trees were read, and no other");
       } finally {
@@ -286,6 +292,174 @@ test("the flow follows a commit into a later tree, and refuses to scan a rolled-
       } finally {
         await full.close();
       }
+    } finally {
+      prover.terminate();
+    }
+  });
+});
+
+// Two leaves per tree: leaf i is 32 bytes of i + 1 and its note 156 bytes of
+// i + 50; a record is what a receipt's coin tree log appended.
+const leafOf = (i) => new Uint8Array(32).fill(i + 1);
+const noteOf = (i) => new Uint8Array(156).fill(i + 50);
+const treeOfLeaves = (treeIndex, list) => ({
+  treeIndex,
+  count: list.length,
+  records: concat(list.flatMap((i) => [leafOf(i), noteOf(i)])),
+  salts: list.map(() => null),
+});
+const record = (treeIndex, position, i, marker = null) => ({ treeIndex, position, leaf: leafOf(i), note: noteOf(i), salt: null, marker });
+const MARKER = new Uint8Array(32).fill(0xaa);
+
+test("checkTreesAgainstReceipts checks every tree, the rollover and the markers against the receipts' records", () => {
+  const base = {
+    trees: [treeOfLeaves(0, [0, 1]), treeOfLeaves(1, [2])],
+    blockRecords: [[], [record(0, 0, 0)], [record(0, 1, 1)], [record(1, 0, 2, MARKER)]],
+    start: { treeIndex: 0, count: 0 },
+    treeLeaves: 2,
+    markerBlocks: 4,
+    fromGenesis: true,
+    markers: MARKER,
+  };
+  checkTreesAgainstReceipts(base);
+  const check = (change) => () => checkTreesAgainstReceipts({ ...base, ...change });
+
+  // A note, leaf or salt of tree 1 that is not its receipt's.
+  const otherNote = { ...treeOfLeaves(1, [2]), records: concat([leafOf(2), noteOf(9)]) };
+  assert.throws(check({ trees: [base.trees[0], otherNote] }), /the note at position 0 of coin tree 1 differs from its receipt/);
+  assert.throws(check({ trees: [base.trees[0], treeOfLeaves(1, [7])] }), /the leaf at position 0 of coin tree 1 differs/);
+  assert.throws(check({ trees: [base.trees[0], { ...treeOfLeaves(1, [2]), salts: [new Uint8Array(16)] }] }), /the salt at position 0 of coin tree 1/);
+  // A leaf no receipt holds, one the tree lacks, and a tree not read.
+  assert.throws(check({ trees: [base.trees[0], treeOfLeaves(1, [2, 3])] }), /the leaf at position 1 of coin tree 1 is not in the receipts/);
+  assert.throws(check({ blockRecords: [...base.blockRecords, [record(1, 1, 3)]] }), /the leaf at position 1 of coin tree 1 is missing/);
+  assert.throws(check({ trees: [base.trees[0]] }), /position 0 of coin tree 1, a tree past those read/);
+  // The rollover comes after exactly `treeLeaves` leaves, and nothing is
+  // skipped or repeated across it.
+  assert.throws(check({ treeLeaves: 3 }), /the record of coin tree 1, position 0 is out of sequence/);
+  assert.throws(check({ blockRecords: [[], [record(0, 0, 0)], [record(1, 0, 2, MARKER)]] }), /out of sequence/);
+  assert.throws(check({ blockRecords: [...base.blockRecords.slice(0, 3), [record(0, 1, 1)], base.blockRecords[3]] }), /out of sequence/);
+  // The markers: none missing, invented or out of the blocks they were read at.
+  assert.throws(check({ markers: new Uint8Array(0) }), /spent marker 0 is missing/);
+  assert.throws(check({ markers: concat([MARKER, MARKER]) }), /spent marker 1 is not in the receipts/);
+  assert.throws(check({ markers: new Uint8Array(32).fill(0xbb) }), /spent marker 0 differs from its receipt/);
+  assert.throws(check({ markerBlocks: 3 }), /spent marker 0 is not in the receipts/);
+
+  // From a start in tree 1 (a pinned header): tree 0 and the earlier
+  // markers no receipt of the chain covers are not compared.
+  checkTreesAgainstReceipts({
+    ...base,
+    trees: [treeOfLeaves(0, [5, 6]), treeOfLeaves(1, [2])],
+    blockRecords: [[record(1, 0, 2, MARKER)]],
+    start: { treeIndex: 1, count: 0 },
+    markerBlocks: 1,
+    fromGenesis: false,
+    markers: concat([new Uint8Array(32).fill(0xcc), MARKER]),
+  });
+});
+
+const RECIPIENT = "0x00000000000000000000000000000000000beef1";
+const GHOST = 10n ** 18n;
+
+test("a coin of a full earlier tree is revealed against that tree's final root, and restored with its remainder in the next tree", async () => {
+  await withNode({ treeLeaves: TREE_LEAVES }, async (node) => {
+    const prover = nodeProver();
+    try {
+      const options = { prover, endpoint: node.url, networks: node.networks(), pollMs: 5, sleep: async () => node.mine(), treeLeaves: TREE_LEAVES };
+      const original = createFlow(options);
+      await openTestWallet(original, node);
+      node.foreignCommits(1);
+      const key = await original.vanishStart("1");
+      assert.equal((await original.vanishCheck(original.vanishSaved().map((p) => key.split(" ")[p - 1]))).ok, true);
+      assert.equal(toHex(node.leaves[1].commitment), toHex(node.commits.at(-1).commitment), "the coin is leaf 1 of tree 0");
+      // A stranger fills tree 0 and another starts tree 1.
+      node.foreignCommits(2);
+      node.mineTo(node.tip() + 2);
+      const filled = node.blocks.findIndex((b) => b.leafCount === TREE_LEAVES);
+
+      let s = await original.summonOpen(key);
+      assert.equal(s.status, "unclaimed");
+      assert.deepEqual([s.current.treeIndex, s.current.position], [0, 1]);
+      assert.equal(s.wait, null, "a coin of a full earlier tree needs no wait");
+      assert.deepEqual(s.cover, { height: filled, covers: TREE_LEAVES, total: TREE_LEAVES });
+      const first = await original.summonReveal({ amount: "0.25", recipient: RECIPIENT });
+      const sent = node.reveals.at(-1);
+      assert.equal(toHex(sent.root), toHex(node.blocks[filled].coinTreeRoot), "proved against tree 0's final root");
+      assert.equal(toHex(node.leaves[4].commitment), toHex(sent.remainder), "the remainder is leaf 1 of tree 1");
+      s = original.state.summon;
+      assert.deepEqual([s.current.treeIndex, s.current.position, s.current.number], [1, 1, 1n]);
+      original.summonClose();
+
+      // A clean device restores the spent coin in tree 0 and the remainder in
+      // tree 1 from the key alone.
+      const clean = createFlow(options);
+      s = await clean.summonOpen(key);
+      assert.equal(s.status, "unclaimed");
+      assert.deepEqual(
+        s.coins.map((c) => [c.treeIndex, c.position, c.number, c.spent]),
+        [
+          [0, 1, 0n, true],
+          [1, 1, 1n, false],
+        ],
+      );
+      assert.equal(s.current.amount, GHOST - GHOST / 4n - first.fee);
+      clean.summonClose();
+
+      // Once a later leaf of tree 1 is settled, the remainder is revealed
+      // against a settled root of tree 1, and its own remainder starts tree 2.
+      node.foreignCommits(1);
+      node.mineTo(node.tip() + 2);
+      s = await clean.summonOpen(key);
+      assert.equal(s.wait, null);
+      await clean.summonReveal({ amount: "0.25", recipient: RECIPIENT });
+      const second = node.reveals.at(-1);
+      assert.notEqual(toHex(second.root), toHex(node.blocks[filled].coinTreeRoot));
+      assert.equal(toHex(second.root), toHex(node.blocks[node.blocks.findIndex((b) => b.leafCount === 2 * TREE_LEAVES)].coinTreeRoot));
+      assert.equal(node.balances.get(RECIPIENT), GHOST / 2n);
+      s = clean.state.summon;
+      assert.deepEqual([s.current.treeIndex, s.current.position, s.current.number], [2, 0, 2n]);
+      assert.equal(clean.state.chainRefused, null);
+    } finally {
+      prover.terminate();
+    }
+  });
+});
+
+test("a scan of a rolled-over chain refuses a note, salt or marker the receipts do not show, before the key is tried", async () => {
+  await withNode({ treeLeaves: TREE_LEAVES }, async (node) => {
+    const prover = nodeProver();
+    const asked = [];
+    const watched = {
+      request(op, args, onProgress) {
+        asked.push(op);
+        return prover.request(op, args, onProgress);
+      },
+    };
+    try {
+      const flow = createFlow({ prover: watched, endpoint: node.url, networks: node.networks(), pollMs: 5, sleep: async () => node.mine(), treeLeaves: TREE_LEAVES });
+      await openTestWallet(flow, node);
+      node.foreignCommits(4);
+      const key = await flow.vanishStart("1");
+      assert.equal((await flow.vanishCheck(flow.vanishSaved().map((p) => key.split(" ")[p - 1]))).ok, true);
+      node.mineTo(node.tip() + 2);
+      const honest = await flow.summonOpen(key);
+      assert.deepEqual([honest.current.treeIndex, honest.current.position], [1, 1], "the honest chain restores the coin at tree 1, position 1");
+
+      // Each change the endpoint makes, by the leaf's index in every tree's
+      // leaves in order (tree 1 starts at index 3).
+      const changes = [
+        [() => (node.dishonest.note = (i, note) => (i === 3 ? noteOf(0) : note)), /the note at position 0 of coin tree 1 differs from its receipt/],
+        [() => (node.dishonest.note = (i, note) => (i === 1 ? noteOf(0) : note)), /the note at position 1 of coin tree 0 differs from its receipt/],
+        [() => (node.dishonest.salt = (i, salt) => (i === 4 ? null : salt)), /the salt at position 1 of coin tree 1 differs from its receipt/],
+        [() => (node.dishonest.markers = (list) => [...list, toHex(MARKER)]), /spent marker 0 is not in the receipts/],
+      ];
+      for (const [change, why] of changes) {
+        change();
+        asked.length = 0;
+        await assert.rejects(flow.summonOpen(key), (err) => err.message.includes(RECEIPTS_FAILED) && why.test(err.message));
+        assert.ok(!asked.includes("restore"), `no note was tried with the key (${why})`);
+        Object.assign(node.dishonest, { note: null, salt: null, markers: null });
+      }
+      assert.equal((await flow.summonOpen(key)).status, "unclaimed", "the honest chain still reads");
     } finally {
       prover.terminate();
     }

@@ -64,13 +64,17 @@ export const PAGE_LEAVES = 4096;
 // takes another count only to talk to a node whose trees are smaller, as a
 // recovery test of a rollover needs; the release never sets it.
 export const LEAVES_PER_TREE = 2 ** 32;
-// What a scan says when the chain's coin tree has rolled over: every tree is
-// read and checked against its root, but the worker checks the notes and
-// salts of coin tree 0 alone against the block receipts, so the notes of a
-// later tree are unchecked and the scan tries the key on none of them.
-export const LATER_TREES_UNCHECKED =
-  "this build checks only the notes of coin tree 0 against the block receipts, so it restores nothing from this chain " +
-  "and uses the key for nothing";
+// The coin tree logs of a block's receipts (client/src/receipts.rs, after
+// ghost-node docs/private-transactions.md, "Receipts"): the coin tree
+// account as address; a commit log has the topic K("ghost/commit-receipt/v1")
+// and the tree index (4), position (4), leaf (32), `v` (32) and note, then the
+// salt of a version 2 commit; a reveal log has K("ghost/reveal-receipt/v1")
+// and the marker as topics and the tree index, position, remainder (32),
+// note, recipient (20) and amount out (32). The scan of a chain whose coin
+// tree has rolled over reads them here (checkTreesAgainstReceipts).
+const COIN_TREE_ACCOUNT = "0x67686f7374000000000000000000000000000001";
+const COMMIT_RECEIPT_TAG = "ghost/commit-receipt/v1";
+const REVEAL_RECEIPT_TAG = "ghost/reveal-receipt/v1";
 // Every scan reads the headers from this many blocks below the settled
 // block S (SETTLE_DEPTH below the tip) up to the tip, to find a leaf's block.
 export const LEAF_WINDOW = 32;
@@ -292,18 +296,24 @@ export function normalKey(text) {
 }
 
 // The key's state from what restore found: no coin yet, a coin to claim,
-// or nothing left unspent.
+// or nothing left unspent. The current coin is the unspent one appended
+// last: in the latest coin tree index (`treeIndex`, 0 when not given), then
+// at the highest position in it.
 export function keyStatus(found) {
   if (found.length === 0) return { status: "not-found", current: null };
-  const unspent = found.filter((coin) => !coin.spent).sort((a, b) => b.position - a.position);
+  const unspent = found
+    .filter((coin) => !coin.spent)
+    .sort((a, b) => (b.treeIndex ?? 0) - (a.treeIndex ?? 0) || b.position - a.position);
   if (unspent.length === 0) return { status: "claimed", current: null };
   return { status: "unclaimed", current: unspent[0] };
 }
 
-// Whether two coins restore found are the same coin: the same leaf position,
-// number and amount.
+// Whether two coins restore found are the same coin: the same tree index,
+// leaf position, number and amount.
 function sameCoin(a, b) {
-  return a.position === b.position && a.number === b.number && a.amount === b.amount;
+  return (
+    (a.treeIndex ?? 0) === (b.treeIndex ?? 0) && a.position === b.position && a.number === b.number && a.amount === b.amount
+  );
 }
 
 // Every leaf and note of coin tree `treeIndex` (0 unless given) as of
@@ -449,8 +459,30 @@ export function leafBlock({ rootHeaders: headers, rootCounts: counts, prefixRoot
 // settled yet, or the plain warning ALONE_WARNING (`alone`) when nobody has
 // committed since the coin. It never proves against the coin's own block
 // root.
+//
+// A coin in a full earlier coin tree (its `treeIndex` below the tip's tree
+// in `scan.trees`) is proven against that tree's final root, which every
+// leaf of the tree shares and a header of the page's chain carries (spec 05,
+// section 5, item 5, and section 13, item 4): no later root of the next tree
+// holds it, and no wait applies. The rule is still asked once, as for a
+// decoy, so the worker's work does not depend on the coin's tree.
 export async function planReveal(prover, scan, coin, progress = () => {}) {
   const { chain, rootHeaders: headers, rootCounts: counts, settledAt } = scan;
+  const trees = scan.trees ?? [scan.tree];
+  const treeIndex = coin.treeIndex ?? 0;
+  if (treeIndex < trees.length - 1) {
+    progress("choosing the tree state");
+    await askRuleForDecoy(prover, scan);
+    const full = trees[treeIndex];
+    return {
+      root: full.root,
+      leaves: full.leaves,
+      fee: scan.fee,
+      domain: chain.genesis.hash,
+      height: full.finalHeight,
+      covers: full.count,
+    };
+  }
   if (settledAt === null) {
     throw new WaitError(`no block is ${SETTLE_DEPTH} blocks deep yet; wait until the chain passes block ${SETTLE_DEPTH}`);
   }
@@ -498,6 +530,129 @@ async function askRuleForDecoy(prover, scan) {
     height: settled.number,
     root: settled.coinTreeRoot,
   });
+}
+
+// Data bytes of a commit log (tree index, position, leaf, `v`, note), a
+// version 2 commit log's adding the salt, and a reveal log (tree index,
+// position, remainder, note, recipient, out).
+const COMMIT_LOG_BYTES = 4 + 4 + 32 + 32 + NOTE_BYTES;
+const REVEAL_LOG_BYTES = 4 + 4 + 32 + NOTE_BYTES + 20 + 32;
+
+// The coin tree logs of a block's receipts (eth_getBlockReceipts, each
+// receipt already put through receiptBytes), in receipt and log order: the
+// same address, topics and data the bytes the receipts root covers are made
+// of, with whether the log's receipt succeeded.
+function coinLogsOf(list) {
+  const logs = [];
+  for (const receipt of list) {
+    const succeeded = quantity(receipt.status) === 1n;
+    for (const log of receipt.logs) {
+      if (toHex(fromHex(log.address, 20)) !== COIN_TREE_ACCOUNT) continue;
+      logs.push({ succeeded, topics: log.topics.map((topic) => fromHex(topic, 32)), data: fromHex(log.data) });
+    }
+  }
+  return logs;
+}
+
+// The leaf a coin tree log appended, `{ treeIndex, position, leaf, note,
+// salt, marker }` (`salt` null but for a version 2 commit, `marker` null but
+// for a reveal), read exactly as client/src/receipts.rs reads it. `topics`
+// are the hex first topics of a commit and a reveal log. A log that is not
+// exactly a commit or a reveal log is refused.
+export function coinRecord(log, topics) {
+  if (!log.succeeded) throw new Error("a failed receipt has a coin tree log");
+  const { data } = log;
+  const first = log.topics.length > 0 ? toHex(log.topics[0]) : null;
+  const head = () => {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    return { treeIndex: view.getUint32(0), position: view.getUint32(4), leaf: data.slice(8, 40) };
+  };
+  if (first === topics.commit) {
+    if (log.topics.length !== 1) throw new Error("a commit log does not have exactly one topic");
+    const salted = data.length === COMMIT_LOG_BYTES + SALT_BYTES;
+    if (data.length !== COMMIT_LOG_BYTES && !salted) throw new Error("a commit log's data is not its length");
+    const salt = salted ? data.slice(COMMIT_LOG_BYTES) : null;
+    return { ...head(), note: data.slice(72, 72 + NOTE_BYTES), salt, marker: null };
+  }
+  if (first === topics.reveal) {
+    if (log.topics.length !== 2) throw new Error("a reveal log does not have exactly two topics");
+    if (data.length !== REVEAL_LOG_BYTES) throw new Error("a reveal log's data is not its length");
+    return { ...head(), note: data.slice(40, 40 + NOTE_BYTES), salt: null, marker: log.topics[1] };
+  }
+  throw new Error("a coin tree log's first topic is neither a commit nor a reveal");
+}
+
+// Checks every coin tree of a scan whose tree has rolled over (`trees`, as
+// fetchTrees reads them, tree k at index k) and its spent markers against the
+// coin tree records of the receipts of the page's chain from its start to the
+// tip (`blockRecords`, one list per block in chain order, coinRecord), as the
+// worker's receiptsCheck does for coin tree 0 (client/src/receipts.rs), with
+// a tree of `treeLeaves` leaves:
+//
+// - every record appends right after the one before: the next position in
+//   the same tree, or position 0 of the next tree once a tree holds
+//   `treeLeaves`;
+// - from `start` (`{ treeIndex, count }`, where the first block's coin root
+//   is) on, the leaves, notes and salts of each tree are exactly those the
+//   records appended to it, none missing, repeated, reordered or invented,
+//   and no record is of a tree past those read. The leaves before `start`
+//   no receipt of the chain covers, as for tree 0 from a pinned start;
+// - the markers are exactly those of the reveal records of the first
+//   `markerBlocks` blocks, in order: the whole list when the chain starts at
+//   genesis (`fromGenesis`), its last ones otherwise.
+//
+// Any difference throws, naming the tree and position.
+export function checkTreesAgainstReceipts({ trees, blockRecords, start, treeLeaves, markerBlocks, fromGenesis, markers }) {
+  const records = blockRecords.flat();
+  let last = null;
+  for (const record of records) {
+    const { treeIndex, position } = record;
+    const next = last && (last.position + 1 < treeLeaves ? [last.treeIndex, last.position + 1] : [last.treeIndex + 1, 0]);
+    if (position >= treeLeaves || (next && (next[0] !== treeIndex || next[1] !== position))) {
+      throw new Error(`the record of coin tree ${treeIndex}, position ${position} is out of sequence`);
+    }
+    last = record;
+  }
+  const expected = trees.map((tree) => (tree.treeIndex === start.treeIndex ? start.count : 0));
+  for (const { treeIndex, position, leaf, note, salt } of records) {
+    if (treeIndex < start.treeIndex || (treeIndex === start.treeIndex && position < start.count)) continue;
+    const where = `position ${position} of coin tree ${treeIndex}`;
+    const tree = trees[treeIndex];
+    if (!tree) throw new Error(`the receipts hold the leaf at ${where}, a tree past those read`);
+    if (position !== expected[treeIndex]) {
+      throw new Error(`the receipts hold ${where} where the tree holds position ${expected[treeIndex]}`);
+    }
+    if (position >= tree.count) throw new Error(`the leaf at ${where} is missing`);
+    const at = position * (32 + NOTE_BYTES);
+    if (toHex(tree.records.slice(at, at + 32)) !== toHex(leaf)) throw new Error(`the leaf at ${where} differs from its receipt`);
+    if (toHex(tree.records.slice(at + 32, at + 32 + NOTE_BYTES)) !== toHex(note)) {
+      throw new Error(`the note at ${where} differs from its receipt`);
+    }
+    const beside = tree.salts[position];
+    if ((beside === null) !== (salt === null) || (salt !== null && toHex(beside) !== toHex(salt))) {
+      throw new Error(`the salt at ${where} differs from its receipt`);
+    }
+    expected[treeIndex] += 1;
+  }
+  for (const tree of trees) {
+    if (tree.treeIndex < start.treeIndex || expected[tree.treeIndex] === tree.count) continue;
+    throw new Error(`the leaf at position ${expected[tree.treeIndex]} of coin tree ${tree.treeIndex} is not in the receipts`);
+  }
+  const held = blockRecords
+    .slice(0, markerBlocks)
+    .flat()
+    .filter((record) => record.marker)
+    .map((record) => toHex(record.marker));
+  const listed = [];
+  for (let i = 0; i < markers.length; i += 32) listed.push(toHex(markers.slice(i, i + 32)));
+  if (!fromGenesis && listed.length < held.length) throw new Error(`spent marker ${listed.length} is missing`);
+  const compared = fromGenesis ? listed : listed.slice(listed.length - held.length);
+  const offset = listed.length - compared.length;
+  for (let i = 0; i < compared.length; i += 1) {
+    if (i >= held.length) throw new Error(`spent marker ${offset + i} is not in the receipts`);
+    if (compared[i] !== held[i]) throw new Error(`spent marker ${offset + i} differs from its receipt`);
+  }
+  if (held.length > compared.length) throw new Error(`spent marker ${listed.length} is missing`);
 }
 
 export function createFlow({
@@ -638,6 +793,9 @@ export function createFlow({
       startHeight: height,
       known: new Map([[startHash, { ...header, rlpHex: toHex(rlp) }]]),
       receipts: new Set(),
+      // The coin tree logs of those blocks' receipts, by block hash
+      // (coinLogsOf), read when a scan's coin tree has rolled over.
+      coinLogs: new Map(),
     };
     return headerChain;
   }
@@ -741,12 +899,32 @@ export function createFlow({
   // the tip's (fetchTrees). A full earlier tree's final root must be the
   // coin root of a header of the page's best chain from its start to the
   // tip. Only a chain whose tree has rolled over asks for those headers.
+  // Each full earlier tree carries `finalHeight`, the first block of that
+  // chain whose header carries its final root (null for the tip's tree).
   async function readTrees(tip) {
+    const finalAt = new Map();
     const headerWithRoot = async (root) => {
       const blocks = await chainRange(headerChain.startHeight, tip.number);
-      return blocks.some((block) => block && toHex(block.coinTreeRoot) === toHex(root));
+      const block = blocks.find((b) => b && toHex(b.coinTreeRoot) === toHex(root));
+      if (block) finalAt.set(toHex(root), block.number);
+      return Boolean(block);
     };
-    return fetchTrees(rpc, prover, tip, { headerWithRoot, treeLeaves });
+    const trees = await fetchTrees(rpc, prover, tip, { headerWithRoot, treeLeaves });
+    for (const tree of trees) tree.finalHeight = tree === trees.at(-1) ? null : finalAt.get(toHex(tree.root));
+    return trees;
+  }
+
+  // The hex first topics of a commit and a reveal log, K(tag) of their tags
+  // (client/src/hash.rs: Keccak-256 of the tag's length byte and the tag),
+  // asked of the worker once per page session.
+  let logTopics = null;
+  async function coinLogTopics() {
+    const topic = async (tag) => {
+      const bytes = concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]);
+      return toHex((await prover.request("keccak256", { bytes })).hash);
+    };
+    logTopics ??= { commit: await topic(COMMIT_RECEIPT_TAG), reveal: await topic(REVEAL_RECEIPT_TAG) };
+    return logTopics;
   }
 
   // The chain as of its tip: headers of the page's best chain, each the
@@ -798,7 +976,14 @@ export function createFlow({
   // and notes the receipts appended, and the markers against the reveal
   // receipts of the blocks up to the block they were read at. Any mismatch
   // is refused.
-  async function checkReceipts(chain, tree, spent, countOf, markerAnchor) {
+  //
+  // `trees` are the scan's coin trees (readTrees) and `placeOf` gives the
+  // tree index and leaf count of each of their prefix roots. The worker's
+  // check covers coin tree 0 alone and rolls over only at 2^32 leaves, so
+  // once the tree has rolled over the same checks are made here, over every
+  // tree, from the coin tree logs of the receipts the worker has just checked
+  // against their receiptsRoot (checkTreesAgainstReceipts).
+  async function checkReceipts(chain, trees, spent, placeOf, markerAnchor) {
     const { hc, tip } = chain;
     progress("checking the coin tree against the block receipts");
     const blocks = await chainRange(hc.startHeight, tip.number, hc);
@@ -811,7 +996,7 @@ export function createFlow({
       }
     }
     if (toHex(blocks.at(-1).hash) !== toHex(tip.hash)) throw receiptsRefused("the page's chain does not end at the tip read");
-    const start = countOf.get(toHex(blocks[0].coinTreeRoot));
+    const start = placeOf.get(toHex(blocks[0].coinTreeRoot));
     if (start === undefined) {
       throw receiptsRefused(`the start of the page's chain, block ${hc.startHeight}, cannot be placed in the endpoint's coin tree`);
     }
@@ -819,6 +1004,7 @@ export function createFlow({
     for (let i = 0; i < missing.length; i += CHAIN_BATCH) {
       const part = missing.slice(i, i + CHAIN_BATCH);
       const fetched = [];
+      const logs = [];
       for (const block of part) {
         let list;
         try {
@@ -834,26 +1020,42 @@ export function createFlow({
           throw receiptsRefused(`a receipt of block ${block.number} is malformed: ${err.message}`);
         }
         fetched.push({ header: fromHex(block.rlpHex), receipts });
+        logs.push(coinLogsOf(list));
       }
       try {
         await prover.request("receiptsAdd", { blocks: fetched });
       } catch (err) {
         throw receiptsRefused(err.message);
       }
-      for (const block of part) hc.receipts.add(toHex(block.hash));
+      part.forEach((block, j) => {
+        hc.receipts.add(toHex(block.hash));
+        hc.coinLogs.set(toHex(block.hash), logs[j]);
+      });
     }
     const markerBlocks = markerAnchor.number - hc.startHeight + 1;
     if (markerBlocks < 1) throw receiptsRefused(`the markers were read at block ${markerAnchor.number}, below the chain's start`);
+    const fromGenesis = hc.startHeight === 0;
+    if (trees.length === 1) {
+      const [tree] = trees;
+      try {
+        await prover.request("receiptsCheck", {
+          hashes: blocks.map((block) => block.hash),
+          fromGenesis,
+          start: start.count,
+          records: tree.records.slice(start.count * (32 + NOTE_BYTES)),
+          salts: tree.salts.slice(start.count),
+          markerBlocks,
+          markers: spent,
+        });
+      } catch (err) {
+        throw receiptsRefused(err.message);
+      }
+      return;
+    }
+    const topics = await coinLogTopics();
     try {
-      await prover.request("receiptsCheck", {
-        hashes: blocks.map((block) => block.hash),
-        fromGenesis: hc.startHeight === 0,
-        start,
-        records: tree.records.slice(start * (32 + NOTE_BYTES)),
-        salts: tree.salts.slice(start),
-        markerBlocks,
-        markers: spent,
-      });
+      const blockRecords = blocks.map((block) => hc.coinLogs.get(toHex(block.hash)).map((log) => coinRecord(log, topics)));
+      checkTreesAgainstReceipts({ trees, blockRecords, start, treeLeaves, markerBlocks, fromGenesis, markers: spent });
     } catch (err) {
       throw receiptsRefused(err.message);
     }
@@ -883,40 +1085,58 @@ export function createFlow({
   // those headers.
   //
   // Every coin tree index up to the tip's is read and checked against its
-  // root (readTrees). The worker checks the notes and salts of coin tree 0
-  // alone against the receipts, so once the tree has rolled over the scan
-  // stops there, before the key is tried on any note (LATER_TREES_UNCHECKED).
+  // root (readTrees), and every tree's leaves, notes and salts against the
+  // receipts. A header's coin root is placed by the roots of every prefix of
+  // every tree: the tree index and leaf count it is of. `tree` is the tip's
+  // tree, and `rootCounts` each header's leaf count in it (0 for a header of
+  // an earlier tree), so a coin of the tip's tree is planned as before; a
+  // coin of a full earlier tree is proven against that tree's final root
+  // (planReveal). The settled leaves are those of the settled block's tree
+  // up to its count. The key is tried on every tree's notes, one restore per
+  // tree, and each coin found carries its `treeIndex`.
   async function scanKey(key) {
     const chain = await readChain();
     progress("reading the coin tree");
     const trees = await readTrees(chain.tip);
-    if (trees.length > 1) {
-      throw new Error(`the chain's coin tree has rolled over to coin tree ${trees.length - 1}: ${LATER_TREES_UNCHECKED}`);
-    }
-    const [tree] = trees;
+    const tree = trees.at(-1);
     const markerAnchor = chain.at(Math.max(0, chain.tip.number - (CONFIRMATIONS - 1)));
     const spent = await fetchSpent(markerAnchor);
     const fee = (await feeForNextBlock(chain.tip, async (n) => chain.at(n))).fee;
-    const { roots: prefixRoots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
-    const countOf = new Map(prefixRoots.map((root, count) => [toHex(root), count]));
+    let prefixRoots = null;
+    const placeOf = new Map();
+    for (const t of trees) {
+      const { roots } = await prover.request("prefixRoots", { leaves: t.leaves, from: 0, to: t.count });
+      roots.forEach((root, count) => {
+        // The empty root is tree 0's before its first leaf: no header
+        // carries a later tree with no leaf.
+        if ((count > 0 || t.treeIndex === 0) && !placeOf.has(toHex(root))) placeOf.set(toHex(root), { treeIndex: t.treeIndex, count });
+      });
+      prefixRoots = roots;
+    }
     const rootHeaders = chain.headers;
-    const rootCounts = rootHeaders.map((header) => {
-      const count = countOf.get(toHex(header.coinTreeRoot));
-      if (count === undefined) throw new Error(`the endpoint's tree does not match the header of block ${header.number}`);
-      return count;
+    const places = rootHeaders.map((header) => {
+      const place = placeOf.get(toHex(header.coinTreeRoot));
+      if (place === undefined) throw new Error(`the endpoint's tree does not match the header of block ${header.number}`);
+      return place;
     });
-    await checkReceipts(chain, tree, spent, countOf, markerAnchor);
+    const rootCounts = places.map((place) => (place.treeIndex === tree.treeIndex ? place.count : 0));
+    await checkReceipts(chain, trees, spent, placeOf, markerAnchor);
     const settledAt = chain.settled === null ? null : chain.settled - chain.low;
-    const settledLeaves = settledAt === null ? tree.leaves : tree.leaves.slice(0, rootCounts[settledAt] * 32);
+    const settledPlace = settledAt === null ? null : places[settledAt];
+    const settledLeaves = settledPlace === null ? tree.leaves : trees[settledPlace.treeIndex].leaves.slice(0, settledPlace.count * 32);
     progress("looking for the key's coins");
-    const { found } = await prover.request("restore", {
-      chainId: chain.chainId,
-      key,
-      records: tree.records,
-      salts: tree.salts,
-      markers: spent,
-    });
-    return { chain, tree, rootHeaders, rootCounts, prefixRoots, settledAt, settledLeaves, fee, found };
+    const found = [];
+    for (const t of trees) {
+      const restored = await prover.request("restore", {
+        chainId: chain.chainId,
+        key,
+        records: t.records,
+        salts: t.salts,
+        markers: spent,
+      });
+      for (const coin of restored.found) found.push({ ...coin, treeIndex: t.treeIndex });
+    }
+    return { chain, trees, tree, rootHeaders, rootCounts, prefixRoots, settledAt, settledLeaves, fee, found };
   }
 
   // The receipt of `hash`, or null while no block holds it.
@@ -1216,7 +1436,9 @@ export function createFlow({
       let failure = null;
       try {
         args = await revealArgs(scan, request, pinned);
-        pinned ??= { number: args.number, position: args.position, amount: args.amount };
+        // A coin of a later coin tree than tree 0 also keeps its tree index.
+        const { treeIndex = 0 } = keyStatus(scan.found).current;
+        pinned ??= { ...(treeIndex > 0 ? { treeIndex } : {}), number: args.number, position: args.position, amount: args.amount };
       } catch (err) {
         failure = err;
       }
@@ -1396,9 +1618,11 @@ export function createFlow({
     }
     const { status, current } = keyStatus(scan.found);
     const { fee } = scan;
-    s.coins = scan.found.map(({ number, amount, position, spent }) => ({ number, amount, position, spent }));
+    s.coins = scan.found.map(({ number, amount, treeIndex, position, spent }) => ({ number, amount, treeIndex, position, spent }));
     s.status = status;
-    s.current = current ? { number: current.number, amount: current.amount, position: current.position } : null;
+    s.current = current
+      ? { number: current.number, amount: current.amount, treeIndex: current.treeIndex, position: current.position }
+      : null;
     s.fee = fee;
     s.available = current && current.amount > fee ? current.amount - fee : 0n;
     s.tip = scan.chain.tip.number;
@@ -1410,7 +1634,7 @@ export function createFlow({
     if (current) {
       try {
         const plan = await planReveal(prover, scan, current);
-        s.cover = { height: plan.height, covers: plan.covers, total: scan.tree.count };
+        s.cover = { height: plan.height, covers: plan.covers, total: scan.trees[current.treeIndex].count };
       } catch (err) {
         if (!(err instanceof WaitError)) throw err;
         s.wait = { message: err.message, alone: err.alone };

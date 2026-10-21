@@ -80,14 +80,13 @@ it to the test, the devices are told it (createFlow's `treeLeaves`), and the
 rollover case sends enough strangers' commits of 1 wei to fill coin tree 0.
 The web app reads every coin tree index from 0 up to the tip's, each full
 earlier tree checked against its final root in a header and the last
-against the tip's root ([web app](webapp.md), Coin trees). Two parts of the
-wallet still stand between that and a pass, and the cases fail, not skip,
-on them until they are built: its worker checks the notes and salts of coin
-tree 0 alone against the block receipts (and takes a rollover only at 2^32
-leaves), so a scan of a chain whose tree has rolled over is refused before
-the key is tried on any note; and it hashes trees of 32 levels, so a node
-whose smaller trees are also shallower (spec 05 names 14 levels) needs the
-worker to hash those too.
+against the tip's root, checks every tree's leaves, notes and salts and the
+spent markers against the block receipts, restores a key's coins across
+trees, and proves a coin of a full earlier tree against that tree's final
+root ([web app](webapp.md), Coin trees). One part of the wallet may still
+stand between that and a pass, and the cases fail, not skip, on it: the
+worker hashes trees of 32 levels, so a node whose smaller trees are also
+shallower (spec 05 names 14 levels) needs the worker to hash those too.
 
 ## Release condition
 
