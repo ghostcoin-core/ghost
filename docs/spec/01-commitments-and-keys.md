@@ -37,7 +37,7 @@ specification. Section 14 holds test vectors, and
 | Derivation | Each secret is the tagged SHA3-256 of the key bytes, one tag per secret | Outline ("Technical starting picks"); layout **Proposed** |
 | Remainder blinding | Derived from the digits and the commitment's hop number, used once per key on any one chain (section 8) | Outline ("Coin rules"; "Do not carry over"); counter **Proposed** |
 | Finding the current remainder | Bulk trial decryption of the notes, then the marker of each found commitment against the spent-marker set | Threat model, section 6 item 8; method **Proposed** |
-| Encrypted note | 156 bytes on the chain: random nonce, ChaCha20-Poly1305 ciphertext of a fixed 128-byte plaintext, tag | Outline ("Core protocol" 11); scheme and layout **Proposed** |
+| Encrypted note | 156 bytes on the chain: random nonce, ChaCha20-Poly1305 ciphertext of a fixed 128-byte plaintext, tag. Note version 2 carries the commitment's salt; version 1 stays valid for notes already on a chain (section 9) | Outline ("Core protocol" 11); scheme and layout **Proposed**; note version 2 front desk decision |
 | Versions | Version suffix on every tag, a version byte in every type tag, a key format code, a note version and a scheme ID | Outline ("Extension points" 1 and 4); values **Proposed** |
 
 ## 2. Conventions
@@ -132,9 +132,9 @@ computed from the digits or from another value. It is public: nothing rests on
 keeping it hidden, and it is stored so that the holder can read it back from
 the chain on restore (section 8). A commit publishes it with `F`; a remainder's
 salt travels inside the remainder's encrypted note, because a reveal publishes
-no field beyond those of [spec 02](02-proof-statements.md). Its exact place in
-the commit transaction and in the note is fixed with those formats (section
-11). The salt is not a replacement for `b`: `b` hides the commitment, the salt
+no field beyond those of [spec 02](02-proof-statements.md). Its place in the
+note is fixed by note version 2 (section 9); its place in the commit
+transaction is fixed with that format (section 11). The salt is not a replacement for `b`: `b` hides the commitment, the salt
 makes every commitment a separate target (below).
 
 **Content fingerprint.** For a data commitment,
@@ -603,8 +603,9 @@ C41):
 3. Try `k_note` on every note (section 9). Under authenticated encryption only
    the key's own notes decrypt; every other note fails and is passed over.
 4. For each note that decrypts, read its number `i`, amount `v`, type tag,
-   `cf` and `rule`, and for a version 2 type tag the commitment's salt (the
-   one published with a commit's leaf, or the one inside a remainder's note);
+   `cf` and `rule`, and for a version 2 type tag the commitment's salt, which
+   note version 2 carries (section 9; a commit also publishes it with its
+   leaf);
    compute `b_i`, then `F` and `C` under the tags of the type tag's version
    (section 3). A version 1 type tag has no salt. If `C` is not
    the leaf the note is stored with, discard that note and report it; never
@@ -655,13 +656,39 @@ weakness beyond the square-root search on its 256-bit key (threat model, C2).
 leaf the note is stored with. A note copied to another leaf or another chain
 fails to decrypt.
 
-**Plaintext: 128 bytes, fixed.**
+**Plaintext: 128 bytes, fixed.** There are two note versions, told apart by
+byte 0. Both are 128 bytes, so the note on the chain has one length whatever
+its version.
+
+Note version 2, the note of a version 2 (salted) commitment and the one a
+wallet writes for every new commitment:
+
+| Offset | Width | Field |
+|---|---|---|
+| 0 | 1 | Note version, `0x02` |
+| 1 | 1 | Scheme ID, `0x01` (section 10) |
+| 2 | 2 | Type tag of version 2: `COIN` `0x02 0x01` or `DATA` `0x02 0x02` |
+| 4 | 8 | Commitment number `i` (section 8) |
+| 12 | 12 | Amount `v` in wei, 12 bytes big-endian; zero for data |
+| 24 | 32 | Content fingerprint `cf`; 32 zero bytes for a coin |
+| 56 | 8 | Content length in bytes; zero for a coin |
+| 64 | 32 | Rule; 32 zero bytes for the empty rule |
+| 96 | 16 | The commitment's salt (section 3) |
+| 112 | 16 | Zero padding |
+
+The amount is 12 bytes because `V_MAX` is `2^96 - 1`
+([spec 03](03-coin-rules.md), section 2): the 32-byte amount of version 1
+always has 20 leading zero bytes, and dropping them makes room for the salt
+without changing the 128-byte plaintext or the 156-byte note.
+
+Note version 1, the note of a version 1 commitment, keeps its layout. It stays
+valid for leaves already on a chain and is never rewritten:
 
 | Offset | Width | Field |
 |---|---|---|
 | 0 | 1 | Note version, `0x01` |
 | 1 | 1 | Scheme ID, `0x01` (section 10) |
-| 2 | 2 | Type tag, `COIN` or `DATA` |
+| 2 | 2 | Type tag of version 1: `COIN` `0x01 0x01` or `DATA` `0x01 0x02` |
 | 4 | 8 | Commitment number `i` (section 8) |
 | 12 | 32 | Amount `v` in wei; zero for data |
 | 44 | 32 | Content fingerprint `cf`; 32 zero bytes for a coin |
@@ -671,8 +698,14 @@ fails to decrypt.
 
 The plaintext holds only what the key cannot derive. It never holds `s`, `r`,
 `b_i`, `k_note`, `k_data`, the digits, a storage location or a tree position
-([spec 04](04-data-commitments.md), section 4). A wallet rejects a note whose
-version, scheme ID or type tag it does not know, or whose padding is not zero.
+([spec 04](04-data-commitments.md), section 4). The salt is public and is not
+derived from the digits, so it belongs here.
+
+A wallet rejects a note whose version, scheme ID or type tag it does not know,
+or whose padding is not zero. The note version and the version of its type tag
+must agree: note version 2 is read only with a version 2 type tag, and note
+version 1 only with a version 1 type tag. A note whose two versions disagree
+is rejected, never read with a guessed layout.
 
 **On the chain: 156 bytes, fixed.**
 `nonce (12 bytes) || ciphertext (128 bytes) || tag (16 bytes)`. Every note has this one length, coin or data, so its length is not a
@@ -687,10 +720,13 @@ salt, so the holder must be able to read the salt back from the chain. A
 commit publishes it with `F`. A remainder's salt has nowhere public to go,
 because a reveal publishes no field for it, so the remainder's note carries
 it, under the reveal's binding of the note ([spec 02](02-proof-statements.md),
-section 7). The plaintext above has 12 free bytes, fewer than 16, so the note
-that carries a salt is a new note version, fixed with the next revision of the
-note (section 11). Until then the plaintext above is the note of a version 1
-commitment, and a wallet rejects a note version it does not know.
+section 7). Note version 1 has 12 free bytes, fewer than 16, so the note
+that carries a salt is note version 2 above, at offset 96. A wallet writes
+note version 2 for every version 2 commitment, a commit's as well as a
+remainder's, so restore reads every salt the same way; a commit's note carries
+the same salt the commit publishes with `F`. On restore, the salt read from a
+note is checked like every other field of the note: the commitment computed
+with it must be the leaf the note is stored with (section 8, step 4).
 
 ## 10. Version tags and scheme IDs
 
@@ -705,7 +741,7 @@ later scheme can be added and old commitments migrated safely (outline,
 | Type | `0x01` coin, `0x02` data | Second byte of the type tag |
 | Type tags | Version 2: `COIN` `0x02 0x01`, `DATA` `0x02 0x02`. Version 1: `COIN` `0x01 0x01`, `DATA` `0x01 0x02` | Inside `F` and `C`; the note |
 | Key format code | `0x20` words (24 words, or 21 digit groups), `0x0C` standard, `0x18` long | Implied by words or the number of groups; first byte of the key bytes and the checksum input |
-| Note version | `0x01` | Byte 0 of the note plaintext |
+| Note version | `0x02` with the salt, the note of a version 2 commitment and the only version a wallet writes; `0x01` without salt, valid for notes already on a chain. Each is read only with a type tag of its own version | Byte 0 of the note plaintext |
 | Scheme ID | `0x01` | Byte 1 of the note plaintext; implied by commitment format versions 1 and 2 |
 
 **Scheme 1** is this whole document: Keccak-256 with the tags of section 4 for
@@ -733,6 +769,9 @@ and the type tag inside them keeps the two versions' leaves apart.
   does not know rejects it and never guesses (front desk decision). A type tag
   of version 2 with a `v1` fingerprint or marker tag, or of version 1 with a
   `v2` one or a salt, is rejected the same way.
+- A note of note version 2 with a version 1 type tag, or of note version 1
+  with a version 2 type tag, is rejected (section 9). Version 1 notes stay
+  valid and are never rewritten; a wallet writes only note version 2.
 - Version 1 type tags and tags stay valid for leaves already on a chain: a
   version 1 leaf can always be revealed and its marker recorded, as the
   survival rule below requires. A wallet makes only version 2 commitments:
@@ -769,8 +808,8 @@ and the type tag inside them keeps the two versions' leaves apart.
 - The tree's shape, rollover and root rules beyond the node and empty-leaf
   hashes (tree and header specification).
 - The transaction formats, including where `F`, the salt and the note sit in
-  a commit (transaction-format specification).
-- The note version that carries a version 2 commitment's salt (section 9).
+  a commit (transaction-format specification). The note version that carries
+  a version 2 commitment's salt is fixed here: note version 2 (section 9).
 - The data encryption itself: [spec 04](04-data-commitments.md), section 4 sets
   its rules; this document fixes only `k_data`.
 - Chain identifier values.
@@ -1143,11 +1182,18 @@ node = 758f3cd54a14569d259552727fb0c8d19d41b8a15ae6305559fcd6502a105a4a
 
 The plaintext and associated data of the notes stored with `[coin-remainder]`
 and `[data-commit]`. Encryption itself follows RFC 8439 and its own vectors.
+`version` is the note version (section 9). A `note` vector is always note
+version 1 with a version 1 type tag, as a `coin-commitment` vector is always
+commitment format version 1; the checker refuses a `note` vector with a
+version 2 type tag. Every note vector's `leaf` is the commitment of a
+commitment vector above, and its fields are that commitment's.
 
 ```text
 [note-coin-remainder]
 kind = note
+version = 1
 type = COIN
+type-tag = 0101
 index = 1
 amount = 700000000000000000
 content-fingerprint = 0000000000000000000000000000000000000000000000000000000000000000
@@ -1160,7 +1206,9 @@ associated-data = 00000000000004d293312061656298f41cd5a9f116d070b38b0acf5f8d968c
 
 [note-data-commit]
 kind = note
+version = 1
 type = DATA
+type-tag = 0102
 index = 0
 amount = 0
 content-fingerprint = 7da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c
@@ -1170,4 +1218,46 @@ chain-id = 1234
 leaf = 39c4e1e8edca6f366db5125e1bc9484063fa9f35da539638207f03732d913b06
 plaintext = 01010102000000000000000000000000000000000000000000000000000000000000000000000000000000007da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c00000000000000120000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 associated-data = 00000000000004d239c4e1e8edca6f366db5125e1bc9484063fa9f35da539638207f03732d913b06
+```
+
+### Salted note vectors
+
+Note version 2, the note a wallet writes: the plaintext and associated data of
+the notes stored with `[coin-remainder-salted]` and `[data-commit-salted]`,
+each carrying that commitment's salt at offset 96 after a 12-byte amount.
+Their kind, `salted-note`, is their own, and the checker refuses a
+`salted-note` vector with a version 1 type tag.
+
+```text
+[note-coin-remainder-salted]
+kind = salted-note
+version = 2
+type = COIN
+type-tag = 0201
+index = 1
+amount = 700000000000000000
+content-fingerprint = 0000000000000000000000000000000000000000000000000000000000000000
+content-length = 0
+rule = 0000000000000000000000000000000000000000000000000000000000000000
+salt = 0123456789abcdeffedcba9876543210
+chain-id = 1234
+leaf = 7b2269649fa191df18cf80dde1e81f5cf61bb00a7faf17f58aafc197251393ab
+plaintext = 0201020100000000000000010000000009b6e64a8ec600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000123456789abcdeffedcba987654321000000000000000000000000000000000
+associated-data = 00000000000004d27b2269649fa191df18cf80dde1e81f5cf61bb00a7faf17f58aafc197251393ab
+
+[note-data-commit-salted]
+kind = salted-note
+version = 2
+type = DATA
+type-tag = 0202
+index = 0
+amount = 0
+content-fingerprint = 7da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c
+content-length = 18
+rule = 0000000000000000000000000000000000000000000000000000000000000000
+salt = 00112233445566778899aabbccddeeff
+chain-id = 1234
+leaf = 324c90dbad0fbecfd82331d087ea216b525e68b8dcb64891aa59322565ebb8b5
+plaintext = 0201020200000000000000000000000000000000000000007da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c0000000000000012000000000000000000000000000000000000000000000000000000000000000000112233445566778899aabbccddeeff00000000000000000000000000000000
+associated-data = 00000000000004d2324c90dbad0fbecfd82331d087ea216b525e68b8dcb64891aa59322565ebb8b5
 ```

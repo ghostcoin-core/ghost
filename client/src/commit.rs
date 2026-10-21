@@ -33,6 +33,42 @@ pub const COIN: TypeTag = [0x01, 0x01];
 /// The type tag of a data commitment, version 1.
 pub const DATA: TypeTag = [0x01, 0x02];
 
+/// The type tag of a coin commitment, version 2: the salted format.
+pub const COIN_V2: TypeTag = [0x02, 0x01];
+
+/// The type tag of a data commitment, version 2: the salted format.
+pub const DATA_V2: TypeTag = [0x02, 0x02];
+
+/// Length of the salt of a version 2 commitment.
+pub const SALT_BYTES: usize = 16;
+
+/// The salt of a version 2 commitment: 16 bytes the wallet draws at random
+/// for every new commitment (spec 01, section 3). It is public.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Salt([u8; SALT_BYTES]);
+
+impl Salt {
+    /// The salt from its 16 bytes.
+    pub const fn from_bytes(bytes: [u8; SALT_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    /// The 16 bytes.
+    pub const fn as_bytes(&self) -> &[u8; SALT_BYTES] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for Salt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Salt(")?;
+        for byte in &self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        write!(f, ")")
+    }
+}
+
 /// The largest amount in wei, `2^96 - 1`.
 pub const V_MAX: u128 = (1 << 96) - 1;
 

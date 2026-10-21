@@ -620,10 +620,14 @@ fn wrong_note_key_rejected() {
     };
     let good = contents.to_plaintext();
     assert_eq!(seal(good), None);
-    let cases: [(usize, u8, NoteError); 6] = [
-        (0, 0x02, NoteError::UnknownVersion),
+    // Byte 0 or 2 set to 0x02 makes a version 2 note with a version 1 type
+    // tag, or the other way round: the two must agree.
+    let cases: [(usize, u8, NoteError); 8] = [
+        (0, 0x03, NoteError::UnknownVersion),
+        (0, 0x02, NoteError::VersionMismatch),
         (1, 0x02, NoteError::UnknownScheme),
-        (2, 0x02, NoteError::UnknownType),
+        (2, 0x02, NoteError::VersionMismatch),
+        (2, 0x03, NoteError::UnknownType),
         (3, 0x03, NoteError::UnknownType),
         (12, 0x01, NoteError::AmountTooLarge),
         (127, 0x01, NoteError::NonZeroPadding),
@@ -677,6 +681,7 @@ fn note_plaintext_matches_spec_vectors() {
         ),
         content_length: 18,
         rule: Rule::EMPTY,
+        salt: None,
     };
     let plaintext = data.to_plaintext();
     assert_eq!(plaintext.to_vec(), hex(&spec_field("note-data-commit", "plaintext")));

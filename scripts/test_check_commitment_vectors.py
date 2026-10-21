@@ -90,6 +90,9 @@ class CheckerTest(unittest.TestCase):
             ("data-tree-node", "node"),
             ("note-coin-remainder", "plaintext"),
             ("note-data-commit", "associated-data"),
+            ("note-coin-remainder-salted", "plaintext"),
+            ("note-data-commit-salted", "plaintext"),
+            ("note-data-commit-salted", "associated-data"),
             ("keccak-abc", "digest"),
         ]
         for vector, name in cases:
@@ -153,6 +156,115 @@ class CheckerTest(unittest.TestCase):
         self.assertNotIn("kind = note", self.text[:start] + self.text[end:])
         errors = self.run_on(self.text[:start] + self.text[end:])
         self.assertIn("no vector of kind note", errors)
+
+    def test_salted_note_layout(self):
+        # Note version 2 (section 9), field by field: version, scheme, type tag,
+        # number (8), amount (12), cf (32), length (8), rule (32), salt (16),
+        # then 16 zero bytes, 128 in all.
+        vectors = {v["name"]: v for v in
+                   checker.parse_vectors(checker.section(self.text, "Test vectors"))}
+        for name, tag, amount, cf, length in (
+            ("note-coin-remainder-salted", "0201", 700000000000000000, bytes(32), 0),
+            ("note-data-commit-salted", "0202", 0,
+             bytes.fromhex(vectors["data-commit-salted"]["content-fingerprint"]), 18),
+        ):
+            with self.subTest(name=name):
+                v = vectors[name]
+                salt = bytes.fromhex(v["salt"])
+                expected = (b"\x02\x01" + bytes.fromhex(tag)
+                            + int(v["index"]).to_bytes(8, "big")
+                            + amount.to_bytes(12, "big") + cf + length.to_bytes(8, "big")
+                            + bytes(32) + salt + bytes(16))
+                self.assertEqual(len(expected), 128)
+                plaintext = bytes.fromhex(v["plaintext"])
+                self.assertEqual(plaintext, expected)
+                self.assertEqual(plaintext[96:112], salt)
+                self.assertEqual(plaintext[112:], bytes(16))
+                self.assertEqual(v["kind"], "salted-note")
+                self.assertEqual(v["version"], "2")
+        # The leaf of each salted note is the salted commitment it carries the
+        # salt of.
+        self.assertEqual(vectors["note-coin-remainder-salted"]["leaf"],
+                         vectors["coin-remainder-salted"]["commitment"])
+        self.assertEqual(vectors["note-coin-remainder-salted"]["salt"],
+                         vectors["coin-remainder-salted"]["salt"])
+        self.assertEqual(vectors["note-data-commit-salted"]["leaf"],
+                         vectors["data-commit-salted"]["commitment"])
+        # The largest amount still fits in 12 bytes; a larger one is refused.
+        top = checker.note_plaintext("COIN", 0, checker.V_MAX, bytes(32), 0, bytes(32),
+                                     SALT_A, checker.NOTE_VERSION_2)
+        self.assertEqual(top[12:24], b"\xff" * 12)
+        with self.assertRaises(ValueError):
+            checker.note_plaintext("COIN", 0, checker.V_MAX + 1, bytes(32), 0, bytes(32),
+                                   SALT_A, checker.NOTE_VERSION_2)
+        # A salt is required in version 2 and refused in version 1.
+        with self.assertRaises(ValueError):
+            checker.note_plaintext("COIN", 0, 1, bytes(32), 0, bytes(32), None,
+                                   checker.NOTE_VERSION_2)
+        with self.assertRaises(ValueError):
+            checker.note_plaintext("COIN", 0, 1, bytes(32), 0, bytes(32), SALT_A,
+                                   checker.NOTE_VERSION)
+        with self.assertRaises(ValueError):
+            checker.note_plaintext("COIN", 0, 1, bytes(32), 0, bytes(32), SALT_A, 3)
+        # A changed salt byte is caught: the plaintext no longer matches, and
+        # the salt is no longer the one of the commitment the note is stored with.
+        salt = self.field("note-coin-remainder-salted", "salt")
+        changed = salt[:-1] + ("1" if salt[-1] != "1" else "2")
+        errors = self.run_on(self.replace_field("note-coin-remainder-salted", "salt", changed))
+        self.assertTrue(any("[note-coin-remainder-salted] plaintext" in e for e in errors), errors)
+        self.assertTrue(any("[note-coin-remainder-salted] salt is not that of "
+                            "[coin-remainder-salted]" in e for e in errors), errors)
+        # The salt written into the plaintext elsewhere is caught too.
+        plaintext = self.field("note-data-commit-salted", "plaintext")
+        moved = plaintext[:2 * 96] + plaintext[2 * 112:] + plaintext[2 * 96:2 * 112]
+        errors = self.run_on(self.replace_field("note-data-commit-salted", "plaintext", moved))
+        self.assertTrue(any("[note-data-commit-salted] plaintext" in e for e in errors), errors)
+        # A salted note needs its salt.
+        start = self.text.index("[note-data-commit-salted]\n")
+        at = self.text.index("salt = ", start)
+        end = self.text.index("\n", at) + 1
+        errors = self.run_on(self.text[:at] + self.text[end:])
+        self.assertTrue(any("[note-data-commit-salted] cannot be checked" in e for e in errors),
+                        errors)
+        # And the document must carry a salted-note vector.
+        start = self.text.index("### Salted note vectors")
+        errors = self.run_on(self.text[:start])
+        self.assertIn("no vector of kind salted-note", errors)
+
+    def test_note_version_must_match_type_tag(self):
+        # A salted-note vector (note version 2) with a version 1 type tag.
+        errors = self.run_on(self.replace_field("note-coin-remainder-salted", "type-tag", "0101"))
+        self.assertTrue(any("[note-coin-remainder-salted] cannot be checked: note version 2 "
+                            "needs a version 2 type tag, not 0101" in e for e in errors), errors)
+        # A note vector (note version 1) with a version 2 type tag.
+        errors = self.run_on(self.replace_field("note-data-commit", "type-tag", "0202"))
+        self.assertTrue(any("[note-data-commit] cannot be checked: note version 1 needs a "
+                            "version 1 type tag, not 0202" in e for e in errors), errors)
+        # The kind fixes the note version: neither kind takes the other's.
+        errors = self.run_on(self.replace_field("note-coin-remainder", "version", "2"))
+        self.assertTrue(any("[note-coin-remainder] cannot be checked: kind note is note "
+                            "version 1, not 2" in e for e in errors), errors)
+        start = self.text.index("[note-data-commit-salted]\n")
+        at = self.text.index("kind = salted-note", start)
+        old = "kind = salted-note"
+        errors = self.run_on(self.text[:at] + "kind = note" + self.text[at + len(old):])
+        self.assertTrue(any("[note-data-commit-salted] cannot be checked: kind note is note "
+                            "version 1, not 2" in e for e in errors), errors)
+        # An unknown type tag version, or a type tag of another type, is refused.
+        for tag in ("0301", "0203"):
+            with self.subTest(tag=tag):
+                errors = self.run_on(self.replace_field("note-coin-remainder-salted",
+                                                        "type-tag", tag))
+                self.assertTrue(any("[note-coin-remainder-salted] cannot be checked: unknown "
+                                    "type tag" in e for e in errors), errors)
+        errors = self.run_on(self.replace_field("note-coin-remainder-salted", "type-tag", "0202"))
+        self.assertTrue(any("[note-coin-remainder-salted] cannot be checked: type tag 0202 is "
+                            "DATA, not COIN" in e for e in errors), errors)
+        # The type tag written into the plaintext follows the note version.
+        v1 = checker.note_plaintext("DATA", 0, 0, bytes(32), 0, bytes(32))
+        v2 = checker.note_plaintext("DATA", 0, 0, bytes(32), 0, bytes(32), SALT_A,
+                                    checker.NOTE_VERSION_2)
+        self.assertEqual((v1[:4], v2[:4]), (b"\x01\x01\x01\x02", b"\x02\x01\x02\x02"))
 
     def test_missing_remainder_vector_fails(self):
         start = self.text.index("[coin-remainder]")
