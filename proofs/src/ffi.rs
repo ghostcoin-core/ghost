@@ -1,10 +1,14 @@
 //! A C interface to the coin reveal verifier, so a node written in another
-//! language links the same [`verify_coin_reveal`] the prover is checked
-//! against.
+//! language links the same [`verify_salted_coin_reveal`] and
+//! [`verify_coin_reveal`] the prover is checked against.
 //!
 //! One function, [`ghost_verify_coin_reveal`], takes the chain parameters, the
 //! public statement and the proof as pointer and length, and returns a status
-//! code. Nothing unwinds into the caller: a panic inside becomes
+//! code. The statement is the same for both commitment formats and names
+//! neither, so the proof is verified as a salted (version 2) reveal and, if
+//! that fails, as a version 1 reveal; it is accepted when one of the two
+//! verifies. The binding digest holds the format's type tag, so a proof can
+//! pass only the one it was made for. Nothing unwinds into the caller: a panic inside becomes
 //! [`GHOST_PROOFS_PANICKED`], which needs the library built with the default
 //! `panic = "unwind"`. Only [`GHOST_PROOFS_ACCEPTED`] accepts; every other
 //! status rejects.
@@ -26,7 +30,9 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::{ChainParams, CoinReveal, NOTE_BYTES, Proof, ProofError, stark, verify_coin_reveal};
+use crate::{
+    ChainParams, CoinReveal, NOTE_BYTES, Proof, ProofError, stark, verify_coin_reveal, verify_salted_coin_reveal,
+};
 
 /// The proof verifies against the statement and the chain parameters.
 pub const GHOST_PROOFS_ACCEPTED: i32 = 0;
@@ -138,7 +144,11 @@ fn verify_unguarded(params: &[u8], statement: &[u8], proof: &[u8]) -> i32 {
     }
     let params = chain_params_from_bytes(params);
     let tx = coin_reveal_from_bytes(statement);
-    match verify_coin_reveal(&params, &tx, &Proof::from_bytes(proof.to_vec())) {
+    let proof = Proof::from_bytes(proof.to_vec());
+    // The statement carries no type: a salted reveal first, then version 1.
+    // The binding digest holds the type, so a proof passes at most one.
+    let verdict = verify_salted_coin_reveal(&params, &tx, &proof).or_else(|_| verify_coin_reveal(&params, &tx, &proof));
+    match verdict {
         Ok(()) => GHOST_PROOFS_ACCEPTED,
         Err(ProofError::MalformedProof) => GHOST_PROOFS_MALFORMED_INPUT,
         Err(_) => GHOST_PROOFS_REJECTED,

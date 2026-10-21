@@ -1,5 +1,6 @@
 //! Keccak-256 with the original padding, the tags of spec 01, section 4, and
-//! the commitment, marker and tree hashes built from them.
+//! the commitment, marker and tree hashes built from them: version 1 without a
+//! salt, and the salted version 2 (the `_v2` functions) of spec 01, section 3.
 //!
 //! `K(tag, x1, x2, ...)` is Keccak-256 over `tagbytes(tag) || x1 || x2 || ...`,
 //! where `tagbytes` is one length byte followed by the tag's ASCII bytes. It is
@@ -21,6 +22,14 @@ pub const COIN: [u8; 2] = [0x01, 0x01];
 /// Type tag of a data commitment (format version 1, type 2).
 pub const DATA: [u8; 2] = [0x01, 0x02];
 
+/// Type tag of a salted coin commitment (format version 2, type 1).
+pub const COIN_V2: [u8; 2] = [0x02, 0x01];
+/// Type tag of a salted data commitment (format version 2, type 2).
+pub const DATA_V2: [u8; 2] = [0x02, 0x02];
+
+/// Length of the salt of a version 2 commitment (spec 01, section 3).
+pub const SALT_BYTES: usize = 16;
+
 /// The empty rule, the only rule version 1 accepts.
 pub const EMPTY_RULE: [u8; 32] = [0; 32];
 
@@ -30,6 +39,10 @@ pub const TAG_DATA_FINGERPRINT: &str = "ghost/data-fingerprint/v1";
 pub const TAG_DATA_COMMITMENT: &str = "ghost/data-commitment/v1";
 pub const TAG_COIN_MARKER: &str = "ghost/coin-marker/v1";
 pub const TAG_DATA_MARKER: &str = "ghost/data-marker/v1";
+pub const TAG_COIN_FINGERPRINT_V2: &str = "ghost/coin-fingerprint/v2";
+pub const TAG_DATA_FINGERPRINT_V2: &str = "ghost/data-fingerprint/v2";
+pub const TAG_COIN_MARKER_V2: &str = "ghost/coin-marker/v2";
+pub const TAG_DATA_MARKER_V2: &str = "ghost/data-marker/v2";
 pub const TAG_COIN_TREE_NODE: &str = "ghost/coin-tree-node/v1";
 pub const TAG_DATA_TREE_NODE: &str = "ghost/data-tree-node/v1";
 pub const TAG_EMPTY_LEAF: &str = "ghost/empty-leaf/v1";
@@ -159,6 +172,49 @@ pub fn data_marker(r: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     tagged(TAG_DATA_MARKER, &[r, b])
 }
 
+/// `F = K("ghost/coin-fingerprint/v2", s, r, b, salt, COIN_V2, 0^32, rule)`.
+pub fn coin_fingerprint_v2(
+    s: &[u8; 32],
+    r: &[u8; 32],
+    b: &[u8; 32],
+    salt: &[u8; SALT_BYTES],
+    rule: &[u8; 32],
+) -> [u8; 32] {
+    tagged(TAG_COIN_FINGERPRINT_V2, &[s, r, b, salt, &COIN_V2, &[0u8; 32], rule])
+}
+
+/// `C = K("ghost/coin-commitment/v1", COIN_V2, F, v)`, `v` an amount word.
+pub fn coin_commitment_v2(fingerprint: &[u8; 32], v: &[u8; 32]) -> [u8; 32] {
+    tagged(TAG_COIN_COMMITMENT, &[&COIN_V2, fingerprint, v])
+}
+
+/// `F_d = K("ghost/data-fingerprint/v2", s, r, b, salt, DATA_V2, cf, rule)`.
+pub fn data_fingerprint_v2(
+    s: &[u8; 32],
+    r: &[u8; 32],
+    b: &[u8; 32],
+    salt: &[u8; SALT_BYTES],
+    cf: &[u8; 32],
+    rule: &[u8; 32],
+) -> [u8; 32] {
+    tagged(TAG_DATA_FINGERPRINT_V2, &[s, r, b, salt, &DATA_V2, cf, rule])
+}
+
+/// `C = K("ghost/data-commitment/v1", DATA_V2, F_d)`.
+pub fn data_commitment_v2(fingerprint: &[u8; 32]) -> [u8; 32] {
+    tagged(TAG_DATA_COMMITMENT, &[&DATA_V2, fingerprint])
+}
+
+/// `m = K("ghost/coin-marker/v2", r, b, salt)`.
+pub fn coin_marker_v2(r: &[u8; 32], b: &[u8; 32], salt: &[u8; SALT_BYTES]) -> [u8; 32] {
+    tagged(TAG_COIN_MARKER_V2, &[r, b, salt])
+}
+
+/// `m = K("ghost/data-marker/v2", r, b, salt)`.
+pub fn data_marker_v2(r: &[u8; 32], b: &[u8; 32], salt: &[u8; SALT_BYTES]) -> [u8; 32] {
+    tagged(TAG_DATA_MARKER_V2, &[r, b, salt])
+}
+
 /// An inner node at `level` (0 just above the leaves, 31 for the root).
 pub fn tree_node(tree: Tree, level: u8, left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     tagged(tree.node_tag(), &[&[level], left, right])
@@ -208,5 +264,10 @@ mod tests {
         assert_eq!(tag_bytes(TAG_COIN_MARKER).len() + 64, 85);
         assert_eq!(tag_bytes(TAG_COIN_TREE_NODE).len() + 1 + 64, 89);
         assert_eq!(tag_bytes(TAG_EMPTY_LEAF).len(), 20);
+        assert_eq!(tag_bytes(TAG_COIN_FINGERPRINT_V2).len() + 32 * 5 + SALT_BYTES + 2, 204);
+        assert_eq!(tag_bytes(TAG_DATA_FINGERPRINT_V2).len() + 32 * 5 + SALT_BYTES + 2, 204);
+        assert_eq!(tag_bytes(TAG_COIN_MARKER_V2).len() + 64 + SALT_BYTES, 101);
+        assert_eq!(tag_bytes(TAG_DATA_MARKER_V2).len() + 64 + SALT_BYTES, 101);
+        assert_eq!((permutations(204), permutations(101)), (2, 1));
     }
 }

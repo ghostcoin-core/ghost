@@ -1,14 +1,16 @@
 //! The proof statements of Ghost (spec 02), with a native prover and verifier.
 //!
-//! - S1, the one-time reveal of a coin: [`prove_coin_reveal`],
-//!   [`verify_coin_reveal`].
+//! - S1, the one-time reveal of a coin: [`prove_salted_coin_reveal`] and
+//!   [`verify_salted_coin_reveal`] for a salted (version 2) commitment, and
+//!   [`prove_coin_reveal`] and [`verify_coin_reveal`] for a version 1
+//!   commitment, made without a salt.
 //! - S2, the one-time reveal of data: [`verify_data_reveal`], which rejects
 //!   every data reveal until its fee is settled.
 //! - S3, the proof of holding: [`verify_hold`], which rejects every proof until
 //!   the spent-marker set is settled, and the verifier's [`ChallengeBook`].
 //!
-//! The module [`ffi`] is a C interface to [`verify_coin_reveal`], with its
-//! header in `include/ghost_proofs.h`.
+//! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`] and
+//! [`verify_coin_reveal`], with its header in `include/ghost_proofs.h`.
 //!
 //! S2 and S3 are written in full, and are built and verified only by the
 //! functions compiled under the `unsettled-points-test` feature, for tests.
@@ -25,8 +27,8 @@
 //! wrapped in an elliptic-curve proof. Inside the proofs the only hash is
 //! Keccak-256 with the original padding, the hash of spec 01.
 //!
-//! **What stays private.** No public input is `s`, `r`, `b`, `cf`, `v`, `v'`,
-//! a position or a path. The types that hold them implement neither `Debug`
+//! **What stays private.** No public input is `s`, `r`, `b`, a salt, `cf`,
+//! `v`, `v'`, a position or a path. The types that hold them implement neither `Debug`
 //! nor `Display` nor any serialization, so they cannot leave by accident.
 //!
 //! **Chain constants** (`chain_id`, `version`, `domain`) are parameters of
@@ -71,17 +73,21 @@ pub use data::{DataOpening, DataPurpose, DataReveal, data_reveal_binding, verify
 #[cfg(feature = "unsettled-points-test")]
 pub use data::{DataRevealRequest, prove_data_reveal, verify_data_reveal_unsettled};
 pub use hash::{
-    COIN, DATA, EMPTY_RULE, RATE_BYTES, TREE_DEPTH, Tree, coin_commitment, coin_fingerprint, coin_marker,
-    data_commitment, data_fingerprint, data_marker, empty_leaf, keccak256, merkle_root, permutations, tag_bytes,
-    tagged, tree_node,
+    COIN, COIN_V2, DATA, DATA_V2, EMPTY_RULE, RATE_BYTES, SALT_BYTES, TREE_DEPTH, Tree, coin_commitment,
+    coin_commitment_v2, coin_fingerprint, coin_fingerprint_v2, coin_marker, coin_marker_v2, data_commitment,
+    data_commitment_v2, data_fingerprint, data_fingerprint_v2, data_marker, data_marker_v2, empty_leaf, keccak256,
+    merkle_root, permutations, tag_bytes, tagged, tree_node,
 };
 pub use hold::{ChallengeBook, HoldContext, HoldOpening, hold_binding, verify_hold};
 #[cfg(feature = "unsettled-points-test")]
 pub use hold::{prove_hold, verify_hold_unsettled, verify_hold_unsettled_with_book};
 pub use reveal::{
-    CoinOpening, CoinRemainder, CoinReveal, NOTE_BYTES, RevealRequest, coin_reveal_binding, prove_coin_reveal,
-    verify_coin_reveal,
+    CoinOpening, CoinRemainder, CoinReveal, NOTE_BYTES, RevealRequest, SaltedCoinOpening, SaltedCoinRemainder,
+    coin_reveal_binding, prove_coin_reveal, prove_salted_coin_reveal, salted_coin_reveal_binding,
+    verify_coin_reveal, verify_salted_coin_reveal,
 };
+#[doc(hidden)]
+pub use reveal::prove_salted_coin_reveal_claiming;
 pub use stark::{
     BATCH_POW_BITS, COLLISION_RESISTANCE_BITS, DIGEST_BITS, EXTENSION_DEGREE, LOG_BLOWUP, MAX_GRINDING_BITS,
     MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH, MIN_SALT_BITS, NUM_QUERIES, PROOF_FIELD_BYTES, QUERY_POW_BITS, SALT_BITS,
@@ -248,7 +254,7 @@ pub struct ShippedConfiguration {
     pub salt_bits: usize,
     /// The estimator's result for each statement at these parameters:
     /// conjectured and proven, classical and quantum.
-    pub statements: [(Statement, SecurityEstimate); 3],
+    pub statements: [(Statement, SecurityEstimate); Statement::ALL.len()],
 }
 
 /// Build the shipped configuration and report it. Fails when the security
