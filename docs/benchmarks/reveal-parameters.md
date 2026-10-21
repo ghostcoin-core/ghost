@@ -155,6 +155,8 @@ The gate is `proofs/src/stark.rs`. The tests that hold it are
 
 ## Not measured here
 
-Proving time on other devices and in WebAssembly, which decides whether the
-10-second proving target still holds at the higher proving cost, is measured
-separately and recorded in [reveal-results.md](reveal-results.md) when done.
+Proving time on other devices and in WebAssembly is measured separately, in
+[reveal-results.md](reveal-results.md). In the browser, measured 2026-10-21,
+the 10-second proving target holds on the Mac Studio (warm median 2.72 s) but
+not on the emulated mid-range phone, not a real device (warm median 13.15 s,
+slowest cold proof 17.39 s).
