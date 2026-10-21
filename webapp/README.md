@@ -125,3 +125,8 @@ It needs `git`, Go and a C compiler for the node, and prints
 `SKIP: GHOST_NODE_GETH is not set` when the variable is unset. The pinned
 commit (`webapp/test/e2e/NODE_COMMIT`) takes the salted 206-byte commit and
 serves each leaf's salt back.
+
+To prove recovery with every project-run host blocked (an independent node
+synced from peers only, a clean device given only digits, a reorganisation
+during recovery), run `scripts/recovery-blackout.sh`; see
+[docs/recovery-test.md](../docs/recovery-test.md).
