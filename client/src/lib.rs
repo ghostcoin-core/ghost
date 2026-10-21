@@ -12,7 +12,9 @@
 //! - [`derive`]: every secret derived from the digits: the key bytes, `s`,
 //!   `r`, the blinding `b_i`, the note key and the data key (section 7).
 //! - [`commit`]: the content fingerprint, the fingerprint, the commitment and
-//!   the marker of a coin or data commitment (sections 3 and 8).
+//!   the marker of a coin or data commitment, salted (version 2, a fresh salt
+//!   from the caller's generator for every new commitment) or version 1, and
+//!   the data of a salted commit (sections 3 and 8).
 //! - [`hash`]: the tagged Keccak-256 and SHA3-256 of sections 2 and 4.
 //! - [`note`]: the encrypted note, ChaCha20-Poly1305 under the note key
 //!   (section 9).
@@ -43,8 +45,8 @@
 //!
 //! # Randomness
 //!
-//! Key generation and note encryption take the caller's cryptographically
-//! secure generator (any [`rand_core::CryptoRng`]), and proving takes 32
+//! Key generation, the salt of every new commitment and note encryption take
+//! the caller's cryptographically secure generator (any [`rand_core::CryptoRng`]), and proving takes 32
 //! random bytes from the caller. The crate never reads the operating system's
 //! random source itself, so it builds for `wasm32-unknown-unknown` without one;
 //! the web app passes the browser's source.
@@ -76,8 +78,9 @@ pub use account::{
     VerifiedAccountTx, WalletSeed,
 };
 pub use commit::{
-    Amount, CoinCommit, Commitment, CommitError, Content, ContentFingerprint, DataCommit,
-    Fingerprint, Marker, Rule, Salt, TypeTag, COIN, COIN_V2, DATA, DATA_V2, SALT_BYTES, V_MAX,
+    salted_commit_data, Amount, CoinCommit, Commitment, CommitError, Content, ContentFingerprint,
+    DataCommit, Fingerprint, Marker, Rule, Salt, TypeTag, COIN, COIN_V2, DATA, DATA_V2,
+    SALTED_COMMIT_DATA_BYTES, SALTED_COMMIT_FORMAT_VERSION, SALT_BYTES, V_MAX,
 };
 pub use derive::{Blinding, DataKey, KeyBytes, NoteKey, RevealSecret, Secret};
 pub use header_chain::{

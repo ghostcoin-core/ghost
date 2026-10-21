@@ -236,7 +236,7 @@ fn block(start: u32, count: usize) -> Block {
     let mut gas = 0;
     let mut append = |leaves: &mut Vec<TreeLeaf>| {
         let p = position;
-        leaves.push(TreeLeaf { commitment: leaf_at(0, p), note: note_at(p) });
+        leaves.push(TreeLeaf { commitment: leaf_at(0, p), note: note_at(p), salt: None });
         position += 1;
         p
     };
@@ -488,7 +488,7 @@ fn a_repeated_or_invented_leaf_is_refused() {
 
     let mut leaves = honest.leaves.clone();
     let next = leaves.len() as u32;
-    leaves.push(TreeLeaf { commitment: leaf_at(0, next), note: note_at(next) });
+    leaves.push(TreeLeaf { commitment: leaf_at(0, next), note: note_at(next), salt: None });
     assert_eq!(check_leaves(&blocks, 0, 0, &leaves), Err(ReceiptError::LeafInvented { position: next }));
 
     // A run starting past the receipts invents every leaf.

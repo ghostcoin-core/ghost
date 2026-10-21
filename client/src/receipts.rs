@@ -22,7 +22,12 @@
 //! | Log | Topics | Data |
 //! |---|---|---|
 //! | commit | `K("ghost/commit-receipt/v1")` | tree index (4), position (4), leaf (32), `v` (32), note (156) |
+//! | salted commit | `K("ghost/commit-receipt/v1")` | tree index (4), position (4), leaf (32), `v` (32), note (156), salt (16) |
 //! | reveal | `K("ghost/reveal-receipt/v1")`, marker | tree index (4), position (4), remainder (32), note (156), recipient (20), out (32) |
+//!
+//! A commit log is 228 bytes for a version 1 commit and 244 for a version 2
+//! (salted) commit, whose salt the node appends after the note. A reveal log
+//! carries no salt: a remainder's salt is only in its note.
 //!
 //! Integers are big-endian. Logs of any other address are not read here.
 //!
@@ -34,7 +39,7 @@
 
 use core::fmt;
 
-use crate::commit::{Commitment, Marker};
+use crate::commit::{Commitment, Marker, Salt, SALT_BYTES};
 use crate::hash::{k, keccak256};
 use crate::note::NOTE_BYTES;
 use crate::restore::TreeLeaf;
@@ -50,6 +55,11 @@ pub const TAG_COMMIT_RECEIPT: &str = "ghost/commit-receipt/v1";
 pub const TAG_REVEAL_RECEIPT: &str = "ghost/reveal-receipt/v1";
 /// Data bytes of a commit log: tree index, position, leaf, `v`, note.
 pub const COMMIT_LOG_BYTES: usize = 4 + 4 + 32 + 32 + NOTE_BYTES;
+/// Data bytes of a salted (version 2) commit log: a commit log, then the
+/// commitment's salt.
+pub const SALTED_COMMIT_LOG_BYTES: usize = COMMIT_LOG_BYTES + SALT_BYTES;
+
+const _: () = assert!(COMMIT_LOG_BYTES == 228 && SALTED_COMMIT_LOG_BYTES == 244);
 /// Data bytes of a reveal log: tree index, position, remainder, note,
 /// recipient, out.
 pub const REVEAL_LOG_BYTES: usize = 4 + 4 + 32 + NOTE_BYTES + 20 + 32;
@@ -72,6 +82,9 @@ pub struct AppendedLeaf {
     pub leaf: Commitment,
     /// The note stored with it.
     pub note: [u8; NOTE_BYTES],
+    /// The salt a salted commit log carries after the note; `None` for a
+    /// version 1 commit log and for every reveal log.
+    pub salt: Option<Salt>,
 }
 
 /// One coin tree record of a receipt.
@@ -140,6 +153,9 @@ pub enum ReceiptError {
     LeafMismatch { position: u32 },
     /// The run's note differs from the record's.
     NoteMismatch { position: u32 },
+    /// The salt the run holds beside a leaf differs from the record's, or
+    /// one of the two has a salt and the other none.
+    SaltMismatch { position: u32 },
     /// The list lacks a marker the records hold, at this index.
     MarkerMissing { index: usize },
     /// The list holds a marker the records do not, at this index.
@@ -167,6 +183,7 @@ impl fmt::Display for ReceiptError {
             }
             Self::LeafMismatch { position } => write!(f, "the leaf at position {position} differs from its receipt"),
             Self::NoteMismatch { position } => write!(f, "the note at position {position} differs from its receipt"),
+            Self::SaltMismatch { position } => write!(f, "the salt at position {position} differs from its receipt"),
             Self::MarkerMissing { index } => write!(f, "spent marker {index} is missing"),
             Self::MarkerInvented { index } => write!(f, "spent marker {index} is not in the receipts"),
             Self::MarkerMismatch { index } => write!(f, "spent marker {index} differs from its receipt"),
@@ -257,6 +274,9 @@ pub fn check_leaves(
         }
         if leaf.note != record.note {
             return Err(ReceiptError::NoteMismatch { position: record.position });
+        }
+        if leaf.salt != record.salt {
+            return Err(ReceiptError::SaltMismatch { position: record.position });
         }
         expected = expected.wrapping_add(1);
     }
@@ -365,14 +385,17 @@ fn coin_record(topics: &[[u8; 32]], data: &[u8]) -> Result<CoinRecord, &'static 
         if topics.len() != 1 {
             return Err("a commit log does not have exactly one topic");
         }
-        if data.len() != COMMIT_LOG_BYTES {
-            return Err("a commit log's data is not its length");
-        }
+        let salted = match data.len() {
+            COMMIT_LOG_BYTES => false,
+            SALTED_COMMIT_LOG_BYTES => true,
+            _ => return Err("a commit log's data is not its length"),
+        };
         let mut data = Fields(data);
         let appended = data.appended_head();
         let v = data.take();
         let note = data.take();
-        Ok(CoinRecord::Commit { appended: AppendedLeaf { note, ..appended }, v })
+        let salt = salted.then(|| Salt::from_bytes(data.take()));
+        Ok(CoinRecord::Commit { appended: AppendedLeaf { note, salt, ..appended }, v })
     } else if *first == k(TAG_REVEAL_RECEIPT, &[]) {
         if topics.len() != 2 {
             return Err("a reveal log does not have exactly two topics");
@@ -413,6 +436,7 @@ impl Fields<'_> {
             position: u32::from_be_bytes(self.take()),
             leaf: Commitment::from_bytes(self.take()),
             note: [0; NOTE_BYTES],
+            salt: None,
         }
     }
 }

@@ -425,6 +425,7 @@ pub extern "C" fn ghost_restore(ptr: *const u8, len: usize) -> u32 {
             .map(|record| TreeLeaf {
                 commitment: Commitment::from_bytes(record[..32].try_into().expect("32 bytes")),
                 note: record[32..].try_into().expect("note bytes"),
+                salt: None,
             })
             .collect();
         let spent: Vec<Marker> = input.records::<32>()?.into_iter().map(Marker::from_bytes).collect();
@@ -649,7 +650,7 @@ fn real_coin(
     if &leaves[index] != commit.commitment.as_bytes() || tree_root(leaves, z) != terms.root {
         return Err(String::from("the coin is not in the tree under the chosen root"));
     }
-    let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, position, path: witness(leaves, index, z) };
+    let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, salt: None, position, path: witness(leaves, index, z) };
     Ok((key, new_key, coin))
 }
 
@@ -677,7 +678,7 @@ fn decoy_coin(
     leaves[index] = *commit.commitment.as_bytes();
     terms.root = tree_root(leaves, z);
     let position = index as u32;
-    let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, position, path: witness(leaves, index, z) };
+    let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, salt: None, position, path: witness(leaves, index, z) };
     Ok((key, new_key, coin))
 }
 

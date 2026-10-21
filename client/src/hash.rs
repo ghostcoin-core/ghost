@@ -33,6 +33,14 @@ pub const TAG_CONTENT_FINGERPRINT: &str = "ghost/content-fingerprint/v1";
 pub const TAG_COIN_MARKER: &str = "ghost/coin-marker/v1";
 /// Marker of a data commitment (Keccak-256).
 pub const TAG_DATA_MARKER: &str = "ghost/data-marker/v1";
+/// Coin fingerprint `F` of a version 2 (salted) commitment (Keccak-256).
+pub const TAG_COIN_FINGERPRINT_V2: &str = "ghost/coin-fingerprint/v2";
+/// Data fingerprint `F_d` of a version 2 (salted) commitment (Keccak-256).
+pub const TAG_DATA_FINGERPRINT_V2: &str = "ghost/data-fingerprint/v2";
+/// Marker of a version 2 (salted) coin commitment (Keccak-256).
+pub const TAG_COIN_MARKER_V2: &str = "ghost/coin-marker/v2";
+/// Marker of a version 2 (salted) data commitment (Keccak-256).
+pub const TAG_DATA_MARKER_V2: &str = "ghost/data-marker/v2";
 
 fn tagged<H: Hasher>(mut hasher: H, tag: &str, parts: &[&[u8]]) -> [u8; 32] {
     let len = u8::try_from(tag.len()).expect("a tag is shorter than 256 bytes");
