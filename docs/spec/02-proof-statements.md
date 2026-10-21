@@ -33,6 +33,7 @@ It chooses nothing inside the proof system beyond what the statements need.
 | Statements | Three: S1 one-time reveal of a coin, S2 one-time reveal of data (reveal or revoke), S3 proof of holding (data, and coins once settled) | Outline ("Core protocol" 5); spec 04 |
 | What a reveal publishes | A one-time marker computed from the reveal secret and blinding, never the commitment, its fingerprint or its position | Outline (core requirement 3); spec 01, section 3 |
 | What a proof of holding publishes | Nothing tied to the commitment: no marker, no commitment, no position | Spec 04, section 5 |
+| Salt | The 16-byte salt of a version 2 commitment is a private witness of every statement, never a public input; the remainder's fresh salt is private too. No public field changes | Spec 01, section 3; front desk decision |
 | Binding | One binding digest per statement, computed by the node or verifier from its own values, never taken from the prover | Outline ("Core protocol" 10); base client plan 7.3; spec 03, section 7, step 6 |
 | Binding layouts | Fixed-width fields in a fixed order under the three binding tags of spec 01 | **Proposed** (section 7) |
 | Domain tag | The genesis block hash of the chain | **Proposed** (question 1) |
@@ -48,8 +49,11 @@ It chooses nothing inside the proof system beyond what the statements need.
 
 The conventions of [spec 01](01-commitments-and-keys.md), section 2, apply:
 `K(tag, ...)` is tagged Keccak-256, `||` is concatenation, integers are unsigned
-big-endian at the stated width, `COIN` and `DATA` are the type tags of version
-1, and "reject" means the value or transaction is invalid and changes no state.
+big-endian at the stated width, `COIN` and `DATA` are the type tags of the
+commitment's format version (`0x02 0x01` and `0x02 0x02` for version 2, the
+salted format every new commitment uses; `0x01 0x01` and `0x01 0x02` for
+version 1, valid for leaves already on a chain), and "reject" means the value
+or transaction is invalid and changes no state.
 In addition:
 
 - **Amount word.** Every amount (`v`, `out`, `v'`, `fee`) is carried as a
@@ -81,21 +85,29 @@ Every statement opens one commitment, shows that it is a leaf of the tree of
 its type, computes its marker inside the proof, and is tied to its purpose by a
 binding digest. These parts are the same in all three statements.
 
-1. **Opening, in two steps.** The prover knows `s`, `r`, `b`, `cf` and `rule`
-   (and `v` for a coin) such that the fingerprint and the commitment are built
-   exactly as in spec 01, section 3: `F = K("ghost/coin-fingerprint/v1", ...)`
-   and `C = K("ghost/coin-commitment/v1", COIN, F, v)` for a coin;
-   `F_d = K("ghost/data-fingerprint/v1", ...)` and
-   `C = K("ghost/data-commitment/v1", DATA, F_d)` for data. The type tag inside
-   both hashes is the statement's public `type`, so a data leaf never opens as
-   a coin or the other way round. For `COIN`, `cf` is the constant 32 zero bytes
-   (spec 01, section 3), not an input.
+1. **Opening, in two steps.** The prover knows `s`, `r`, `b`, `salt`, `cf` and
+   `rule` (and `v` for a coin) such that the fingerprint and the commitment are
+   built exactly as in spec 01, section 3. For a version 2 commitment:
+   `F = K("ghost/coin-fingerprint/v2", s, r, b, salt, COIN, cf, rule)` and
+   `C = K("ghost/coin-commitment/v1", COIN, F, v)` for a coin;
+   `F_d = K("ghost/data-fingerprint/v2", s, r, b, salt, DATA, cf, rule)` and
+   `C = K("ghost/data-commitment/v1", DATA, F_d)` for data. For a version 1
+   commitment, already on a chain, the fingerprint tags are
+   `ghost/coin-fingerprint/v1` and `ghost/data-fingerprint/v1` and there is no
+   salt. The type tag inside both hashes is the statement's public `type`, so a
+   data leaf never opens as a coin or the other way round, and its version byte
+   selects the tags: a version 1 leaf never opens as version 2 or the other way
+   round. For `COIN`, `cf` is the constant 32 zero bytes (spec 01, section 3),
+   not an input.
 2. **Membership.** Starting from `C` at the private `position`, hashing with
    the private `path` level by level with the tree-node tag of the statement's
    type (`ghost/coin-tree-node/v1` or `ghost/data-tree-node/v1`, level byte 0 to
    31) gives the public `root`. `C` is never public.
-3. **Marker.** `m = K("ghost/coin-marker/v1", r, b)` for a coin and
-   `m = K("ghost/data-marker/v1", r, b)` for data, with the same `r` and `b`
+3. **Marker.** For a version 2 commitment
+   `m = K("ghost/coin-marker/v2", r, b, salt)` for a coin and
+   `m = K("ghost/data-marker/v2", r, b, salt)` for data; for a version 1
+   commitment `m = K("ghost/coin-marker/v1", r, b)` or
+   `m = K("ghost/data-marker/v1", r, b)`. The `r`, `b` and salt are the same
    that open `C` in item 1. S1 and S2 publish `m`; S3 keeps it private and
    proves it is not in the spent-marker set.
 4. **Binding.** The proof establishes `binding = K(tag, fields)` with the
@@ -103,14 +115,23 @@ binding digest. These parts are the same in all three statements.
    public inputs the node or verifier holds. The node or verifier computes
    `binding` itself from its own values and the transaction's fields, and never
    takes it from the prover.
-5. **No secret leaves.** `s`, `r`, `b`, `cf`, `v`, `v'`, `position`, `path`,
-   the remainder secrets, the digits, `k_note` and `k_data` are never public
-   inputs. No statement takes the digits, `k_note` or `k_data` at all: they are
-   derived off the proof with SHA3-256 (spec 01, section 7). The proof system's
-   zero-knowledge mode is on (outline, "Cryptography").
-6. **Fail closed.** A public input with an unknown type, purpose, statement
-   code or version is rejected before any proof is verified. A point this
-   document leaves open (section 13) rejects until it is settled.
+5. **No secret leaves.** `s`, `r`, `b`, `salt`, `cf`, `v`, `v'`, `position`,
+   `path`, the remainder secrets and salt, the digits, `k_note` and `k_data`
+   are never public inputs. No statement takes the digits, `k_note` or
+   `k_data` at all: they are derived off the proof with SHA3-256 (spec 01,
+   section 7). The proof system's zero-knowledge mode is on (outline,
+   "Cryptography").
+6. **The salt is a private witness.** The salt is not secret: the commit
+   published it with `F` (spec 01, section 3). That is exactly why no
+   statement makes it public: a reveal or proof of holding that carried it
+   would name the commit it opens. Every statement takes it as a private
+   input, uses it in item 1 and item 3, and publishes nothing new for it; the
+   public inputs and binding layouts below are the same as without the salt. A
+   version 1 commitment has no salt, and its statement takes none.
+7. **Fail closed.** A public input with an unknown type, commitment format
+   version, purpose, statement code or version is rejected before any proof is
+   verified, and never read with a guessed version (spec 01, section 10). A
+   point this document leaves open (section 13) rejects until it is settled.
 
 ## 4. Statement S1: One-time reveal of a coin
 
@@ -131,12 +152,12 @@ amount `v`, the fingerprint `F`, the leaf `C`, its position and the note `N`.
 | `domain` | 32 | Node | A chain constant |
 | `statement` | 1 | Node | `0x01`, the same in every coin reveal |
 | `statement_version` | 1 | Node | `0x01`, the same in every coin reveal |
-| `type` | 2 | Transaction, must be `COIN` | The same in every coin reveal |
+| `type` | 2 | Transaction, must be `COIN` of commitment format version 2 or 1 | The same in every coin reveal of that format version. It shows whether the input is a salted (version 2) leaf or a version 1 leaf, so a reveal hides among the leaves of its version, as every leaf a wallet makes is version 2 |
 | `purpose` | 1 | Node, `0x01` spend | The same in every coin reveal |
 | `root` | 32 | Transaction, checked against a canonical header | The settled root of section 8, a root of the chain shared by every wallet that proves against it and never the root of the block that added the wallet's own leaf, except a full tree's shared final root. The commit transaction does not contain it |
-| `marker` | 32 | Transaction | `K("ghost/coin-marker/v1", r, b)` was never published before. It has a tag of its own, so it equals no `F`, `C` or tree node, and computing it from `F` or `C`, or `F` or `C` from it, needs `r` and `b` (preimage resistance, threat model A1) |
-| `remainder` | 32 | Transaction | A new leaf `C'` built from fresh blinding `b'` (spec 01, section 8). It differs from `C` and from every earlier leaf, and hides `s'`, `r'`, `b'` and `v'` |
-| `remainder_note` | 156 | Transaction | A new ciphertext under a fresh random nonce, unreadable without `k_note`, with the fixed length of every note (spec 01, section 9) |
+| `marker` | 32 | Transaction | `K("ghost/coin-marker/v2", r, b, salt)` (or, for a version 1 input, `K("ghost/coin-marker/v1", r, b)`) was never published before. It has a tag of its own, so it equals no `F`, `C` or tree node, and computing it from `F` or `C`, or `F` or `C` from it, needs `r` and `b` (preimage resistance, threat model A1). The commit's public salt alone does not help: without `r` and `b` nobody can compute the marker of any salt |
+| `remainder` | 32 | Transaction | A new version 2 leaf `C'` built from fresh blinding `b'` (spec 01, section 8) and a fresh random salt. It differs from `C` and from every earlier leaf, and hides `s'`, `r'`, `b'` and `v'`. Its salt is inside `remainder_note`, never a field of its own |
+| `remainder_note` | 156 | Transaction | A new ciphertext under a fresh random nonce, unreadable without `k_note`, with the fixed length of every note (spec 01, section 9). It carries the remainder's salt, so the salt is bound with it |
 | `recipient` | 20 | Transaction | Chosen by the user. The chain adds no link, but a recipient equal to the commit's sender correlates (outline, "Privacy claim": destinations can correlate) |
 | `out` | 32 | Transaction | Chosen by the user. The chain adds no link, but amounts can correlate, most of all a full reveal whose `out` is the public commit amount minus the fee (outline, "Privacy claim") |
 | `fee` | 32 | Node's fee formula for the block | The same for every private transaction in the block (outline, "Transactions and fees") |
@@ -144,7 +165,8 @@ amount `v`, the fingerprint `F`, the leaf `C`, its position and the note `N`.
 | `binding` | 32 | Node, section 7 | A hash of the values above; it adds nothing they do not |
 
 Nothing else is public. In particular the reveal never publishes `C`, `F`, the
-position, `v`, `v'` or any value computed from them without the digits.
+position, `v`, `v'`, the input's salt or any value computed from them without
+the digits.
 
 **Private inputs.**
 
@@ -153,27 +175,35 @@ position, `v`, `v'` or any value computed from them without the digits.
 | `s` | 32 | Secret of the input commitment |
 | `r` | 32 | Reveal secret of the input commitment |
 | `b` | 32 | Blinding of the input commitment |
+| `salt` | 16 | Salt of the input commitment, as the commit published it (spec 01, section 3); none for a version 1 input |
 | `v` | 32 | Amount of the input commitment, an amount word |
 | `position` | 4 | Position of `C` in the coin tree |
 | `path` | 1024 | The 32 sibling hashes from `C` to `root` |
 | `s'` | 32 | Secret of the remainder (equal to `s` by default, new for a claim) |
 | `r'` | 32 | Reveal secret of the remainder (equal to `r` by default, new for a claim) |
 | `b'` | 32 | Fresh blinding of the remainder |
+| `salt'` | 16 | Fresh random salt of the remainder, drawn by the wallet for this reveal |
 | `v'` | 32 | Amount of the remainder, an amount word |
 
 **Constraints.** The proof establishes all of them together:
 
-1. `F = K("ghost/coin-fingerprint/v1", s, r, b, COIN, 0^32, rule)` and
-   `C = K("ghost/coin-commitment/v1", COIN, F, v)` (section 3, item 1).
+1. For a version 2 input (`type` = `0x02 0x01`):
+   `F = K("ghost/coin-fingerprint/v2", s, r, b, salt, COIN, 0^32, rule)`; for
+   a version 1 input (`type` = `0x01 0x01`):
+   `F = K("ghost/coin-fingerprint/v1", s, r, b, COIN, 0^32, rule)`. In both,
+   `C = K("ghost/coin-commitment/v1", COIN, F, v)` with `COIN` the public
+   `type` (section 3, item 1).
 2. `C` is the leaf at `position` under `root` in the coin tree (section 3,
    item 2).
-3. `marker = K("ghost/coin-marker/v1", r, b)` with the `r` and `b` of
-   constraint 1.
-4. `F' = K("ghost/coin-fingerprint/v1", s', r', b', COIN, 0^32, rule)` and
-   `remainder = K("ghost/coin-commitment/v1", COIN, F', v')`: the remainder
-   keeps the input's type tag, `cf` and `rule` ([spec 03](03-coin-rules.md),
-   section 8). `s'`, `r'` and `b'` are otherwise unconstrained, so the chain
-   cannot tell a claim from a partial reveal.
+3. `marker = K("ghost/coin-marker/v2", r, b, salt)` for a version 2 input, or
+   `K("ghost/coin-marker/v1", r, b)` for a version 1 input, with the `r`, `b`
+   and salt of constraint 1.
+4. `F' = K("ghost/coin-fingerprint/v2", s', r', b', salt', COIN', 0^32, rule)`
+   and `remainder = K("ghost/coin-commitment/v1", COIN', F', v')` with
+   `COIN'` = `0x02 0x01`: the remainder keeps the input's type, `cf` and `rule`
+   ([spec 03](03-coin-rules.md), section 8) and is always version 2, also when
+   the input is version 1. `s'`, `r'`, `b'` and `salt'` are otherwise
+   unconstrained, so the chain cannot tell a claim from a partial reveal.
 5. `v`, `out`, `v'` and `fee` are amount words below `2^96` (section 10).
 6. `v = out + v' + fee` over the integers (section 9).
 7. `binding` is the coin reveal binding of section 7 over the public inputs.
@@ -197,17 +227,17 @@ creates no remainder and carries no amount out. Its binding tag is
 | `domain` | 32 | Node | A chain constant |
 | `statement` | 1 | Node | `0x02`, the same in every data reveal |
 | `statement_version` | 1 | Node | `0x01`, the same in every data reveal |
-| `type` | 2 | Transaction, must be `DATA` | The same in every data reveal |
+| `type` | 2 | Transaction, must be `DATA` of commitment format version 2 or 1 | The same in every data reveal of that format version, as for S1 |
 | `purpose` | 1 | Transaction, `0x02` reveal or `0x03` revoke | One of two values, shared by every data reveal of that purpose |
 | `root` | 32 | Transaction, checked against a canonical header | The settled root of the data tree (section 8), never the root of the block that added the wallet's own leaf, except a full tree's shared final root |
-| `marker` | 32 | Transaction | `K("ghost/data-marker/v1", r, b)`, never published before and not computable from `F_d` or `C` without `r` and `b`, as for S1 |
+| `marker` | 32 | Transaction | `K("ghost/data-marker/v2", r, b, salt)` (or `K("ghost/data-marker/v1", r, b)` for a version 1 commitment), never published before and not computable from `F_d`, `C` or the commit's salt without `r` and `b`, as for S1 |
 | `party` | 32 | Transaction | The verifier or recipient the ticket is for, or zero for none (spec 04, section 6). Chosen by the user; nothing is credited to it |
 | `fee` | 32 | Node | Not settled; every data reveal is rejected at spec 04, section 6, step 6 until it is |
 | `rule` | 32 | Transaction, must be the empty rule | The same in every data reveal of version 1 |
 | `binding` | 32 | Node, section 7 | A hash of the values above |
 
-The data reveal never publishes `C`, `F_d`, `cf`, the position, the data, the
-data key or any part of it (spec 04, section 6).
+The data reveal never publishes `C`, `F_d`, `cf`, the position, the salt, the
+data, the data key or any part of it (spec 04, section 6).
 
 **Private inputs.**
 
@@ -216,17 +246,22 @@ data key or any part of it (spec 04, section 6).
 | `s` | 32 | Secret of the data commitment |
 | `r` | 32 | Reveal secret of the data commitment |
 | `b` | 32 | Blinding of the data commitment (`b_0`, spec 01, section 8) |
+| `salt` | 16 | Salt of the data commitment, as the commit published it; none for a version 1 commitment |
 | `cf` | 32 | Content fingerprint |
 | `position` | 4 | Position of `C` in the data tree |
 | `path` | 1024 | The 32 sibling hashes from `C` to `root` |
 
 **Constraints.**
 
-1. `F_d = K("ghost/data-fingerprint/v1", s, r, b, DATA, cf, rule)` and
-   `C = K("ghost/data-commitment/v1", DATA, F_d)`.
+1. `F_d = K("ghost/data-fingerprint/v2", s, r, b, salt, DATA, cf, rule)` for
+   a version 2 commitment, or
+   `F_d = K("ghost/data-fingerprint/v1", s, r, b, DATA, cf, rule)` for a
+   version 1 commitment, and `C = K("ghost/data-commitment/v1", DATA, F_d)`,
+   with `DATA` the public `type`.
 2. `C` is the leaf at `position` under `root` in the data tree.
-3. `marker = K("ghost/data-marker/v1", r, b)` with the `r` and `b` of
-   constraint 1.
+3. `marker = K("ghost/data-marker/v2", r, b, salt)` for a version 2
+   commitment, or `K("ghost/data-marker/v1", r, b)` for a version 1 one, with
+   the `r`, `b` and salt of constraint 1.
 4. `binding` is the data reveal binding of section 7 over the public inputs,
    including `purpose`, so a reveal cannot be passed off as a revocation or the
    other way round.
@@ -278,6 +313,7 @@ value with the commit or with a later reveal: the marker stays private.
 | `s` | 32 | Secret of the commitment |
 | `r` | 32 | Reveal secret of the commitment |
 | `b` | 32 | Blinding of the commitment |
+| `salt` | 16 | Salt of the commitment; none for a version 1 commitment |
 | `cf` | 32 | Content fingerprint (`DATA`); 32 zero bytes for `COIN` |
 | `v` | 32 | Amount (`COIN` only); no amount is claimed or published |
 | `rule` | 32 | Rule of the commitment |
@@ -290,8 +326,8 @@ value with the commit or with a later reveal: the marker stays private.
 
 1. `C` is opened as in section 3, item 1, with the public `type`.
 2. `C` is the leaf at `position` under `root` in the tree of `type`.
-3. `marker` is computed from the `r` and `b` of constraint 1 with the marker tag
-   of `type` (section 3, item 3).
+3. `marker` is computed from the `r`, `b` and salt of constraint 1 with the
+   marker tag of `type` and its version (section 3, item 3).
 4. `marker` is not in the spent-marker set of `type` under `marker_set_root`,
    shown with `absence`. The non-membership concerns exactly the marker of the
    commitment opened in constraint 1, so a proof never rests on "some marker is
@@ -725,20 +761,21 @@ names how a test checks it. A test that still passes with the check it names
 removed does not count ([spec 03](03-coin-rules.md), section 10).
 
 - **PS-1. A reveal shares no value with its commit.** No public input of S1 or
-  S2 equals the commit's `F`, `F_d`, `C`, position, note or any value computed
-  from them without the digits. Check: the linkage test pulls the raw commit
-  and reveal transactions and finds no byte string of 16 bytes or more in both,
-  apart from the whitelisted chain constants, codes and settled root; it
-  fails against a build whose reveal publishes `C`.
+  S2 equals the commit's `F`, `F_d`, `C`, salt, position, note or any value
+  computed from them without the digits. Check: the linkage test pulls the raw
+  commit and reveal transactions and finds no byte string of 16 bytes or more
+  in both, apart from the whitelisted chain constants, codes and settled root;
+  it fails against a build whose reveal publishes `C`, and against one whose
+  reveal publishes the commit's 16-byte salt.
 - **PS-2. Proofs of holding share nothing.** Two proofs of holding of one
   commitment, and a proof of holding and the later reveal of it, share no public
   value apart from the tree state, the chain constants and the verifiers'
   choices. Check: the linkage test of spec 04, section 9, over a commit, two
   proofs of holding and a revocation.
 - **PS-3. One commitment, one marker.** The published marker is computed inside
-  the proof from the `r` and `b` that open the leaf. Check: a prover run with a
-  marker from another commitment, or from another `b`, fails to produce a proof
-  that verifies.
+  the proof from the `r`, `b` and salt that open the leaf. Check: a prover run
+  with a marker from another commitment, or from another `b` or another salt,
+  fails to produce a proof that verifies.
 - **PS-4. A marker is used once.** A marker already in the spent-marker set of
   the canonical chain, or used by an earlier transaction in the same block, is
   rejected. Check: spec 03, CR-6 and spec 04, CR-D7.
@@ -778,9 +815,10 @@ removed does not count ([spec 03](03-coin-rules.md), section 10).
   the Go node's parsed value, the proof's limbs and the digest input agree, and
   invalid words are rejected by both.
 - **PS-13. Exactly one remainder, of the same kind.** Every coin reveal appends
-  one remainder with the input's type tag, `cf` and `rule`, also when
-  `v' = 0`. Check: a full reveal appends a leaf; a remainder built with another
-  type tag or rule fails to verify.
+  one remainder with the input's type, `cf` and `rule`, at commitment format
+  version 2 with its own salt, also when `v' = 0` and when the input is
+  version 1. Check: a full reveal appends a leaf; a remainder built with
+  another type, another rule, the version 1 tags or no salt fails to verify.
 - **PS-14. Data mints nothing.** A data reveal credits nothing, burns no
   committed value and appends no leaf. Check: spec 04, CR-D5.
 - **PS-15. Holding uses nothing up.** A proof of holding publishes no marker,
@@ -814,8 +852,8 @@ removed does not count ([spec 03](03-coin-rules.md), section 10).
   empty rule in S1 and S2. Check: spec 03, section 7, step 11; spec 04,
   question 9.
 - **PS-22. No secret is public.** No public input of any statement is `s`,
-  `r`, `b`, `cf`, `v`, `v'`, a position, a path, the digits, `k_note` or
-  `k_data`, and the proof system's zero-knowledge mode is on. Check: the public
+  `r`, `b`, the salt, `cf`, `v`, `v'`, a position, a path, the digits, `k_note`
+  or `k_data`, and the proof system's zero-knowledge mode is on. Check: the public
   and private tables of each statement share no name (checked by the script
   of section 16), and the shipped configuration test confirms the mode.
 - **PS-23. Purposes do not substitute.** A proof made for one statement or
@@ -826,6 +864,18 @@ removed does not count ([spec 03](03-coin-rules.md), section 10).
   remainder commitment or remainder note is replaced in transit fails. Check:
   replace the note of a valid reveal with another valid-length note; the
   transaction is rejected and nothing is applied.
+- **PS-25. The salt is a private witness bound to the opening.** For a
+  version 2 commitment the fingerprint and the marker are computed inside the
+  proof from the same 16-byte salt, right after `b`, under the `v2` tags; the
+  salt is a private input of every statement and never a public one, and the
+  public inputs and binding layouts are those of section 7, unchanged. A
+  version 1 commitment opens only under the `v1` tags without a salt, and an
+  unknown commitment format version is rejected (spec 01, section 10). Check:
+  a prover run with the right `s`, `r` and `b` but another salt, or with the
+  salt left out or moved, fails to produce a proof that verifies; a version 1
+  leaf opened with a salt, or a version 2 leaf opened without one, fails; the
+  public and private tables of every statement list the salt as private only
+  (checked by the script of section 16).
 
 ## 12. Adversarial vectors
 
@@ -885,6 +935,15 @@ threat model C16 and C22 is here.
   `marker_set_root` from a current header. Expected: no proof exists, or it
   fails (PS-17). A proof that opens another unspent commitment B verifies;
   that is the limit of section 6, "What S3 shows".
+- **AV-13. Salt substitution and format confusion.** A prover opens a version
+  2 leaf with the right `s`, `r` and `b` but another salt, or with none; opens
+  a version 1 leaf under the `v2` tags with a made-up salt; presents a marker
+  computed under the other format version's tag; or submits a `type` whose
+  version byte is neither 1 nor 2. A relay adds the commit's salt to a reveal.
+  Expected: no proof verifies for a wrong, missing or added salt, an unknown
+  version is rejected at the type check before the proof, and a reveal that
+  carries any field beyond its layout is rejected at the shape check (PS-1,
+  PS-3, PS-25).
 
 ## 13. Not settled: fail closed
 
@@ -964,6 +1023,15 @@ difference is listed here for the founder's review.
    coin `recipient` stays 20 bytes at offset 143 of the coin reveal binding,
    and no binding layout here changes. A reveal still carries no account
    signature; the proof is its authorization.
+10. **The salt and the reveal proof.** [Spec 01](01-commitments-and-keys.md),
+    section 3, adds a per-commitment salt (commitment format version 2). This
+    document states what every statement must do with it (section 3, items 1,
+    3 and 6; PS-25): the salt is a private witness, never a public input, and
+    no public field or binding layout changes. The opening and the marker keep
+    their permutation counts (2 for a fingerprint, 1 for a marker), because the
+    16 more bytes fit (spec 01, section 4). The reveal proof itself, its tests
+    and its trace budget take the salt in a follow-up change; until then a
+    proof built to the version 1 statements opens only version 1 leaves.
 
 ## 15. Questions for the founder
 
@@ -999,7 +1067,9 @@ python3 scripts/check_proof_statements.py
 from the repository root. It uses Python's standard library only and exits
 nonzero on any gap. It checks that every statement section lists public and
 private inputs, with a reason for every public input and no name in both
-tables; that every binding layout is contiguous, sums to its stated total and
+tables, and that every statement takes `s`, `r`, `b`, the salt, the position
+and the path as private inputs and none of them as public ones; that the
+document names the four salted fingerprint and marker tags; that every binding layout is contiguous, sums to its stated total and
 holds the fields its statement must bind; that every binding tag is in the tag
 table of [spec 01](01-commitments-and-keys.md); that the properties are
 numbered PS-1 upwards without gaps and each names its check; that every named

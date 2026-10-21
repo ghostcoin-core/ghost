@@ -4,7 +4,9 @@
 Reads every vector block in the "Test vectors" section of
 docs/spec/01-commitments-and-keys.md, recomputes the Phantom Key checksum and
 every derivation from the rules in that document, and exits nonzero on any
-mismatch. It also checks that the tag table lists exactly the tags used here.
+mismatch. It also checks that the tag table lists exactly the tags used here,
+with the right input sizes, and that the same secret under two salts gives
+unrelated fingerprints, commitments and markers.
 
 Only the standard library is used. Keccak-256 (original padding) is written
 out below, because hashlib.sha3_256 applies the FIPS 202 padding and gives
@@ -129,12 +131,16 @@ TAG_BLINDING = "ghost/blinding/v1"
 TAG_NOTE_KEY = "ghost/note-key/v1"
 TAG_DATA_KEY = "ghost/data-key/v1"
 TAG_COIN_FINGERPRINT = "ghost/coin-fingerprint/v1"
+TAG_COIN_FINGERPRINT_V2 = "ghost/coin-fingerprint/v2"
 TAG_COIN_COMMITMENT = "ghost/coin-commitment/v1"
 TAG_DATA_FINGERPRINT = "ghost/data-fingerprint/v1"
+TAG_DATA_FINGERPRINT_V2 = "ghost/data-fingerprint/v2"
 TAG_DATA_COMMITMENT = "ghost/data-commitment/v1"
 TAG_CONTENT_FINGERPRINT = "ghost/content-fingerprint/v1"
 TAG_COIN_MARKER = "ghost/coin-marker/v1"
+TAG_COIN_MARKER_V2 = "ghost/coin-marker/v2"
 TAG_DATA_MARKER = "ghost/data-marker/v1"
+TAG_DATA_MARKER_V2 = "ghost/data-marker/v2"
 TAG_COIN_TREE_NODE = "ghost/coin-tree-node/v1"
 TAG_DATA_TREE_NODE = "ghost/data-tree-node/v1"
 TAG_EMPTY_LEAF = "ghost/empty-leaf/v1"
@@ -150,12 +156,16 @@ ALL_TAGS = {
     TAG_NOTE_KEY,
     TAG_DATA_KEY,
     TAG_COIN_FINGERPRINT,
+    TAG_COIN_FINGERPRINT_V2,
     TAG_COIN_COMMITMENT,
     TAG_DATA_FINGERPRINT,
+    TAG_DATA_FINGERPRINT_V2,
     TAG_DATA_COMMITMENT,
     TAG_CONTENT_FINGERPRINT,
     TAG_COIN_MARKER,
+    TAG_COIN_MARKER_V2,
     TAG_DATA_MARKER,
+    TAG_DATA_MARKER_V2,
     TAG_COIN_TREE_NODE,
     TAG_DATA_TREE_NODE,
     TAG_EMPTY_LEAF,
@@ -167,7 +177,47 @@ ALL_TAGS = {
 FORMAT_12 = 0x0C
 FORMAT_24 = 0x18
 
-TYPE_TAGS = {"COIN": bytes([0x01, 0x01]), "DATA": bytes([0x01, 0x02])}
+# Commitment format versions (section 10). Version 1 has no salt and stays
+# valid for leaves already on a chain; a wallet makes only version 2.
+VERSION_1 = 0x01
+VERSION_2 = 0x02
+TYPE_CODES = {"COIN": 0x01, "DATA": 0x02}
+TYPE_TAGS = {"COIN": bytes([VERSION_1, 0x01]), "DATA": bytes([VERSION_1, 0x02])}
+SALT_LENGTH = 16
+
+# Per version: (fingerprint tag, marker tag) of each type. The commitment tags
+# do not change, because their input layout does not.
+VERSION_TAGS = {
+    VERSION_1: {
+        "COIN": (TAG_COIN_FINGERPRINT, TAG_COIN_MARKER),
+        "DATA": (TAG_DATA_FINGERPRINT, TAG_DATA_MARKER),
+    },
+    VERSION_2: {
+        "COIN": (TAG_COIN_FINGERPRINT_V2, TAG_COIN_MARKER_V2),
+        "DATA": (TAG_DATA_FINGERPRINT_V2, TAG_DATA_MARKER_V2),
+    },
+}
+COMMITMENT_TAGS = {"COIN": TAG_COIN_COMMITMENT, "DATA": TAG_DATA_COMMITMENT}
+
+# Inputs after the tag of each fixed-layout Keccak-256 tag, in bytes, for the
+# input-size columns of the tag table.
+TAG_LAYOUTS = {
+    TAG_COIN_FINGERPRINT: (32, 32, 32, 2, 32, 32),
+    TAG_COIN_FINGERPRINT_V2: (32, 32, 32, SALT_LENGTH, 2, 32, 32),
+    TAG_COIN_COMMITMENT: (2, 32, 32),
+    TAG_DATA_FINGERPRINT: (32, 32, 32, 2, 32, 32),
+    TAG_DATA_FINGERPRINT_V2: (32, 32, 32, SALT_LENGTH, 2, 32, 32),
+    TAG_DATA_COMMITMENT: (2, 32),
+    TAG_COIN_MARKER: (32, 32),
+    TAG_COIN_MARKER_V2: (32, 32, SALT_LENGTH),
+    TAG_DATA_MARKER: (32, 32),
+    TAG_DATA_MARKER_V2: (32, 32, SALT_LENGTH),
+    TAG_COIN_TREE_NODE: (1, 32, 32),
+    TAG_DATA_TREE_NODE: (1, 32, 32),
+    TAG_EMPTY_LEAF: (),
+}
+KECCAK_RATE = 136
+
 NOTE_VERSION = 0x01
 SCHEME_ID = 0x01
 NOTE_PLAINTEXT_LENGTH = 128
@@ -249,26 +299,64 @@ def content_fingerprint(content):
     return keccak_tagged(TAG_CONTENT_FINGERPRINT, len(content).to_bytes(8, "big"), content)
 
 
-def coin_fingerprint(s, r, b, rule):
-    return keccak_tagged(TAG_COIN_FINGERPRINT, s, r, b, TYPE_TAGS["COIN"], ZERO32, rule)
+def type_tag(type_name, version):
+    """The two-byte type tag: format version, then type."""
+    if version not in VERSION_TAGS:
+        raise ValueError(f"unknown commitment format version {version}")
+    return bytes([version, TYPE_CODES[type_name]])
 
 
-def coin_commitment(fingerprint, amount):
+def read_type_tag(tag):
+    """(version, type name) of a type tag; an unknown byte is rejected, never guessed."""
+    if len(tag) != 2 or tag[0] not in VERSION_TAGS:
+        raise ValueError(f"unknown type tag {tag.hex()}")
+    for name, code in TYPE_CODES.items():
+        if tag[1] == code:
+            return tag[0], name
+    raise ValueError(f"unknown type tag {tag.hex()}")
+
+
+def _salt_parts(version, salt):
+    """The salt as hash input: absent in version 1, 16 bytes in version 2."""
+    if version == VERSION_1:
+        if salt is not None:
+            raise ValueError("a version 1 commitment has no salt")
+        return ()
+    if version == VERSION_2:
+        if salt is None or len(salt) != SALT_LENGTH:
+            raise ValueError(f"a version 2 commitment needs a {SALT_LENGTH}-byte salt")
+        return (salt,)
+    raise ValueError(f"unknown commitment format version {version}")
+
+
+def _fingerprint(type_name, s, r, b, cf, rule, salt, version):
+    tag = VERSION_TAGS.get(version, {}).get(type_name, (None,))[0]
+    parts = _salt_parts(version, salt)
+    return keccak_tagged(tag, s, r, b, *parts, type_tag(type_name, version), cf, rule)
+
+
+def coin_fingerprint(s, r, b, rule, salt=None, version=VERSION_1):
+    return _fingerprint("COIN", s, r, b, ZERO32, rule, salt, version)
+
+
+def coin_commitment(fingerprint, amount, version=VERSION_1):
     if not 0 <= amount <= V_MAX:
         raise ValueError("amount out of range")
-    return keccak_tagged(TAG_COIN_COMMITMENT, TYPE_TAGS["COIN"], fingerprint, amount.to_bytes(32, "big"))
+    return keccak_tagged(TAG_COIN_COMMITMENT, type_tag("COIN", version), fingerprint,
+                         amount.to_bytes(32, "big"))
 
 
-def data_fingerprint(s, r, b, cf, rule):
-    return keccak_tagged(TAG_DATA_FINGERPRINT, s, r, b, TYPE_TAGS["DATA"], cf, rule)
+def data_fingerprint(s, r, b, cf, rule, salt=None, version=VERSION_1):
+    return _fingerprint("DATA", s, r, b, cf, rule, salt, version)
 
 
-def data_commitment(fingerprint):
-    return keccak_tagged(TAG_DATA_COMMITMENT, TYPE_TAGS["DATA"], fingerprint)
+def data_commitment(fingerprint, version=VERSION_1):
+    return keccak_tagged(TAG_DATA_COMMITMENT, type_tag("DATA", version), fingerprint)
 
 
-def marker(tag, r, b):
-    return keccak_tagged(tag, r, b)
+def marker(type_name, r, b, salt=None, version=VERSION_1):
+    parts = _salt_parts(version, salt)
+    return keccak_tagged(VERSION_TAGS[version][type_name][1], r, b, *parts)
 
 
 def tree_node(tag, level, left, right):
@@ -398,30 +486,42 @@ def check_derivation(ch, v):
     ch.expect(v, "data-key", derive_data_key(kb).hex())
 
 
+def _version_and_salt(v):
+    """The vector's commitment format version and salt (None when absent)."""
+    version = int(v["version"])
+    salt = _hex_field(v, "salt") if "salt" in v else None
+    _salt_parts(version, salt)
+    return version, salt
+
+
 def check_coin_commitment(ch, v):
     kb = valid_key_bytes(v["key"])
     index = int(v["index"])
     amount = int(v["amount"])
+    version, salt = _version_and_salt(v)
     s, r, b = derive_secret(kb), derive_reveal_secret(kb), derive_blinding(kb, index)
-    f = coin_fingerprint(s, r, b, _rule(v))
-    c = coin_commitment(f, amount)
+    f = coin_fingerprint(s, r, b, _rule(v), salt, version)
+    c = coin_commitment(f, amount, version)
+    ch.expect(v, "type-tag", type_tag("COIN", version).hex())
     ch.expect(v, "fingerprint", f.hex())
     ch.expect(v, "commitment", c.hex())
-    ch.expect(v, "marker", marker(TAG_COIN_MARKER, r, b).hex())
+    ch.expect(v, "marker", marker("COIN", r, b, salt, version).hex())
 
 
 def check_data_commitment(ch, v):
     kb = valid_key_bytes(v["key"])
     index = int(v["index"])
     content = v["content-ascii"].encode("ascii")
+    version, salt = _version_and_salt(v)
     s, r, b = derive_secret(kb), derive_reveal_secret(kb), derive_blinding(kb, index)
     cf = content_fingerprint(content)
-    f = data_fingerprint(s, r, b, cf, _rule(v))
+    f = data_fingerprint(s, r, b, cf, _rule(v), salt, version)
+    ch.expect(v, "type-tag", type_tag("DATA", version).hex())
     ch.expect(v, "content-length", str(len(content)))
     ch.expect(v, "content-fingerprint", cf.hex())
     ch.expect(v, "fingerprint", f.hex())
-    ch.expect(v, "commitment", data_commitment(f).hex())
-    ch.expect(v, "marker", marker(TAG_DATA_MARKER, r, b).hex())
+    ch.expect(v, "commitment", data_commitment(f, version).hex())
+    ch.expect(v, "marker", marker("DATA", r, b, salt, version).hex())
 
 
 def check_empty_leaf(ch, v):
@@ -480,17 +580,87 @@ def check_coverage(vectors):
     for groups in (12, 24):
         if not any(len(re.sub(r"[ -]", "", v.get("key", ""))) == 4 * groups for v in derivations):
             errors.append(f"no derivation vector for a {groups}-group key")
-    coin_indexes = {v.get("index") for v in vectors if v.get("kind") == "coin-commitment"}
-    if not {"0", "1"} <= coin_indexes:
-        errors.append("coin commitment vectors must cover index 0 and a remainder at index 1")
+    for version in ("1", "2"):
+        coin_indexes = {v.get("index") for v in vectors
+                        if v.get("kind") == "coin-commitment" and v.get("version") == version}
+        if not {"0", "1"} <= coin_indexes:
+            errors.append(f"version {version} coin commitment vectors must cover index 0 "
+                          f"and a remainder at index 1")
+        if not any(v.get("kind") == "data-commitment" and v.get("version") == version
+                   for v in vectors):
+            errors.append(f"no version {version} data commitment vector")
     names = [v["name"] for v in vectors]
     for name in sorted({n for n in names if names.count(n) > 1}):
         errors.append(f"vector name [{name}] used more than once")
     return errors
 
 
+def _bits_apart(x, y):
+    return bin(int.from_bytes(x, "big") ^ int.from_bytes(y, "big")).count("1")
+
+
+# Two unrelated 256-bit values differ in about 128 bits; fewer than this many
+# would mean the salt barely entered the hash.
+MIN_BITS_APART = 64
+
+
+def check_salt_pairs(vectors):
+    """The same secret under two salts must give unrelated values.
+
+    Groups the version 2 commitment vectors by everything except the salt (kind,
+    key, index, amount or content, rule). Each kind must have a group with at
+    least two salts, and within a group every salt, fingerprint, commitment and
+    marker must differ from every other, and from the version 1 vector of the
+    same secret, by at least MIN_BITS_APART bits."""
+    errors = []
+    groups = {}
+    for v in vectors:
+        if v.get("kind") not in ("coin-commitment", "data-commitment"):
+            continue
+        key = (v.get("kind"), " ".join(v.get("key", "").split()), v.get("index"),
+               v.get("amount"), v.get("content-ascii"), v.get("rule"))
+        groups.setdefault(key, []).append(v)
+    paired = set()
+    for (kind, *_), members in groups.items():
+        salted = [v for v in members if v.get("version") == "2"]
+        if len(salted) < 2:
+            continue
+        paired.add(kind)
+        salts = [v.get("salt") for v in salted]
+        if len(set(salts)) != len(salts):
+            names = ", ".join(f"[{v['name']}]" for v in salted)
+            errors.append(f"{names}: the same salt is used twice; a wallet draws a fresh one")
+            continue
+        for field in ("fingerprint", "commitment", "marker"):
+            for i, a in enumerate(members):
+                for b in members[i + 1:]:
+                    try:
+                        x, y = bytes.fromhex(a[field]), bytes.fromhex(b[field])
+                    except (KeyError, ValueError):
+                        errors.append(f"[{a['name']}] and [{b['name']}]: {field} is "
+                                      f"missing or not hex")
+                        continue
+                    if _bits_apart(x, y) < MIN_BITS_APART:
+                        errors.append(f"[{a['name']}] and [{b['name']}]: {field} values are "
+                                      f"not unrelated under different salts")
+    for kind in ("coin-commitment", "data-commitment"):
+        if kind not in paired:
+            errors.append(f"no {kind} vectors of one secret under two salts")
+    return errors
+
+
+def _table_rows(body):
+    """The tag table rows as dictionaries keyed by its header."""
+    rows = [[c.strip() for c in line.strip().strip("|").split("|")]
+            for line in body.splitlines() if line.startswith("|")]
+    if len(rows) < 3:
+        return []
+    return [dict(zip(rows[0], cells)) for cells in rows[2:]]
+
+
 def check_tag_table(text):
-    """The tagged hashing section must list exactly the tags in use."""
+    """The tagged hashing section must list exactly the tags in use, and its
+    size columns must match the fixed input layouts."""
     body = section(text, "Tagged hashing")
     listed = set(re.findall(r"`(ghost/[a-z0-9-]+/v[0-9]+)`", body))
     errors = []
@@ -498,6 +668,30 @@ def check_tag_table(text):
         errors.append(f"tag {tag} is used but not listed in the tag table")
     for tag in sorted(listed - ALL_TAGS):
         errors.append(f"tag {tag} is listed but not known to this checker")
+    rows = {}
+    for row in _table_rows(body):
+        found = re.fullmatch(r"`(ghost/[a-z0-9-]+/v[0-9]+)`", row.get("Tag", ""))
+        if found:
+            rows[found.group(1)] = row
+    for tag, widths in sorted(TAG_LAYOUTS.items()):
+        row = rows.get(tag)
+        if row is None:
+            continue
+        total = len(_tag_prefix(tag)) + sum(widths)
+        if row.get("Input bytes") != str(total):
+            errors.append(f"tag {tag}: table says {row.get('Input bytes')!r} input bytes, "
+                          f"recomputed {total}")
+        perms = row.get("Keccak permutations", "")
+        expect = total // KECCAK_RATE + 1
+        if tag in (TAG_COIN_TREE_NODE, TAG_DATA_TREE_NODE):
+            expect_text = f"{expect} per level"
+        elif tag == TAG_EMPTY_LEAF:
+            expect_text = "a constant"
+        else:
+            expect_text = str(expect)
+        if perms != expect_text:
+            errors.append(f"tag {tag}: table says {perms!r} Keccak permutations, "
+                          f"recomputed {expect_text!r}")
     return errors
 
 
@@ -507,6 +701,7 @@ def run(path):
     errors += check_tag_table(text)
     vectors = parse_vectors(section(text, "Test vectors"))
     errors += check_coverage(vectors)
+    errors += check_salt_pairs(vectors)
     ch = Checker()
     for v in vectors:
         kind = v.get("kind")

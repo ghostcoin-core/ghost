@@ -72,18 +72,28 @@ transaction is invalid and changes no state. In addition:
 **Type tag.** A data commitment uses the outline's one commitment format with a
 type tag ("Core protocol" 3), the same fields as a coin commitment in
 [spec 03](03-coin-rules.md), section 5: a secret `s`, a separate reveal secret
-`r`, random blinding `b`, the type tag, the content fingerprint and the rule.
-This document adds one type: `DATA` at the current version (**Proposed**: the
-only data type in the first version, question 6). An unknown data type or an
-old version is rejected wherever a type tag is checked.
+`r`, random blinding `b`, a salt, the type tag, the content fingerprint and
+the rule. This document adds one type: `DATA` (**Proposed**: the only data
+type in the first version, question 6). A new data commitment is commitment
+format version 2, type tag `0x02 0x02`; a version 1 data leaf (`0x01 0x02`,
+no salt) already on a chain stays valid ([spec 01](01-commitments-and-keys.md),
+section 10). An unknown data type or an unknown version byte is rejected
+wherever a type tag is checked, and never read with a guessed version.
 
-**Commitment.** The wallet computes the data fingerprint
+**Commitment.** The wallet draws a fresh random 16-byte salt from its secure
+random source for this commitment and computes the data fingerprint
 
 ```text
-F_d = H(tag_data_fingerprint, s, r, b, DATA, cf, rule)
+F_d = H(tag_data_fingerprint, s, r, b, salt, DATA, cf, rule)
 ```
 
-and the commit carries `F_d`. The node computes
+with the tag `ghost/data-fingerprint/v2` (spec 01, section 3), and the commit
+carries `F_d` and the salt. The salt is public: it is not a secret and is not
+computed from the digits; it makes every data leaf a separate target, so one
+guess at a key cannot be checked against every leaf at once (threat model,
+C20). The data marker takes the same salt,
+`K("ghost/data-marker/v2", r, b, salt)`. A version 1 data commitment has no
+salt and hashes as before. The node computes
 
 ```text
 C = H(tag_data_commitment, DATA, F_d)
@@ -120,8 +130,8 @@ holding.
 **What each party learns.**
 
 - **A chain observer** (threat model, T1) sees the commit as a normal visible
-  transaction: its sender, its time, the leaf `C`, and a note of the fixed
-  length every note has. From these it learns nothing about the data, its
+  transaction: its sender, its time, the leaf `C`, the salt, and a note of the
+  fixed length every note has. From these it learns nothing about the data, its
   fingerprint or its length, because `C` and `F_d` are hiding under `b` and the
   note is encrypted under a key it cannot derive.
 - **A public host's readers** see a ciphertext and its length. They cannot tie
@@ -219,9 +229,10 @@ the prover.
 
 **What the proof establishes.**
 
-1. **Membership.** The prover knows `s`, `r`, `b`, `cf` and `rule` such that
-   `C`, built as in section 3 with type `DATA`, is a leaf under the public
-   data-tree root.
+1. **Membership.** The prover knows `s`, `r`, `b`, the salt, `cf` and `rule`
+   such that `C`, built as in section 3 with type `DATA`, is a leaf under the
+   public data-tree root. The salt is a private input, never a public one: the
+   commit published it, so showing it again would name the commitment.
 2. **Not used up (Proposed).** The marker derived from that same `C`'s secret
    parts, inside the proof, is not in the data spent-marker set under the
    public spent-marker-set root. Membership and non-membership are about one
@@ -246,7 +257,8 @@ that they concern one commitment.
 
 **Verifier checks (Proposed order).** The verifier stops at the first failure.
 
-1. The type tag is `DATA` at the current version, and the purpose is hold.
+1. The type tag is `DATA` at commitment format version 2 or 1, and the purpose
+   is hold. Any other version byte is rejected.
 2. The chain identifier and version are this chain's.
 3. The challenge is one this verifier issued, has not been answered before, and
    has not expired under the verifier's own limit (question 7). A proof with
@@ -309,8 +321,9 @@ value to carry (question 3).
    or account fields. **Proposed:** the same encoded size as the coin reveal,
    with the amount-out and remainder fields required to be zero.
 2. **Encoding.** Every public input is canonical.
-3. **Type.** The type tag is `DATA` at the current version. A `COIN` type is
-   rejected here; a coin reveal follows spec 03, section 7.
+3. **Type.** The type tag is `DATA` at commitment format version 2 or, for a
+   leaf already on a chain, version 1. A `COIN` type or an unknown version byte
+   is rejected here; a coin reveal follows spec 03, section 7.
 4. **Chain, version and domain.** This chain's current values.
 5. **Purpose.** The purpose is reveal or revoke. Any other value is rejected.
 6. **Fee.** **Proposed (fail closed):** the outline requires a one-time reveal
@@ -330,8 +343,9 @@ value to carry (question 3).
 10. **Proof.** The proof verifies against the public inputs. It establishes
     that the prover knows `r` and the other secret parts of a leaf `C` built as
     in section 3 with type `DATA` under the public root, that the public marker
-    is derived from that `C`'s secret parts with the data marker tag (so one
-    commitment has one marker), that the rule is the empty rule, and that the
+    is derived from that `C`'s secret parts and salt with the data marker tag
+    of its version (so one commitment has one marker), that the salt stays a
+    private input, that the rule is the empty rule, and that the
     binding digest is the one in the public inputs.
 11. **Apply, all or nothing.** In one state change: add the marker to the data
     spent-marker set, settle the fee as question 1 decides, and write the
@@ -390,10 +404,11 @@ everything that is on the chain or derivable (outline, second milestone 4):
    (threat model, section 6 item 8). The one note that decrypts under
    authenticated encryption is the wallet's. **Proposed:** the wallet never
    asks an endpoint for one commitment, one position or one marker.
-3. Recompute `F_d` and `C` from the derived values and the note's `cf`, and
-   check that `C` is the leaf stored with that note. If it is not, restore
-   fails closed.
-4. Compute the marker locally and check it against the data spent-marker set,
+3. Recompute `F_d` and `C` from the derived values, the note's `cf` and, for a
+   version 2 commitment, the salt published with its commit (fetched in bulk
+   with the note history, never asked for one leaf at a time), and check that
+   `C` is the leaf stored with that note. If it is not, restore fails closed.
+4. Compute the marker locally, with the same salt, and check it against the data spent-marker set,
    fetched in bulk, to learn whether the commitment is still unrevealed.
 
 No step uses or publishes a value that ties the commitment to a reveal or to a
