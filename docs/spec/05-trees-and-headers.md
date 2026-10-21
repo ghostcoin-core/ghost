@@ -592,6 +592,8 @@ start: 188 bytes per leaf, about 188 MB per million commitments, up to about
 **Recovery test.** Written now as a procedure with expected results; it runs in
 the node phase, which records the measured figures. The figures above are the
 floor until then. No project-run indexer is reachable during any step.
+The part that runs today, with every project-run host blocked by a firewall
+rule, is `scripts/recovery-blackout.sh` ([recovery test](../recovery-test.md)).
 
 - **RT-1. Network.** Part A: a test network at the release parameters (depth
   32), with three full nodes run by different parties and one snap-synced node
