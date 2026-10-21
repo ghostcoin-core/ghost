@@ -29,6 +29,7 @@ import test from "node:test";
 
 import { concat, fromHex, toHex, toQuantity } from "../../src/bytes.mjs";
 import { ACCOUNT_EXTRA_GAS, DEFAULT_COMMIT_ENTRY, WaitError, createFlow } from "../../src/flow.mjs";
+import { startBlockPacer } from "../support/block-pacer.mjs";
 import { TEST_WALLET_ADDRESS, TEST_WALLET_WORDS, loadModule, nodeProver } from "../support/env.mjs";
 
 const GETH = process.env.GHOST_NODE_GETH;
@@ -65,8 +66,9 @@ function rpcClient(url) {
 }
 
 // A one-node internal network in a temporary directory: init, then geth
-// mining to the tests' wallet account with HTTP JSON-RPC on a port the
-// system picks.
+// with the tests' wallet account as its etherbase and HTTP JSON-RPC (miner
+// API included) on a port the system picks. It mines only while the block
+// pacer has started its miner.
 async function startGeth() {
   const dir = await mkdtemp(join(tmpdir(), "ghost-real-node-"));
   const log = [];
@@ -94,8 +96,10 @@ async function startGeth() {
       "--nodiscover",
       "--ipcdisable",
       "--http", "--http.addr", "127.0.0.1", "--http.port", "0",
-      "--http.api", "eth,net,web3,ghost",
-      "--mine", "--miner.threads", "1", "--miner.etherbase", miner,
+      "--http.api", "eth,net,web3,ghost,miner",
+      // Not mining from the start: the block pacer starts and stops the
+      // miner through the node's own RPC.
+      "--miner.threads", "1", "--miner.etherbase", miner,
       "--verbosity", "3",
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
@@ -153,6 +157,11 @@ if (!GETH) {
   test("Vanish, a partial Summon and a Claim against a real ghost-node", { timeout: 3_600_000 }, async () => {
     const ghost = await loadModule();
     const node = await startGeth();
+    // Left mining, the node seals a block about every 20 ms, tens of
+    // thousands of headers over the test, each of which the page checks in
+    // its worker (seal and difficulty) from genesis on. Paced, the chain
+    // grows by about one block every 2 seconds.
+    const pacer = startBlockPacer({ rpc: node.rpc, intervalMs: 2000 });
     const { rpc } = node;
     const prover = nodeProver();
 
@@ -253,11 +262,11 @@ if (!GETH) {
       if (r?.stage === "sent" && sentSeen.reveal?.txHash !== r.txHash) sentSeen.reveal = { txHash: r.txHash, out: r.out };
       if (c?.stage === "sent" && sentSeen.claim?.txHash !== c.txHash) sentSeen.claim = { txHash: c.txHash, amount: c.amount };
     };
-    // The node keeps sealing a block about every 20 ms throughout, so its
-    // tip never holds still: a reveal it refuses while its head kept moving
-    // is sent again after a short wait, or proved again against the settled
-    // root of the tip by then, and that gets the Summon and the Claim
-    // through.
+    // The pacer has the node seal a block about every 2 seconds throughout,
+    // so its tip never holds still: a reveal it refuses while its head kept
+    // moving is sent again after a short wait, or proved again against the
+    // settled root of the tip by then, and that gets the Summon and the
+    // Claim through.
     //
     // This build pins no network, so the test adds the internal network's
     // entry, starting the page's header chain at the genesis of the node it
@@ -272,12 +281,13 @@ if (!GETH) {
         pin: null,
       },
     };
-    // Each block's timestamp must exceed its parent's, so a node sealing a
-    // block about every 20 ms dates its chain ahead of real time by about a
-    // second per block. The page's clock here is the later of the wall clock
-    // and the latest block's timestamp of the node the test started, read
-    // every 250 ms, so the 30-second drift rule holds against the node's own
-    // time; it never runs behind real time.
+    // Each block's timestamp must exceed its parent's, so a node sealing
+    // faster than a block a second dates its chain ahead of real time; paced,
+    // it no longer does, and the clock stays as a guard. The page's clock
+    // here is the later of the wall clock and the latest block's timestamp
+    // of the node the test started, read every 250 ms, so the 30-second
+    // drift rule holds against the node's own time; it never runs behind
+    // real time.
     let nodeTime = Number(BigInt((await rpc("eth_getBlockByNumber", ["latest", false])).timestamp));
     let following = true;
     const followNodeTime = (async () => {
@@ -444,6 +454,7 @@ if (!GETH) {
       following = false;
       await followNodeTime;
       prover.terminate();
+      await pacer.stop();
       await node.stop();
     }
   });
