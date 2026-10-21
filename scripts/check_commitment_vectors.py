@@ -486,8 +486,22 @@ def check_derivation(ch, v):
     ch.expect(v, "data-key", derive_data_key(kb).hex())
 
 
+# Each commitment vector kind is one type at one format version, so a reader
+# that knows only version 1 can take every coin-commitment and data-commitment
+# vector without meeting a salt.
+COMMITMENT_KINDS = {
+    "coin-commitment": ("coin-commitment", "1"),
+    "data-commitment": ("data-commitment", "1"),
+    "salted-coin-commitment": ("coin-commitment", "2"),
+    "salted-data-commitment": ("data-commitment", "2"),
+}
+
+
 def _version_and_salt(v):
     """The vector's commitment format version and salt (None when absent)."""
+    _, expected = COMMITMENT_KINDS[v["kind"]]
+    if v["version"] != expected:
+        raise ValueError(f"kind {v['kind']} is version {expected}, not {v['version']}")
     version = int(v["version"])
     salt = _hex_field(v, "salt") if "salt" in v else None
     _salt_parts(version, salt)
@@ -559,6 +573,8 @@ CHECKS = {
     "derivation": check_derivation,
     "coin-commitment": check_coin_commitment,
     "data-commitment": check_data_commitment,
+    "salted-coin-commitment": check_coin_commitment,
+    "salted-data-commitment": check_data_commitment,
     "empty-leaf": check_empty_leaf,
     "tree-node": check_tree_node,
     "note": check_note,
@@ -580,14 +596,17 @@ def check_coverage(vectors):
     for groups in (12, 24):
         if not any(len(re.sub(r"[ -]", "", v.get("key", ""))) == 4 * groups for v in derivations):
             errors.append(f"no derivation vector for a {groups}-group key")
+    def of(family, version):
+        return [v for v in vectors
+                if COMMITMENT_KINDS.get(v.get("kind")) == (family, version)
+                and v.get("version") == version]
+
     for version in ("1", "2"):
-        coin_indexes = {v.get("index") for v in vectors
-                        if v.get("kind") == "coin-commitment" and v.get("version") == version}
+        coin_indexes = {v.get("index") for v in of("coin-commitment", version)}
         if not {"0", "1"} <= coin_indexes:
             errors.append(f"version {version} coin commitment vectors must cover index 0 "
                           f"and a remainder at index 1")
-        if not any(v.get("kind") == "data-commitment" and v.get("version") == version
-                   for v in vectors):
+        if not of("data-commitment", version):
             errors.append(f"no version {version} data commitment vector")
     names = [v["name"] for v in vectors]
     for name in sorted({n for n in names if names.count(n) > 1}):
@@ -607,7 +626,7 @@ MIN_BITS_APART = 64
 def check_salt_pairs(vectors):
     """The same secret under two salts must give unrelated values.
 
-    Groups the version 2 commitment vectors by everything except the salt (kind,
+    Groups the version 2 commitment vectors by everything except the salt (type,
     key, index, amount or content, rule). Each kind must have a group with at
     least two salts, and within a group every salt, fingerprint, commitment and
     marker must differ from every other, and from the version 1 vector of the
@@ -615,9 +634,10 @@ def check_salt_pairs(vectors):
     errors = []
     groups = {}
     for v in vectors:
-        if v.get("kind") not in ("coin-commitment", "data-commitment"):
+        if v.get("kind") not in COMMITMENT_KINDS:
             continue
-        key = (v.get("kind"), " ".join(v.get("key", "").split()), v.get("index"),
+        family, _ = COMMITMENT_KINDS[v["kind"]]
+        key = (family, " ".join(v.get("key", "").split()), v.get("index"),
                v.get("amount"), v.get("content-ascii"), v.get("rule"))
         groups.setdefault(key, []).append(v)
     paired = set()

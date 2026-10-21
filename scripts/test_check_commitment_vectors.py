@@ -375,6 +375,33 @@ class SaltTest(unittest.TestCase):
         self.assertTrue(any("[coin-commit-salted] cannot be checked" in e
                             for e in self.run_on(text)))
 
+    def test_salted_vectors_have_their_own_kind(self):
+        # A coin-commitment or data-commitment vector is always version 1, so a
+        # reader that knows only version 1 can take all of them.
+        vectors = checker.parse_vectors(checker.section(self.text, "Test vectors"))
+        for v in vectors:
+            if v.get("kind") in ("coin-commitment", "data-commitment"):
+                self.assertEqual(v.get("version"), "1", v["name"])
+                self.assertNotIn("salt", v, v["name"])
+            if v.get("kind", "").startswith("salted-"):
+                self.assertEqual(v.get("version"), "2", v["name"])
+        for name, kind in (("coin-commit-salted", "coin-commitment"),
+                           ("data-commit-salted", "data-commitment")):
+            with self.subTest(name=name):
+                start = self.text.index(f"[{name}]\n")
+                at = self.text.index(f"kind = salted-{kind}", start)
+                old = f"kind = salted-{kind}"
+                text = self.text[:at] + f"kind = {kind}" + self.text[at + len(old):]
+                errors = self.run_on(text)
+                self.assertTrue(any(f"[{name}] cannot be checked: kind {kind} is version 1"
+                                    in e for e in errors), errors)
+        start = self.text.index("[coin-commit]\n")
+        at = self.text.index("kind = coin-commitment", start)
+        old = "kind = coin-commitment"
+        text = self.text[:at] + "kind = salted-coin-commitment" + self.text[at + len(old):]
+        self.assertTrue(any("[coin-commit] cannot be checked: kind salted-coin-commitment "
+                            "is version 2" in e for e in self.run_on(text)))
+
     def test_type_tag_is_checked(self):
         start = self.text.index("[coin-commit-salted]\n")
         at = self.text.index("type-tag = 0201", start)
