@@ -4,7 +4,9 @@
 // carry a base fee: by default the same on every block, so the pacer's
 // warm-up has nothing to wait for; `baseFee(n)` gives block n's. Its pool
 // is empty unless `pending(n)` says how many transactions are pending at
-// height n; `sealMs` slows its miner down.
+// height n; `sealMs` slows its miner down. A call for which `stalls(method,
+// node)` is true never answers. `minerCalls` lists its miner_start and
+// miner_stop calls in order.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -14,8 +16,8 @@ import { startBlockPacer } from "./support/block-pacer.mjs";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const SEAL_MS = 5;
 
-function fakeNode({ height = 1, baseFee = () => 1000n, pending = () => 0, sealMs = SEAL_MS } = {}) {
-  const node = { height, starts: 0, stops: 0, timer: null, startArgs: [], startHeights: [], stopHeights: [] };
+function fakeNode({ height = 1, baseFee = () => 1000n, pending = () => 0, sealMs = SEAL_MS, stalls = () => false } = {}) {
+  const node = { height, starts: 0, stops: 0, timer: null, startArgs: [], startHeights: [], stopHeights: [], minerCalls: [] };
   const block = (n) => ({ number: `0x${n.toString(16)}`, baseFeePerGas: `0x${baseFee(n).toString(16)}` });
   const methods = {
     eth_blockNumber: () => `0x${node.height.toString(16)}`,
@@ -39,6 +41,8 @@ function fakeNode({ height = 1, baseFee = () => 1000n, pending = () => 0, sealMs
   };
   node.rpc = async (method, params = []) => {
     if (!methods[method]) throw new Error(`the fake node has no ${method}`);
+    if (stalls(method, node)) return new Promise(() => {});
+    if (method.startsWith("miner_")) node.minerCalls.push(method);
     return methods[method](params);
   };
   return node;
@@ -148,6 +152,46 @@ test("the warm-up gives up at its block bound and the pacer goes on pacing", asy
   assert.equal(typeof warm.baseFee, "bigint", "the fee it saw is reported");
   assert.equal(node.stops, node.starts);
   assert.equal(await node.rpc("eth_mining"), false);
+});
+
+test("the warm-up deadline holds when an RPC call stalls", async () => {
+  const warmUpMs = 300;
+  // A fee that never settles, so only the deadline ends the warm-up. The
+  // block reads stall from the first one, or only once the warm-up's miner
+  // is running unpaced.
+  const cases = [
+    { name: "from the first read", stalls: (method) => method === "eth_getBlockByNumber", warmUpCalls: ["miner_stop"] },
+    {
+      name: "while the miner runs",
+      stalls: (method, node) => method === "eth_getBlockByNumber" && node.timer !== null,
+      warmUpCalls: ["miner_start", "miner_stop"],
+    },
+  ];
+  for (const { name, stalls, warmUpCalls } of cases) {
+    const node = fakeNode({ height: 0, baseFee: (n) => 1_000_000n - BigInt(n), stalls });
+    const began = Date.now();
+    const pacer = startBlockPacer({ rpc: node.rpc, intervalMs: 60_000, warmUpMs });
+    let warm;
+    let warmMs;
+    try {
+      warm = await pacer.warmUp;
+      warmMs = Date.now() - began;
+      // The first paced cycle, after which the 60-second pause holds.
+      while (node.minerCalls.length < warmUpCalls.length + 2) await sleep(5);
+    } finally {
+      await pacer.stop();
+    }
+    assert.equal(warm.settled, false, `${name}: not settled`);
+    assert.ok(warmMs >= warmUpMs - 20 && warmMs < warmUpMs + 1000, `${name}: the warm-up took ${warmMs} ms`);
+    // The warm-up stops the miner itself, before the paced cycle starts it.
+    assert.deepEqual(node.minerCalls, [...warmUpCalls, "miner_start", "miner_stop"], `${name}: miner calls`);
+
+    // Nothing is mining afterwards.
+    assert.equal(await node.rpc("eth_mining"), false, `${name}: not mining`);
+    const after = node.height;
+    await sleep(100);
+    assert.equal(node.height, after, `${name}: no block after stop()`);
+  }
 });
 
 // One paced cycle (the next is 60 s away), from height 1.
