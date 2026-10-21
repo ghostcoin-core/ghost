@@ -194,7 +194,67 @@ if (!GETH) {
       throw new Error(`timed out waiting for ${what}`);
     }
 
-    const receiptOf = (hash) => waitFor(`the receipt of ${hash}`, () => rpc("eth_getTransactionReceipt", [hash]));
+    // The node's state as it bears on a transaction it was expected to take
+    // into a block: its pool, whether it mines, its head, the transaction
+    // and its receipt, the sender's nonces, and the last lines of its log.
+    // Each answer is bounded, so a node that no longer answers still leaves
+    // a dump.
+    async function chainState(hash, sender = node.miner) {
+      const ask = async (method, params = []) => {
+        let timer;
+        const late = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("no answer in 5 s")), 5000);
+        });
+        try {
+          return JSON.stringify(await Promise.race([rpc(method, params), late]));
+        } catch (err) {
+          return `error: ${err.message}`;
+        } finally {
+          clearTimeout(timer);
+        }
+      };
+      const content = await ask("txpool_content");
+      const lines = [
+        `txpool_status: ${await ask("txpool_status")}`,
+        `txpool_content: ${content.length > 4000 ? `${content.slice(0, 4000)}... (${content.length} chars)` : content}`,
+        `eth_mining: ${await ask("eth_mining")}`,
+        `head block: ${await ask("eth_blockNumber")}`,
+      ];
+      if (hash) {
+        lines.push(
+          `eth_getTransactionByHash ${hash}: ${await ask("eth_getTransactionByHash", [hash])}`,
+          `eth_getTransactionReceipt ${hash}: ${await ask("eth_getTransactionReceipt", [hash])}`,
+        );
+      }
+      lines.push(
+        `nonce of ${sender}: latest ${await ask("eth_getTransactionCount", [sender, "latest"])}, ` +
+          `pending ${await ask("eth_getTransactionCount", [sender, "pending"])}`,
+        `--- last lines of geth's log ---\n${node.tail()}`,
+      );
+      return lines.join("\n");
+    }
+
+    // A wait on the chain itself (a receipt, a block depth): the pacer seals
+    // a block about every 2 seconds, so a minute without it means the node
+    // is stuck, and the test fails with the node's state instead of waiting
+    // out the job's time limit. A check whose RPC call hangs counts too.
+    const CHAIN_WAIT_MS = 60_000;
+    async function waitOnChain(what, check, hash) {
+      let timer;
+      const late = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), CHAIN_WAIT_MS);
+      });
+      try {
+        return await Promise.race([waitFor(what, check, { limit: CHAIN_WAIT_MS / 1000 }), late]);
+      } catch (err) {
+        if (!node.alive()) throw err;
+        throw new Error(`${err.message} (within ${CHAIN_WAIT_MS / 1000} s)\n--- node state ---\n${await chainState(hash)}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    const receiptOf = (hash) => waitOnChain(`the receipt of ${hash}`, () => rpc("eth_getTransactionReceipt", [hash]), hash);
 
     // Every leaf of coin tree 0, and every spent coin marker, as of the tip.
     async function chainTree() {
@@ -251,13 +311,13 @@ if (!GETH) {
       const receipt = await receiptOf(hash);
       assert.equal(receipt.status, "0x1", "the stranger's commit is executed");
       assert.equal(receipt.type, "0x52");
-      return Number(BigInt(receipt.blockNumber));
+      return { block: Number(BigInt(receipt.blockNumber)), hash };
     }
 
     // Until `block` is 2 blocks deep, so that the settled tree holds a leaf
-    // added after the coin's.
-    async function waitSettledAfter(block) {
-      await waitFor(`block ${block + SETTLE_DEPTH}`, async () => (await blockNumber()) >= block + SETTLE_DEPTH);
+    // added after the coin's (the commit `hash` put it there).
+    async function waitSettledAfter(block, hash) {
+      await waitOnChain(`block ${block + SETTLE_DEPTH}`, async () => (await blockNumber()) >= block + SETTLE_DEPTH, hash);
     }
 
     // Each stage the flow reports is logged once, so a resend of a reveal the
@@ -324,8 +384,8 @@ if (!GETH) {
     // settled block's tree holds a leaf after the coin, and the coin can be
     // revealed at once.
     async function strangerCommitSettled() {
-      const block = await strangerCommit();
-      await waitSettledAfter(block);
+      const { block, hash } = await strangerCommit();
+      await waitSettledAfter(block, hash);
       console.log(`a stranger committed in block ${block}; it is ${SETTLE_DEPTH} blocks deep`);
       return block;
     }
