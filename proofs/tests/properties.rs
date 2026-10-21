@@ -407,10 +407,14 @@ fn statement_trace(statement: Statement) -> SecurityEstimate {
 /// none can outgrow the proof field.
 #[test]
 fn proof_budget_holds_for_every_statement() {
-    assert_eq!((MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH), (2048, 3808));
+    assert_eq!((MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH), (2048, 3824));
+    // The salted coin reveal is the widest statement and sets the budget.
+    assert_eq!(statement_trace(Statement::SaltedCoinReveal).trace_width, MAX_TRACE_WIDTH);
+    assert_eq!(statement_trace(Statement::CoinReveal).trace_width, 3808);
     let config = shipped_configuration().expect("the shipped configuration builds");
     let reported: Vec<Statement> = config.statements.iter().map(|(s, _)| *s).collect();
     assert_eq!(reported, Statement::ALL);
+    assert!(Statement::ALL.contains(&Statement::SaltedCoinReveal));
     for (statement, estimate) in config.statements {
         assert!(
             estimate.trace_height <= MAX_TRACE_HEIGHT,
@@ -433,8 +437,10 @@ fn proof_length_bound_fits_field() {
     assert_eq!(PROOF_FIELD_BYTES, 1_310_720);
     let bound = proof_length_bound(MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH);
     assert!(bound <= PROOF_FIELD_BYTES, "the bound {bound} is over {PROOF_FIELD_BYTES}");
-    // The figure spec 07, section 3 derives term by term.
-    assert_eq!(bound, 1_053_331);
+    // The figure spec 07, section 3 derives term by term for 3,808 columns,
+    // and 212 bytes for each of the salt's 16 carried columns.
+    assert_eq!(bound, 1_053_331 + 16 * 212);
+    assert_eq!(bound, 1_056_723);
     // Any smaller trace has a smaller bound.
     for statement in Statement::ALL {
         let t = statement_trace(statement);
@@ -610,6 +616,49 @@ fn commitment_vectors_from_spec_agree() {
     let z = empty_subtrees(Tree::Data);
     let empty = tree_node(Tree::Data, 31, &z[31], &z[31]);
     assert_eq!(empty, hex32(&vector(SPEC_05, "empty-data-tree")["root"]));
+}
+
+/// Spec 01, section 14: the salted (version 2) vectors agree with the v2
+/// fingerprint, commitment and marker the salted reveal proves, and differ
+/// from the version 1 values of the same secrets.
+#[test]
+fn salted_commitment_vectors_from_spec_agree() {
+    let salt = |map: &BTreeMap<String, String>| -> [u8; SALT_BYTES] {
+        hex(&map["salt"]).try_into().expect("16 bytes")
+    };
+    let coins = vector_blocks(SPEC_01, "coin-");
+    let salted: Vec<_> = coins
+        .iter()
+        .filter(|(_, c)| c.get("kind").map(String::as_str) == Some("salted-coin-commitment"))
+        .collect();
+    assert_eq!(salted.len(), 4);
+    for (name, c) in salted {
+        assert_eq!((c["version"].as_str(), c["type-tag"].as_str()), ("2", "0201"), "{name}");
+        let (s, r, b0, b1) = key_secrets(&c["key"]);
+        let b = match c["index"].as_str() {
+            "0" => b0,
+            "1" => b1,
+            other => panic!("{name}: index {other}"),
+        };
+        let v = amount_word(c["amount"].parse().unwrap());
+        let rule = hex32(&c["rule"]);
+        let f = coin_fingerprint_v2(&s, &r, &b, &salt(c), &rule);
+        assert_eq!(f, hex32(&c["fingerprint"]), "{name}");
+        assert_eq!(coin_commitment_v2(&f, &v), hex32(&c["commitment"]), "{name}");
+        assert_eq!(coin_marker_v2(&r, &b, &salt(c)), hex32(&c["marker"]), "{name}");
+        assert_ne!(f, coin_fingerprint(&s, &r, &b, &rule), "{name}");
+        assert_ne!(coin_marker_v2(&r, &b, &salt(c)), coin_marker(&r, &b), "{name}");
+    }
+    let datas = vector_blocks(SPEC_01, "data-commit-salted");
+    assert_eq!(datas.len(), 2);
+    for (name, d) in datas {
+        assert_eq!((d["kind"].as_str(), d["type-tag"].as_str()), ("salted-data-commitment", "0202"), "{name}");
+        let (s, r, b, _) = key_secrets(&d["key"]);
+        let f = data_fingerprint_v2(&s, &r, &b, &salt(&d), &hex32(&d["content-fingerprint"]), &hex32(&d["rule"]));
+        assert_eq!(f, hex32(&d["fingerprint"]), "{name}");
+        assert_eq!(data_commitment_v2(&f), hex32(&d["commitment"]), "{name}");
+        assert_eq!(data_marker_v2(&r, &b, &salt(&d)), hex32(&d["marker"]), "{name}");
+    }
 }
 
 // ---------------------------------------------------------------------------

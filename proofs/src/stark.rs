@@ -35,7 +35,8 @@
 //!
 //! The proof-size budget of spec 07, section 3 lives here too: no statement's
 //! trace may be taller than [`MAX_TRACE_HEIGHT`] or wider than
-//! [`MAX_TRACE_WIDTH`], the coin reveal's, and [`proof_length_bound`] shows
+//! [`MAX_TRACE_WIDTH`], the coin reveal's, the salted one's included, and
+//! [`proof_length_bound`] shows
 //! that a proof of such a trace fits [`PROOF_FIELD_BYTES`].
 
 use alloc::vec::Vec;
@@ -123,8 +124,9 @@ pub const PROOF_FIELD_BYTES: usize = 1_310_720;
 /// The proof-size budget (spec 07, section 3): the most rows a statement's
 /// trace may have before zero-knowledge padding, the coin reveal's.
 pub const MAX_TRACE_HEIGHT: usize = 2048;
-/// The most columns a statement's trace may have, the coin reveal's.
-pub const MAX_TRACE_WIDTH: usize = 3808;
+/// The most columns a statement's trace may have, the salted coin reveal's:
+/// the version 1 coin reveal's 3,808 and the 16 carried columns of the salt.
+pub const MAX_TRACE_WIDTH: usize = 3824;
 
 /// The challenge field.
 pub(crate) type Challenge = BinomialExtensionField<BabyBear, EXTENSION_DEGREE>;
@@ -335,34 +337,39 @@ fn estimate(p: &Parameters, air: &StatementAir) -> Option<SecurityEstimate> {
     })
 }
 
-/// The three statements, each with its own fixed shape.
+/// The statements, each with its own fixed shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Statement {
-    /// S1, the one-time reveal of a coin.
+    /// S1, the one-time reveal of a version 1 coin (made without a salt).
     CoinReveal,
     /// S2, the one-time reveal of data (reveal or revoke).
     DataReveal,
     /// S3, the proof of holding.
     Hold,
+    /// S1, the one-time reveal of a salted (version 2) coin, type `0x02 0x01`:
+    /// the salt is a private witness in 16 carried columns.
+    SaltedCoinReveal,
 }
 
 impl Statement {
-    pub const ALL: [Self; 3] = [Self::CoinReveal, Self::DataReveal, Self::Hold];
+    pub const ALL: [Self; 4] = [Self::CoinReveal, Self::DataReveal, Self::Hold, Self::SaltedCoinReveal];
 
     const fn index(self) -> usize {
         match self {
             Self::CoinReveal => 0,
             Self::DataReveal => 1,
             Self::Hold => 2,
+            Self::SaltedCoinReveal => 3,
         }
     }
 
     /// The statement's schedule, without any witness.
     pub(crate) fn schedule(self) -> Schedule {
         match self {
-            Self::CoinReveal => crate::reveal::schedule(None).0,
+            Self::CoinReveal => crate::reveal::schedule(crate::reveal::Format::V1),
             Self::DataReveal => crate::data::schedule(None).0,
             Self::Hold => crate::hold::schedule(None).0,
+            Self::SaltedCoinReveal => crate::reveal::schedule(crate::reveal::Format::V2),
         }
     }
 
@@ -433,8 +440,8 @@ fn check(p: &Parameters, air: &StatementAir) -> Result<SecurityEstimate, ProofEr
 /// The security gate: the rule checked for a statement at the shipped
 /// parameters, computed once.
 pub(crate) fn gate(statement: Statement) -> Result<SecurityEstimate, ProofError> {
-    static PLANS: [OnceLock<Result<SecurityEstimate, ProofError>>; 3] =
-        [OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    static PLANS: [OnceLock<Result<SecurityEstimate, ProofError>>; Statement::ALL.len()] =
+        [const { OnceLock::new() }; Statement::ALL.len()];
     PLANS[statement.index()]
         .get_or_init(|| check(&shipped_parameters(), &statement.air()))
         .clone()
@@ -593,8 +600,8 @@ pub(crate) fn serialized_len(bytes: &[u8]) -> Option<usize> {
 
 /// The gate's estimate for every statement, for the shipped configuration
 /// report.
-pub(crate) fn estimates() -> Result<[(Statement, SecurityEstimate); 3], ProofError> {
-    let mut out = [(Statement::CoinReveal, gate(Statement::CoinReveal)?); 3];
+pub(crate) fn estimates() -> Result<[(Statement, SecurityEstimate); Statement::ALL.len()], ProofError> {
+    let mut out = [(Statement::CoinReveal, gate(Statement::CoinReveal)?); Statement::ALL.len()];
     for (slot, statement) in out.iter_mut().zip(Statement::ALL) {
         *slot = (statement, gate(statement)?);
     }

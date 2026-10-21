@@ -70,6 +70,31 @@ field (spec 07, section 3).
 | Before | 8.58; 9.33; 8.42; 9.34; 9.29; 8.45; 9.17; 8.42; 8.32 |
 | After | 7.94; 8.03; 10.61; 8.93; 8.00; 7.94; 8.39; 8.28; 8.08 |
 
+## The salted coin reveal (version 2)
+
+The reveal of a salted (version 2) commitment, `prove_salted_coin_reveal` and
+`verify_salted_coin_reveal`, holds the 16-byte salt as a private witness in
+16 carried columns, read by both the fingerprint and the marker. Its trace is
+2,048 rows by **3,824 columns**, 16 more than the version 1 coin reveal's
+3,808, which is unchanged. The budget `MAX_TRACE_WIDTH` rises from 3,808 to
+3,824 for it; the height, the field, the queries, the rate and every other
+parameter stay as above.
+
+| Figure | Value |
+|---|---|
+| Trace width, version 1 coin reveal | 3,808 columns |
+| Trace width, salted coin reveal | 3,824 columns |
+| Bytes per extra column in `proof_length_bound` (2 challenges of 20 bytes, 43 queries of 4) | 212 |
+| `proof_length_bound` at 2,048 by 3,824 | 1,056,723 bytes (from 1,053,331), 253,997 below the field |
+| Salted proof measured (one proof, the largest made) | 960,087 bytes |
+| Proof field, `PROOF_BYTES` | 1,310,720 bytes, unchanged |
+
+The measured proof is the salted example of `proofs/tests/salted_reveal.rs`
+(zero-knowledge seed 1), serialized before padding to the field, measured on
+2026-10-21 in that test's run (debug assertions on, so not timed). It is in
+the range of the version 1 proofs above (954,991 to 961,981 bytes): the 16
+columns add at most 3,392 bytes to the bound.
+
 ## Security figures
 
 From the library's estimator (`p3-uni-stark` `StarkSecurityParams`, through
