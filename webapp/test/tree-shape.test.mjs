@@ -7,12 +7,23 @@
 // and refuses anything else.
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 
 import { concat, fromHex, toHex } from "../src/bytes.mjs";
 import { fetchTree } from "../src/flow.mjs";
-import { loadModule } from "./support/env.mjs";
+import { loadModule, wasmPath, webappDir } from "./support/env.mjs";
 
+// The module is built as webapp/README.md's "Test it" builds it, when no
+// build is there yet, with the toolchain CI pins.
+if (!existsSync(wasmPath)) {
+  const env = { ...process.env, RUSTUP_TOOLCHAIN: process.env.RUSTUP_TOOLCHAIN || "1.99.1" };
+  if (!env.RUSTUP_HOME && existsSync("/usr/local/rustup")) env.RUSTUP_HOME = "/usr/local/rustup";
+  const manifest = resolve(webappDir, "wasm/Cargo.toml");
+  execFileSync("cargo", ["build", "--release", "--locked", "--target", "wasm32-unknown-unknown", "--manifest-path", manifest], { env, stdio: "inherit" });
+}
 const ghost = await loadModule();
 
 // Spec 05, section 11: the one-leaf-pair tree of wasm.test.mjs, its only
