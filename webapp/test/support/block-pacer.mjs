@@ -1,8 +1,12 @@
 // Seals a test node's blocks at a bounded pace, through the node's own
 // miner_start / miner_stop RPC: each cycle starts the miner with 1 thread,
 // polls eth_blockNumber every 5 ms until the head is above what it was before
-// the start (at most 30 s), stops the miner, waits until eth_mining is false,
-// then sleeps `intervalMs`. Left mining, the internal network's node seals a
+// the start (at most 30 s), keeps it running while txpool_status reports
+// pending transactions (at most 5 s or 20 blocks in the cycle), stops the
+// miner, waits until eth_mining is false, then sleeps `intervalMs`. The node's
+// miner seals an empty block first on every start, and on the test network
+// that one wins the race against the block that would include a transaction
+// slow to verify; mining on gives that block its chance. Left mining, the internal network's node seals a
 // block about every 20 ms, far more headers than the page can check in its
 // worker; paced, its chain grows by about one block (a few at most) per cycle.
 //
@@ -24,6 +28,8 @@
 const POLL_MS = 5;
 const SEAL_LIMIT_MS = 30_000;
 const WARM_UP_POLL_MS = 20;
+const PENDING_LIMIT_MS = 5_000;
+const PENDING_LIMIT_BLOCKS = 20;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -57,11 +63,25 @@ export function startBlockPacer({ rpc, intervalMs = 2000, warmUpBlocks = 1000, w
     while ((await rpc("eth_mining")) && Date.now() < deadline) await sleep(POLL_MS);
   }
 
+  const pending = async () => Number(BigInt((await rpc("txpool_status")).pending ?? 0));
+
+  // Keeps the miner running while the pool has pending transactions, up to
+  // PENDING_LIMIT_MS from now or PENDING_LIMIT_BLOCKS above `before`.
+  async function whilePending(before) {
+    const deadline = Date.now() + PENDING_LIMIT_MS;
+    while (running && Date.now() < deadline) {
+      if ((await head()) - before >= BigInt(PENDING_LIMIT_BLOCKS)) return;
+      if ((await pending()) === 0) return;
+      await sleep(POLL_MS);
+    }
+  }
+
   async function cycle() {
     const before = await head();
     try {
       await rpc("miner_start", [1]);
       await untilSealed(before);
+      await whilePending(before);
     } finally {
       await minerStop();
     }

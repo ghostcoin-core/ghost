@@ -96,7 +96,8 @@ async function startGeth() {
       "--nodiscover",
       "--ipcdisable",
       "--http", "--http.addr", "127.0.0.1", "--http.port", "0",
-      "--http.api", "eth,net,web3,ghost,miner",
+      // txpool: the block pacer keeps mining while a transaction is pending.
+      "--http.api", "eth,net,web3,ghost,miner,txpool",
       // Not mining from the start: the block pacer starts and stops the
       // miner through the node's own RPC.
       "--miner.threads", "1", "--miner.etherbase", miner,
