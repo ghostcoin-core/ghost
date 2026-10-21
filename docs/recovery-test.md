@@ -83,10 +83,15 @@ earlier tree checked against its final root in a header and the last
 against the tip's root, checks every tree's leaves, notes and salts and the
 spent markers against the block receipts, restores a key's coins across
 trees, and proves a coin of a full earlier tree against that tree's final
-root ([web app](webapp.md), Coin trees). One part of the wallet may still
-stand between that and a pass, and the cases fail, not skip, on it: the
-worker hashes trees of 32 levels, so a node whose smaller trees are also
-shallower (spec 05 names 14 levels) needs the worker to hash those too.
+root ([web app](webapp.md), Coin trees). The trees' depth is
+`GHOST_RECOVERY_TREE_DEPTH` (by default the depth whose 2^depth is the leaf
+count, so 14 for spec 05's 16,384), and the devices check that depth's roots.
+One part of the wallet still stands between that and a pass at a depth below
+32, and both cases fail, not skip, at their reveal on it: the worker proves a
+coin only against a 32-level root, which no header of such a node carries,
+so the app refuses the reveal before proving it. Spec 05 (RT-8) has Part B's
+node take those reveals with a stub verifier; the wallet needs a prover of
+that depth, a change to the WebAssembly module.
 
 ## Release condition
 

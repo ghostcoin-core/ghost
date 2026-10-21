@@ -209,13 +209,22 @@ function nodeFee(blocks, height) {
 // root stays in the headers until the next tree's first leaf. Tree page
 // requests take any index up to the anchor's tree, and the receipts carry
 // each leaf's tree index and position in it. Without it there is one tree.
+//
+// With `treeDepth` below 32, as a node built with smaller trees (spec 05,
+// RT-1 Part B: 14 levels), every root is that of a tree of `treeDepth`
+// levels and a tree holds 2^treeDepth leaves unless `treeLeaves` says fewer.
+// Such a root is computed here apart from the app's: the module's page roots
+// (the subtree of height 12 under each, whatever the depth), climbed to
+// level `treeDepth` with the module's Keccak-256 of the node tag, the level
+// and the two children, an empty subtree filling the right.
 export async function startFakeNode({
   ghost,
   chainId = FAKE_CHAIN_ID,
   commitEntry,
   genesisTime = Math.floor(Date.now() / 1000) - 400 * 86_400,
   earlyHalfLives = 0,
-  treeLeaves = Infinity,
+  treeDepth = 32,
+  treeLeaves = treeDepth === 32 ? Infinity : 2 ** treeDepth,
 }) {
   const early = BigInt(earlyHalfLives) * BigInt(TEST_CHAIN_PARAMS.halfLife);
   const scheduled = 1n << BigInt(earlyHalfLives);
@@ -315,7 +324,23 @@ export async function startFakeNode({
     for (let start = 0; start < list.length; start += treeLeaves) trees.push(list.slice(start, start + treeLeaves));
     return trees.length === 0 ? [[]] : trees;
   };
-  const rootOf = (list) => ghost.treeRoots(concat(treesOf(list).at(-1).map((l) => l.commitment))).root;
+  const tagBytes = (tag) => concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]);
+  const nodeHash = (level, left, right) => ghost.keccak256(concat([tagBytes("ghost/coin-tree-node/v1"), Uint8Array.of(level), left, right]));
+  const zeros = [ghost.keccak256(tagBytes("ghost/empty-leaf/v1"))];
+  for (let level = 0; level < treeDepth; level += 1) zeros.push(nodeHash(level, zeros[level], zeros[level]));
+  // The root of a tree of `treeDepth` levels holding `commitments`.
+  const depthRoot = (commitments) => {
+    const { root, pageRoots } = ghost.treeRoots(concat(commitments));
+    if (treeDepth === 32) return root;
+    let nodes = pageRoots;
+    for (let level = 12; level < treeDepth; level += 1) {
+      const next = [];
+      for (let i = 0; i < nodes.length; i += 2) next.push(nodeHash(level, nodes[i], nodes[i + 1] ?? zeros[level]));
+      nodes = next;
+    }
+    return nodes[0] ?? zeros[treeDepth];
+  };
+  const rootOf = (list) => depthRoot(treesOf(list).at(-1).map((l) => l.commitment));
 
   // A commit's log: tree index, position, leaf, value and note, then the
   // salt of a version 2 commit (228 or 244 bytes). `index` is the leaf's

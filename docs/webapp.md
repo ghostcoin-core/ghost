@@ -188,6 +188,19 @@ each header's leaf count taken in the tip's tree (none for a header of an
 earlier tree). `createFlow`'s `treeLeaves` sets a smaller tree for a test
 node; the release never sets it.
 
+A test node built with trees of fewer levels (spec 05, RT-1 Part B: 14
+levels, 16,384 leaves) carries roots of that depth in its headers.
+`createFlow`'s `treeDepth` (12 to 32, 32 by default, with `treeLeaves` then
+2^treeDepth unless set lower) tells the app so. The worker hashes only 32
+levels, so at any other depth the page checks each tree and computes its
+prefix roots itself (`treeCheckAt`, `prefixRootsAt`), with the same hash:
+Keccak-256 of the node tag, the level and the two children, written in
+`flow.mjs` and checked against the module's in the tests. At 32 levels the
+worker's check is used, as before. The worker proves a coin only against a
+32-level root, so at a smaller depth a reveal is refused before it is proved
+(`SMALL_TREE_REVEAL`); spec 05 has Part B's node take such reveals with a stub
+verifier, and the wallet still needs a prover of that depth to make them.
+
 ## Headers
 
 The page keeps its own header chain, in the background worker's memory for
@@ -557,9 +570,9 @@ app makes no data commitments.
   over, 2^32 leaves away, the receipts check of every tree is the page's own
   (Coin trees), not the worker's, which covers tree 0 alone: the two read the
   same log layout and must agree. The worker still checks every block's
-  receipts against its header's `receiptsRoot` first, and its trees are of
-  32 levels, so a test node whose smaller trees are also shallower needs the
-  worker to hash those too.
+  receipts against its header's `receiptsRoot` first. Trees of fewer levels
+  than 32, on a test node, are likewise hashed by the page, and no reveal is
+  proved on them (Coin trees).
 - **Reorganisations are found when asked.** A step shown Done is checked
   again only on Refresh or "Check the commit is still in the chain"; the
   page does not watch the chain on its own.
@@ -640,7 +653,13 @@ app makes no data commitments.
   before restore; the page's check of every tree also refuses, on its own,
   a changed leaf, note or salt, a leaf missing or invented, a record of a
   tree not read, a rollover before or after `treeLeaves` and a marker
-  missing, invented or changed.
+  missing, invented or changed. The page's Keccak-256 and its 32-level roots
+  and prefix roots equal the module's, and its 14-level roots, climbed over
+  empty subtrees with the module's hash, give the module's 32-level root of
+  the same leaves. Against a stand-in whose headers carry 14-level roots
+  (16,384 leaves per tree), a device of the release depth refuses them, and
+  one told the depth finds a coin in the full tree 0 with tree 0's final
+  root as its tree state and one in tree 1, and refuses to prove.
 - `salted-coin.test.mjs`: the commit is 206 bytes of version 2 with a fresh
   salt, in the module and as the wallet signs it, and the stand-in keeps
   that salt with the leaf; restore reads the salt beside the leaf, finds the
