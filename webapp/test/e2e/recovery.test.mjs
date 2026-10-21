@@ -45,8 +45,17 @@
 //    34 blocks (the scan's header window plus the settle depth) below the tip
 //    when the clean device restores it from its digits and reveals part of
 //    it on the branch that won the reorganisation.
-// 4. rollover, and 5. commitment-in-full-tree: skipped, with the reason
-//    below, until ghost-node and the web app can reach a second tree index.
+// 4. rollover: keys KB and KA commit in coin tree 0, strangers' commits
+//    fill it, the next commit starts tree 1 at position 0, and KA's
+//    remainder of a partial reveal lands in tree 1; the clean device reads
+//    both trees and restores KA's spent coin and its remainder.
+// 5. commitment-in-full-tree: KB's coin, left unspent in the full tree 0, is
+//    restored by the clean device and revealed in part.
+//
+// Cases 4 and 5 need a coin tree that can fill: they run only when the
+// script says the node holds GHOST_RECOVERY_TREE_LEAVES leaves per tree,
+// fewer than the release's 2^32 (spec 05, RT-1 Part B), and the devices are
+// told the same count. Otherwise they are skipped with the reason below.
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -75,13 +84,19 @@ const PORTS = { A: { p2p: 30411, http: 18541 }, B: { p2p: 30412, http: 18542 }, 
 // The second miner's etherbase: any address other than the wallet's.
 const C_ETHERBASE = "0x00000000000000000000000000000000000c0ffe";
 
+// Leaves per coin tree of the node under test, from the script: unset for a
+// release node, whose trees hold 2^32.
+const TREE_LEAVES_SET = process.env.GHOST_RECOVERY_TREE_LEAVES;
+const TREE_LEAVES = TREE_LEAVES_SET ? Number(TREE_LEAVES_SET) : null;
+
 export const ROLLOVER_SKIP =
-  "not on main: ghost-node fixes the tree depth at 32 (core/ghosttree: Release = Params{Depth: 32}, and Params.Check " +
-  "refuses any other depth) and has no test build with a smaller depth, so a rollover needs 2^32 commits; the web app " +
-  "reads only coin tree 0 (docs/webapp.md, Limits: One tree). Needs the test-build depth of spec 05, RT-1 Part B";
+  "not on main: the node under test holds 2^32 leaves per coin tree (the release's only size: its tree package " +
+  "refuses any other), so a rollover needs 2^32 commits. It runs once the node can be built with smaller coin trees " +
+  "(spec 05, RT-1 Part B, a change in the node's own repository) and the script is given that size in " +
+  "GHOST_RECOVERY_TREE_LEAVES; the web app already reads every coin tree index up to the tip's";
 export const FULL_TREE_SKIP =
   "not on main: a commitment left in a full earlier tree index needs the same rollover (spec 05, RT-2 Part B), " +
-  "and the web app reads no tree index but 0";
+  "so it waits for the same node build of smaller coin trees";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -376,39 +391,76 @@ if (!GETH || !NETNS) {
           if (stage !== null && stage !== lastStage) console.log(`${node.name} device: ${stage}`);
           lastStage = stage;
         };
-        return createFlow({ prover, endpoint: node.url, networks, pollMs: 1000, maxPolls: 1800, onChange, clock, ...(fetchFn ? { fetch: fetchFn } : {}) });
+        return createFlow({
+          prover,
+          endpoint: node.url,
+          networks,
+          pollMs: 1000,
+          maxPolls: 1800,
+          onChange,
+          clock,
+          ...(fetchFn ? { fetch: fetchFn } : {}),
+          ...(TREE_LEAVES ? { treeLeaves: TREE_LEAVES } : {}),
+        });
       }
 
-      // A commit by someone else from the funded account on A: a version 2
-      // commit of a random F and salt and a note no key opens, so that the
-      // tree-state rule finds a leaf after the coins.
-      async function strangerCommit() {
-        const data = concat([Uint8Array.of(0x00, 0x02), randomBytes(32), randomBytes(SALT_BYTES), randomBytes(NOTE_BYTES)]);
-        const value = GHOST / 100n;
-        const call = { from: TEST_WALLET_ADDRESS, to: DEFAULT_COMMIT_ENTRY, value: toQuantity(value), data: toHex(data) };
+      // Commits by someone else from the funded account on A, `count` of
+      // them sent at once with consecutive nonces: version 2 commits of a
+      // random F and salt and a note no key opens, of `value` each. Returns
+      // their hashes.
+      async function sendStrangerCommits(count, value = GHOST / 100n) {
         const tip = await A.rpc("eth_getBlockByNumber", ["latest", false]);
         const priority = BigInt(await A.rpc("eth_maxPriorityFeePerGas"));
-        const signed = ghost.walletSign({
-          words: TEST_WALLET_WORDS,
-          index: 0,
-          chainId: NETWORK_ID,
-          genesis: fromHex((await A.rpc("eth_getBlockByNumber", ["0x0", false])).hash, 32),
-          nonce: BigInt(await A.rpc("eth_getTransactionCount", [TEST_WALLET_ADDRESS, "pending"])),
-          maxPriorityFeePerGas: priority,
-          maxFeePerGas: 2n * BigInt(tip.baseFeePerGas) + priority,
-          gasLimit: BigInt(await A.rpc("eth_estimateGas", [call])) + ACCOUNT_EXTRA_GAS,
-          to: fromHex(DEFAULT_COMMIT_ENTRY, 20),
-          value,
-          data,
-          seed: randomBytes(32),
-        });
-        const hash = toHex(signed.txHash);
-        await A.rpc("eth_sendRawTransaction", [toHex(signed.envelope)]).catch(() => null);
+        const genesis = fromHex((await A.rpc("eth_getBlockByNumber", ["0x0", false])).hash, 32);
+        const first = BigInt(await A.rpc("eth_getTransactionCount", [TEST_WALLET_ADDRESS, "pending"]));
+        const hashes = [];
+        let gasLimit = null;
+        for (let i = 0n; i < BigInt(count); i += 1n) {
+          const data = concat([Uint8Array.of(0x00, 0x02), randomBytes(32), randomBytes(SALT_BYTES), randomBytes(NOTE_BYTES)]);
+          const call = { from: TEST_WALLET_ADDRESS, to: DEFAULT_COMMIT_ENTRY, value: toQuantity(value), data: toHex(data) };
+          gasLimit ??= BigInt(await A.rpc("eth_estimateGas", [call])) + ACCOUNT_EXTRA_GAS;
+          const signed = ghost.walletSign({
+            words: TEST_WALLET_WORDS,
+            index: 0,
+            chainId: NETWORK_ID,
+            genesis,
+            nonce: first + i,
+            maxPriorityFeePerGas: priority,
+            maxFeePerGas: 2n * BigInt(tip.baseFeePerGas) + priority,
+            gasLimit,
+            to: fromHex(DEFAULT_COMMIT_ENTRY, 20),
+            value,
+            data,
+            seed: randomBytes(32),
+          });
+          await A.rpc("eth_sendRawTransaction", [toHex(signed.envelope)]).catch(() => null);
+          hashes.push(toHex(signed.txHash));
+        }
+        return hashes;
+      }
+
+      // A commit by someone else, waited for until SETTLE_DEPTH blocks are
+      // on it, so that the tree-state rule finds a leaf after the coins.
+      // Returns its receipt.
+      async function strangerCommitReceipt() {
+        const [hash] = await sendStrangerCommits(1);
         const receipt = await receiptOn(A, hash, "a stranger's commit");
         assert.equal(receipt.status, "0x1");
         const block = Number(BigInt(receipt.blockNumber));
         await waitFor(`block ${block + SETTLE_DEPTH} on A`, async () => (await A.head()).number >= block + SETTLE_DEPTH);
-        return block;
+        return receipt;
+      }
+
+      async function strangerCommit() {
+        return Number(BigInt((await strangerCommitReceipt()).blockNumber));
+      }
+
+      // Where a receipt's leaf went: the coin tree index and the position in
+      // it, the first 8 bytes of its log's data.
+      function appendedAt(receipt) {
+        const data = fromHex(receipt.logs[0].data);
+        const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+        return { tree: view.getUint32(0), position: view.getUint32(4) };
       }
 
       // The isolation the script set up, seen from inside: B is no miner,
@@ -575,8 +627,67 @@ if (!GETH || !NETNS) {
         return `K2, committed in block ${K2.block}, ${tip - K2.block} blocks below the tip, restored from its digits and 0.2 GHOST revealed in block ${reveal.block}`;
       });
 
-      await skipCase("rollover", ROLLOVER_SKIP);
-      await skipCase("commitment-in-full-tree", FULL_TREE_SKIP);
+      if (TREE_LEAVES === null) {
+        await skipCase("rollover", ROLLOVER_SKIP);
+        await skipCase("commitment-in-full-tree", FULL_TREE_SKIP);
+      } else {
+        // KB's coin, left in the full tree 0 for the last case.
+        let inFullTree = null;
+        await runCase("rollover", async () => {
+          assert.ok(Number.isSafeInteger(TREE_LEAVES) && TREE_LEAVES > 0 && TREE_LEAVES < 2 ** 32, `GHOST_RECOVERY_TREE_LEAVES is ${TREE_LEAVES_SET}`);
+          const KB = await vanish("0.4");
+          const KA = await vanish("1");
+          let at = appendedAt(await strangerCommitReceipt());
+          assert.equal(at.tree, 0, "coin tree 0 is not full before the filler");
+          // The filler: strangers' commits of 1 wei, in batches the pool
+          // takes, until coin tree 0 holds TREE_LEAVES leaves.
+          for (let left = TREE_LEAVES - at.position - 1; left > 0; ) {
+            const batch = Math.min(left, 200);
+            const hashes = await sendStrangerCommits(batch, 1n);
+            for (const hash of hashes) assert.equal((await receiptOn(A, hash, "a filler commit")).status, "0x1");
+            left -= batch;
+            console.log(`coin tree 0: ${TREE_LEAVES - left} of ${TREE_LEAVES} leaves`);
+          }
+          at = appendedAt(await strangerCommitReceipt());
+          assert.deepEqual(at, { tree: 1, position: 0 }, "the next commit starts coin tree 1 at position 0");
+          // KA's partial reveal: its remainder lands in tree 1.
+          const recipient = toHex(randomBytes(20));
+          const s = await original.summonOpen(KA.key);
+          assert.equal(s.wait, null, "KA can be revealed");
+          const reveal = await original.summonReveal({ amount: "0.25", recipient });
+          const remainderAt = appendedAt(await receiptOn(A, reveal.txHash, "KA's reveal"));
+          assert.equal(remainderAt.tree, 1, "KA's remainder is in coin tree 1");
+          original.summonClose();
+          await strangerCommit();
+          await synced();
+          // The clean device reads both trees and restores KA across them.
+          const r = await clean.summonOpen(KA.digits);
+          assert.equal(r.status, "unclaimed");
+          assert.equal(r.coins.length, 2, "KA's spent coin in tree 0 and its remainder in tree 1 are found");
+          assert.ok(r.coins.find((c) => c.number === 0n)?.spent, "coin number 0 shows spent");
+          assert.equal(r.current.number, 1n);
+          assert.equal(r.current.amount, GHOST - GHOST / 4n - reveal.fee);
+          clean.summonClose();
+          inFullTree = KB;
+          return `coin tree 0 filled at ${TREE_LEAVES} leaves; the next commit started tree 1; KA's remainder at tree 1, position ${remainderAt.position}, restored by the clean device`;
+        });
+        await runCase("commitment-in-full-tree", async () => {
+          assert.ok(inFullTree, "the rollover case left KB's coin in the full tree 0");
+          let r = await clean.summonOpen(inFullTree.digits);
+          assert.equal(r.status, "unclaimed", "KB's coin in the full tree 0 is found");
+          assert.equal(r.current.amount, (GHOST * 4n) / 10n);
+          assert.equal(r.wait, null, "a coin in a full earlier tree needs no wait");
+          const recipient = toHex(randomBytes(20));
+          const reveal = await clean.summonReveal({ amount: "0.1", recipient });
+          const receipt = await receiptOn(B, reveal.txHash, "KB's reveal");
+          assert.equal(receipt.status, "0x1");
+          await waitFor("the recipient's balance on B", async () => (await balance(B, recipient)) === GHOST / 10n);
+          r = clean.state.summon;
+          assert.equal(r.current.number, 1n, "the remainder stays under KB");
+          clean.summonClose();
+          return `KB, committed in block ${inFullTree.block} in coin tree 0, restored from its digits after the rollover and 0.1 GHOST revealed in block ${reveal.block}`;
+        });
+      }
 
       assert.equal(clean.state.chainRefused, null, "the independent node's chain passed the clean device's proof-of-work check");
       assert.deepEqual(cleanDeviceAsked, [], "the clean device asked nothing but the independent node");

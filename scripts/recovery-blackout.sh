@@ -41,6 +41,13 @@
 #                            separated by spaces
 #   GHOST_RECOVERY_WORK      the work directory (default: a new one under TMPDIR)
 #   GHOST_RECOVERY_KEEP=1    keep the work directory
+#   GHOST_RECOVERY_TREE_LEAVES
+#                            leaves per coin tree of the node built, for a
+#                            node built with coin trees smaller than the
+#                            release's 2^32 (spec 05, RT-1 Part B); the
+#                            rollover and commitment-in-full-tree cases run
+#                            only with it, and are skipped with their reason
+#                            without it
 #
 # Usage: scripts/recovery-blackout.sh [--require-all]
 #   --require-all   fail if any case is skipped (the launch gate runs this)
@@ -63,6 +70,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
 webapp="$repo/webapp"
 node_repo="${GHOST_NODE_REPO:-https://github.com/ghostcoin-core/ghost-node.git}"
+tree_leaves="${GHOST_RECOVERY_TREE_LEAVES:-}"
+if [ -n "$tree_leaves" ] && ! [[ "$tree_leaves" =~ ^[1-9][0-9]*$ ]]; then
+  echo "recovery-blackout: GHOST_RECOVERY_TREE_LEAVES is not a leaf count: $tree_leaves" >&2
+  exit 2
+fi
 
 # The hosts the project runs, or that hold its source and releases: its
 # website, its organisation's code and release downloads, and its container
@@ -262,6 +274,7 @@ as_user env -i \
   PATH="$PATH" HOME="$HOME" TMPDIR="$work" \
   GHOST_NODE_GETH="$geth_a" GHOST_WEBAPP_WASM="$wasm" \
   GHOST_RECOVERY_NETNS="$ns" GHOST_RECOVERY_RESULTS="$results" \
+  ${tree_leaves:+GHOST_RECOVERY_TREE_LEAVES="$tree_leaves"} \
   node --test --test-reporter=spec --test-timeout=7200000 "$webapp/test/e2e/recovery.test.mjs" 2>&1 | tee "$log" >&2
 test_status=${PIPESTATUS[0]}
 set -e

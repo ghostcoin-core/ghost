@@ -200,12 +200,22 @@ function nodeFee(blocks, height) {
 // seal fails (a header chain must start above genesis for such a chain,
 // `pinnedNetwork`). `setDifficulty(d)` makes the blocks mined from then on
 // carry difficulty `d` whatever the schedule requires.
+//
+// With `treeLeaves`, a coin tree holds that many leaves and the next leaf
+// goes to position 0 of the next tree index (spec 05, section 3), as a node
+// whose trees are smaller than the release's 2^32 would roll over. Each
+// tree's root is still the depth-32 root of its leaves, and a header carries
+// the root of the tree its block's last leaf is in, so a full tree's final
+// root stays in the headers until the next tree's first leaf. Tree page
+// requests take any index up to the anchor's tree, and the receipts carry
+// each leaf's tree index and position in it. Without it there is one tree.
 export async function startFakeNode({
   ghost,
   chainId = FAKE_CHAIN_ID,
   commitEntry,
   genesisTime = Math.floor(Date.now() / 1000) - 400 * 86_400,
   earlyHalfLives = 0,
+  treeLeaves = Infinity,
 }) {
   const early = BigInt(earlyHalfLives) * BigInt(TEST_CHAIN_PARAMS.halfLife);
   const scheduled = 1n << BigInt(earlyHalfLives);
@@ -230,9 +240,10 @@ export async function startFakeNode({
   // headers carry that tree's root but keep their real hash; `salt(position,
   // salt)` replaces the salt it serves beside each leaf (bytes, a hex text
   // as it is sent, or null to leave it out).
-  // `pageRoots(roots)` replaces the page-root list it serves, and
-  // `page(p, honest, honestPage)` the coin page `p` (`honestPage(q)` is the
-  // honest page q), to drop or reorder pages; `markers(list)` replaces the
+  // `pageRoots(roots, k)` replaces the page-root list it serves of coin tree
+  // k, and `page(p, honest, honestPage, k)` the coin page `p` of tree k
+  // (`honestPage(q, j = k)` is the honest page q of tree j), to drop or
+  // reorder pages; `markers(list)` replaces the
   // spent markers (hex) it serves as of an anchor, before they are cut into
   // pages; `receipts(number, list)` replaces the receipts (JSON) it serves
   // for block `number`, null for none.
@@ -292,19 +303,34 @@ export async function startFakeNode({
   const REVEAL_TOPIC = tagTopic("ghost/reveal-receipt/v1");
   const coinTreeAccount = fromHex(COIN_TREE_ACCOUNT, 20);
 
+  // The tree index and the position in it of the leaf at `index` of
+  // `leaves` (every tree's leaves, in the order they were appended).
+  const treeOf = (index) => Math.floor(index / treeLeaves);
+  const positionOf = (index) => index % treeLeaves;
+  // `list` (leaves in append order) cut into its trees, the last one the
+  // tree a header of that many leaves carries: a full tree stays the
+  // current one until a leaf goes into the next.
+  const treesOf = (list) => {
+    const trees = [];
+    for (let start = 0; start < list.length; start += treeLeaves) trees.push(list.slice(start, start + treeLeaves));
+    return trees.length === 0 ? [[]] : trees;
+  };
+  const rootOf = (list) => ghost.treeRoots(concat(treesOf(list).at(-1).map((l) => l.commitment))).root;
+
   // A commit's log: tree index, position, leaf, value and note, then the
-  // salt of a version 2 commit (228 or 244 bytes).
-  const commitLog = (position, commitment, value, note, salt) => ({
+  // salt of a version 2 commit (228 or 244 bytes). `index` is the leaf's
+  // index in `leaves`.
+  const commitLog = (index, commitment, value, note, salt) => ({
     address: coinTreeAccount,
     topics: [COMMIT_TOPIC],
-    data: concat([u32(0), u32(position), commitment, word(value), note, ...(salt ? [salt] : [])]),
+    data: concat([u32(treeOf(index)), u32(positionOf(index)), commitment, word(value), note, ...(salt ? [salt] : [])]),
   });
   // A reveal's log: the marker as second topic; tree index, position,
   // remainder, note, recipient and amount out (248 bytes).
-  const revealLog = (position, reveal) => ({
+  const revealLog = (index, reveal) => ({
     address: coinTreeAccount,
     topics: [REVEAL_TOPIC, reveal.marker],
-    data: concat([u32(0), u32(position), reveal.remainder, reveal.note, reveal.recipient, word(reveal.out)]),
+    data: concat([u32(treeOf(index)), u32(positionOf(index)), reveal.remainder, reveal.note, reveal.recipient, word(reveal.out)]),
   });
 
   // A block's header fields, with the names of the base client's JSON-RPC.
@@ -340,11 +366,16 @@ export async function startFakeNode({
     return forged(block) ? [...real, ...dishonest.forge.extra] : real;
   }
 
-  const servedLeaves = (block) => concat(served(block).map((l) => l.commitment));
+  // The leaves of tree `treeIndex` served as of `block`, null for a tree
+  // past the block's.
+  function servedTree(block, treeIndex) {
+    const trees = treesOf(served(block));
+    return treeIndex < trees.length ? trees[treeIndex] : null;
+  }
 
   function header(block) {
     const json = { ...block.json, hash: toHex(block.hash) };
-    if (forged(block)) json.coinTreeRoot = toHex(ghost.treeRoots(servedLeaves(block)).root);
+    if (forged(block)) json.coinTreeRoot = toHex(rootOf(served(block)));
     return json;
   }
 
@@ -356,7 +387,7 @@ export async function startFakeNode({
     const pooled = pool.entries.splice(0);
     for (const entry of pooled) entry.apply(number);
     const leafCount = leaves.length;
-    const coinTreeRoot = ghost.treeRoots(concat(leaves.map((l) => l.commitment))).root;
+    const coinTreeRoot = rootOf(leaves);
     const parentHash = number === 0 ? new Uint8Array(32) : blocks[number - 1].hash;
     const txReceipts = blockReceipts.splice(0).map((r, i) => ({
       ...r,
@@ -581,8 +612,8 @@ export async function startFakeNode({
           type: "0x50",
           marker: toHex(reveal.marker),
           remainder: toHex(reveal.remainder),
-          treeIndex: "0x0",
-          position: q(position),
+          treeIndex: q(treeOf(position)),
+          position: q(positionOf(position)),
           note: toHex(reveal.note),
         });
         reveals.push({ ...reveal, hash, block: number });
@@ -617,11 +648,12 @@ export async function startFakeNode({
     // The page roots of a tree as a plain array of 32-byte roots, `[]` for an
     // empty tree. No data commitment is made here, so `data` has none.
     ghost_getPageRoots: (params) => {
-      const [kind, block] = treeArgs(params, 3, 2);
+      const [kind, block, treeIndex] = treeArgs(params, 3, 2);
       if (MARKER_KINDS.has(kind)) throw invalid(0, "no page roots for a marker kind");
       if (kind === "data") return [];
-      const roots = ghost.treeRoots(servedLeaves(block)).pageRoots.map(toHex);
-      return dishonest.pageRoots ? dishonest.pageRoots(roots) : roots;
+      const tree = servedTree(block, treeIndex);
+      const roots = ghost.treeRoots(concat(tree.map((l) => l.commitment))).pageRoots.map(toHex);
+      return dishonest.pageRoots ? dishonest.pageRoots(roots, treeIndex) : roots;
     },
     // The receipts of the block of that hash, in transaction order, as
     // geth's eth_getBlockReceipts returns them; null for a block it does not
@@ -636,7 +668,7 @@ export async function startFakeNode({
     // `salt` (16 bytes of hex) for a version 2 commit's leaf, as the node
     // serves it.
     ghost_getTreePage: (params) => {
-      const [kind, block] = treeArgs(params, 4, 3);
+      const [kind, block, treeIndex] = treeArgs(params, 4, 3);
       let page;
       try {
         page = Number(quantity(params[2]));
@@ -646,8 +678,9 @@ export async function startFakeNode({
       if (page >= MAX_PAGES) throw new Error("page number beyond the tree");
       const start = page * PAGE;
       if (kind === "coin" || kind === "data") {
-        const honest = treePage(kind, block, page);
-        return dishonest.page && kind === "coin" ? dishonest.page(page, honest, (p) => treePage(kind, block, p)) : honest;
+        const honest = treePage(kind, block, page, treeIndex);
+        if (!dishonest.page || kind !== "coin") return honest;
+        return dishonest.page(page, honest, (p, k = treeIndex) => treePage(kind, block, p, k), treeIndex);
       }
       let listed = kind === "coin-markers" ? spent.slice(0, block.spentCount).map((s) => toHex(s.marker)) : [];
       if (dishonest.markers && kind === "coin-markers") listed = dishonest.markers(listed);
@@ -656,25 +689,28 @@ export async function startFakeNode({
     },
   };
 
-  // Coin or data page `page` as of `block`, with the dishonest notes and
-  // salts, if any.
-  function treePage(kind, block, page) {
+  // Coin or data page `page` of tree `treeIndex` as of `block`, with the
+  // dishonest notes and salts, if any; those are given the leaf's index in
+  // `leaves` (its position, in tree 0).
+  function treePage(kind, block, page, treeIndex = 0) {
     const start = page * PAGE;
-    const part = kind === "coin" ? served(block).slice(start, start + PAGE) : [];
-    const note = (l, i) => (dishonest.note ? dishonest.note(start + i, l.note) : l.note);
+    const part = kind === "coin" ? (servedTree(block, treeIndex) ?? []).slice(start, start + PAGE) : [];
+    const first = (treeIndex === 0 ? 0 : treeIndex * treeLeaves) + start;
+    const note = (l, i) => (dishonest.note ? dishonest.note(first + i, l.note) : l.note);
     const entries = part.map((l, i) => {
       const entry = { leaf: toHex(l.commitment), note: toHex(note(l, i)) };
-      const salt = dishonest.salt ? dishonest.salt(start + i, l.salt) : l.salt;
+      const salt = dishonest.salt ? dishonest.salt(first + i, l.salt) : l.salt;
       if (salt) entry.salt = typeof salt === "string" ? salt : toHex(salt);
       return entry;
     });
-    return { kind, treeIndex: "0x0", page: q(page), filled: q(entries.length), entries };
+    return { kind, treeIndex: q(treeIndex), page: q(page), filled: q(entries.length), entries };
   }
 
   // The checks the node makes on a tree page request, in its words: the
-  // number of parameters, the kind, the tree index (only 0 exists) and the
-  // anchor, which must be the 32-byte hash of a known block. Returns the
-  // kind and the anchor's block.
+  // number of parameters, the kind, the tree index (a coin tree up to the
+  // anchor's, 0 for the other kinds) and the anchor, which must be the
+  // 32-byte hash of a known block. Returns the kind, the anchor's block and
+  // the tree index.
   function treeArgs(params, count, anchorAt) {
     if (params.length < count) throw invalid(null, `missing value for required argument ${params.length}`);
     if (params.length > count) throw invalid(null, `too many arguments, want at most ${count}`);
@@ -691,8 +727,9 @@ export async function startFakeNode({
       throw invalid(1, err.message);
     }
     const block = blockByHash(anchor);
-    if (treeIndex !== 0n) throw new Error("tree index does not exist at the anchor");
-    return [kind, block];
+    const last = kind === "coin" ? treesOf(served(block)).length - 1 : 0;
+    if (treeIndex > BigInt(last)) throw new Error("tree index does not exist at the anchor");
+    return [kind, block, Number(treeIndex)];
   }
 
   const server = createServer((req, res) => {

@@ -159,6 +159,22 @@ test("fetchTree refuses a page that is not the one asked for", async () => {
   assert.equal(tree.count, 2);
 });
 
+// Tree `k` is asked for by its index, and a page of any other index is
+// refused, tree 0's included.
+test("fetchTree asks for the tree index given and refuses a page of another", async () => {
+  const rpc = endpoint(docsPageRoots(), [{ ...docsPage(), treeIndex: "0x2" }]);
+  const tree = await fetchTree(rpc, prover, anchor(), 2);
+  assert.equal(tree.count, 2);
+  assert.deepEqual(rpc.calls, [
+    { method: "ghost_getPageRoots", params: ["coin", "0x2", ANCHOR_HASH] },
+    { method: "ghost_getTreePage", params: ["coin", "0x2", "0x0", ANCHOR_HASH] },
+  ]);
+  const notAsked = /page 0 of coin tree 2 from the endpoint is not the page asked for/;
+  for (const treeIndex of ["0x0", "0x1", "0x3", undefined]) {
+    await assert.rejects(fetchTree(endpoint(docsPageRoots(), [{ ...docsPage(), treeIndex }]), prover, anchor(), 2), notAsked, String(treeIndex));
+  }
+});
+
 test("fetchTree checks the page roots and leaves against the anchor's coin root", async () => {
   const changed = docsPage();
   changed.entries[1] = { ...changed.entries[1], leaf: LEAF_B.replace(/5$/, "4") };
