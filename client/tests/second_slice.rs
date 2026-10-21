@@ -96,7 +96,7 @@ impl Chain {
     }
 
     fn push(&mut self, commitment: Commitment, note: [u8; NOTE_BYTES]) -> u32 {
-        self.leaves.push(TreeLeaf { commitment, note });
+        self.leaves.push(TreeLeaf { commitment, note, salt: None });
         (self.leaves.len() - 1) as u32
     }
 
@@ -112,6 +112,7 @@ impl Chain {
             number,
             amount: amount(wei),
             rule: Rule::EMPTY,
+            salt: None,
             position,
             path,
         };
