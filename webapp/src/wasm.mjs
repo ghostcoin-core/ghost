@@ -1,7 +1,7 @@
 // The plain exports of webapp/wasm (the client library built for
 // wasm32-unknown-unknown), with no bindings generator: inputs are copied
 // into linear memory, results read back, and both overwritten with zeros
-// once used, because they can hold a key's digits.
+// once used, because they can hold a key's words or digits.
 
 import { concat, fromWord, word } from "./bytes.mjs";
 
@@ -84,7 +84,40 @@ class Output {
   rest() {
     return this.take(this.bytes.length - this.at);
   }
+
+  // A salt record: 0 and zeros for none, 1 and the 16 bytes.
+  salt() {
+    const record = this.take(SALT_RECORD_BYTES);
+    if (record[0] > 1) throw new Error("the module returned an unknown salt kind");
+    return record[0] === 1 ? record.slice(1) : null;
+  }
 }
+
+// Bytes of a salt beside a leaf, and of a salt record (lib.rs).
+export const SALT_BYTES = 16;
+const SALT_RECORD_BYTES = 1 + SALT_BYTES;
+// A leaf with its note.
+export const LEAF_RECORD_BYTES = 32 + 156;
+// The commit versions: 2, salted, is what the app sends; 1 only for tests
+// that need a coin made before the salt.
+export const COMMIT_VERSION = 2;
+
+// The salt record of `salt`, a 16-byte salt or null.
+export function saltRecord(salt) {
+  const record = new Uint8Array(SALT_RECORD_BYTES);
+  if (salt == null) return record;
+  if (salt.length !== SALT_BYTES) throw new Error(`a salt is ${SALT_BYTES} bytes`);
+  record[0] = 1;
+  record.set(salt, 1);
+  return record;
+}
+
+// The key formats ghost_check_key names by their code.
+const KEY_FORMATS = new Map([
+  [0x0c, "standard"],
+  [0x18, "long"],
+  [0x20, "words"],
+]);
 
 export class Ghost {
   constructor(exports) {
@@ -115,30 +148,52 @@ export class Ghost {
 
   constants() {
     const out = new Output(this.call("ghost_constants", new Uint8Array(0)));
-    return { envelopeBytes: out.u32(), commitPayloadBytes: out.u32() };
+    return { envelopeBytes: out.u32(), commitPayloadBytes: out.u32(), commitV1PayloadBytes: out.u32() };
   }
 
+  // A new key in the default format: 24 words separated by single spaces.
   newKey(seed) {
-    const out = this.call("ghost_new_key", new Input().bytes(seed, 32).build());
-    const text = decoder.decode(out);
-    out.fill(0);
-    return text;
+    return this.text("ghost_new_key", new Input().bytes(seed, 32).build());
   }
 
+  // A typed key, words or digits, checked with its check before anything
+  // is derived: its format ("words", "standard" or "long") and the groups
+  // of its digit view (21, 12 or 24). A refusal names no word or digit.
   checkKey(text) {
-    return this.call("ghost_check_key", encoder.encode(text))[0];
+    const [code, groups] = this.call("ghost_check_key", encoder.encode(text));
+    const format = KEY_FORMATS.get(code);
+    if (!format) throw new Error("the module returned an unknown key format");
+    return { format, groups };
   }
 
-  commit({ chainId, amount, seed, key }) {
-    const input = new Input().u64(chainId).bytes(word(amount)).bytes(seed, 32).text(key).build();
+  // A key's digit view: 21 groups of four digits for a words key.
+  keyDigits(text) {
+    return this.text("ghost_key_digits", encoder.encode(text));
+  }
+
+  // The commit of a key's first coin: version 2 (206 bytes, a fresh salt
+  // from `seed`) unless a test asks for version 1 (190 bytes).
+  commit({ chainId, amount, seed, key, version = COMMIT_VERSION }) {
+    const input = new Input().u8(version).u64(chainId).bytes(word(amount)).bytes(seed, 32).text(key).build();
     const out = new Output(this.call("ghost_commit", input));
     return { commitment: out.take(32), marker: out.take(32), payload: out.rest() };
   }
 
   // `records`: leaves with their notes (188 bytes each) from position 0;
-  // `markers`: spent markers (32 bytes each).
-  restore({ chainId, key, records, markers }) {
-    const input = new Input().u64(chainId).text(key).records(records, 188).records(markers, 32).build();
+  // `salts`: the salt read beside each leaf (16 bytes, or null), one per
+  // leaf, all null when not given; `markers`: spent markers (32 bytes each).
+  // Each coin found carries its salt, null for a version 1 coin.
+  restore({ chainId, key, records, salts = null, markers }) {
+    const count = records.length / LEAF_RECORD_BYTES;
+    if (salts !== null && salts.length !== count) throw new Error("one salt (or null) is expected per leaf");
+    const saltRecords = concat(Array.from({ length: count }, (_, i) => saltRecord(salts?.[i] ?? null)));
+    const input = new Input()
+      .u64(chainId)
+      .text(key)
+      .records(records, LEAF_RECORD_BYTES)
+      .records(saltRecords, SALT_RECORD_BYTES)
+      .records(markers, 32)
+      .build();
     const out = new Output(this.call("ghost_restore", input));
     const found = [];
     for (let n = out.u32(); n > 0; n -= 1) {
@@ -149,6 +204,7 @@ export class Ghost {
         commitment: out.take(32),
         marker: out.take(32),
         spent: out.take(1)[0] === 1,
+        salt: out.salt(),
       });
     }
     return found;
@@ -178,9 +234,12 @@ export class Ghost {
     return this.call("ghost_choose_tree_state", input)[0] === 1;
   }
 
-  // kind: "partial" or "claim". `leaves`: the tree under `root`. With
-  // `decoy`, the same work for a throwaway key (lib.rs, ghost_prove).
+  // kind: "partial" or "claim". `leaves`: the tree under `root`. `salt`: the
+  // coin's salt from restore, null for a version 1 coin. With `decoy`, the
+  // same work for a throwaway key (lib.rs, ghost_prove), of a salted coin
+  // unless `salted` is false.
   prove(a) {
+    const salt = a.decoy ? (a.salted === false ? null : new Uint8Array(SALT_BYTES)) : (a.salt ?? null);
     const input = new Input()
       .u64(a.chainId)
       .bytes(a.domain, 32)
@@ -192,6 +251,7 @@ export class Ghost {
       .u64(a.number)
       .bytes(word(a.amount))
       .u32(a.position)
+      .bytes(saltRecord(salt))
       .records(a.leaves, 32)
       .bytes(a.seed, 32)
       .bytes(a.zk, 32)
@@ -222,13 +282,20 @@ export class Ghost {
     };
   }
 
-  coinCommitment(fingerprint, amount) {
-    return this.call("ghost_coin_commitment", new Input().bytes(fingerprint, 32).bytes(word(amount)).build());
+  // `C` as the node computes it from a commit's `F`, amount and version.
+  coinCommitment(fingerprint, amount, version) {
+    if (version !== 1 && version !== 2) throw new Error("the commit version is 1 or 2");
+    return this.call("ghost_coin_commitment", new Input().bytes(fingerprint, 32).bytes(word(amount)).u8(version).build());
   }
 
   // A new wallet seed's 24 words from 32 random bytes.
   walletNew(seed) {
-    const out = this.call("ghost_wallet_new", new Input().bytes(seed, 32).build());
+    return this.text("ghost_wallet_new", new Input().bytes(seed, 32).build());
+  }
+
+  // A text result, its bytes overwritten with zeros once decoded.
+  text(name, input) {
+    const out = this.call(name, input);
     const text = decoder.decode(out);
     out.fill(0);
     return text;

@@ -11,8 +11,16 @@
 //   transaction. No request names a key, a commitment, a position or a
 //   marker; the reveal itself carries only public fields;
 // - the background worker (prover.mjs), which holds the WebAssembly module
-//   and receives a key's digits or the wallet seed's words for the length of
-//   one request.
+//   and receives a key's words (or the digits of a key issued before the
+//   words) or the words of the wallet's seed for the length of one request.
+//
+// A new Phantom Key is 24 words, the client library's default: a 256-bit
+// secret, so it stays strong even against a quantum search. Its coin's
+// commit is version 2 with a fresh per-coin salt in the clear beside `F`
+// (206 bytes); the node serves that salt beside the leaf, the app hands it
+// to restore, and the reveal and the claim pass the coin's salt to the
+// prover. Keys already issued as twelve groups of digits still restore,
+// reveal and claim.
 //
 // The wallet is built in (spec 09, section 9): a 256-bit seed shown as 24
 // words, which derives a quantum-safe account key (ML-DSA-44). The commit is
@@ -50,9 +58,13 @@ export const PAGE_LEAVES = 4096;
 // block S (SETTLE_DEPTH below the tip) up to the tip, to find a leaf's block.
 export const LEAF_WINDOW = 32;
 const NOTE_BYTES = 156;
-// Groups the user re-types before a key is used, out of a key's twelve.
+const SALT_BYTES = 16;
+// The commit the app sends: version 0x0002, F, the salt and the note (the
+// node's ghostpriv.SaltedCommitDataSize).
+export const COMMIT_DATA_BYTES = 2 + 32 + SALT_BYTES + NOTE_BYTES;
+// Words the user re-types before a new key is used, out of its 24.
 export const SAVE_CHECK_GROUPS = 3;
-const KEY_GROUPS = 12;
+export const KEY_WORDS = 24;
 // Words of a wallet seed, of which the user re-types SAVE_CHECK_GROUPS.
 export const SEED_WORDS = 24;
 // The account of the seed the app uses.
@@ -177,9 +189,9 @@ export const ALONE_WARNING =
   "this coin's own block, which ties the reveal to its commit, so the app waits: this coin can be revealed " +
   `${SETTLE_DEPTH} blocks after anyone else commits one`;
 
-// Three distinct group positions (1 to 12), drawn without bias from the
+// Three distinct word positions (1 to 24), drawn without bias from the
 // secure random source and returned in order.
-export function pickGroups(random, total = KEY_GROUPS, count = SAVE_CHECK_GROUPS) {
+export function pickGroups(random, total = KEY_WORDS, count = SAVE_CHECK_GROUPS) {
   const limit = 256 - (256 % total);
   const chosen = new Set();
   while (chosen.size < count) {
@@ -192,13 +204,8 @@ export function pickGroups(random, total = KEY_GROUPS, count = SAVE_CHECK_GROUPS
   return [...chosen].sort((a, b) => a - b);
 }
 
-// The positions whose typed group does not match the key.
-export function wrongGroups(keyText, positions, answers) {
-  const groups = keyText.trim().split(/[\s-]+/);
-  return positions.filter((position, i) => String(answers[i] ?? "").replace(/[\s-]/g, "") !== groups[position - 1]);
-}
-
-// The positions whose typed word does not match the seed's, in any case.
+// The positions whose typed word does not match the key's or the seed's, in
+// any case. A word must be typed whole: a prefix or a near word is wrong.
 export function wrongWords(words, positions, answers) {
   const list = normalWords(words).split(" ");
   return positions.filter((position, i) => String(answers[i] ?? "").trim().toLowerCase() !== list[position - 1]);
@@ -207,6 +214,14 @@ export function wrongWords(words, positions, answers) {
 // Seed words as the module reads them: lower case, single spaces.
 export function normalWords(text) {
   return String(text).trim().toLowerCase().split(/\s+/).join(" ");
+}
+
+// A typed Phantom Key as the module is given it: words or digits with any
+// run of white space (a line break of a pasted key included) made one
+// space. Case, hyphens and the words themselves are left to the module's
+// parse, which checks the key's check before anything is derived.
+export function normalKey(text) {
+  return String(text).trim().split(/\s+/).join(" ");
 }
 
 // The key's state from what restore found: no coin yet, a coin to claim,
@@ -226,10 +241,13 @@ function sameCoin(a, b) {
 
 // Every leaf and note of coin tree 0 as of `anchor` (a verified header), in
 // the node's shape: the page roots as an array, then every page in order as
-// `{ kind, treeIndex, page, filled, entries: [{ leaf, note }] }`. Every page
-// but the last is full and the last holds 1 to 4,096 leaves; the page roots
-// and leaves are checked against the anchor's coin root. Anything else is
-// refused, never guessed at.
+// `{ kind, treeIndex, page, filled, entries: [{ leaf, note, salt? }] }`.
+// `salt` is the 16-byte salt a version 2 commit published beside its leaf;
+// the node leaves it out for a version 1 commit and for a reveal's
+// remainder. Every page but the last is full and the last holds 1 to 4,096
+// leaves; the page roots and leaves are checked against the anchor's coin
+// root. Anything else, a salt that is not 16 bytes of hex among it, is
+// refused, never guessed at. `salts` holds each leaf's salt or null.
 export async function fetchTree(rpc, prover, anchor) {
   const anchorHash = toHex(anchor.hash);
   const list = await rpc.call("ghost_getPageRoots", ["coin", "0x0", anchorHash]);
@@ -237,6 +255,7 @@ export async function fetchTree(rpc, prover, anchor) {
   const pageRoots = list.map((root) => fromHex(root, 32));
   const leaves = [];
   const records = [];
+  const salts = [];
   for (let p = 0; p < pageRoots.length; p += 1) {
     const page = await rpc.call("ghost_getTreePage", ["coin", "0x0", toQuantity(p), anchorHash]);
     const filled = Number(quantity(page?.filled));
@@ -248,11 +267,22 @@ export async function fetchTree(rpc, prover, anchor) {
       const leaf = fromHex(entry?.leaf, 32);
       leaves.push(leaf);
       records.push(leaf, fromHex(entry.note, NOTE_BYTES));
+      salts.push(entry.salt === undefined ? null : saltOf(entry.salt, p));
     }
   }
   const leafBytes = concat(leaves);
   await prover.request("treeCheck", { pageRoots: concat(pageRoots), leaves: leafBytes, root: anchor.coinTreeRoot });
-  return { count: leaves.length, leaves: leafBytes, records: concat(records) };
+  return { count: leaves.length, leaves: leafBytes, records: concat(records), salts };
+}
+
+// The `salt` of an entry of page `p`: 16 bytes of hex, or the page is
+// refused as malformed.
+function saltOf(hex, p) {
+  try {
+    return fromHex(hex, SALT_BYTES);
+  } catch {
+    throw new Error(`page ${p} from the endpoint is malformed: a salt is not ${SALT_BYTES} bytes`);
+  }
 }
 
 // A leaf's block, `{ height, root, count }`, as chooseTreeState is asked
@@ -640,6 +670,7 @@ export function createFlow({
       chainId: chain.chainId,
       key,
       records: tree.records,
+      salts: tree.salts,
       markers: spent,
     });
     return { chain, tree, rootHeaders, rootCounts, prefixRoots, settledAt, settledLeaves, fee, found };
@@ -828,6 +859,10 @@ export function createFlow({
       number: current.number,
       amount: current.amount,
       position: current.position,
+      // The coin's salt as restore found it (null for a version 1 coin): the
+      // prover opens the coin with it, and a salted coin's remainder is
+      // salted too.
+      salt: current.salt ?? null,
       leaves: plan.leaves,
       key,
       newKey,
@@ -836,15 +871,19 @@ export function createFlow({
 
   // The worker's input for a decoy of the same kind over the same leaves
   // (lib.rs, ghost_prove): a throwaway key's coin of the fee plus 1 wei at
-  // the last position, proved as a real reveal would be. The tree-state rule
-  // is asked once too, as it is for a coin, whenever the scan has a settled
-  // block.
+  // the last position, proved as a real reveal would be. It is salted, as a
+  // new coin is, unless the key's current coin is of version 1: the decoy
+  // mirrors the coin's version, so the work does not depend on the coin. The
+  // tree-state rule is asked once too, as it is for a coin, whenever the
+  // scan has a settled block.
   async function decoyArgs(scan, { kind, recipient }) {
     const { chain, settledLeaves } = scan;
     await askRuleForDecoy(prover, scan);
     const claim = kind === "claim";
+    const { current } = keyStatus(scan.found);
     return {
       decoy: true,
+      salted: !current || current.salt != null,
       chainId: chain.chainId,
       domain: chain.genesis.hash,
       kind: claim ? "claim" : "partial",
@@ -1177,12 +1216,37 @@ export function createFlow({
     return holder.groups;
   }
 
+  // The save check stays on the key's words, whichever view is shown.
   function requireCheck(holder, answers) {
     if (!holder || holder.stage !== "check") throw new Error("the save check has not started");
-    const wrong = wrongGroups(holder.key, holder.groups, answers);
+    const wrong = wrongWords(holder.key, holder.groups, answers);
     holder.wrong = wrong;
     emit();
     return wrong;
+  }
+
+  // Shows the key of Vanish or Claim (`holder`) as its words or as its digit
+  // view, 21 groups of four digits, which the worker writes from the words.
+  // The digits are dropped with the key.
+  async function keyView(holder, view) {
+    if (!holder || !holder.key || (holder.stage !== "shown" && holder.stage !== "check")) {
+      throw new Error("show the key first");
+    }
+    if (view !== "words" && view !== "digits") throw new Error("a key is shown as words or as digits");
+    if (view === "digits" && !holder.digits) {
+      const { digits } = await prover.request("keyDigits", { key: holder.key });
+      holder.digits = digits;
+    }
+    holder.view = view;
+    emit();
+    return view === "digits" ? holder.digits : holder.key;
+  }
+
+  // The key leaves the holder: its words and its digit view.
+  function dropKey(holder) {
+    holder.key = null;
+    holder.digits = null;
+    holder.view = "words";
   }
 
   return {
@@ -1263,25 +1327,41 @@ export function createFlow({
       emit();
     },
 
-    // Vanish, step 1: a new standard key for `amountText` GHOST, shown to
-    // the user to copy, write down or download.
+    // Vanish, step 1: a new key of 24 words for `amountText` GHOST, shown
+    // to the user to write down; copying it or downloading its image is a
+    // convenience beside that, never the only backup.
     vanishStart(amountText) {
       return run("creating a key", async () => {
         if (!walletWords) throw new Error("open a wallet first: create one, or restore it from its 24 words");
         const amount = parseGhost(amountText);
         if (amount === 0n) throw new Error("enter an amount above zero");
         const { key } = await prover.request("newKey");
-        state.vanish = { stage: "shown", key, amount, groups: null, wrong: [], txHash: null, block: null };
+        state.vanish = {
+          stage: "shown",
+          key,
+          view: "words",
+          digits: null,
+          amount,
+          groups: null,
+          wrong: [],
+          txHash: null,
+          block: null,
+        };
         return key;
       });
     },
 
-    // Vanish, step 2: the user says the key is saved; three groups to re-type.
+    // Vanish: the new key shown as its words or as its digit view.
+    vanishView(view) {
+      return keyView(state.vanish, view);
+    },
+
+    // Vanish, step 2: the user says the key is saved; three words to re-type.
     vanishSaved() {
       return saveCheckStep(state.vanish);
     },
 
-    // Vanish, step 3: the re-typed groups. Nothing is sent unless all match.
+    // Vanish, step 3: the re-typed words. Nothing is sent unless all match.
     vanishCheck(answers) {
       return run("sending the commit", async () => {
         const v = state.vanish;
@@ -1291,11 +1371,16 @@ export function createFlow({
         const chainId = quantity(await rpc.call("eth_chainId"));
         progress("building the commit");
         const sentAfter = await blockNumber();
+        // Version 2: the worker draws the coin's salt from its secure random
+        // source and the payload carries it beside F (206 bytes).
         const commit = await prover.request("commit", { chainId, amount: v.amount, key: v.key });
+        if (commit.payload.length !== COMMIT_DATA_BYTES || commit.payload[0] !== 0 || commit.payload[1] !== 2) {
+          throw new Error(`the commit is not ${COMMIT_DATA_BYTES} bytes of version 2; nothing was sent`);
+        }
         const txHash = await sendFromWallet({ chainId, to: state.commitEntry, value: v.amount, data: commit.payload });
         // The user has the key; the app no longer needs it. The node took
         // the commit: the page shows it Sent at once.
-        v.key = null;
+        dropKey(v);
         v.stage = "sent";
         v.txHash = txHash;
         emit();
@@ -1323,13 +1408,18 @@ export function createFlow({
       emit();
     },
 
-    // Summon: enter any valid standard or long key.
+    // Summon: enter any valid key: its 24 words, in any case, separated by
+    // spaces or hyphens, or its digits (21 groups for a words key, or the 12
+    // or 24 groups of a key issued before the words). The worker checks the
+    // key's check before anything is derived; a key that fails is refused
+    // with a message that names a position at most, never a word or digit.
     summonOpen(keyText) {
       return run("opening the key", async () => {
-        const key = String(keyText).trim();
-        const { groups } = await prover.request("checkKey", { key });
+        const key = normalKey(keyText);
+        const { format, groups } = await prover.request("checkKey", { key });
         state.summon = {
           key,
+          format,
           groups,
           status: "scanning",
           coins: [],
@@ -1395,22 +1485,38 @@ export function createFlow({
       });
     },
 
-    // Claim, step 1: a new key for the remaining value, to be saved first.
+    // Claim, step 1: a new key of 24 words for the remaining value, to be
+    // saved first.
     claimStart() {
       return run("creating a key", async () => {
         const s = state.summon;
         if (!s || !s.current) throw new Error("this key holds no coin to claim");
         const { key } = await prover.request("newKey");
-        s.claim = { stage: "shown", key, groups: null, wrong: [], txHash: null, block: null, amount: null };
+        s.claim = {
+          stage: "shown",
+          key,
+          view: "words",
+          digits: null,
+          groups: null,
+          wrong: [],
+          txHash: null,
+          block: null,
+          amount: null,
+        };
         return key;
       });
+    },
+
+    // Claim: the new key shown as its words or as its digit view.
+    claimView(view) {
+      return keyView(state.summon && state.summon.claim, view);
     },
 
     claimSaved() {
       return saveCheckStep(state.summon && state.summon.claim);
     },
 
-    // Claim, step 3: with the new key's groups re-typed, move the coin's
+    // Claim, step 3: with three of the new key's words re-typed, move the coin's
     // value minus the fee to the new key, and wait for its block. The old
     // key stays unclaimed until the chain shows the new key's coin.
     claimCheck(answers) {
@@ -1423,7 +1529,7 @@ export function createFlow({
         // From then on its input coin is pinned until it is Done.
         const onSent = ({ hash, remainder, coin }) => {
           s.pinned = coin;
-          c.key = null;
+          dropKey(c);
           c.stage = "sent";
           c.txHash = hash;
           c.amount = remainder.amount;

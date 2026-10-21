@@ -68,7 +68,7 @@
 
     <section id="vanish">
       <h2>Vanish</h2>
-      <p>Commit GHOST from your wallet to a new Phantom Key. The key is the only authority over the coin: save it before anything is sent. The commit's gas costs at most 0.01 GHOST; the app refuses to sign one that could cost more.</p>
+      <p>Commit GHOST from your wallet to a new Phantom Key of 24 words. The key is the only authority over the coin: write it down before anything is sent. Each coin's commit carries its own random salt, and the 24 words hold a 256-bit secret, so the key stays strong even against a quantum computer. A Phantom Key is not your wallet's words: keep the two apart. The commit's gas costs at most 0.01 GHOST; the app refuses to sign one that could cost more.</p>
       <form id="vanish-form">
         <label>Amount (GHOST)
           <input id="vanish-amount" type="text" inputmode="decimal" autocomplete="off">
@@ -76,17 +76,18 @@
         <button type="submit">Create a key</button>
       </form>
       <div id="vanish-key" class="key-panel" hidden>
-        <p>Your Phantom Key. Copy it, write it down or download it as an image. It is shown here only; the app never stores it.</p>
+        <p>Your Phantom Key: 24 words. Write them down in order. Copying the key or downloading it as an image is a convenience, not a backup on its own. The same key can be shown as 21 groups of digits. It is shown here only; the app never stores it.</p>
         <p id="vanish-key-text" class="secret blurred"></p>
         <p>
           <button id="vanish-show" type="button">Show</button>
+          <button id="vanish-digits" type="button">Show as digits</button>
           <button id="vanish-copy" type="button">Copy</button>
           <button id="vanish-download" type="button">Download image</button>
-          <button id="vanish-saved" type="button">I have saved it</button>
+          <button id="vanish-saved" type="button">I have written it down</button>
         </p>
       </div>
       <form id="vanish-check" class="check" hidden>
-        <p>Save check: type these groups of your key. The commit is sent only when all three match.</p>
+        <p>Save check: type these words of your key. The commit is sent only when all three match.</p>
         <div id="vanish-check-groups" class="groups"></div>
         <button type="submit">Send the commit</button>
       </form>
@@ -96,9 +97,9 @@
 
     <section id="summon">
       <h2>Summon</h2>
-      <p>Enter a Phantom Key to see its coin, reveal any available amount to any address, or claim it to a new key.</p>
+      <p>Enter a Phantom Key to see its coin, reveal any available amount to any address, or claim it to a new key. Type its 24 words, in any case, separated by spaces or hyphens, or its digits. Keys issued earlier as 12 groups of digits still open. A key whose check fails is refused before anything is derived from it; a wrong word is named by its position, never corrected.</p>
       <form id="summon-form">
-        <label>Phantom Key
+        <label>Phantom Key (24 words, or digits)
           <textarea id="summon-key" rows="2" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
         </label>
         <button type="submit">Open</button>
@@ -125,17 +126,18 @@
           <p>Move the remaining value, minus the fee, to a new key. The claim shows Sent as soon as the node takes it and Done at the first block that holds it; from that block on the received key shows claimed. If the chain is later reorganised and drops that block, Refresh says so and you can claim again. Confirmation comes only from blocks this page checked itself, proof-of-work seal and difficulty included.</p>
           <button id="claim-start" type="button">Claim to a new key</button>
           <div id="claim-key" class="key-panel" hidden>
-            <p>Your new Phantom Key. Save it: after the claim it is the only authority over the coin.</p>
+            <p>Your new Phantom Key: 24 words. Write them down in order: after the claim it is the only authority over the coin. Copying it or downloading it as an image is a convenience, not a backup on its own.</p>
             <p id="claim-key-text" class="secret blurred"></p>
             <p>
               <button id="claim-show" type="button">Show</button>
+              <button id="claim-digits" type="button">Show as digits</button>
               <button id="claim-copy" type="button">Copy</button>
               <button id="claim-download" type="button">Download image</button>
-              <button id="claim-saved" type="button">I have saved it</button>
+              <button id="claim-saved" type="button">I have written it down</button>
             </p>
           </div>
           <form id="claim-check" class="check" hidden>
-            <p>Save check: type these groups of the new key. The claim is sent only when all three match.</p>
+            <p>Save check: type these words of the new key. The claim is sent only when all three match.</p>
             <div id="claim-check-groups" class="groups"></div>
             <button type="submit">Send the claim</button>
           </form>

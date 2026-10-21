@@ -16,7 +16,14 @@
 //!   (spec 05, section 8): page roots, the tree root, the roots of every
 //!   prefix of the leaves and the witness of one position, so no endpoint is
 //!   ever asked for a path;
-//! - the commit payload sent to the commit entry address;
+//! - new Phantom Keys in the client library's default format, 24 words, and
+//!   the digit view of a key (21 groups for a words key); a typed key, words
+//!   or digits, is read only by `PhantomKey::parse`, so its check is verified
+//!   before anything is derived from it;
+//! - the commit payload sent to the commit entry address: version 2, with a
+//!   fresh per-coin salt in the clear beside `F` (206 bytes); version 1 (190
+//!   bytes) only for the tests that need a coin made before the salt;
+//! - restore and the reveal over the salt the node serves beside each leaf;
 //! - the private transaction envelope of spec 07, section 3, and its
 //!   decoding and verification, which the test's stand-in node uses;
 //! - the built-in wallet (spec 09, section 9): a new seed as 24 words, the
@@ -32,7 +39,7 @@
 //! # Secrets
 //!
 //! Nothing here is stored: a key or a wallet seed exists in memory only
-//! during the call that received its digits or words, and the result buffer is overwritten with zeros
+//! during the call that received its words or digits, and the result buffer is overwritten with zeros
 //! before it is replaced and when [`ghost_clear`] is called. Random bytes
 //! come from the caller (`crypto.getRandomValues` in the worker), as a seed
 //! for the generator the proofs crate already uses; its state is not wiped.
@@ -52,11 +59,13 @@ use ghost_client::header_chain::{
 use ghost_client::seal::header_fields;
 use ghost_client::reveal::{ChainParams, CoinReveal, Proof, TREE_DEPTH};
 use ghost_client::{
-    Amount, Commitment, HeaderRoot, KeyFormat, Marker, NOTE_BYTES, NoteContents, OwnedCoin, PhantomKey,
-    RevealTerms, Rule, TreeLeaf, TreeStateChoice, choose_tree_state, claim_to_new_key, encrypt_note,
-    partial_reveal, restore_coins,
+    Amount, Commitment, HeaderRoot, Marker, NOTE_BYTES, NoteContents, OwnedCoin, PhantomKey, RevealTerms, Rule,
+    SALT_BYTES, SALTED_COMMIT_DATA_BYTES, SALTED_COMMIT_FORMAT_VERSION, Salt, TreeLeaf, TreeStateChoice,
+    choose_tree_state, claim_to_new_key, encrypt_note, partial_reveal, restore_coins, salted_commit_data,
 };
-use ghost_proofs::{PROTOCOL_VERSION_1, Tree, empty_leaf, keccak256, tree_node, verify_coin_reveal};
+use ghost_proofs::{
+    PROTOCOL_VERSION_1, Tree, empty_leaf, keccak256, tree_node, verify_coin_reveal, verify_salted_coin_reveal,
+};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
@@ -74,13 +83,23 @@ const HEAD_BYTES: usize = 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32;
 /// Length of the envelope: the type byte and the payload.
 pub const ENVELOPE_BYTES: usize = 1 + HEAD_BYTES + PROOF_FIELD_BYTES + NOTE_BYTES;
 
-/// Commit format version, the first two bytes of a commit payload: the
+/// Format version of a version 1 commit payload, made before the salt: the
 /// transaction version (spec 07, section 2).
 pub const COMMIT_FORMAT_VERSION: [u8; 2] = TX_VERSION;
-/// A commit payload: the version, the fingerprint `F` and the note, 190
-/// bytes (spec 07; the node's `ghostpriv.CommitData`).
+/// A version 1 commit payload: the version, the fingerprint `F` and the
+/// note, 190 bytes (the node's `ghostpriv.CommitDataSize`). The node still
+/// takes it; the app sends only version 2.
 pub const COMMIT_PAYLOAD_BYTES: usize = COMMIT_FORMAT_VERSION.len() + 32 + NOTE_BYTES;
 const _: () = assert!(COMMIT_PAYLOAD_BYTES == 190);
+/// A version 2 commit payload, the one the app sends: the version `0x0002`,
+/// `F`, the coin's salt and the note, 206 bytes (the node's
+/// `ghostpriv.SaltedCommitDataSize`).
+pub const SALTED_COMMIT_PAYLOAD_BYTES: usize = SALTED_COMMIT_DATA_BYTES;
+const _: () = assert!(SALTED_COMMIT_PAYLOAD_BYTES == 206);
+const _: () = assert!(SALTED_COMMIT_FORMAT_VERSION[1] == 2);
+/// A salt beside a leaf, as an input carries it: 1 if the leaf has one, else
+/// 0, then the 16 bytes (zero when there is none).
+const SALT_RECORD_BYTES: usize = 1 + SALT_BYTES;
 
 /// Leaves per page of wallet tree data (spec 05, section 8).
 const PAGE_LEAVES: usize = 4096;
@@ -207,6 +226,41 @@ fn key(text: &str) -> Result<PhantomKey, String> {
 
 fn rng(seed: [u8; 32]) -> StdRng {
     StdRng::from_seed(seed)
+}
+
+/// A salt record: 0 and 16 zero bytes for none, 1 and the salt.
+fn salt_of(record: &[u8; SALT_RECORD_BYTES]) -> Result<Option<Salt>, String> {
+    match record[0] {
+        0 => Ok(None),
+        1 => Ok(Some(Salt::from_bytes(record[1..].try_into().expect("16 bytes")))),
+        _ => Err(String::from("unknown salt kind")),
+    }
+}
+
+/// Writes a salt as a salt record.
+fn push_salt(out: &mut Vec<u8>, salt: Option<&Salt>) {
+    match salt {
+        Some(salt) => {
+            out.push(1);
+            out.extend_from_slice(salt.as_bytes());
+        }
+        None => out.extend_from_slice(&[0u8; SALT_RECORD_BYTES]),
+    }
+}
+
+/// Verifies a reveal's proof as the node does: as salted first, then as
+/// version 1 (the node's ghostverifier).
+fn verify_any(params: &ChainParams, reveal: &CoinReveal, proof: &Proof) -> Result<(), ghost_proofs::ProofError> {
+    verify_salted_coin_reveal(params, reveal, proof).or_else(|_| verify_coin_reveal(params, reveal, proof))
+}
+
+/// Verifies a reveal the worker made, under the version of its input coin.
+fn verify_made(params: &ChainParams, made: &ghost_client::BuiltReveal) -> Result<(), ghost_proofs::ProofError> {
+    if made.remainder.salt.is_some() {
+        verify_salted_coin_reveal(params, &made.reveal, &made.proof)
+    } else {
+        verify_coin_reveal(params, &made.reveal, &made.proof)
+    }
 }
 
 /// `Z_0` to `Z_32`: the empty subtree of each height in the coin tree.
@@ -357,33 +411,53 @@ pub extern "C" fn ghost_error_len() -> usize {
     unsafe { ERROR.len() }
 }
 
-/// A new standard key. Input: a 32-byte seed. Output: the key as twelve
-/// groups of four digits separated by spaces.
+/// A new key in the client library's default format, 24 words. Input: a
+/// 32-byte seed. Output: the 24 words separated by single spaces.
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_new_key(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
         let mut rng = rng(input.array()?);
-        let key = PhantomKey::generate(KeyFormat::Standard, &mut rng);
-        Ok(key.format_groups().as_str().as_bytes().to_vec())
+        let key = PhantomKey::generate_default(&mut rng);
+        let words = key.format_words().ok_or_else(|| String::from("the new key has no words"))?;
+        Ok(words.as_str().as_bytes().to_vec())
     })
 }
 
-/// Checks typed digits. Input: the text. Output: the number of groups (12
-/// or 24) as one byte.
+/// Checks a typed key, words or digits, with its check. Input: the text.
+/// Output: the format code (1: `0x0C` twelve groups, `0x18` twenty-four,
+/// `0x20` words) and the number of groups of its digit view (1: 12, 24 or
+/// 21).
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_check_key(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
         let text = core::str::from_utf8(input.rest()).map_err(|_| String::from("the text is not UTF-8"))?;
-        Ok(vec![key(text)?.key_format().groups() as u8])
+        let format = key(text)?.key_format();
+        Ok(vec![format.code(), format.groups() as u8])
     })
 }
 
-/// The commit of a key's first coin. Input: chain identifier (8), amount word
-/// (32), seed (32), key text. Output: `C` (32), marker (32), then the commit
-/// payload: format version (2), `F` and the note of number 0.
+/// A key's digit view: groups of four digits separated by single spaces, 21
+/// for a words key, 12 or 24 for a digit key. Input: the key text, words or
+/// digits. Output: the groups.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_key_digits(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let text = core::str::from_utf8(input.rest()).map_err(|_| String::from("the text is not UTF-8"))?;
+        Ok(key(text)?.format_groups().as_str().as_bytes().to_vec())
+    })
+}
+
+/// The commit of a key's first coin. Input: commit version (1: 2 for the
+/// app, 1 only for a test that needs a coin made before the salt), chain
+/// identifier (8), amount word (32), seed (32), key text. Output: `C` (32),
+/// marker (32), then the commit payload. Version 2: `0x0002`, `F`, a fresh
+/// salt drawn from the seed's generator and the note of number 0, which
+/// carries that salt (206 bytes). Version 1: `0x0001`, `F` and the note (190
+/// bytes).
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_commit(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
+        let version = input.u8()?;
         let chain_id = input.u64()?;
         let value = amount(input.array()?)?;
         let mut rng = rng(input.array()?);
@@ -391,43 +465,68 @@ pub extern "C" fn ghost_commit(ptr: *const u8, len: usize) -> u32 {
         if value.wei() == 0 {
             return Err(String::from("a commit holds at least 1 wei"));
         }
-        let commit = key.coin_commit(0, value, Rule::EMPTY).map_err(|e| e.to_string())?;
-        let note = encrypt_note(
-            &key.note_key(),
-            chain_id,
-            &commit.commitment,
-            &NoteContents::coin(0, value, Rule::EMPTY),
-            &mut rng,
-        );
-        let mut out = Vec::with_capacity(64 + COMMIT_PAYLOAD_BYTES);
-        out.extend_from_slice(commit.commitment.as_bytes());
-        out.extend_from_slice(commit.marker.as_bytes());
-        out.extend_from_slice(&COMMIT_FORMAT_VERSION);
-        out.extend_from_slice(commit.fingerprint.as_bytes());
-        out.extend_from_slice(&note);
+        let mut out = Vec::with_capacity(64 + SALTED_COMMIT_PAYLOAD_BYTES);
+        match version {
+            2 => {
+                let commit = key.salted_coin_commit(0, value, Rule::EMPTY, &mut rng).map_err(|e| e.to_string())?;
+                let salt = commit.salt.ok_or_else(|| String::from("the commit has no salt"))?;
+                let note = encrypt_note(
+                    &key.note_key(),
+                    chain_id,
+                    &commit.commitment,
+                    &NoteContents::salted_coin(0, value, Rule::EMPTY, salt),
+                    &mut rng,
+                );
+                out.extend_from_slice(commit.commitment.as_bytes());
+                out.extend_from_slice(commit.marker.as_bytes());
+                out.extend_from_slice(&salted_commit_data(&commit.fingerprint, &salt, &note));
+            }
+            1 => {
+                let commit = key.coin_commit(0, value, Rule::EMPTY).map_err(|e| e.to_string())?;
+                let note = encrypt_note(
+                    &key.note_key(),
+                    chain_id,
+                    &commit.commitment,
+                    &NoteContents::coin(0, value, Rule::EMPTY),
+                    &mut rng,
+                );
+                out.extend_from_slice(commit.commitment.as_bytes());
+                out.extend_from_slice(commit.marker.as_bytes());
+                out.extend_from_slice(&COMMIT_FORMAT_VERSION);
+                out.extend_from_slice(commit.fingerprint.as_bytes());
+                out.extend_from_slice(&note);
+            }
+            _ => return Err(String::from("unknown commit version")),
+        }
         Ok(out)
     })
 }
 
 /// Restores a key's coins. Input: chain identifier (8), key text, leaf count
 /// (4) and that many leaves with their notes (32 + 156 each, from position
-/// 0), marker count (4) and that many spent markers (32 each). Output: the
-/// number found (4), then per coin: number (8), amount word (32), position
-/// (4), `C` (32), marker (32), spent (1).
+/// 0), salt count (4, the leaf count) and the salt read beside each leaf (1 +
+/// 16 each: 0 and zeros for a leaf served without one), marker count (4) and
+/// that many spent markers (32 each). Output: the number found (4), then per
+/// coin: number (8), amount word (32), position (4), `C` (32), marker (32),
+/// spent (1), its salt (1 + 16: 0 and zeros for a version 1 coin).
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_restore(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
         let chain_id = input.u64()?;
         let key = key(input.text()?)?;
-        let leaves: Vec<TreeLeaf> = input
-            .records::<LEAF_RECORD_BYTES>()?
-            .iter()
-            .map(|record| TreeLeaf {
+        let records = input.records::<LEAF_RECORD_BYTES>()?;
+        let salts = input.records::<SALT_RECORD_BYTES>()?;
+        if salts.len() != records.len() {
+            return Err(String::from("the salts do not match the leaves one for one"));
+        }
+        let mut leaves = Vec::with_capacity(records.len());
+        for (record, salt) in records.iter().zip(&salts) {
+            leaves.push(TreeLeaf {
                 commitment: Commitment::from_bytes(record[..32].try_into().expect("32 bytes")),
                 note: record[32..].try_into().expect("note bytes"),
-                salt: None,
-            })
-            .collect();
+                salt: salt_of(salt)?,
+            });
+        }
         let spent: Vec<Marker> = input.records::<32>()?.into_iter().map(Marker::from_bytes).collect();
         let restored = restore_coins(&key, chain_id, &leaves, &spent);
         let mut out = Vec::new();
@@ -439,6 +538,7 @@ pub extern "C" fn ghost_restore(ptr: *const u8, len: usize) -> u32 {
             out.extend_from_slice(coin.commitment.as_bytes());
             out.extend_from_slice(coin.marker.as_bytes());
             out.push(u8::from(spent.contains(&coin.marker)));
+            push_salt(&mut out, coin.salt.as_ref());
         }
         Ok(out)
     })
@@ -528,15 +628,21 @@ pub extern "C" fn ghost_choose_tree_state(ptr: *const u8, len: usize) -> u32 {
 ///
 /// Input: chain identifier (8), domain (32), kind (1: 0 partial, 1 claim,
 /// 2 decoy partial, 3 decoy claim), root (32), recipient (20), amount out
-/// (32), fee (32), the coin's number (8), amount word (32) and position (4),
-/// the leaves of the tree under the root (count, 32 each), seed (32),
+/// (32), fee (32), the coin's number (8), amount word (32), position (4) and
+/// salt (1 + 16: 1 and the salt for a salted coin, 0 and zeros for version
+/// 1), the leaves of the tree under the root (count, 32 each), seed (32),
 /// zero-knowledge randomness (32), the key text, then for a claim the new
 /// key's text.
+///
+/// A salted coin is proved as salted and its remainder is salted under a
+/// fresh salt (the client library does both); a version 1 coin as before.
 ///
 /// A decoy does the same work for a key and a new key made from the seed:
 /// its coin replaces the leaf at the position (the last one, from the
 /// caller), the root is that tree's, and the given root and key texts are
-/// not used. The app proves a decoy when it has no coin to prove, so the
+/// not used. Its coin is of the version the salt field gives, under a salt
+/// drawn from the seed when salted, so the work mirrors the coin's. The app
+/// proves a decoy when it has no coin to prove, so the
 /// time before its next request does not depend on whether it found one.
 /// A real reveal refused before its proof (its coin not under the root, a
 /// key that does not parse, amounts that do not balance) proves a decoy too
@@ -561,6 +667,7 @@ pub extern "C" fn ghost_prove(ptr: *const u8, len: usize) -> u32 {
         let number = input.u64()?;
         let value = amount(input.array()?)?;
         let position = input.u32()?;
+        let salt = salt_of(&input.array()?)?;
         let mut leaves = input.records::<32>()?;
         let mut rng = rng(input.array()?);
         let zk: [u8; 32] = input.array()?;
@@ -575,7 +682,7 @@ pub extern "C" fn ghost_prove(ptr: *const u8, len: usize) -> u32 {
         let mut refused = None;
         let mut built = None;
         if !decoy {
-            match real_coin(key_text, new_key_text, number, value, position, &leaves, &terms, &z) {
+            match real_coin(key_text, new_key_text, number, value, position, salt, &leaves, &terms, &z) {
                 Ok((key, new_key, coin)) => match prove_coin(&params, &key, &coin, new_key.as_ref(), &terms, out, &mut rng, zk) {
                     Ok(made) => built = Some(made),
                     Err(e) => refused = Some(e),
@@ -597,14 +704,15 @@ pub extern "C" fn ghost_prove(ptr: *const u8, len: usize) -> u32 {
                 };
                 let made = Amount::new(value).and_then(|value| Ok((value, Amount::new(out)?))).map_err(|e| e.to_string()).and_then(
                     |(value, out)| {
+                        let salted = salt.is_some();
                         let (key, new_key, coin) =
-                            decoy_coin(claim, number, value, position, &mut leaves, &mut terms, &mut rng, &z)?;
+                            decoy_coin(claim, number, value, position, salted, &mut leaves, &mut terms, &mut rng, &z)?;
                         prove_coin(&params, &key, &coin, new_key.as_ref(), &terms, out, &mut rng, zk)
                     },
                 );
                 if let Some(refusal) = refused {
                     if let Ok(made) = made {
-                        let _ = verify_coin_reveal(&params, &made.reveal, &made.proof);
+                        let _ = verify_made(&params, &made);
                         let _ = encode_envelope(chain_id, &made.reveal, &made.proof);
                     }
                     return Err(refusal);
@@ -612,8 +720,7 @@ pub extern "C" fn ghost_prove(ptr: *const u8, len: usize) -> u32 {
                 made?
             }
         };
-        verify_coin_reveal(&params, &built.reveal, &built.proof)
-            .map_err(|e| format!("the proof did not verify in the worker: {e}"))?;
+        verify_made(&params, &built).map_err(|e| format!("the proof did not verify in the worker: {e}"))?;
         let envelope = encode_envelope(chain_id, &built.reveal, &built.proof)?;
 
         let mut result = Vec::with_capacity(136 + envelope.len());
@@ -636,6 +743,7 @@ fn real_coin(
     number: u64,
     value: Amount,
     position: u32,
+    salt: Option<Salt>,
     leaves: &[[u8; 32]],
     terms: &RevealTerms,
     z: &[[u8; 32]],
@@ -646,23 +754,28 @@ fn real_coin(
     if index >= leaves.len() {
         return Err(String::from("the coin is not in the tree under the chosen root"));
     }
-    let commit = key.coin_commit(number, value, Rule::EMPTY).map_err(|e| e.to_string())?;
+    let commit = match salt {
+        Some(salt) => key.coin_commit_with_salt(number, value, Rule::EMPTY, salt),
+        None => key.coin_commit(number, value, Rule::EMPTY),
+    }
+    .map_err(|e| e.to_string())?;
     if &leaves[index] != commit.commitment.as_bytes() || tree_root(leaves, z) != terms.root {
         return Err(String::from("the coin is not in the tree under the chosen root"));
     }
-    let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, salt: None, position, path: witness(leaves, index, z) };
+    let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, salt, position, path: witness(leaves, index, z) };
     Ok((key, new_key, coin))
 }
 
-/// A decoy's throwaway key (and new key for a claim) and coin: the coin
-/// replaces the leaf at `position` (or the last), and `terms.root` becomes
-/// that tree's root.
+/// A decoy's throwaway key (and new key for a claim) and coin, salted under a
+/// salt drawn from `rng` when `salted`: the coin replaces the leaf at
+/// `position` (or the last), and `terms.root` becomes that tree's root.
 #[allow(clippy::too_many_arguments)]
 fn decoy_coin(
     claim: bool,
     number: u64,
     value: Amount,
     position: u32,
+    salted: bool,
     leaves: &mut Vec<[u8; 32]>,
     terms: &mut RevealTerms,
     rng: &mut StdRng,
@@ -671,14 +784,20 @@ fn decoy_coin(
     if leaves.is_empty() {
         leaves.push(z[0]);
     }
-    let key = PhantomKey::generate(KeyFormat::Standard, rng);
-    let new_key = claim.then(|| PhantomKey::generate(KeyFormat::Standard, rng));
+    let key = PhantomKey::generate_default(rng);
+    let new_key = claim.then(|| PhantomKey::generate_default(rng));
     let index = (position as usize).min(leaves.len() - 1);
-    let commit = key.coin_commit(number, value, Rule::EMPTY).map_err(|e| e.to_string())?;
+    let commit = if salted {
+        key.salted_coin_commit(number, value, Rule::EMPTY, rng)
+    } else {
+        key.coin_commit(number, value, Rule::EMPTY)
+    }
+    .map_err(|e| e.to_string())?;
     leaves[index] = *commit.commitment.as_bytes();
     terms.root = tree_root(leaves, z);
     let position = index as u32;
-    let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, salt: None, position, path: witness(leaves, index, z) };
+    let salt = commit.salt;
+    let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, salt, position, path: witness(leaves, index, z) };
     Ok((key, new_key, coin))
 }
 
@@ -706,7 +825,8 @@ fn key_for_claim(text: &str) -> Result<PhantomKey, String> {
 }
 
 /// Decodes a private transaction envelope and verifies its proof, as a node
-/// would at decoding (spec 07, section 3) and step 9 of admission. Input:
+/// would at decoding (spec 07, section 3) and step 9 of admission: as a
+/// salted reveal first, then as version 1. Input:
 /// chain identifier (8), domain (32), the envelope. Output: transaction hash
 /// (32), marker (32), root (32), remainder (32), recipient (20), amount out
 /// (32), fee (32), note (156).
@@ -738,7 +858,7 @@ pub extern "C" fn ghost_decode_envelope(ptr: *const u8, len: usize) -> u32 {
         let remainder_note = tx.array()?;
         tx.end()?;
         let reveal = CoinReveal { root, marker, remainder, remainder_note, recipient, out, fee, rule: [0; 32] };
-        verify_coin_reveal(&params, &reveal, &proof).map_err(|e| format!("the proof does not verify: {e}"))?;
+        verify_any(&params, &reveal, &proof).map_err(|e| format!("the proof does not verify: {e}"))?;
         let mut result = keccak256(envelope).to_vec();
         for field in [&marker[..], &root, &remainder, &recipient, &out, &fee, &remainder_note] {
             result.extend_from_slice(field);
@@ -747,14 +867,19 @@ pub extern "C" fn ghost_decode_envelope(ptr: *const u8, len: usize) -> u32 {
     })
 }
 
-/// The commitment the node computes from a commit: `C = K(tag, COIN, F, v)`.
-/// Input: `F` (32), amount word (32). Output: `C` (32).
+/// The commitment the node computes from a commit: `C = K(tag, COIN, F, v)`
+/// for version 1, `K(tag, COIN_V2, F, v)` for version 2. Input: `F` (32),
+/// amount word (32), the commit's version (1). Output: `C` (32).
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_coin_commitment(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
         let fingerprint = input.array()?;
-        let value = amount(input.array()?)?;
-        Ok(ghost_proofs::coin_commitment(&fingerprint, &value.to_bytes()).to_vec())
+        let value = amount(input.array()?)?.to_bytes();
+        match input.u8()? {
+            1 => Ok(ghost_proofs::coin_commitment(&fingerprint, &value).to_vec()),
+            2 => Ok(ghost_proofs::coin_commitment_v2(&fingerprint, &value).to_vec()),
+            _ => Err(String::from("unknown commit version")),
+        }
     })
 }
 
@@ -765,11 +890,13 @@ pub extern "C" fn ghost_keccak256(ptr: *const u8, len: usize) -> u32 {
 }
 
 /// Constants the JavaScript side checks it agrees with: the envelope length
-/// (4) and the commit payload length (4).
+/// (4), the commit payload length the app sends (4, version 2) and that of
+/// version 1 (4).
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_constants(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |_| {
         let mut out = (ENVELOPE_BYTES as u32).to_be_bytes().to_vec();
+        out.extend_from_slice(&(SALTED_COMMIT_PAYLOAD_BYTES as u32).to_be_bytes());
         out.extend_from_slice(&(COMMIT_PAYLOAD_BYTES as u32).to_be_bytes());
         Ok(out)
     })

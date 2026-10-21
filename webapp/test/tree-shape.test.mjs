@@ -1,7 +1,8 @@
 // The app reads the coin tree in the node's shape (ghost-node
 // docs/trees-and-headers.md, "Wallet tree pages"): `ghost_getPageRoots`
 // answers a plain array of page roots, and `ghost_getTreePage` a page as
-// `{ kind, treeIndex, page, filled, entries: [{ leaf, note }] }`. fetchTree
+// `{ kind, treeIndex, page, filled, entries: [{ leaf, note, salt? }] }`,
+// `salt` only beside a version 2 commit's leaf. fetchTree
 // is fed that JSON exactly, with the real tree check of the built module,
 // and refuses anything else.
 
@@ -63,6 +64,7 @@ test("fetchTree reads the node's page roots and page into the right leaves and n
   assert.equal(tree.count, 2);
   assert.equal(toHex(tree.leaves), toHex(concat([fromHex(LEAF_A), fromHex(LEAF_B)])));
   assert.equal(toHex(tree.records), toHex(concat([LEAF_A, NOTE_A, LEAF_B, NOTE_B].map((h) => fromHex(h)))));
+  assert.deepEqual(tree.salts, [null, null], "no salt served, none read");
   assert.deepEqual(rpc.calls, [
     { method: "ghost_getPageRoots", params: ["coin", "0x0", ANCHOR_HASH] },
     { method: "ghost_getTreePage", params: ["coin", "0x0", "0x0", ANCHOR_HASH] },
@@ -126,6 +128,23 @@ test("fetchTree refuses a page not in the node's shape", async () => {
   await assert.rejects(fetchTree(endpoint(docsPageRoots(), [short]), prover, anchor()), /expected 156 bytes/);
   const noLeaf = { ...docsPage(), entries: [entries[0], { note: NOTE_B }] };
   await assert.rejects(fetchTree(endpoint(docsPageRoots(), [noLeaf]), prover, anchor()), /expected hex bytes/);
+});
+
+test("fetchTree reads the optional salt beside a leaf and refuses one that is not 16 bytes", async () => {
+  const SALT = `0x${"c3".repeat(16)}`;
+  const page = docsPage();
+  page.entries[1] = { ...page.entries[1], salt: SALT };
+  const tree = await fetchTree(endpoint(docsPageRoots(), [page]), prover, anchor());
+  // A version 1 leaf (or a remainder) has none; a version 2 commit's leaf
+  // has its salt. The records stay leaf and note, 188 bytes each.
+  assert.deepEqual(tree.salts.map((s) => (s === null ? null : toHex(s))), [null, SALT]);
+  assert.equal(tree.records.length, 2 * 188);
+  assert.equal(toHex(tree.records), toHex(concat([LEAF_A, NOTE_A, LEAF_B, NOTE_B].map((h) => fromHex(h)))));
+  for (const salt of [SALT.slice(0, -2), `${SALT}00`, "0xzz", null, 16, ""]) {
+    const bad = docsPage();
+    bad.entries[0] = { ...bad.entries[0], salt };
+    await assert.rejects(fetchTree(endpoint(docsPageRoots(), [bad]), prover, anchor()), /page 0 from the endpoint is malformed/, String(salt));
+  }
 });
 
 test("fetchTree checks the page roots and leaves against the anchor's coin root", async () => {

@@ -10,7 +10,8 @@ import { loadModule } from "./support/env.mjs";
 
 const ghost = await loadModule();
 
-// Spec 01, vector coin-commit.
+// Spec 01, vector coin-commit: a key of twelve digit groups, issued before
+// the words, and its version 1 coin.
 const VECTOR_KEY = "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417";
 const LEAF_A = "562d92a92bb8f2b3b772b55220a5ee26f189bedc0f4bfa513205df1545029458";
 const LEAF_B = "93312061656298f41cd5a9f116d070b38b0acf5f8d968c58e32170f70e7aed15";
@@ -78,20 +79,35 @@ test("the tree check accepts matching data and refuses a changed leaf or root", 
   assert.throws(() => ghost.treeCheck({ pageRoots: new Uint8Array(0), leaves: two, root }), /do not fill/);
 });
 
-test("the commit matches spec 01, vector coin-commit", () => {
-  const commit = ghost.commit({ chainId: 7n, amount: 10n ** 18n, seed: new Uint8Array(32).fill(9), key: VECTOR_KEY });
+test("a version 1 commit still matches spec 01, vector coin-commit", () => {
+  const commit = ghost.commit({ version: 1, chainId: 7n, amount: 10n ** 18n, seed: new Uint8Array(32).fill(9), key: VECTOR_KEY });
   assert.equal(toHex(commit.commitment), `0x${LEAF_A}`);
   assert.equal(toHex(commit.marker), "0x671b869daf27c895e24a009e3d471e893e8e6ffe62f0309b4e5402c94c47ec85");
-  assert.equal(commit.payload.length, ghost.constants().commitPayloadBytes);
+  assert.equal(commit.payload.length, ghost.constants().commitV1PayloadBytes);
   assert.equal(commit.payload.length, 190);
   assert.equal(toHex(commit.payload.slice(0, 2)), "0x0001");
   assert.equal(toHex(commit.payload.slice(2, 34)), "0xb44338ab6f6dcb3d63772c457737afd38a841207725e1440d235c4f6be0c4d8b");
-  assert.equal(toHex(ghost.coinCommitment(commit.payload.slice(2, 34), 10n ** 18n)), `0x${LEAF_A}`);
+  assert.equal(toHex(ghost.coinCommitment(commit.payload.slice(2, 34), 10n ** 18n, 1)), `0x${LEAF_A}`);
+  assert.throws(() => ghost.commit({ version: 3, chainId: 7n, amount: 1n, seed: new Uint8Array(32), key: VECTOR_KEY }), /unknown commit version/);
+});
+
+test("a commit is version 2 by default, its salt fresh each time", () => {
+  const seed = () => crypto.getRandomValues(new Uint8Array(32));
+  const a = ghost.commit({ chainId: 7n, amount: 10n ** 18n, seed: seed(), key: VECTOR_KEY });
+  const b = ghost.commit({ chainId: 7n, amount: 10n ** 18n, seed: seed(), key: VECTOR_KEY });
+  assert.equal(a.payload.length, ghost.constants().commitPayloadBytes);
+  assert.equal(a.payload.length, 206);
+  assert.equal(toHex(a.payload.slice(0, 2)), "0x0002");
+  assert.notEqual(toHex(a.payload.slice(34, 50)), toHex(b.payload.slice(34, 50)), "a fresh salt");
+  assert.notEqual(toHex(a.commitment), toHex(b.commitment), "so a fresh commitment from the same key");
+  assert.notEqual(toHex(a.marker), toHex(b.marker));
+  assert.equal(toHex(ghost.coinCommitment(a.payload.slice(2, 34), 10n ** 18n, 2)), toHex(a.commitment));
+  assert.notEqual(toHex(ghost.coinCommitment(a.payload.slice(2, 34), 10n ** 18n, 1)), toHex(a.commitment));
 });
 
 test("restore finds the committed coin from its note and passes over others", () => {
   const chainId = 7n;
-  const commit = ghost.commit({ chainId, amount: 10n ** 18n, seed: crypto.getRandomValues(new Uint8Array(32)), key: VECTOR_KEY });
+  const commit = ghost.commit({ version: 1, chainId, amount: 10n ** 18n, seed: crypto.getRandomValues(new Uint8Array(32)), key: VECTOR_KEY });
   const stranger = new Uint8Array(188).fill(3);
   const records = new Uint8Array([...stranger, ...commit.commitment, ...commit.payload.slice(34)]);
   let found = ghost.restore({ chainId, key: VECTOR_KEY, records, markers: new Uint8Array(0) });
@@ -99,21 +115,29 @@ test("restore finds the committed coin from its note and passes over others", ()
   assert.equal(found[0].position, 1);
   assert.equal(found[0].amount, 10n ** 18n);
   assert.equal(found[0].spent, false);
+  assert.equal(found[0].salt, null, "a version 1 coin has no salt");
   found = ghost.restore({ chainId, key: VECTOR_KEY, records, markers: commit.marker });
   assert.equal(found[0].spent, true);
   // Another chain's note does not open.
   assert.equal(ghost.restore({ chainId: 8n, key: VECTOR_KEY, records, markers: new Uint8Array(0) }).length, 0);
+  // One salt (or none) per leaf.
+  assert.throws(() => ghost.restore({ chainId, key: VECTOR_KEY, records, salts: [null], markers: new Uint8Array(0) }), /one salt/);
 });
 
-test("keys: new keys are standard, typed keys are checked, errors hold no digit", () => {
+test("keys: new keys are 24 words, typed keys are checked, errors hold no word or digit", () => {
   const key = ghost.newKey(crypto.getRandomValues(new Uint8Array(32)));
-  assert.match(key, /^\d{4}( \d{4}){11}$/);
-  assert.equal(ghost.checkKey(key), 12);
-  assert.equal(ghost.checkKey(VECTOR_KEY.replaceAll(" ", "-")), 12);
+  assert.match(key, /^[a-z]+( [a-z]+){23}$/);
+  assert.deepEqual(ghost.checkKey(key), { format: "words", groups: 21 });
+  assert.deepEqual(ghost.checkKey(VECTOR_KEY.replaceAll(" ", "-")), { format: "standard", groups: 12 });
   const bad = VECTOR_KEY.slice(0, -1) + "8";
   assert.throws(() => ghost.checkKey(bad), (err) => /group 12/.test(err.message) && !/\d{4}/.test(err.message));
   assert.throws(() => ghost.checkKey("1234"), /48 or 96 digits/);
   assert.notEqual(ghost.newKey(crypto.getRandomValues(new Uint8Array(32))), key);
+  // The digit view of a words key: 21 groups, which open the same key.
+  const digits = ghost.keyDigits(key);
+  assert.match(digits, /^\d{4}( \d{4}){20}$/);
+  assert.deepEqual(ghost.checkKey(digits), { format: "words", groups: 21 });
+  assert.equal(ghost.keyDigits(VECTOR_KEY), VECTOR_KEY);
 });
 
 test("the tree-state rule refuses the leaf's own root and an unsettled candidate", () => {

@@ -6,6 +6,15 @@ address, and **Claim** a received key's coin to a new key. It is plain ES
 modules with no framework and no npm dependencies, on top of the client
 library, which runs in a background worker as WebAssembly.
 
+A new Phantom Key is 24 words (it can also be shown as 21 groups of digits),
+and every coin's commit carries its own random salt, so the key keeps about
+128 bits of strength even against a quantum search. Keys issued earlier as
+twelve groups of digits still open, reveal and claim; they hold a smaller,
+unsalted secret and are not called quantum-safe. You type a key as its words
+(any case, spaces or hyphens between them) or as its digits; a key whose
+check fails is refused before anything is derived from it, and a wrong word
+is named by its position, never corrected.
+
 **Experimental.** Nothing here has been audited. Do not use it for anything
 of value.
 
@@ -18,7 +27,8 @@ The design, the node methods it calls and its limits are in
   cookie, not on a server. A key exists only in the page's memory for the
   step that needs it, and the wallet's 24 words only while the wallet is
   open. The key image is drawn in the page and saved only when you press the
-  button.
+  button. Copying a key or saving its image is a convenience, never the only
+  backup: a new key is sent only after you type three of its words back.
 - It uses no elliptic-curve key. The wallet's account key is ML-DSA-44,
   derived from the wallet's seed, and every commit is a quantum-safe account
   transaction signed in the background worker.
@@ -84,13 +94,19 @@ defaults to the internal network's, `0x67686f7374000000000000000000000000000005`
 ```sh
 cargo build --release --locked --target wasm32-unknown-unknown --manifest-path webapp/wasm/Cargo.toml
 node --test --test-timeout=1200000 webapp/test/
+node --test --test-timeout=1200000 webapp/test/words-key.test.mjs webapp/test/salted-coin.test.mjs webapp/test/words-flow.test.mjs
 ```
+
+The last three cover the words key (new keys, typed keys, a swapped word
+refused, an old 12-group key restoring) and the salted coin (the 206-byte
+commit of version 2, the salt read back beside the leaf, a salted coin
+revealed and claimed, a version 1 coin still revealing).
 
 `webapp/test/header-chain.test.mjs` checks the page's header chain: chains
 with seals that are not valid or with a wrong difficulty refused with no
 confirmation, and a lighter competing chain refused with the heavier one
 kept. `webapp/test/flow.test.mjs` drives the flow controller through Vanish (a
-wrong save check that sends nothing, then a right one), a partial Summon and a
+wrong save check of three words that sends nothing, then a right one), a partial Summon and a
 Claim, with the real prover in a `worker_threads` worker speaking the browser
 worker's messages, against a scripted stand-in for the node's JSON-RPC that
 verifies every proof and records every request. Set `GHOST_WEBAPP_WASM` to
@@ -106,4 +122,6 @@ GHOST_NODE_GETH="$(webapp/scripts/build-node.sh)" \
 ```
 
 It needs `git`, Go and a C compiler for the node, and prints
-`SKIP: GHOST_NODE_GETH is not set` when the variable is unset.
+`SKIP: GHOST_NODE_GETH is not set` when the variable is unset. The pinned
+commit (`webapp/test/e2e/NODE_COMMIT`) takes the salted 206-byte commit and
+serves each leaf's salt back.

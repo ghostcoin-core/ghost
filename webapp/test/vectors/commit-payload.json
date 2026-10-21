@@ -1,5 +1,5 @@
 {
-  "about": "The commit payload of spec 07 (the node's ghostpriv.CommitData): version (2 bytes), F (32), note (156), 190 bytes. Built from spec 01, vector coin-commit; the note is the module's encryption of the coin's contents on chain 7 with a seed of 32 bytes 0x09.",
+  "about": "A version 1 commit payload (the node's ghostpriv CommitDataSize, still accepted beside the 206-byte salted version 2 the app sends): version (2 bytes), F (32), note (156), 190 bytes. Built from spec 01, vector coin-commit, the key of twelve digit groups; the note is the module's encryption of the coin's contents on chain 7 with a seed of 32 bytes 0x09.",
   "key": "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417",
   "chainId": "7",
   "amount": "1000000000000000000",

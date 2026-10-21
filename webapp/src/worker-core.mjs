@@ -9,7 +9,7 @@
 //
 // Every random byte comes from crypto.getRandomValues. Nothing is kept
 // between requests except the compiled module and, in its memory, the page's
-// header chain, which holds public headers only: a key's digits or a wallet
+// header chain, which holds public headers only: a key's words or a wallet
 // seed's words arrive with a request and are gone when it is answered.
 
 import { loadGhost } from "./wasm.mjs";
@@ -22,11 +22,18 @@ const OPS = {
   },
 
   checkKey(ghost, { key }) {
-    return { groups: ghost.checkKey(key) };
+    return ghost.checkKey(key);
   },
 
-  commit(ghost, { chainId, amount, key }) {
-    return ghost.commit({ chainId, amount, seed: random(32), key });
+  // The digit view of a key: 21 groups for a words key.
+  keyDigits(ghost, { key }) {
+    return { digits: ghost.keyDigits(key) };
+  },
+
+  // A version 2 commit, its salt drawn from the secure random seed. Only a
+  // test asks for version 1.
+  commit(ghost, { chainId, amount, key, version }) {
+    return ghost.commit({ chainId, amount, seed: random(32), key, version });
   },
 
   treeCheck(ghost, args) {
