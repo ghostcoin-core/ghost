@@ -9,6 +9,7 @@ import "./reveal-moving-head.test.mjs";
 import "./wasm.test.mjs";
 import "./commit-layout.test.mjs";
 import "./tree-shape.test.mjs";
+import "./earlier-trees.test.mjs";
 import "./stand-in.test.mjs";
 import "./flow.test.mjs";
 import "./sent-and-done.test.mjs";

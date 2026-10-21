@@ -130,10 +130,46 @@ The tree answers are read in the node's shape (ghost-node
 refuses page roots that are not an array, and a coin page whose `filled` is
 not the number of its `entries`, that is not whole (every page but the
 last holds 4,096 leaves and the last 1 to 4,096), or that is not the page
-asked for (its `kind` `"coin"`, its `treeIndex` 0 and its `page` the number
-asked), so no page is missing, repeated or out of order. An entry's `salt`, when
+asked for (its `kind` `"coin"`, its `treeIndex` the tree index asked and
+its `page` the number asked), so no page is missing, repeated or out of
+order. An entry's `salt`, when
 present, must be 16 bytes of hex, or the page is refused as malformed. The
-page roots and leaves must then give the anchor header's coin root.
+page roots and leaves must then give the root of their tree, as Coin trees
+says.
+
+### Coin trees
+
+A coin tree holds 2^32 leaves; once it is full the next leaf goes to
+position 0 of the next tree index, and the full tree is final (spec 05,
+section 3). Headers carry only the current tree's root, so the app reads
+every coin tree index as of the tip, from tree 0 up to the tip's own
+(`fetchTrees` in `webapp/src/flow.mjs`; spec 05, section 8, RT-5), in
+whole pages, and asks for tree k + 1 only once tree k is shown full and is
+not the tip's tree, so it never asks for an index past the tip's:
+
+- A tree with fewer leaves than a full one is the tip's: its page roots and
+  leaves must give the tip's coin root.
+- A full tree's root, computed from its leaves and checked against its page
+  roots, is either the tip's coin root (nothing is in the next tree yet, and
+  the read ends there) or that tree's final root, which must be the coin
+  root of a header of the page's best chain from its start to the tip, and
+  differ from every earlier tree's.
+
+A tree with more leaves than a tree holds, a full tree whose final root no
+header of the page's chain carries (for instance on a network whose pin is
+above the block that filled it), a tree served twice, or a page of another
+tree index is refused. A commit or a reveal's new leaf is looked for in the
+tree its block appended to: the block's coin root is a prefix root of that
+tree, and its parent's one of the same tree, or the final root of the tree
+before when the block started it.
+
+The worker checks the notes and salts of coin tree 0 alone against the
+block receipts (`ghost_receipts_check`), so the notes of a later tree would
+be unchecked. A scan whose tip is past tree 0 therefore stops once the
+trees are read, before the marker pages, the receipts check or the key is
+tried on any note, and says so: the coin tree has rolled over, and this
+build checks only the notes of coin tree 0. `createFlow`'s `treeLeaves`
+sets a smaller tree for a test node; the release never sets it.
 
 ## Headers
 
@@ -500,7 +536,13 @@ app makes no data commitments.
   watching whether a reveal follows; see Block receipts.)
 - **The zero address.** The app refuses it as a reveal's recipient and as
   the commit entry address, because what it is credited cannot be spent.
-- **One tree.** Only coin tree 0 is read; a rollover is 2^32 leaves away.
+- **Restore from tree 0 only.** Every coin tree index up to the tip's is
+  read and checked against its root (Coin trees), but a scan restores only
+  while the tip is in coin tree 0: the worker's receipts check covers tree 0
+  alone, so once the tree rolls over, 2^32 leaves away, a scan is refused
+  before the key is tried. Reading the receipts of later trees, and choosing
+  a full earlier tree's final root as a coin's tree state (spec 05, section
+  13, item 4), are not built.
 - **Reorganisations are found when asked.** A step shown Done is checked
   again only on Refresh or "Check the commit is still in the chain"; the
   page does not watch the chain on its own.
@@ -564,6 +606,17 @@ app makes no data commitments.
   a swapped or wrong word fails the check, and no refusal holds a word or
   digit of the key, nor is anything derived from it; an old 12-group key
   still restores, in the module and through the app against the stand-in.
+- `earlier-trees.test.mjs`: against the stand-in given trees of three
+  leaves, so that it rolls over: every coin tree from 0 up to the tip's is
+  read in whole pages, each full one against its final root in a header and
+  the last against the tip's, and no index past the tip's tree is asked for;
+  a page of another tree index, a changed page root, a tree cut short at an
+  earlier block's tree, a tree of too many leaves, a full tree whose final
+  root no header carries and a tree served twice are refused. A commit is
+  followed into the full tree 0 after the tip has moved to tree 1, and to
+  tree 1's first position; a scan of the rolled-over chain is refused before
+  restore or the receipts check, while one whose tree 0 is just full still
+  finds the coin that filled it.
 - `salted-coin.test.mjs`: the commit is 206 bytes of version 2 with a fresh
   salt, in the module and as the wallet signs it, and the stand-in keeps
   that salt with the leaf; restore reads the salt beside the leaf, finds the

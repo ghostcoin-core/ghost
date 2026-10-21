@@ -68,11 +68,26 @@ touched.
 | `partial-reveal-then-claim` | Key K1 commits 1 GHOST and the original device reveals 0.25 of it. The clean device restores K1 from its digits, finds coin 0 spent and the remainder unspent, and claims the remainder to a new key; K1 then shows claimed and the new key holds the remainder | Runs |
 | `reorganisation-during-recovery` | C is cut off. A mines a few blocks, one with key K4's commit, and the clean device sees K4's coin through B. C mines a longer branch without it and rejoins while the clean device is scanning another key: the scan is held at its first tree page, after it adopted A's tip, until B has switched to C's branch, and then goes on. B and the clean device follow the heavier branch: the device's tip is C's head, the block after the fork is C's, and K4's coin is gone from its view. A scan the reorganisation cut short is started again, as a holder would | Runs |
 | `older-tree-state` | Key K2, committed before everything above and more than 34 blocks (the scan's header window and the settle depth) below the tip, on the branch that won the reorganisation, is restored from its digits and 0.2 GHOST of it is revealed | Runs |
-| `rollover` | A coin tree fills and the next commit starts tree index 1; the clean device restores across both | Skipped: ghost-node fixes the tree depth at 32 (`core/ghosttree`, `Release = Params{Depth: 32}`, and `Params.Check` refuses any other depth) with no test build of a smaller depth, so a rollover needs 2^32 commits; the web app reads only coin tree 0. It needs the test-build depth of [spec 05](spec/05-trees-and-headers.md), RT-1 Part B |
-| `commitment-in-full-tree` | A commitment left unspent in a full earlier tree is restored and revealed against that tree's final root | Skipped for the same reason (spec 05, RT-2 Part B) |
+| `rollover` | Keys KB and KA commit in coin tree 0, strangers' commits fill it, the next commit starts tree index 1 at position 0, and KA's remainder of a partial reveal lands in tree 1; the clean device reads both trees and restores KA's spent coin and its remainder | Runs only with `GHOST_RECOVERY_TREE_LEAVES`; skipped otherwise: the node's release build holds 2^32 leaves per coin tree and its tree package refuses any other size, so a rollover needs 2^32 commits. It needs a node built with smaller coin trees ([spec 05](spec/05-trees-and-headers.md), RT-1 Part B), a change in the node's own repository |
+| `commitment-in-full-tree` | KB's coin, left unspent in the full tree 0, is restored by the clean device and revealed in part | The same as `rollover` (spec 05, RT-2 Part B) |
 
 The two skipped cases are part of the test on purpose: the script lists them
 on every run, and `--require-all` fails until they run.
+
+**Running the two tree cases.** Given a node whose coin trees hold fewer
+leaves, `GHOST_RECOVERY_TREE_LEAVES` is set to that count: the script hands
+it to the test, the devices are told it (createFlow's `treeLeaves`), and the
+rollover case sends enough strangers' commits of 1 wei to fill coin tree 0.
+The web app reads every coin tree index from 0 up to the tip's, each full
+earlier tree checked against its final root in a header and the last
+against the tip's root ([web app](webapp.md), Coin trees). Two parts of the
+wallet still stand between that and a pass, and the cases fail, not skip,
+on them until they are built: its worker checks the notes and salts of coin
+tree 0 alone against the block receipts (and takes a rollover only at 2^32
+leaves), so a scan of a chain whose tree has rolled over is refused before
+the key is tried on any note; and it hashes trees of 32 levels, so a node
+whose smaller trees are also shallower (spec 05 names 14 levels) needs the
+worker to hash those too.
 
 ## Release condition
 

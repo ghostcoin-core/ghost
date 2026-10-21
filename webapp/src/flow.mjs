@@ -59,6 +59,18 @@ export const DEFAULT_COMMIT_ENTRY = "0x67686f7374000000000000000000000000000005"
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 // Leaves (or markers) per page of wallet tree data (spec 05, section 8).
 export const PAGE_LEAVES = 4096;
+// Leaves of one coin tree (spec 05, section 3): 2^32. A full tree is final
+// and the next leaf goes to position 0 of the next tree index. createFlow
+// takes another count only to talk to a node whose trees are smaller, as a
+// recovery test of a rollover needs; the release never sets it.
+export const LEAVES_PER_TREE = 2 ** 32;
+// What a scan says when the chain's coin tree has rolled over: every tree is
+// read and checked against its root, but the worker checks the notes and
+// salts of coin tree 0 alone against the block receipts, so the notes of a
+// later tree are unchecked and the scan tries the key on none of them.
+export const LATER_TREES_UNCHECKED =
+  "this build checks only the notes of coin tree 0 against the block receipts, so it restores nothing from this chain " +
+  "and uses the key for nothing";
 // Every scan reads the headers from this many blocks below the settled
 // block S (SETTLE_DEPTH below the tip) up to the tip, to find a leaf's block.
 export const LEAF_WINDOW = 32;
@@ -294,46 +306,102 @@ function sameCoin(a, b) {
   return a.position === b.position && a.number === b.number && a.amount === b.amount;
 }
 
-// Every leaf and note of coin tree 0 as of `anchor` (a verified header), in
-// the node's shape: the page roots as an array, then every page in order as
-// `{ kind, treeIndex, page, filled, entries: [{ leaf, note, salt? }] }`.
+// Every leaf and note of coin tree `treeIndex` (0 unless given) as of
+// `anchor` (a verified header), checked against the anchor's coin root: the
+// tree the anchor's header holds. fetchTrees reads the full trees before it.
+export async function fetchTree(rpc, prover, anchor, treeIndex = 0) {
+  const tree = await readTree(rpc, anchor, treeIndex);
+  await prover.request("treeCheck", { pageRoots: tree.pageRoots, leaves: tree.leaves, root: anchor.coinTreeRoot });
+  return { count: tree.count, leaves: tree.leaves, records: tree.records, salts: tree.salts };
+}
+
+// Coin tree `treeIndex` as of `anchor`, read but not yet checked against a
+// root, in the node's shape: the page roots as an array, then every page in
+// order as `{ kind, treeIndex, page, filled, entries: [{ leaf, note, salt? }] }`.
 // `salt` is the 16-byte salt a version 2 commit published beside its leaf;
 // the node leaves it out for a version 1 commit and for a reveal's
 // remainder. Every page but the last is full and the last holds 1 to 4,096
 // leaves, and each page is the one asked for (its kind, tree index and page
-// number), so no page is missing, repeated or out of order; the page roots
-// and leaves are checked against the anchor's coin root. Anything else, a
+// number), so no page is missing, repeated or out of order. Anything else, a
 // salt that is not 16 bytes of hex among it, is refused, never guessed at.
 // `salts` holds each leaf's salt or null. The notes and salts are checked
 // against the block receipts by the scan (scanKey), not here.
-export async function fetchTree(rpc, prover, anchor) {
+async function readTree(rpc, anchor, treeIndex) {
   const anchorHash = toHex(anchor.hash);
-  const list = await rpc.call("ghost_getPageRoots", ["coin", "0x0", anchorHash]);
-  if (!Array.isArray(list)) throw new Error("the endpoint's page roots are not a list");
+  const index = toQuantity(treeIndex);
+  const list = await rpc.call("ghost_getPageRoots", ["coin", index, anchorHash]);
+  if (!Array.isArray(list)) throw new Error(`the endpoint's page roots${ofTree(treeIndex)} are not a list`);
   const pageRoots = list.map((root) => fromHex(root, 32));
   const leaves = [];
   const records = [];
   const salts = [];
   for (let p = 0; p < pageRoots.length; p += 1) {
-    const page = await rpc.call("ghost_getTreePage", ["coin", "0x0", toQuantity(p), anchorHash]);
+    const which = `page ${p}${ofTree(treeIndex)}`;
+    const page = await rpc.call("ghost_getTreePage", ["coin", index, toQuantity(p), anchorHash]);
     const filled = Number(quantity(page?.filled));
     const whole = p === pageRoots.length - 1 ? filled >= 1 && filled <= PAGE_LEAVES : filled === PAGE_LEAVES;
     if (!whole || !Array.isArray(page.entries) || page.entries.length !== filled) {
-      throw new Error(`page ${p} from the endpoint is not a whole page`);
+      throw new Error(`${which} from the endpoint is not a whole page`);
     }
-    if (page.kind !== "coin" || !sameQuantity(page.treeIndex, 0) || !sameQuantity(page.page, p)) {
-      throw new Error(`page ${p} from the endpoint is not the page asked for: a page is missing, repeated or out of order`);
+    if (page.kind !== "coin" || !sameQuantity(page.treeIndex, treeIndex) || !sameQuantity(page.page, p)) {
+      throw new Error(`${which} from the endpoint is not the page asked for: a page is missing, repeated or out of order`);
     }
     for (const entry of page.entries) {
       const leaf = fromHex(entry?.leaf, 32);
       leaves.push(leaf);
       records.push(leaf, fromHex(entry.note, NOTE_BYTES));
-      salts.push(entry.salt === undefined ? null : saltOf(entry.salt, p));
+      salts.push(entry.salt === undefined ? null : saltOf(entry.salt, which));
     }
   }
-  const leafBytes = concat(leaves);
-  await prover.request("treeCheck", { pageRoots: concat(pageRoots), leaves: leafBytes, root: anchor.coinTreeRoot });
-  return { count: leaves.length, leaves: leafBytes, records: concat(records), salts };
+  return { pageRoots: concat(pageRoots), count: leaves.length, leaves: concat(leaves), records: concat(records), salts };
+}
+
+// How an error names a tree past tree 0; tree 0 keeps its old words.
+function ofTree(treeIndex) {
+  return treeIndex === 0 ? "" : ` of coin tree ${treeIndex}`;
+}
+
+// Every coin tree as of `anchor` (a verified header), from tree 0 up to the
+// anchor's own tree (spec 05, section 3 and section 8, RT-5), in order, each
+// `{ treeIndex, root, count, leaves, records, salts }`. A tree holds
+// `treeLeaves` leaves at most (LEAVES_PER_TREE). Tree k is read only once
+// tree k - 1 is shown full and is not the anchor's tree, so no index past
+// the anchor's tree is asked for:
+//
+// - A tree with fewer leaves than a full one is the anchor's: its page roots
+//   and leaves must give the anchor's coin root.
+// - A full tree is final. Its root, computed from its leaves and checked
+//   against its page roots, is either the anchor's coin root (nothing has
+//   gone into the next tree yet, and the read ends) or the tree's final
+//   root, which must be the coin root of a header of the page's chain
+//   (`headerWithRoot(root)`, true when one carries it) and differ from every
+//   earlier tree's; the next tree is read after it.
+//
+// Anything else, a tree with more leaves than a tree holds, a full tree
+// whose final root no header carries, a tree served twice, is refused.
+export async function fetchTrees(rpc, prover, anchor, { headerWithRoot, treeLeaves = LEAVES_PER_TREE }) {
+  const trees = [];
+  for (let k = 0; ; k += 1) {
+    const tree = await readTree(rpc, anchor, k);
+    if (tree.count > treeLeaves) {
+      throw new Error(`coin tree ${k} from the endpoint holds ${tree.count} leaves, more than a tree holds (${treeLeaves})`);
+    }
+    if (tree.count < treeLeaves) {
+      await prover.request("treeCheck", { pageRoots: tree.pageRoots, leaves: tree.leaves, root: anchor.coinTreeRoot });
+      trees.push({ treeIndex: k, root: anchor.coinTreeRoot, ...tree });
+      return trees;
+    }
+    const [root] = (await prover.request("prefixRoots", { leaves: tree.leaves, from: tree.count, to: tree.count })).roots;
+    await prover.request("treeCheck", { pageRoots: tree.pageRoots, leaves: tree.leaves, root });
+    trees.push({ treeIndex: k, root, ...tree });
+    if (toHex(root) === toHex(anchor.coinTreeRoot)) return trees;
+    if (trees.slice(0, -1).some((earlier) => toHex(earlier.root) === toHex(root))) {
+      throw new Error(`coin tree ${k} from the endpoint is a tree it served before`);
+    }
+    if (!(await headerWithRoot(root))) {
+      throw new Error(`coin tree ${k} from the endpoint is full, but no header of the page's chain carries its final root`);
+    }
+  }
 }
 
 // Whether `text` is a hex quantity of value `n`.
@@ -341,13 +409,13 @@ function sameQuantity(text, n) {
   return typeof text === "string" && /^0x[0-9a-fA-F]+$/.test(text) && BigInt(text) === BigInt(n);
 }
 
-// The `salt` of an entry of page `p`: 16 bytes of hex, or the page is
-// refused as malformed.
-function saltOf(hex, p) {
+// The `salt` of an entry of a page (`which`, as an error names it): 16 bytes
+// of hex, or the page is refused as malformed.
+function saltOf(hex, which) {
   try {
     return fromHex(hex, SALT_BYTES);
   } catch {
-    throw new Error(`page ${p} from the endpoint is malformed: a salt is not ${SALT_BYTES} bytes`);
+    throw new Error(`${which} from the endpoint is malformed: a salt is not ${SALT_BYTES} bytes`);
   }
 }
 
@@ -451,6 +519,8 @@ export function createFlow({
   // The page's clock in Unix seconds, against which a header's timestamp
   // may run at most the network's future drift ahead.
   clock = () => Math.floor(Date.now() / 1000),
+  // Leaves of one coin tree (LEAVES_PER_TREE; smaller only for a test node).
+  treeLeaves = LEAVES_PER_TREE,
   onChange = () => {},
 } = {}) {
   let rpc = createRpc(endpoint, { fetch });
@@ -667,6 +737,18 @@ export function createFlow({
     return (await chainRange(number, number))[0];
   }
 
+  // Every coin tree as of `tip` (a header syncTip adopted), from tree 0 to
+  // the tip's (fetchTrees). A full earlier tree's final root must be the
+  // coin root of a header of the page's best chain from its start to the
+  // tip. Only a chain whose tree has rolled over asks for those headers.
+  async function readTrees(tip) {
+    const headerWithRoot = async (root) => {
+      const blocks = await chainRange(headerChain.startHeight, tip.number);
+      return blocks.some((block) => block && toHex(block.coinTreeRoot) === toHex(root));
+    };
+    return fetchTrees(rpc, prover, tip, { headerWithRoot, treeLeaves });
+  }
+
   // The chain as of its tip: headers of the page's best chain, each the
   // parent of the next, from LEAF_WINDOW blocks below the settled block (or
   // from the start) up to the tip, which covers the settled block, the fee
@@ -799,10 +881,19 @@ export function createFlow({
   // verified and linked to the tip, whatever the coin, so the requests say
   // nothing about where the coin is; leafBlock picks a leaf's block from
   // those headers.
+  //
+  // Every coin tree index up to the tip's is read and checked against its
+  // root (readTrees). The worker checks the notes and salts of coin tree 0
+  // alone against the receipts, so once the tree has rolled over the scan
+  // stops there, before the key is tried on any note (LATER_TREES_UNCHECKED).
   async function scanKey(key) {
     const chain = await readChain();
     progress("reading the coin tree");
-    const tree = await fetchTree(rpc, prover, chain.tip);
+    const trees = await readTrees(chain.tip);
+    if (trees.length > 1) {
+      throw new Error(`the chain's coin tree has rolled over to coin tree ${trees.length - 1}: ${LATER_TREES_UNCHECKED}`);
+    }
+    const [tree] = trees;
     const markerAnchor = chain.at(Math.max(0, chain.tip.number - (CONFIRMATIONS - 1)));
     const spent = await fetchSpent(markerAnchor);
     const fee = (await feeForNextBlock(chain.tip, async (n) => chain.at(n))).fee;
@@ -870,9 +961,9 @@ export function createFlow({
 
   // A receipt is the endpoint's word only. A transaction sent when the
   // endpoint's tip was block `sentAfter` can only be in a later block. It
-  // counts as settled when the chain shows what it did: the coin tree as
-  // of the tip, checked against the tip's coin root, holds `commitment` (the
-  // new leaf every commit, reveal and claim appends) at a position the
+  // counts as settled when the chain shows what it did: the coin trees as
+  // of the tip, each checked against its root (readTrees), hold `commitment`
+  // (the new leaf every commit, reveal and claim appends) at a position the
   // receipt's block added, read from the coin roots of that block and its
   // parent on the page's header chain, the one with the most work, that
   // leads to the tip. The first
@@ -914,14 +1005,9 @@ export function createFlow({
       }
       return waitSettled(hash, commitment, sentAfter, again, reread + 1);
     }
-    const tree = await fetchTree(rpc, prover, tip);
-    const { roots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
-    const countOf = new Map(roots.map((root, count) => [toHex(root), count]));
-    const before = countOf.get(toHex(parent.coinTreeRoot));
-    const after = countOf.get(toHex(block.coinTreeRoot));
-    if (before === undefined || after === undefined) {
-      throw new Error(`the endpoint's tree does not match the header of block ${block.number}`);
-    }
+    const added = await appendedBy(await readTrees(tip), parent, block);
+    if (!added) throw new Error(`the endpoint's tree does not match the header of block ${block.number}`);
+    const { tree, before, after } = added;
     const leaf = toHex(commitment);
     for (let position = before; position < after; position += 1) {
       if (toHex(tree.leaves.slice(position * 32, position * 32 + 32)) === leaf) {
@@ -931,15 +1017,37 @@ export function createFlow({
     throw new Error(`block ${block.number} does not hold the transaction's new coin; it has not settled`);
   }
 
-  // Whether the coin tree as of the tip, checked against the tip's verified
-  // header, holds `commitment`. The whole tree is read, so no request names
-  // the leaf.
+  // The tree `block` (whose parent is `parent`) appended to and the leaf
+  // counts of that tree before and after it, `{ tree, before, after }`, read
+  // from the two headers' coin roots among the prefix roots of `trees`
+  // (readTrees): the block's root is a prefix root of one tree, and its
+  // parent's a prefix root of the same tree, or the final root of the tree
+  // before when the block started this one. Null when the trees do not show
+  // it.
+  async function appendedBy(trees, parent, block) {
+    for (let t = trees.length - 1; t >= 0; t -= 1) {
+      const tree = trees[t];
+      const { roots } = await prover.request("prefixRoots", { leaves: tree.leaves, from: 0, to: tree.count });
+      const countOf = new Map(roots.map((root, count) => [toHex(root), count]));
+      const after = countOf.get(toHex(block.coinTreeRoot));
+      if (after === undefined) continue;
+      const started = t > 0 && toHex(parent.coinTreeRoot) === toHex(trees[t - 1].root);
+      const before = started ? 0 : countOf.get(toHex(parent.coinTreeRoot));
+      return before === undefined ? null : { tree, before, after };
+    }
+    return null;
+  }
+
+  // Whether the coin trees as of the tip, each checked against its root
+  // (readTrees), hold `commitment`. Every tree is read whole, so no request
+  // names the leaf.
   async function treeHolds(commitment) {
     const tip = await syncTip();
-    const tree = await fetchTree(rpc, prover, tip);
     const leaf = toHex(commitment);
-    for (let position = 0; position < tree.count; position += 1) {
-      if (toHex(tree.leaves.slice(position * 32, position * 32 + 32)) === leaf) return true;
+    for (const tree of await readTrees(tip)) {
+      for (let position = 0; position < tree.count; position += 1) {
+        if (toHex(tree.leaves.slice(position * 32, position * 32 + 32)) === leaf) return true;
+      }
     }
     return false;
   }
