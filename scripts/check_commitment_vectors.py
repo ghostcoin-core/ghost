@@ -5,8 +5,9 @@ Reads every vector block in the "Test vectors" section of
 docs/spec/01-commitments-and-keys.md, recomputes the Phantom Key checksum and
 every derivation from the rules in that document, and exits nonzero on any
 mismatch. It also checks that the tag table lists exactly the tags used here,
-with the right input sizes, and that the same secret under two salts gives
-unrelated fingerprints, commitments and markers.
+with the right input sizes, that the same secret under two salts gives
+unrelated fingerprints, commitments and markers, and that every note vector
+has a type tag of its note version and is the note of a commitment vector.
 
 Only the standard library is used. Keccak-256 (original padding) is written
 out below, because hashlib.sha3_256 applies the FIPS 202 padding and gives
@@ -219,6 +220,7 @@ TAG_LAYOUTS = {
 KECCAK_RATE = 136
 
 NOTE_VERSION = 0x01
+NOTE_VERSION_2 = 0x02
 SCHEME_ID = 0x01
 NOTE_PLAINTEXT_LENGTH = 128
 V_MAX = (1 << 96) - 1
@@ -363,15 +365,32 @@ def tree_node(tag, level, left, right):
     return keccak_tagged(tag, bytes([level]), left, right)
 
 
-def note_plaintext(type_name, index, amount, cf, length, rule):
+# Per note version (section 9): the commitment format version its type tag must
+# have and the width of its amount. Version 2 carries the 16-byte salt after the
+# rule; version 1 has none. Any other note version is rejected.
+NOTE_LAYOUTS = {
+    NOTE_VERSION: {"tag_version": VERSION_1, "amount_bytes": 32},
+    NOTE_VERSION_2: {"tag_version": VERSION_2, "amount_bytes": 12},
+}
+
+
+def note_plaintext(type_name, index, amount, cf, length, rule, salt=None,
+                   note_version=NOTE_VERSION):
+    """The 128-byte plaintext of note version 1 (no salt) or 2 (with salt)."""
+    layout = NOTE_LAYOUTS.get(note_version)
+    if layout is None:
+        raise ValueError(f"unknown note version {note_version}")
+    if not 0 <= amount <= V_MAX:
+        raise ValueError("amount out of range")
     out = (
-        bytes([NOTE_VERSION, SCHEME_ID])
-        + TYPE_TAGS[type_name]
+        bytes([note_version, SCHEME_ID])
+        + type_tag(type_name, layout["tag_version"])
         + index.to_bytes(8, "big")
-        + amount.to_bytes(32, "big")
+        + amount.to_bytes(layout["amount_bytes"], "big")
         + cf
         + length.to_bytes(8, "big")
         + rule
+        + b"".join(_salt_parts(layout["tag_version"], salt))
     )
     return out + bytes(NOTE_PLAINTEXT_LENGTH - len(out))
 
@@ -551,14 +570,40 @@ def check_tree_node(ch, v):
     ch.expect(v, "node", node.hex())
 
 
+# Each note vector kind is one note version, as each commitment vector kind is
+# one format version: a note vector is always version 1 with a version 1 type
+# tag, so a reader that knows only version 1 never meets a salt.
+NOTE_KINDS = {"note": NOTE_VERSION, "salted-note": NOTE_VERSION_2}
+
+
+def _note_version_and_type(v):
+    """The vector's note version and type, refusing a note version and type tag
+    that disagree; never guessing a layout."""
+    note_version = NOTE_KINDS[v["kind"]]
+    if int(v["version"]) != note_version:
+        raise ValueError(f"kind {v['kind']} is note version {note_version}, not {v['version']}")
+    tag_version, type_name = read_type_tag(_hex_field(v, "type-tag"))
+    expected = NOTE_LAYOUTS[note_version]["tag_version"]
+    if tag_version != expected:
+        raise ValueError(f"note version {note_version} needs a version {expected} type tag, "
+                         f"not {v['type-tag']}")
+    if type_name != v["type"]:
+        raise ValueError(f"type tag {v['type-tag']} is {type_name}, not {v['type']}")
+    return note_version, type_name
+
+
 def check_note(ch, v):
+    note_version, type_name = _note_version_and_type(v)
+    salt = _hex_field(v, "salt") if "salt" in v else None
     plaintext = note_plaintext(
-        v["type"],
+        type_name,
         int(v["index"]),
         int(v["amount"]),
         _hex_field(v, "content-fingerprint"),
         int(v["content-length"]),
         _rule(v),
+        salt,
+        note_version,
     )
     if len(plaintext) != NOTE_PLAINTEXT_LENGTH:
         raise ValueError("note plaintext has the wrong length")
@@ -578,6 +623,7 @@ CHECKS = {
     "empty-leaf": check_empty_leaf,
     "tree-node": check_tree_node,
     "note": check_note,
+    "salted-note": check_note,
 }
 
 
@@ -611,6 +657,35 @@ def check_coverage(vectors):
     names = [v["name"] for v in vectors]
     for name in sorted({n for n in names if names.count(n) > 1}):
         errors.append(f"vector name [{name}] used more than once")
+    return errors
+
+
+def check_note_leaves(vectors):
+    """Every note vector is the note of a commitment vector of the document: its
+    leaf is that vector's commitment, and its type tag, number, amount, content
+    fingerprint and salt are that commitment's."""
+    errors = []
+    leaves = {v.get("commitment"): v for v in vectors if v.get("kind") in COMMITMENT_KINDS}
+    for note in vectors:
+        if note.get("kind") not in NOTE_KINDS:
+            continue
+        leaf = leaves.get(note.get("leaf"))
+        if leaf is None:
+            errors.append(f"[{note['name']}] leaf is not the commitment of any commitment vector")
+            continue
+        coin = COMMITMENT_KINDS[leaf["kind"]][0] == "coin-commitment"
+        expected = {
+            "type-tag": leaf.get("type-tag"),
+            "index": leaf.get("index"),
+            "salt": leaf.get("salt"),
+            "amount": leaf.get("amount") if coin else "0",
+            "content-fingerprint": ZERO32.hex() if coin else leaf.get("content-fingerprint"),
+            "content-length": "0" if coin else leaf.get("content-length"),
+        }
+        for field, want in expected.items():
+            if note.get(field) != want:
+                errors.append(f"[{note['name']}] {field} is not that of "
+                              f"[{leaf['name']}], the commitment it is stored with")
     return errors
 
 
@@ -722,6 +797,7 @@ def run(path):
     vectors = parse_vectors(section(text, "Test vectors"))
     errors += check_coverage(vectors)
     errors += check_salt_pairs(vectors)
+    errors += check_note_leaves(vectors)
     ch = Checker()
     for v in vectors:
         kind = v.get("kind")

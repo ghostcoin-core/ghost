@@ -77,7 +77,7 @@ pub use account::{
 };
 pub use commit::{
     Amount, CoinCommit, Commitment, CommitError, Content, ContentFingerprint, DataCommit,
-    Fingerprint, Marker, Rule, TypeTag, COIN, DATA, V_MAX,
+    Fingerprint, Marker, Rule, Salt, TypeTag, COIN, COIN_V2, DATA, DATA_V2, SALT_BYTES, V_MAX,
 };
 pub use derive::{Blinding, DataKey, KeyBytes, NoteKey, RevealSecret, Secret};
 pub use header_chain::{
