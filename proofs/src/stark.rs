@@ -349,10 +349,23 @@ pub enum Statement {
     /// S1, the one-time reveal of a salted (version 2) coin, type `0x02 0x01`:
     /// the salt is a private witness in 16 carried columns.
     SaltedCoinReveal,
+    /// S2, the one-time reveal of salted (version 2) data, type `0x02 0x02`:
+    /// the salt is a private witness in 16 carried columns.
+    SaltedDataReveal,
+    /// S3, the proof of holding of salted (version 2) data, type `0x02 0x02`:
+    /// the salt is a private witness in 16 carried columns.
+    SaltedHold,
 }
 
 impl Statement {
-    pub const ALL: [Self; 4] = [Self::CoinReveal, Self::DataReveal, Self::Hold, Self::SaltedCoinReveal];
+    pub const ALL: [Self; 6] = [
+        Self::CoinReveal,
+        Self::DataReveal,
+        Self::Hold,
+        Self::SaltedCoinReveal,
+        Self::SaltedDataReveal,
+        Self::SaltedHold,
+    ];
 
     const fn index(self) -> usize {
         match self {
@@ -360,16 +373,22 @@ impl Statement {
             Self::DataReveal => 1,
             Self::Hold => 2,
             Self::SaltedCoinReveal => 3,
+            Self::SaltedDataReveal => 4,
+            Self::SaltedHold => 5,
         }
     }
 
     /// The statement's schedule, without any witness.
     pub(crate) fn schedule(self) -> Schedule {
+        use crate::data::DataFormat;
+        use crate::reveal::Format;
         match self {
-            Self::CoinReveal => crate::reveal::schedule(crate::reveal::Format::V1),
-            Self::DataReveal => crate::data::schedule(None).0,
-            Self::Hold => crate::hold::schedule(None).0,
-            Self::SaltedCoinReveal => crate::reveal::schedule(crate::reveal::Format::V2),
+            Self::CoinReveal => crate::reveal::schedule(Format::V1),
+            Self::DataReveal => crate::data::schedule(DataFormat::V1),
+            Self::Hold => crate::hold::schedule(DataFormat::V1),
+            Self::SaltedCoinReveal => crate::reveal::schedule(Format::V2),
+            Self::SaltedDataReveal => crate::data::schedule(DataFormat::V2),
+            Self::SaltedHold => crate::hold::schedule(DataFormat::V2),
         }
     }
 

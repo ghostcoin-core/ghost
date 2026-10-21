@@ -95,6 +95,27 @@ The measured proof is the salted example of `proofs/tests/salted_reveal.rs`
 the range of the version 1 proofs above (954,991 to 961,981 bytes): the 16
 columns add at most 3,392 bytes to the bound.
 
+## The salted data reveal and proof of holding (version 2)
+
+The data reveal (S2) and the proof of holding (S3) of a salted (version 2)
+data commitment, type `0x02 0x02`, are two statements beside the version 1
+ones, `Statement::SaltedDataReveal` and `Statement::SaltedHold`. Each holds
+the 16-byte salt as a private witness in 16 carried columns right after `b`,
+read by both the data fingerprint and the data marker under their `v2` tags.
+The public fields and binding layouts are those of version 1.
+
+| Figure | Value |
+|---|---|
+| Trace, version 1 data reveal and proof of holding | 1,024 rows by 3,786 columns, unchanged |
+| Trace, salted data reveal and proof of holding | 1,024 rows by **3,802 columns** |
+| `MAX_TRACE_WIDTH` | 3,824 columns, unchanged: the salted coin reveal stays the widest statement |
+| Proof field, `PROOF_BYTES` | 1,310,720 bytes, unchanged |
+
+The widths are measured from the shipped configuration's report in
+`proofs/tests/salted_data.rs`. No parameter changes; the conjectured bits
+with grinding counted at half stay at least 128 for both, and their proof
+length bound is below the budget trace's 1,056,723 bytes.
+
 ## Security figures
 
 From the library's estimator (`p3-uni-stark` `StarkSecurityParams`, through
