@@ -51,7 +51,11 @@ settled, the check rejects (fails closed) and the point is listed in section 11.
   protocol" 10). Tag strings are fixed in the proof-statement specification;
   the names used here are placeholders for distinct tags.
 - "Type tag" is the commitment's version and type (outline, "Core protocol" 3).
-  `COIN` is the coin type at the current version. `DATA` is any data type.
+  `COIN` is the coin type at the commitment's format version: every new commit
+  and every remainder is version 2, the salted format (`0x02 0x01`), and
+  version 1 leaves (`0x01 0x01`) already on a chain stay valid
+  ([spec 01](01-commitments-and-keys.md), sections 3 and 10). `DATA` is any
+  data type.
 - "Marker" is the one-time marker a one-time reveal publishes (outline, "Core
   protocol" 5).
 - "Hidden set" is the set of coin commitments in the coin tree that have not
@@ -134,22 +138,29 @@ amount and the type tag. The user never submits a final commitment.
 **Construction (Proposed).** The wallet computes
 
 ```text
-F = H(tag_coin_fingerprint, s, r, b, type_tag, content_fingerprint, rule)
+F = H(tag_coin_fingerprint, s, r, b, salt, type_tag, content_fingerprint, rule)
 ```
 
 where `s` is the secret, `r` the reveal secret, `b` fresh random blinding,
+`salt` a fresh random 16-byte value the wallet draws for this commitment,
 `content_fingerprint` and `rule` the fields of the outline's commitment format
-(for the first milestone `rule` is the empty rule). The commit carries `F`. The
-node computes
+(for the first milestone `rule` is the empty rule). The tag is
+`ghost/coin-fingerprint/v2` and the type tag is that of commitment format
+version 2 ([spec 01](01-commitments-and-keys.md), section 3). The salt is
+public and makes every leaf a separate target for anyone guessing keys; a
+version 1 commitment, made before the salt, has none and hashes as before. The
+commit carries `F` and its salt. The node computes
 
 ```text
 C = H(tag_coin_commitment, COIN, F, v)
 ```
 
 with `v` the amount it has just burned and `COIN` set by the node, not by the
-sender, and writes `C` as the leaf. The reveal proof opens a leaf only by
-showing values that satisfy both equations (section 7). A remainder
-commitment is built the same way inside the reveal proof, from `F'` and `v'`.
+sender: the version 2 type tag for every new commit. It writes `C` as the
+leaf. The reveal proof opens a leaf only by showing values that satisfy both
+equations (section 7). A remainder commitment is built the same way inside
+the reveal proof, from `F'` and `v'`, always at version 2 with its own fresh
+salt.
 
 **Why this binds the amount.** The only `v` that ever enters the outer hash at
 commit is the amount the node burned in the same state change. To open `C` at
@@ -189,7 +200,8 @@ in this order and stops at the first failure.
    the exact length that version defines. **Proposed:** a commit reached by a
    contract call, not a top-level transaction, is rejected (question 5).
 3. **No final commitment and no type field.** The payload carries the
-   fingerprint `F` and the encrypted note, and nothing that the node would
+   fingerprint `F`, its public salt (section 5; where it sits is for the
+   transaction-format specification) and the encrypted note, and nothing that the node would
    treat as a final commitment or as a type tag. A payload with any extra field
    is rejected by the exact-length check in step 2.
 4. **Fingerprint encoding.** `F` is a 32-byte Keccak-256 string, so every
@@ -243,9 +255,11 @@ chain, and step 13 is the only step that writes.
    `[0, V_MAX]`, and the recipient a 20-byte address with no other bits set.
    Roots, markers and commitments are 32-byte strings with no modulus check
    ([spec 01](01-commitments-and-keys.md), section 12, item 2).
-3. **Type.** The type tag is `COIN` at the current version. A `DATA` type, an
-   unknown type or an old version is rejected here, before any lookup or proof
-   verification, so a data commitment never reaches the mint.
+3. **Type.** The type tag is `COIN` at commitment format version 2 or, for a
+   leaf already on a chain, version 1. A `DATA` type, an unknown type or an
+   unknown version byte is rejected here, before any lookup or proof
+   verification, and never read with a guessed version, so a data commitment
+   never reaches the mint.
 4. **Chain, version and domain.** The chain identifier, protocol version and
    domain tag are this chain's current values.
 5. **Fee.** The fee equals the chain's formula for this block (base fee plus
@@ -277,12 +291,14 @@ chain, and step 13 is the only step that writes.
     - **Membership:** an input commitment `C`, opened as in section 5 with type
       `COIN`, is a leaf under the public tree root.
     - **Marker derivation:** the public marker is derived from `C`'s secret
-      parts, so one commitment has one marker.
+      parts and, for a version 2 leaf, its salt, so one commitment has one
+      marker. The salt is a private input of the proof, never a public one.
     - **Remainder:** the public remainder commitment is built as in section 5
-      from `F'` and `v'`, with the same type tag, content fingerprint and rule
-      as `C`, and `s'`, `r'` and `b'` free ([spec 02](02-proof-statements.md),
-      section 4, constraint 4). Fresh blinding is the wallet's duty (section
-      8), not something the proof shows: a remainder that reused `r` and `b`
+      from `F'` and `v'`, with the same type, content fingerprint and rule as
+      `C`, at commitment format version 2, and `s'`, `r'`, `b'` and its salt
+      free ([spec 02](02-proof-statements.md), section 4, constraint 4).
+      Fresh blinding and a fresh salt are the wallet's duty (section 8), not
+      something the proof shows: a version 1 remainder that reused `r` and `b`
       would carry the spent marker and could never be revealed, which harms
       only its own holder.
     - **Conservation:** `v = out + v' + fee`.
@@ -325,13 +341,21 @@ never publishes (outline, core requirement 3).
   marker differ (threat model C26). The wallet derives it from the digits and
   the commitment number ([spec 01](01-commitments-and-keys.md), section 8,
   which also covers a number picked again after a reorganisation).
+- **Fresh salt.** Each remainder also gets its own 16-byte salt, drawn fresh
+  from the wallet's secure random source for that reveal and never reused, in
+  its fingerprint and its marker (spec 01, section 3). The reveal publishes no
+  field for it: it travels inside the remainder's encrypted note, which the
+  binding digest covers.
 - **Same key by default.** By default `s' = s` and `r' = r`: the same Phantom
   Key controls the remainder (outline, "Phantom Keys").
 - **New key as an option (claim).** A claim uses new, independent `s'` and
   `r'`, so only the new key controls the remainder. The proof does not require
   `s' = s`; the chain cannot tell a claim from a partial reveal.
-- **What carries over.** Type tag, content fingerprint and rule are equal to
-  the input's. There is nothing else to carry over in the first milestone.
+- **What carries over.** Type, content fingerprint and rule are equal to the
+  input's. The commitment format version does not carry over: every remainder
+  is version 2, so the first reveal of a version 1 leaf moves its value into a
+  salted remainder. There is nothing else to carry over in the first
+  milestone.
 - **Boundary cases** (outline, "First milestone" 8):
   - Full reveal: `out = v - fee`, `v' = 0`.
   - Zero-amount claim: `out = 0`, `v' = v - fee`, new key; nothing is minted to

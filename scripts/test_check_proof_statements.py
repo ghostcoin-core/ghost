@@ -79,6 +79,45 @@ class CheckerTest(unittest.TestCase):
         errors = self.errors(text)
         self.assertTrue(any("both public and private" in e for e in errors), errors)
 
+    def test_salt_must_be_private_in_every_statement(self):
+        for heading, row in (
+                ("## 4. Statement S1", "| `salt` | 16 | Salt of the input commitment"),
+                ("## 5. Statement S2", "| `salt` | 16 | Salt of the data commitment"),
+                ("## 6. Statement S3", "| `salt` | 16 | Salt of the commitment;")):
+            with self.subTest(statement=heading):
+                start = self.text.index(heading)
+                at = self.text.index(row, start)
+                end = self.text.index("\n", at) + 1
+                text = self.text[:at] + self.text[end:]
+                n = heading.split("Statement ")[1]
+                self.assert_gap(text, f"statement {n}: 'salt' is not a private input")
+
+    def test_salt_made_public(self):
+        row = "| `rule` | 32 | Transaction, must be the empty rule | The empty rule is the only"
+        start = self.text.index("## 4. Statement S1")
+        priv = self.text.index("| `salt` | 16 | Salt of the input commitment", start)
+        end = self.text.index("\n", priv) + 1
+        text = self.text[:priv] + self.text[end:]
+        text = text.replace(row, "| `salt` | 16 | Transaction | It is public anyway |\n" + row, 1)
+        errors = self.errors(text)
+        self.assertTrue(any("statement S1: 'salt' is a public input" in e for e in errors), errors)
+        self.assertTrue(any("public inputs not in ghost/coin-reveal-binding/v1: ['salt']" in e
+                            for e in errors), errors)
+
+    def test_salted_tags_must_be_named(self):
+        for tag in checker.SALTED_TAGS:
+            with self.subTest(tag=tag):
+                text = self.text.replace(tag, tag[:-1] + "1")
+                self.assert_gap(text, f"salted tag {tag} is not named")
+
+    def test_salt_and_unknown_version_vectors_are_listed(self):
+        self.assertIn("- **PS-25. The salt is a private witness", self.text)
+        self.assertIn("- **AV-13. Salt substitution", self.text)
+        start = self.text.index("- **PS-25.")
+        at = self.text.index("Check:", start)
+        text = self.text[:at] + "Test:" + self.text[at + len("Check:"):]
+        self.assert_gap(text, "PS-25 does not say how a test checks it")
+
     def test_public_input_not_bound(self):
         row = "| `rule` | 32 | Transaction, must be the empty rule | The empty rule is the only"
         text = self.damaged(row, "| `memo` | 32 | Transaction | A free text |\n" + row)

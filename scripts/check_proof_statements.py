@@ -6,13 +6,15 @@ Python standard library only. It checks that:
   1. the required sections are present;
   2. every statement section (`## N. Statement Sk: ...`) lists its public
      inputs, with a reason for each that it does not link to the commit, its
-     private inputs and its constraints, and that no name is in both tables;
+     private inputs and its constraints, that no name is in both tables, and
+     that the secrets and the salt are private inputs and never public ones;
   3. each statement's public inputs are exactly the fields of its binding
      layout plus the digest itself, at the same widths;
   4. every binding layout is contiguous, sums to its stated total, gives the
      right size with its tag and the right number of Keccak permutations, and
      holds every field its statement must bind;
-  5. every hash tag the document names is in the tag table of spec 01;
+  5. every hash tag the document names is in the tag table of spec 01, and the
+     four salted fingerprint and marker tags are named;
   6. the properties are numbered PS-1 upwards without gaps or repeats, each
      names its check, and every PS-n cited anywhere exists;
   7. every named adversarial vector has exactly one entry, the entries are
@@ -54,8 +56,13 @@ BINDINGS = {
     "ghost/hold-binding/v1": CHAIN_FIELDS + ("marker_set_root", "verifier", "challenge"),
 }
 DIGEST = "binding"
-# Secrets every statement must take privately.
-PRIVATE_SECRETS = ("s", "r", "b", "position", "path")
+# Secrets every statement must take privately and never publicly. The salt of
+# a version 2 commitment is public on the commit, which is exactly why a
+# statement must not publish it again (spec 01, section 3).
+PRIVATE_SECRETS = ("s", "r", "b", "salt", "position", "path")
+# The salted (commitment format version 2) tags every statement opens with.
+SALTED_TAGS = ("ghost/coin-fingerprint/v2", "ghost/data-fingerprint/v2",
+               "ghost/coin-marker/v2", "ghost/data-marker/v2")
 
 REQUIRED_AMOUNT_VECTORS = ("amount-v-max", "amount-two-to-96")
 REQUIRED_CONSERVATION_VECTORS = ("conservation-full-reveal", "conservation-field-wrap",
@@ -308,6 +315,8 @@ class Checker:
             for secret in PRIVATE_SECRETS:
                 if secret not in priv:
                     self.fail(f"{where}: '{secret}' is not a private input")
+                if secret in pub:
+                    self.fail(f"{where}: '{secret}' is a public input")
             if DIGEST not in pub:
                 self.fail(f"{where}: the binding digest is not a public input")
             text = "\n".join(lines)
@@ -342,6 +351,9 @@ class Checker:
         for tag in sorted(set(TAG_RE.findall(self.text))):
             if tag not in known:
                 self.fail(f"tag {tag} is not in the tag table of spec 01")
+        for tag in SALTED_TAGS:
+            if tag not in self.text:
+                self.fail(f"salted tag {tag} is not named; no statement opens version 2")
 
     def check_properties(self):
         names = find_section(self.secs, "Properties")

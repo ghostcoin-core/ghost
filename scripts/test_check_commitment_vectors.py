@@ -77,6 +77,11 @@ class CheckerTest(unittest.TestCase):
             ("coin-commit", "fingerprint"),
             ("coin-commit", "commitment"),
             ("coin-remainder", "marker"),
+            ("coin-commit-salted", "fingerprint"),
+            ("coin-commit-salted-other", "commitment"),
+            ("coin-remainder-salted", "marker"),
+            ("data-commit-salted", "fingerprint"),
+            ("data-commit-salted-other", "marker"),
             ("data-commit", "content-fingerprint"),
             ("data-commit", "commitment"),
             ("data-commit", "marker"),
@@ -164,9 +169,12 @@ class CheckerTest(unittest.TestCase):
         self.assertTrue(any("ghost/empty-leaf/v2 is listed" in e for e in errors))
 
     def test_tags_are_distinct_ascii_with_version(self):
-        self.assertEqual(len(checker.ALL_TAGS), 19)
+        self.assertEqual(len(checker.ALL_TAGS), 23)
         for tag in checker.ALL_TAGS:
-            self.assertRegex(tag, r"^ghost/[a-z0-9-]+/v1$")
+            self.assertRegex(tag, r"^ghost/[a-z0-9-]+/v[12]$")
+        v2 = sorted(t for t in checker.ALL_TAGS if t.endswith("/v2"))
+        self.assertEqual(v2, ["ghost/coin-fingerprint/v2", "ghost/coin-marker/v2",
+                              "ghost/data-fingerprint/v2", "ghost/data-marker/v2"])
         prefixes = {checker._tag_prefix(t) for t in checker.ALL_TAGS}
         self.assertEqual(len(prefixes), len(checker.ALL_TAGS))
 
@@ -183,6 +191,211 @@ class CheckerTest(unittest.TestCase):
         path = Path(self.tmp.name) / "other.md"
         path.write_text(text, encoding="utf-8")
         return path
+
+
+SALT_A = bytes.fromhex("00112233445566778899aabbccddeeff")
+SALT_B = bytes.fromhex("f0e1d2c3b4a5968778695a4b3c2d1e0f")
+
+
+class SaltTest(unittest.TestCase):
+    """Commitment format version 2: a fresh public 16-byte salt in the
+    fingerprint and the marker, so one guess at a key checks one leaf."""
+
+    def setUp(self):
+        self.text = SPEC.read_text(encoding="utf-8")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.vectors = {v["name"]: v for v in
+                        checker.parse_vectors(checker.section(self.text, "Test vectors"))}
+        kb = checker.valid_key_bytes(self.vectors["coin-commit"]["key"])
+        self.s = checker.derive_secret(kb)
+        self.r = checker.derive_reveal_secret(kb)
+        self.b = checker.derive_blinding(kb, 0)
+        self.rule = bytes(32)
+
+    def run_on(self, text):
+        path = Path(self.tmp.name) / "spec.md"
+        path.write_text(text, encoding="utf-8")
+        return checker.run(path)[0]
+
+    def coin(self, salt, version=checker.VERSION_2):
+        f = checker.coin_fingerprint(self.s, self.r, self.b, self.rule, salt, version)
+        c = checker.coin_commitment(f, 10**18, version)
+        m = checker.marker("COIN", self.r, self.b, salt, version)
+        return f, c, m
+
+    def data(self, salt, version=checker.VERSION_2):
+        cf = checker.content_fingerprint(b"Ghost example data")
+        f = checker.data_fingerprint(self.s, self.r, self.b, cf, self.rule, salt, version)
+        return f, checker.data_commitment(f, version), checker.marker("DATA", self.r, self.b, salt, version)
+
+    def test_two_salts_give_unrelated_values(self):
+        for make in (self.coin, self.data):
+            with self.subTest(kind=make.__name__):
+                a, b = make(SALT_A), make(SALT_B)
+                old = make(None, checker.VERSION_1)
+                for x, y, z in zip(a, b, old):
+                    self.assertGreaterEqual(checker._bits_apart(x, y), checker.MIN_BITS_APART)
+                    self.assertGreaterEqual(checker._bits_apart(x, z), checker.MIN_BITS_APART)
+                    self.assertGreaterEqual(checker._bits_apart(y, z), checker.MIN_BITS_APART)
+
+    def test_salt_sits_right_after_b(self):
+        coin2 = bytes([0x02, 0x01])
+        f = checker.keccak_tagged("ghost/coin-fingerprint/v2", self.s, self.r, self.b, SALT_A,
+                                  coin2, bytes(32), self.rule)
+        c = checker.keccak_tagged("ghost/coin-commitment/v1", coin2, f, (10**18).to_bytes(32, "big"))
+        m = checker.keccak_tagged("ghost/coin-marker/v2", self.r, self.b, SALT_A)
+        self.assertEqual(self.coin(SALT_A), (f, c, m))
+        data2 = bytes([0x02, 0x02])
+        cf = checker.content_fingerprint(b"Ghost example data")
+        fd = checker.keccak_tagged("ghost/data-fingerprint/v2", self.s, self.r, self.b, SALT_A,
+                                   data2, cf, self.rule)
+        self.assertEqual(self.data(SALT_A)[0], fd)
+        self.assertEqual(self.data(SALT_A)[1],
+                         checker.keccak_tagged("ghost/data-commitment/v1", data2, fd))
+        self.assertEqual(self.data(SALT_A)[2],
+                         checker.keccak_tagged("ghost/data-marker/v2", self.r, self.b, SALT_A))
+
+    def test_version_1_hashes_as_before(self):
+        # No salt and the v1 tags: exactly the formula before the salt existed.
+        coin1 = bytes([0x01, 0x01])
+        f = checker.keccak_tagged("ghost/coin-fingerprint/v1", self.s, self.r, self.b, coin1,
+                                  bytes(32), self.rule)
+        self.assertEqual(self.coin(None, checker.VERSION_1)[0], f)
+        self.assertEqual(self.coin(None, checker.VERSION_1)[2],
+                         checker.keccak_tagged("ghost/coin-marker/v1", self.r, self.b))
+        v = self.vectors["coin-commit"]
+        self.assertEqual(self.coin(None, checker.VERSION_1)[0].hex(), v["fingerprint"])
+
+    def test_document_vectors_match_two_salts(self):
+        a, b = self.vectors["coin-commit-salted"], self.vectors["coin-commit-salted-other"]
+        self.assertEqual((a["key"], a["index"], a["amount"]), (b["key"], b["index"], b["amount"]))
+        self.assertNotEqual(a["salt"], b["salt"])
+        self.assertEqual(self.coin(bytes.fromhex(a["salt"]))[0].hex(), a["fingerprint"])
+        self.assertEqual(self.coin(bytes.fromhex(b["salt"]))[2].hex(), b["marker"])
+        self.assertEqual(checker.check_salt_pairs(list(self.vectors.values())), [])
+
+    def test_ignoring_the_salt_is_caught(self):
+        original_fp, original_marker = checker._fingerprint, checker.marker
+
+        def fp_without_salt(type_name, s, r, b, cf, rule, salt, version):
+            if version == checker.VERSION_2:
+                tag = checker.VERSION_TAGS[version][type_name][0]
+                return checker.keccak_tagged(tag, s, r, b, checker.type_tag(type_name, version), cf, rule)
+            return original_fp(type_name, s, r, b, cf, rule, salt, version)
+
+        with mock.patch.object(checker, "_fingerprint", fp_without_salt):
+            errors = checker.run(SPEC)[0]
+        self.assertTrue(any("[coin-commit-salted] fingerprint" in e for e in errors), errors)
+        self.assertTrue(any("[data-commit-salted-other] commitment" in e for e in errors), errors)
+        self.assertFalse(any("[coin-commit] " in e for e in errors), errors)
+
+        def marker_without_salt(type_name, r, b, salt=None, version=checker.VERSION_1):
+            if version == checker.VERSION_2:
+                return checker.keccak_tagged(checker.VERSION_TAGS[version][type_name][1], r, b)
+            return original_marker(type_name, r, b, salt, version)
+
+        with mock.patch.object(checker, "marker", marker_without_salt):
+            errors = checker.run(SPEC)[0]
+        self.assertTrue(any("[coin-remainder-salted] marker" in e for e in errors), errors)
+        self.assertTrue(any("[data-commit-salted] marker" in e for e in errors), errors)
+
+    def test_salt_after_the_type_tag_is_caught(self):
+        def fp_salt_moved(type_name, s, r, b, cf, rule, salt, version):
+            tag = checker.VERSION_TAGS[version][type_name][0]
+            parts = (salt,) if salt is not None else ()
+            return checker.keccak_tagged(tag, s, r, b, checker.type_tag(type_name, version), *parts, cf, rule)
+
+        with mock.patch.object(checker, "_fingerprint", fp_salt_moved):
+            errors = checker.run(SPEC)[0]
+        self.assertTrue(any("[coin-commit-salted] fingerprint" in e for e in errors), errors)
+
+    def test_v1_tags_with_salt_are_caught(self):
+        # A version 2 commitment hashed under the version 1 tags must not pass.
+        with mock.patch.dict(checker.VERSION_TAGS, {checker.VERSION_2: checker.VERSION_TAGS[checker.VERSION_1]}):
+            errors = checker.run(SPEC)[0]
+        self.assertTrue(any("[coin-commit-salted] fingerprint" in e for e in errors), errors)
+        self.assertTrue(any("[coin-commit-salted] marker" in e for e in errors), errors)
+
+    def test_same_salt_twice_fails(self):
+        text = self.text.replace("salt = f0e1d2c3b4a5968778695a4b3c2d1e0f",
+                                 "salt = 00112233445566778899aabbccddeeff")
+        errors = self.run_on(text)
+        self.assertTrue(any("the same salt is used twice" in e for e in errors), errors)
+
+    def test_equal_values_under_two_salts_fail(self):
+        # A document whose second salt vector repeats the first one's values.
+        a = self.vectors["coin-commit-salted"]
+        text = self.text
+        for field in ("fingerprint", "commitment", "marker"):
+            text = text.replace(f"{field} = {self.vectors['coin-commit-salted-other'][field]}",
+                                f"{field} = {a[field]}")
+        errors = checker.check_salt_pairs(
+            checker.parse_vectors(checker.section(text, "Test vectors")))
+        for field in ("fingerprint", "commitment", "marker"):
+            self.assertTrue(any(f"{field} values are not unrelated" in e for e in errors), errors)
+
+    def test_salt_pairs_are_required(self):
+        start = self.text.index("[data-commit-salted-other]")
+        end = self.text.index("```", start)
+        errors = self.run_on(self.text[:start] + self.text[end:])
+        self.assertIn("no data-commitment vectors of one secret under two salts", errors)
+        start = self.text.index("### Salted commitment vectors")
+        end = self.text.index("### Tree vectors")
+        errors = self.run_on(self.text[:start] + self.text[end:])
+        self.assertTrue(any("version 2 coin commitment vectors must cover" in e for e in errors), errors)
+        self.assertIn("no version 2 data commitment vector", errors)
+
+    def test_salt_length_and_presence(self):
+        for bad in (bytes(15), bytes(17), None):
+            with self.subTest(salt=bad):
+                with self.assertRaises(ValueError):
+                    self.coin(bad)
+        with self.assertRaises(ValueError):
+            self.coin(SALT_A, checker.VERSION_1)
+        text = self.text.replace("salt = 00112233445566778899aabbccddeeff",
+                                 "salt = 00112233445566778899aabbccddee", 1)
+        self.assertTrue(any("[coin-commit-salted] cannot be checked" in e
+                            for e in self.run_on(text)))
+
+    def test_unknown_version_is_rejected(self):
+        for tag in (b"\x03\x01", b"\x00\x01", b"\x02\x03", b"\x02"):
+            with self.subTest(tag=tag.hex()):
+                with self.assertRaises(ValueError):
+                    checker.read_type_tag(tag)
+        self.assertEqual(checker.read_type_tag(b"\x02\x01"), (2, "COIN"))
+        self.assertEqual(checker.read_type_tag(b"\x01\x02"), (1, "DATA"))
+        with self.assertRaises(ValueError):
+            self.coin(SALT_A, 3)
+        with self.assertRaises(ValueError):
+            checker.marker("COIN", self.r, self.b, SALT_A, 3)
+        start = self.text.index("[coin-commit-salted]\n")
+        at = self.text.index("version = 2", start)
+        text = self.text[:at] + "version = 3" + self.text[at + len("version = 2"):]
+        self.assertTrue(any("[coin-commit-salted] cannot be checked" in e
+                            for e in self.run_on(text)))
+
+    def test_type_tag_is_checked(self):
+        start = self.text.index("[coin-commit-salted]\n")
+        at = self.text.index("type-tag = 0201", start)
+        text = self.text[:at] + "type-tag = 0101" + self.text[at + len("type-tag = 0201"):]
+        self.assertTrue(any("[coin-commit-salted] type-tag" in e for e in self.run_on(text)))
+
+    def test_tag_table_sizes(self):
+        body = checker.section(self.text, "Tagged hashing")
+        rows = {r["Tag"]: r for r in checker._table_rows(body)}
+        for tag, size in (("ghost/coin-fingerprint/v2", "204"), ("ghost/data-fingerprint/v2", "204"),
+                          ("ghost/coin-marker/v2", "101"), ("ghost/data-marker/v2", "101")):
+            self.assertEqual(rows[f"`{tag}`"]["Input bytes"], size)
+        self.assertEqual(rows["`ghost/coin-fingerprint/v2`"]["Keccak permutations"], "2")
+        self.assertEqual(rows["`ghost/coin-marker/v2`"]["Keccak permutations"], "1")
+        text = self.text.replace("`salt`, `COIN`, `cf`, `rule` | 204 | 2 |",
+                                 "`salt`, `COIN`, `cf`, `rule` | 188 | 2 |")
+        self.assertIn("tag ghost/coin-fingerprint/v2: table says '188' input bytes, recomputed 204",
+                      self.run_on(text))
+        text = self.text.replace("`r`, `b`, `salt` | 101 | 1 |", "`r`, `b`, `salt` | 101 | 2 |", 1)
+        self.assertIn("tag ghost/coin-marker/v2: table says '2' Keccak permutations, recomputed '1'",
+                      self.run_on(text))
 
 
 if __name__ == "__main__":
