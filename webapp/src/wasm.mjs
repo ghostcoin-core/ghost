@@ -392,6 +392,45 @@ export class Ghost {
     return { adopted, refused, best: readBest(out), removed: out.u64() };
   }
 
+  // The receipts root of `receipts`, each a receipt's consensus encoding
+  // (Uint8Array), in block order.
+  receiptsRoot(receipts) {
+    return this.call("ghost_receipts_root", byteStrings(new Input(), receipts).build());
+  }
+
+  // Checks each of `blocks` ([{ header, receipts }]: a header's RLP and its
+  // block's receipts, each its consensus encoding) against the header's
+  // receiptsRoot and keeps its coin tree records; stops at the first one
+  // refused.
+  receiptsAdd(blocks) {
+    const input = new Input().u32(blocks.length);
+    for (const { header, receipts } of blocks) byteStrings(input.u32(header.length).bytes(header), receipts);
+    this.call("ghost_receipts_add", input.build());
+  }
+
+  // Checks a scan's tree and markers against the receipts receiptsAdd kept:
+  // `hashes`, the blocks from the chain's start to the tip (32 bytes each);
+  // `fromGenesis`, whether that start is genesis; `start`, its leaf count;
+  // `records` and `salts`, the leaves with their notes from that position on
+  // and the salt (or null) beside each; `markerBlocks`, how many of the
+  // blocks reach the block the markers were read at; `markers`, those
+  // markers (32 bytes each).
+  receiptsCheck({ hashes, fromGenesis, start, records, salts, markerBlocks, markers }) {
+    const count = records.length / LEAF_RECORD_BYTES;
+    if (salts.length !== count) throw new Error("one salt (or null) is expected per leaf");
+    const saltRecords = concat(salts.map((salt) => saltRecord(salt)));
+    const input = new Input()
+      .records(concat(hashes), 32)
+      .u8(fromGenesis ? 1 : 0)
+      .u32(start)
+      .records(records, LEAF_RECORD_BYTES)
+      .records(saltRecords, SALT_RECORD_BYTES)
+      .u32(markerBlocks)
+      .records(markers, 32)
+      .build();
+    this.call("ghost_receipts_check", input);
+  }
+
   // The chain seen from header `hash`: the best tip, whether `hash` is held,
   // its total work and its confirmations on the best chain (0 when it is
   // not on it), and the best chain's hashes at heights `from` to `to`.
@@ -405,6 +444,14 @@ export class Ghost {
     while (out.at < out.bytes.length) hashes.push(out.take(32));
     return { best, held, work, confirmations, hashes };
   }
+}
+
+// A list of byte strings as lib.rs reads one: a count, then each as a
+// 4-byte length and its bytes.
+function byteStrings(input, list) {
+  input.u32(list.length);
+  for (const bytes of list) input.u32(bytes.length).bytes(bytes);
+  return input;
 }
 
 // The best chain's tip as the module writes it.

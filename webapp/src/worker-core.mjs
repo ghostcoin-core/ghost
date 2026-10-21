@@ -9,7 +9,8 @@
 //
 // Every random byte comes from crypto.getRandomValues. Nothing is kept
 // between requests except the compiled module and, in its memory, the page's
-// header chain, which holds public headers only: a key's words or a wallet
+// header chain and the coin tree records of the block receipts it checked,
+// which are public data only: a key's words or a wallet
 // seed's words arrive with a request and are gone when it is answered.
 
 import { loadGhost } from "./wasm.mjs";
@@ -82,6 +83,26 @@ const OPS = {
 
   chainView(ghost, args) {
     return ghost.chainView(args);
+  },
+
+  // The block receipts (lib.rs, ghost_receipts_*): each block's receipts
+  // checked against its header's receiptsRoot and its coin tree records
+  // kept, then a scan's leaves, notes, salts and markers checked against
+  // those records. Public data only.
+  receiptsRoot(ghost, { receipts }) {
+    return { root: ghost.receiptsRoot(receipts) };
+  },
+
+  receiptsAdd(ghost, { blocks }, progress) {
+    progress("checking the block receipts");
+    ghost.receiptsAdd(blocks);
+    return { ok: true };
+  },
+
+  receiptsCheck(ghost, args, progress) {
+    progress("checking the coin tree and the spent markers against the block receipts");
+    ghost.receiptsCheck(args);
+    return { ok: true };
   },
 
   prove(ghost, args, progress) {

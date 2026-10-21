@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fromHex, toHex } from "../src/bytes.mjs";
+import { concat, fromHex, toHex, word } from "../src/bytes.mjs";
+import { receiptBytes } from "../src/flow.mjs";
 import { readHeader } from "../src/header.mjs";
 import { loadModule } from "./support/env.mjs";
 
@@ -161,4 +162,132 @@ test("a malformed envelope is refused before any proof work", () => {
   assert.throws(() => ghost.decodeEnvelope({ chainId: 7n, domain, envelope }), /version/);
   envelope[2] = 0x01;
   assert.throws(() => ghost.decodeEnvelope({ chainId: 7n, domain, envelope }), /chain/);
+});
+
+// --- Block receipts ---
+
+const EMPTY_TRIE = "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421";
+const COIN_TREE_ACCOUNT = "0x67686f7374000000000000000000000000000001";
+const tagTopic = (tag) => toHex(ghost.keccak256(concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)])));
+const be32 = (n) => Uint8Array.of(n >>> 24, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff);
+
+test("a receipt from eth_getBlockReceipts is encoded as its block's receiptsRoot covers it", () => {
+  // A legacy receipt with no log: 0xf90108, status 0x01, gas 0x825208, the
+  // bloom (0xb90100 and 256 bytes) and the empty log list 0xc0.
+  const plain = { type: "0x0", status: "0x1", cumulativeGasUsed: "0x5208", logsBloom: `0x${"00".repeat(256)}`, logs: [] };
+  assert.equal(toHex(receiptBytes(plain)), `0xf9010801825208b90100${"00".repeat(256)}c0`);
+  // Typed: the type byte first. A failed receipt's status is empty (0x80).
+  assert.equal(toHex(receiptBytes({ ...plain, type: "0x52" })), `0x52f9010801825208b90100${"00".repeat(256)}c0`);
+  assert.equal(toHex(receiptBytes({ ...plain, status: "0x0" })), `0xf9010880825208b90100${"00".repeat(256)}c0`);
+  // A log: [address, [topics], data].
+  const log = { address: COIN_TREE_ACCOUNT, topics: [`0x${"ab".repeat(32)}`], data: "0x0102" };
+  const withLog = toHex(receiptBytes({ ...plain, logs: [log] }));
+  assert.ok(withLog.endsWith(`f83a94${COIN_TREE_ACCOUNT.slice(2)}e1a0${"ab".repeat(32)}820102`), withLog);
+  for (const bad of [
+    { ...plain, type: undefined },
+    { ...plain, type: "0x80" },
+    { ...plain, status: "0x2" },
+    { ...plain, logsBloom: "0x00" },
+    { ...plain, logs: null },
+    { ...plain, logs: [{ ...log, address: "0x01" }] },
+    { ...plain, logs: [{ ...log, topics: ["0x01"] }] },
+    null,
+  ]) {
+    assert.throws(() => receiptBytes(bad), Error, JSON.stringify(bad));
+  }
+  assert.equal(toHex(ghost.receiptsRoot([])), EMPTY_TRIE, "no receipts: the empty trie");
+  const one = ghost.receiptsRoot([receiptBytes(plain)]);
+  assert.notEqual(toHex(one), toHex(ghost.receiptsRoot([receiptBytes({ ...plain, cumulativeGasUsed: "0x5209" })])));
+  assert.notEqual(toHex(one), toHex(ghost.receiptsRoot([receiptBytes(plain), receiptBytes(plain)])));
+});
+
+// Genesis and block 1, which holds a salted commit (position 0) and a reveal
+// (its remainder at position 1, spending `marker`), with their receipts in
+// the node's log layout.
+function receiptsChain() {
+  const leaf = new Uint8Array(32).fill(0xa1);
+  const note = new Uint8Array(156).fill(0xa2);
+  const salt = new Uint8Array(16).fill(0xa3);
+  const remainder = new Uint8Array(32).fill(0xb1);
+  const remainderNote = new Uint8Array(156).fill(0xb2);
+  const marker = new Uint8Array(32).fill(0xc1);
+  const receipt = (topics, data, gas) => ({
+    type: "0x50",
+    status: "0x1",
+    cumulativeGasUsed: gas,
+    logsBloom: `0x${"00".repeat(256)}`,
+    logs: [
+      { address: `0x${"11".repeat(20)}`, topics: [], data: "0x" },
+      { address: COIN_TREE_ACCOUNT, topics, data: toHex(data) },
+    ],
+  });
+  const commit = receipt([tagTopic("ghost/commit-receipt/v1")], concat([be32(0), be32(0), leaf, word(5n), note, salt]), "0x1");
+  const reveal = receipt(
+    [tagTopic("ghost/reveal-receipt/v1"), toHex(marker)],
+    concat([be32(0), be32(1), remainder, remainderNote, new Uint8Array(20).fill(0x22), word(1n)]),
+    "0x2",
+  );
+  const receipts = [commit, reveal].map(receiptBytes);
+  const draft = (number, parentHash, receiptsRoot) =>
+    readHeader({
+      ...BLOCK_ONE,
+      parentHash: toHex(parentHash),
+      number: `0x${number.toString(16)}`,
+      receiptsRoot: toHex(receiptsRoot),
+    }).rlp;
+  const genesis = draft(0, new Uint8Array(32), fromHex(EMPTY_TRIE));
+  const block = draft(1, ghost.keccak256(genesis), ghost.receiptsRoot(receipts));
+  return {
+    genesis,
+    block,
+    receipts,
+    hashes: [ghost.keccak256(genesis), ghost.keccak256(block)],
+    records: concat([leaf, note, remainder, remainderNote]),
+    salts: [salt, null],
+    marker,
+  };
+}
+
+test("block receipts check against their header's receiptsRoot, and the leaves, notes, salts and markers against them", () => {
+  const c = receiptsChain();
+  ghost.receiptsAdd([
+    { header: c.genesis, receipts: [] },
+    { header: c.block, receipts: c.receipts },
+  ]);
+  const scan = { hashes: c.hashes, fromGenesis: true, start: 0, records: c.records, salts: c.salts, markerBlocks: 2, markers: c.marker };
+  ghost.receiptsCheck(scan);
+
+  // A receipt dropped, reordered or changed gives another root.
+  for (const receipts of [c.receipts.slice(1), [...c.receipts].reverse(), [c.receipts[0], Uint8Array.from(c.receipts[1], (b, i) => (i === 300 ? b ^ 1 : b))]]) {
+    assert.throws(() => ghost.receiptsAdd([{ header: c.block, receipts }]), /the receipts of block 1: the receipts do not match the header's receipts root/);
+  }
+
+  const changed = (bytes, at) => Uint8Array.from(bytes, (b, i) => (i === at ? b ^ 1 : b));
+  const refusals = [
+    [{ records: changed(c.records, 100) }, /the note at position 0 differs from its receipt/],
+    [{ records: changed(c.records, 188 + 5) }, /the leaf at position 1 differs from its receipt/],
+    [{ salts: [null, null] }, /the salt at position 0 differs from its receipt/],
+    [{ salts: [c.salts[0], c.salts[0]] }, /the salt at position 1 differs from its receipt/],
+    [{ records: c.records.slice(0, 188), salts: [c.salts[0]] }, /the leaf at position 1 is missing/],
+    [{ records: concat([c.records, c.records.slice(0, 188)]), salts: [...c.salts, null] }, /position 2 is not in the receipts/],
+    [{ records: concat([c.records.slice(188), c.records.slice(0, 188)]), salts: [null, c.salts[0]] }, /position 0 differs/],
+    [{ markers: new Uint8Array(0) }, /spent marker 0 is missing/],
+    [{ markers: concat([c.marker, c.marker]) }, /spent marker 1 is not in the receipts/],
+    [{ markers: new Uint8Array(32) }, /spent marker 0 differs from its receipt/],
+    // The markers read at genesis cannot hold block 1's.
+    [{ markerBlocks: 1 }, /spent marker 0 is not in the receipts/],
+    // Blocks out of order, a block whose receipts were not checked, none.
+    [{ hashes: [...c.hashes].reverse() }, /does not follow/],
+    [{ hashes: [c.hashes[0], new Uint8Array(32)] }, /have not been checked/],
+    [{ hashes: [] }, /do not cover the scan/],
+  ];
+  for (const [change, refusal] of refusals) assert.throws(() => ghost.receiptsCheck({ ...scan, ...change }), refusal, String(refusal));
+
+  // From a pinned block 1 with one leaf before it: the run starts at
+  // position 1, and the markers before the start are not the receipts' to
+  // say, only the last ones are.
+  const pinned = { ...scan, hashes: [c.hashes[1]], fromGenesis: false, start: 1, records: c.records.slice(188), salts: [null], markerBlocks: 1 };
+  ghost.receiptsCheck({ ...pinned, markers: concat([new Uint8Array(32).fill(9), c.marker]) });
+  assert.throws(() => ghost.receiptsCheck({ ...pinned, markers: new Uint8Array(0) }), /spent marker 0 is missing/);
+  assert.throws(() => ghost.receiptsCheck({ ...pinned, markers: concat([c.marker, new Uint8Array(32)]) }), /differs from its receipt/);
 });

@@ -37,6 +37,7 @@ const ENDPOINT_METHODS = new Set([
   "eth_blockNumber",
   "eth_getBlockByNumber",
   "eth_getTransactionReceipt",
+  "eth_getBlockReceipts",
   "eth_sendRawTransaction",
   "eth_getTransactionCount",
   "eth_getBalance",
@@ -247,6 +248,16 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
       assert.equal(r.params[2], "0x0", "the internal network's tree fits one page");
       assert.match(r.params[3], /^0x[0-9a-f]{64}$/);
     }
+    // Block receipts only by the hash of a block of the chain, each block
+    // once, from genesis to the last tip read, in chain order.
+    const blockHashes = node.blocks.map((b) => toHex(b.hash));
+    const asked = node.requests.filter((x) => x.method === "eth_getBlockReceipts").map((r) => r.params);
+    assert.ok(asked.every((params) => params.length === 1), "one block hash per request");
+    assert.deepEqual(
+      asked.map(([hash]) => hash),
+      blockHashes.slice(0, asked.length),
+      "every block from genesis on, once each, in order",
+    );
   } finally {
     prover.terminate();
     await node.close();
@@ -357,19 +368,46 @@ async function vanish(flow, amount) {
 // What the endpoint saw since request `from`, without the JSON-RPC ids.
 const seen = (node, from) => node.requests.slice(from).map((r) => JSON.stringify([r.method, r.params]));
 
-test("altered notes cannot make the requests depend on whether the key owns a coin", async () => {
+// Claims the coin of `key` from another device: a second flow, with its own
+// worker, on the same stand-in, whose build pins a recent header (so it
+// checks few seals). A page that opened `key` before still shows the coin,
+// which its next scan finds spent.
+async function claimElsewhere(node, key) {
+  const prover = nodeProver();
+  // Below the settled block, so the coin, older than the pin, counts as
+  // followed by the leaves the settled tree holds.
+  const networks = node.networks({ pinAt: node.tip() - 4 });
+  const elsewhere = createFlow({ prover, endpoint: node.url, networks, pollMs: 5, maxPolls: 20, sleep: async () => node.mine() });
+  try {
+    assert.equal((await elsewhere.summonOpen(key)).status, "unclaimed");
+    const newKey = await elsewhere.claimStart();
+    assert.equal((await elsewhere.claimCheck(answersFor(newKey, elsewhere.claimSaved()))).ok, true);
+  } finally {
+    prover.terminate();
+  }
+}
+
+// A reveal of the open key, which holds no unspent coin any more, refused
+// once: its scan reads the blocks added since the page last looked, so the
+// next attempt starts from the same tip with the same receipts held.
+async function noCoinAttempt(flow) {
+  await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), /holds no unspent coin/);
+}
+
+test("the requests do not depend on whether the key owns a coin", async () => {
   const { node, flow, work, done } = await setUp();
   try {
     const owner = await vanish(flow, "1");
-    const target = node.leaves.findIndex((l) => toHex(l.commitment) === toHex(node.commits[0].commitment));
     const other = await vanish(flow, "1");
     node.foreignCommits(1);
     node.mineTo(44);
     assert.equal((await flow.summonOpen(other)).status, "unclaimed");
 
-    // The endpoint keeps every leaf and root but zeroes every note except
-    // the targeted coin's: only the targeted coin's owner still finds one.
-    node.dishonest.note = (position, note) => (position === target ? note : new Uint8Array(note.length));
+    // The other key's coin is claimed from another device: this page still
+    // shows it, and its next reveal finds no unspent coin. Every note the
+    // endpoint serves is honest, as the block receipts require.
+    await claimElsewhere(node, other);
+    await noCoinAttempt(flow);
 
     let from = node.requests.length;
     let fromWork = work.length;
@@ -384,7 +422,7 @@ test("altered notes cannot make the requests depend on whether the key owns a co
     assert.equal((await flow.summonOpen(owner)).status, "unclaimed");
     const openOwner = seen(node, from);
     from = node.requests.length;
-    assert.equal((await flow.summonOpen(other)).status, "not-found");
+    assert.equal((await flow.summonOpen(other)).status, "claimed");
     assert.deepEqual(seen(node, from), openOwner, "opening a key asks the same whether it owns the coin or not");
 
     // Back on the owner's key, a reveal that fails after restore found the
@@ -406,7 +444,7 @@ test("altered notes cannot make the requests depend on whether the key owns a co
       [true],
       "a reveal that cannot be made proves a decoy",
     );
-    assert.equal(node.reveals.length, 0);
+    assert.equal(node.reveals.length, 1, "only the claim from the other device");
 
     // A reveal that goes through: up to the reveal itself, the endpoint
     // sees what it saw when the key held no coin and the app gave up.
@@ -429,7 +467,7 @@ test("altered notes cannot make the requests depend on whether the key owns a co
       notOwnerProofs[0].ms > real[0].ms / 4,
       `the decoy took ${Math.round(notOwnerProofs[0].ms)} ms, the real proof ${Math.round(real[0].ms)} ms`,
     );
-    assert.equal(node.reveals.length, 1);
+    assert.equal(node.reveals.length, 2);
   } finally {
     await done();
   }
@@ -440,13 +478,16 @@ test("a refused proof and a fee change leave the requests and their timing as fo
   const GWEI = 10n ** 9n;
   try {
     const owner = await vanish(flow, "1");
-    const target = node.leaves.findIndex((l) => toHex(l.commitment) === toHex(node.commits[0].commitment));
     const other = await vanish(flow, "1");
     node.foreignCommits(1);
-    // Each attempt starts at the start of a fee window.
-    node.mineTo(76);
+    node.mineTo(44);
     assert.equal((await flow.summonOpen(other)).status, "unclaimed");
-    node.dishonest.note = (position, note) => (position === target ? note : new Uint8Array(note.length));
+    // The other key's coin is claimed from another device, so the page's
+    // reveal of it finds no unspent coin. Each attempt starts at the start of
+    // a fee window, with the receipts of every block to it already held.
+    await claimElsewhere(node, other);
+    node.mineTo(76);
+    await noCoinAttempt(flow);
 
     // While the first proof of an attempt is made, the next fee window's
     // blocks arrive with a higher base fee, so the fee changes and the
@@ -505,7 +546,7 @@ test("a refused proof and a fee change leave the requests and their timing as fo
         `a refused proof took ${Math.round(p.ms)} ms, a decoy ${Math.round(none.proofs[0].ms)} ms`,
       );
     }
-    assert.equal(node.reveals.length, 0);
+    assert.equal(node.reveals.length, 1, "only the claim from the other device");
 
     // The owner's key again, proved after the retry: up to the reveal, the
     // same as without a coin.
@@ -519,8 +560,8 @@ test("a refused proof and a fee change leave the requests and their timing as fo
     assert.ok(sentAt > 0);
     assert.deepEqual(made.events.slice(0, sentAt), none.events, "the retried reveal asks the same before it is sent");
     assert.deepEqual(made.proofs.map((p) => p.decoy), [false, false]);
-    assert.equal(node.reveals.length, 1);
-    assert.ok(node.reveals[0].fee > SPEC_FEE, "the reveal carries the raised fee");
+    assert.equal(node.reveals.length, 2);
+    assert.ok(node.reveals[1].fee > SPEC_FEE, "the reveal carries the raised fee");
   } finally {
     await done();
   }

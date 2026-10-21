@@ -1,21 +1,62 @@
 // An in-process stand-in for a node whose tip moves on every poll, as the CI
 // node's does at a block about every 20 ms, reached through the flow's
-// `fetch`, with a stub prover. Nothing is built: header hashes are SHA-256
-// of the header's RLP, which the stub's keccak256 also computes, and a
-// proof is a record the stand-in looks up by its envelope.
+// `fetch`, with a stub prover. Nothing is proved: a proof is a record the
+// stand-in looks up by its envelope, and coin roots are stand-in values.
+// Header hashes are keccak256 of the header's RLP, and every block carries
+// real receipts in the node's log layout (the client library's), whose
+// root, computed by the built module's ghost_receipts_root, is the header's
+// receiptsRoot; the stub prover checks the receipts, the leaves, notes and
+// markers with the built module's own exports, as the worker does.
 //
 // Importing this file runs nothing.
 
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
-import { concat, toHex } from "../../src/bytes.mjs";
+import { concat, fromHex, toHex, word } from "../../src/bytes.mjs";
 import { SETTLE_DEPTH } from "../../src/chain.mjs";
 import { HEAD_MOVED, STALE_ROOT_DEPTH, createFlow } from "../../src/flow.mjs";
-import { readHeader } from "../../src/header.mjs";
+import { readHeader, rlpList, rlpString } from "../../src/header.mjs";
+import { Ghost } from "../../src/wasm.mjs";
+import { wasmPath } from "./env.mjs";
 
 export const GHOST = 10n ** 18n;
 const NOTE_BYTES = 156;
+// The coin tree account and the topics of its commit and reveal logs.
+const COIN_TREE_ACCOUNT = "0x67686f7374000000000000000000000000000001";
+const COMMIT_TAG = "ghost/commit-receipt/v1";
+const REVEAL_TAG = "ghost/reveal-receipt/v1";
+
+// The built module, compiled once and instantiated for each stand-in.
+let compiled = null;
+function loadGhostSync() {
+  compiled ??= new WebAssembly.Module(readFileSync(wasmPath));
+  return new Ghost(new WebAssembly.Instance(compiled, {}).exports);
+}
+
+const u32 = (n) => {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setUint32(0, n);
+  return out;
+};
+
+function bigEndian(n) {
+  const out = [];
+  for (let v = BigInt(n); v > 0n; v >>= 8n) out.unshift(Number(v & 0xffn));
+  return Uint8Array.from(out);
+}
+
+// A receipt's consensus encoding, from its JSON: the type byte, then the
+// RLP of [status, cumulativeGasUsed, logsBloom, logs]. Every receipt here
+// is typed and succeeded.
+function encodeReceipt(r) {
+  const logs = r.logs.map((l) =>
+    rlpList([rlpString(fromHex(l.address)), rlpList(l.topics.map((t) => rlpString(fromHex(t)))), rlpString(fromHex(l.data))]),
+  );
+  const body = rlpList([rlpString(Uint8Array.of(1)), rlpString(bigEndian(r.cumulativeGasUsed)), rlpString(fromHex(r.logsBloom)), rlpList(logs)]);
+  return concat([fromHex(r.type), body]);
+}
 // The holder's coin; strangers' coins come before and after it.
 export const COIN_POSITION = 2;
 
@@ -39,9 +80,16 @@ const fromHexBytes = (hex) => Uint8Array.from(Buffer.from(hex.slice(2), "hex"));
 // envelope is judged as above. `clock.ms` is the flow's time (see flowOn); a
 // proof moves it on by `proveMs`.
 export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, deepest = STALE_ROOT_DEPTH, refuseEnvelope = false }) {
+  const ghost = loadGhostSync();
+  const topic = (tag) => ghost.keccak256(concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]));
+  const commitTopic = toHex(topic(COMMIT_TAG));
+  const revealTopic = toHex(topic(REVEAL_TAG));
   const clock = { ms: 0 };
   const leaves = [];
   const blocks = [];
+  const byHash = new Map();
+  // Spent markers (hex), each with the block that holds its reveal.
+  const spent = [];
   const receipts = new Map();
   const requests = [];
   const sends = [];
@@ -54,15 +102,24 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
   const stale = refuseEnvelope ? { envelope: null, refused: 0 } : null;
   let refuse = refuseFirst;
 
-  function mine() {
+  // A block holding `logs`, each the one log of its own transaction's
+  // receipt: { topics, data } (hex).
+  function mine(logs = []) {
     const number = blocks.length;
+    const txReceipts = logs.map((log, i) => ({
+      type: "0x50",
+      status: "0x1",
+      cumulativeGasUsed: q(100_000 * (i + 1)),
+      logsBloom: toHex(new Uint8Array(256)),
+      logs: [{ address: COIN_TREE_ACCOUNT, ...log }],
+    }));
     const json = {
       parentHash: number === 0 ? toHex(new Uint8Array(32)) : blocks[number - 1].json.hash,
       sha3Uncles: toHex(sha256("uncles")),
       miner: toHex(new Uint8Array(20)),
       stateRoot: toHex(sha256("state", String(number))),
       transactionsRoot: toHex(sha256("transactions", String(number))),
-      receiptsRoot: toHex(sha256("receipts", String(number))),
+      receiptsRoot: toHex(ghost.receiptsRoot(txReceipts.map(encodeReceipt))),
       logsBloom: toHex(new Uint8Array(256)),
       difficulty: q(1),
       number: q(number),
@@ -76,14 +133,26 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
       coinTreeRoot: toHex(rootOf(leaves.length)),
       dataTreeRoot: toHex(sha256("data")),
     };
-    json.hash = toHex(sha256(readHeader(json).rlp));
-    blocks.push({ number, json, leafCount: leaves.length });
+    json.hash = toHex(ghost.keccak256(readHeader(json).rlp));
+    const block = { number, json, leafCount: leaves.length, receipts: txReceipts.map((r) => ({ ...r, blockHash: json.hash })) };
+    blocks.push(block);
+    byHash.set(json.hash, block);
     return number;
   }
   const tip = () => blocks.length - 1;
-  const commit = (leaf) => {
+  // A block that appends `leaf` (with an all-zero note): a commit's log, or
+  // with `reveal` ({ marker, recipient, out }) a reveal's, whose marker it
+  // spends.
+  const commit = (leaf, reveal = null) => {
+    const position = leaves.length;
     leaves.push(leaf);
-    return mine();
+    const head = [u32(0), u32(position), leaf];
+    const note = new Uint8Array(NOTE_BYTES);
+    const log = reveal
+      ? { topics: [revealTopic, reveal.marker], data: toHex(concat([...head, note, fromHex(reveal.recipient, 20), word(reveal.out)])) }
+      : { topics: [commitTopic], data: toHex(concat([...head, word(GHOST), note])) };
+    if (reveal) spent.push({ marker: reveal.marker, block: blocks.length });
+    return mine([log]);
   };
 
   mine();
@@ -96,7 +165,7 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
   while (tip() < 120) mine();
 
   const blockByHash = (hash) => {
-    const block = blocks.find((b) => b.json.hash === String(hash).toLowerCase());
+    const block = byHash.get(String(hash).toLowerCase());
     if (!block) throw new Error("unknown anchor block");
     return block;
   };
@@ -123,7 +192,7 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
     if (coin.spent) throw new Error("marker already spent");
     coin.spent = true;
     const position = leaves.length;
-    const number = commit(proof.remainder.commitment);
+    const number = commit(proof.remainder.commitment, { marker: proof.marker, recipient: proof.recipient, out: proof.out });
     // A salted coin's remainder is salted, its salt read from its note.
     coins.push({ position, number: proof.number + 1n, amount: proof.remainder.amount, spent: false, salt: sha256("salt", String(proof.n)).slice(0, 16) });
     balances.set(proof.recipient, (balances.get(proof.recipient) ?? 0n) + proof.out);
@@ -143,9 +212,13 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
     eth_getTransactionByHash: ([hash]) => receipts.get(String(hash).toLowerCase()) ?? null,
     eth_sendRawTransaction: ([hex]) => sendRaw(hex),
     ghost_getPageRoots: ([, , anchor]) => [toHex(rootOf(blockByHash(anchor).leafCount))],
+    eth_getBlockReceipts: ([hash]) => byHash.get(String(hash).toLowerCase())?.receipts ?? null,
     ghost_getTreePage: ([kind, , , anchor]) => {
       const block = blockByHash(anchor);
-      if (kind === "coin-markers") return { count: "0x0", markers: [] };
+      if (kind === "coin-markers") {
+        const markers = spent.filter((s) => s.block <= block.number).map((s) => s.marker);
+        return { count: q(markers.length), markers };
+      }
       const entries = leaves.slice(0, block.leafCount).map((leaf) => ({ leaf: toHex(leaf), note: toHex(new Uint8Array(NOTE_BYTES)) }));
       return { kind, treeIndex: "0x0", page: "0x0", filled: q(entries.length), entries };
     },
@@ -164,12 +237,13 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
   }
 
   // The worker's header chain, stubbed in the stand-in's terms: a header is
-  // held when its SHA-256 is the hash given and it is the stand-in's block
+  // held when its keccak256 is the hash given and it is the stand-in's block
   // of that hash whose parent is held; the best chain is the longest. Its
   // checks of difficulty and seal are header-chain.test.mjs's, with the
   // real module.
   const chain = { held: new Map(), best: null };
-  const blockOf = (hash) => blocks.find((b) => b.json.hash === hash);
+  const blockOf = (hash) => byHash.get(hash);
+  const hashOf = (rlp) => toHex(ghost.keccak256(rlp));
   const heightOf = (hash) => chain.held.get(hash).number;
   const bestAt = (height) => {
     let at = chain.best;
@@ -183,7 +257,7 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
     async request(op, args) {
       switch (op) {
         case "chainStart": {
-          const hash = toHex(sha256(args.start.header));
+          const hash = hashOf(args.start.header);
           chain.held = new Map([[hash, { number: blockOf(hash).number, parent: null }]]);
           chain.best = hash;
           return { startHash: fromHexBytes(hash) };
@@ -191,7 +265,7 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
         case "chainAdd": {
           let adopted = 0;
           for (const { hash, rlp } of args.headers) {
-            const id = toHex(sha256(rlp));
+            const id = hashOf(rlp);
             const block = blockOf(id);
             if (id !== toHex(hash) || !block || !chain.held.has(block.json.parentHash)) {
               return { adopted, refused: { number: BigInt(block?.number ?? 0), why: "check", reason: "not the stand-in's block" }, best: bestView(), removed: 0n };
@@ -206,8 +280,11 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
           const id = toHex(args.hash);
           const held = chain.held.has(id);
           const onBest = held && bestAt(heightOf(id)) === id;
+          // One walk down from `to` by parents, as the module walks.
           const hashes = [];
-          for (let h = args.from; h <= args.to; h += 1) hashes.push(fromHexBytes(bestAt(h)));
+          for (let at = args.from <= args.to ? bestAt(args.to) : null; hashes.length <= args.to - args.from; at = chain.held.get(at).parent) {
+            hashes.unshift(fromHexBytes(at));
+          }
           return {
             best: bestView(),
             held,
@@ -219,9 +296,17 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
         case "checkKey":
           return { format: "words", groups: 21 };
         case "keccak256":
-          return { hash: sha256(args.bytes) };
+          return { hash: ghost.keccak256(args.bytes) };
         case "treeCheck":
           return {};
+        // The block receipts, checked by the built module as the worker
+        // checks them.
+        case "receiptsAdd":
+          ghost.receiptsAdd(args.blocks);
+          return { ok: true };
+        case "receiptsCheck":
+          ghost.receiptsCheck(args);
+          return { ok: true };
         case "prefixRoots":
           return { roots: Array.from({ length: args.to + 1 }, (_, c) => rootOf(c)) };
         case "restore":

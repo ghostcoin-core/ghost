@@ -125,7 +125,9 @@ function describeSummon(s) {
   }
   if (r && r.stage === "done") lines.push(`Done: revealed ${formatGhost(r.out)} GHOST to ${r.recipient} in block ${r.block}.`);
   if (r && r.stage === "dropped") lines.push(`Reveal dropped: ${r.dropped}.`);
-  lines.push(`Chain tip: block ${s.tip ?? "?"}. Notes are not yet checked against block receipts.`);
+  lines.push(
+    `Chain tip: block ${s.tip ?? "?"}. The coin tree's leaves and notes and the spent markers were checked against the block receipts of every block from the start this build pins.`,
+  );
   lines.push(SEAL_TRUST);
   return lines.join(" ");
 }
