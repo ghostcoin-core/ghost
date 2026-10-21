@@ -105,16 +105,48 @@ globalThis.fetch = async (input, init) => {
 };
 
 // The clean device may ask the independent node and nothing else.
+// `hold(method)` pauses the device's next request for that JSON-RPC method
+// before it is sent: the returned `reached` resolves once the request is
+// held, and `release()` sends it on. The reorganisation case uses it to
+// change the node's branch while a scan is part way through.
 function onlyTo(endpoint, seen) {
   const allowed = new URL(endpoint);
-  return async (input, init) => {
+  let holding = null;
+  const guarded = async (input, init) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
     if (url.host !== allowed.host) {
       seen.push(url.href);
       throw new Error(`refused: the clean device asked ${url.href}`);
     }
+    if (holding && typeof init?.body === "string") {
+      let method = null;
+      try {
+        method = JSON.parse(init.body).method;
+      } catch {
+        // not a JSON-RPC body
+      }
+      if (method === holding.method) {
+        const h = holding;
+        holding = null;
+        h.reach();
+        await h.released;
+      }
+    }
     return globalThis.fetch(input, init);
   };
+  guarded.hold = (method) => {
+    let reach;
+    let release;
+    const reached = new Promise((resolve) => {
+      reach = resolve;
+    });
+    const released = new Promise((resolve) => {
+      release = resolve;
+    });
+    holding = { method, reach, released };
+    return { reached, release };
+  };
+  return guarded;
 }
 
 function rpcClient(url) {
@@ -420,7 +452,8 @@ if (!GETH || !NETNS) {
       console.log(`B synced from its peers to block ${synchedHead.number}`);
 
       // --- The clean device: an empty header chain, the digits alone, and B ---
-      const clean = await device(B, onlyTo(B.url, cleanDeviceAsked));
+      const cleanFetch = onlyTo(B.url, cleanDeviceAsked);
+      const clean = await device(B, cleanFetch);
 
       await runCase("partial-reveal-then-claim", async () => {
         let r = await clean.summonOpen(K1.digits);
@@ -469,17 +502,24 @@ if (!GETH || !NETNS) {
         await pacerC.stop();
         const cHead = await C.head();
         console.log(`A's branch ends at block ${aBranch.number}, C's at block ${cHead.number}`);
-        // C rejoins while the clean device scans K2.
+        // C rejoins while the clean device scans K2: the scan is held at its
+        // first tree page, after it has adopted A's tip, until B has
+        // switched to C's branch.
+        const held = cleanFetch.hold("ghost_getTreePage");
         const scan = clean.summonOpen(K2.digits).then(
           (v) => ({ v }),
           (err) => ({ err }),
         );
-        await sleep(300);
+        const reached = await Promise.race([held.reached.then(() => true), scan.then(() => false)]);
+        assert.ok(reached, "the scan reached its first tree page");
+        assert.equal((await B.head()).hash, aBranch.hash, "the scan is held while B is still on A's branch");
         await B.rpc("admin_addPeer", [enode.C]);
         await C.rpc("admin_addPeer", [enode.A]);
         await synced(C);
         await waitFor("A to follow C's branch", async () => (await A.head()).hash === cHead.hash);
+        held.release();
         let first = await scan;
+        const interrupted = first.err ? first.err.message : null;
         let rescans = 0;
         // A scan the reorganisation cut short is started again, as the
         // holder would; it must then end on the new branch.
@@ -508,7 +548,9 @@ if (!GETH || !NETNS) {
         pacers.push(pacerA);
         return (
           `fork at block ${fork.number}; A's branch to ${aBranch.number} with K4's commit, C's to ${cHead.number}; ` +
-          `the scan running when C rejoined ended at block ${scanTip}${rescans ? ` after ${rescans} restart(s)` : ""}; ` +
+          `a scan held at its first tree page on A's tip while B switched to C's branch ` +
+          `${interrupted ? `stopped (${interrupted.slice(0, 200)}) and ` : ""}ended at block ${scanTip}` +
+          `${rescans ? ` after ${rescans} restart(s)` : ""}; ` +
           `on refresh B and the clean device are on C's branch`
         );
       });
