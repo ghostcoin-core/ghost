@@ -4,10 +4,12 @@
 //!   [`verify_salted_coin_reveal`] for a salted (version 2) commitment, and
 //!   [`prove_coin_reveal`] and [`verify_coin_reveal`] for a version 1
 //!   commitment, made without a salt.
-//! - S2, the one-time reveal of data: [`verify_data_reveal`], which rejects
-//!   every data reveal until its fee is settled.
-//! - S3, the proof of holding: [`verify_hold`], which rejects every proof until
-//!   the spent-marker set is settled, and the verifier's [`ChallengeBook`].
+//! - S2, the one-time reveal of data: [`verify_data_reveal`] and, for a
+//!   salted (version 2) data commitment, [`verify_salted_data_reveal`], which
+//!   reject every data reveal until its fee is settled.
+//! - S3, the proof of holding: [`verify_hold`], for `DATA` and for salted
+//!   `DATA_V2` commitments, which rejects every proof until the spent-marker
+//!   set is settled, and the verifier's [`ChallengeBook`].
 //!
 //! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`] and
 //! [`verify_coin_reveal`], with its header in `include/ghost_proofs.h`.
@@ -69,18 +71,30 @@ pub use binding::{
     PURPOSE_HOLD, PURPOSE_REVEAL, PURPOSE_REVOKE, PURPOSE_SPEND, STATEMENT_COIN_REVEAL, STATEMENT_DATA_REVEAL,
     STATEMENT_HOLD, STATEMENT_VERSION_1,
 };
-pub use data::{DataOpening, DataPurpose, DataReveal, data_reveal_binding, verify_data_reveal};
+pub use data::{
+    DataOpening, DataPurpose, DataReveal, SaltedDataOpening, data_reveal_binding, salted_data_reveal_binding,
+    verify_data_reveal, verify_salted_data_reveal,
+};
 #[cfg(feature = "unsettled-points-test")]
-pub use data::{DataRevealRequest, prove_data_reveal, verify_data_reveal_unsettled};
+pub use data::{
+    DataRevealRequest, prove_data_reveal, prove_salted_data_reveal, verify_data_reveal_unsettled,
+    verify_salted_data_reveal_unsettled,
+};
+#[cfg(feature = "unsettled-points-test")]
+#[doc(hidden)]
+pub use data::prove_salted_data_reveal_claiming;
 pub use hash::{
     COIN, COIN_V2, DATA, DATA_V2, EMPTY_RULE, RATE_BYTES, SALT_BYTES, TREE_DEPTH, Tree, coin_commitment,
     coin_commitment_v2, coin_fingerprint, coin_fingerprint_v2, coin_marker, coin_marker_v2, data_commitment,
     data_commitment_v2, data_fingerprint, data_fingerprint_v2, data_marker, data_marker_v2, empty_leaf, keccak256,
     merkle_root, permutations, tag_bytes, tagged, tree_node,
 };
-pub use hold::{ChallengeBook, HoldContext, HoldOpening, hold_binding, verify_hold};
+pub use hold::{ChallengeBook, HoldContext, HoldOpening, SaltedHoldOpening, hold_binding, verify_hold};
 #[cfg(feature = "unsettled-points-test")]
-pub use hold::{prove_hold, verify_hold_unsettled, verify_hold_unsettled_with_book};
+pub use hold::{prove_hold, prove_salted_hold, verify_hold_unsettled, verify_hold_unsettled_with_book};
+#[cfg(feature = "unsettled-points-test")]
+#[doc(hidden)]
+pub use hold::prove_salted_hold_claiming;
 pub use reveal::{
     CoinOpening, CoinRemainder, CoinReveal, NOTE_BYTES, RevealRequest, SaltedCoinOpening, SaltedCoinRemainder,
     coin_reveal_binding, prove_coin_reveal, prove_salted_coin_reveal, salted_coin_reveal_binding,
@@ -112,6 +126,9 @@ pub enum ProofError {
     UnknownType,
     /// A purpose code other than the statement's.
     UnknownPurpose,
+    /// An opening whose commitment format is not the one the type tag names:
+    /// a version 1 opening for `DATA_V2`, or a salted one for `DATA`.
+    WrongFormat,
     /// A proof of holding for `COIN` (spec 02, section 13, item 3).
     HoldCoinUnsettled,
     /// Every proof of holding, until the spent-marker set and its header root
@@ -169,6 +186,7 @@ impl fmt::Display for ProofError {
             Self::NotInTree => f.write_str("the commitment is not under the root"),
             Self::UnknownType => f.write_str("unknown type tag"),
             Self::UnknownPurpose => f.write_str("unknown purpose code"),
+            Self::WrongFormat => f.write_str("the opening is not of the format the type tag names"),
             Self::HoldCoinUnsettled => f.write_str("proof of holding for coins is not settled"),
             Self::HoldUnsettled => f.write_str("proof of holding is not settled: no spent-marker set"),
             Self::DataFeeUnsettled => f.write_str("the fee of a data reveal is not settled"),

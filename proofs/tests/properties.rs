@@ -411,6 +411,15 @@ fn proof_budget_holds_for_every_statement() {
     // The salted coin reveal is the widest statement and sets the budget.
     assert_eq!(statement_trace(Statement::SaltedCoinReveal).trace_width, MAX_TRACE_WIDTH);
     assert_eq!(statement_trace(Statement::CoinReveal).trace_width, 3808);
+    // The salted data statements: the version 1 ones and 16 salt columns.
+    for (v1, v2) in [
+        (Statement::DataReveal, Statement::SaltedDataReveal),
+        (Statement::Hold, Statement::SaltedHold),
+    ] {
+        assert_eq!(statement_trace(v1).trace_width, 3786, "{v1:?}");
+        assert_eq!(statement_trace(v2).trace_width, 3786 + SALT_BYTES, "{v2:?}");
+        assert!(Statement::ALL.contains(&v2));
+    }
     let config = shipped_configuration().expect("the shipped configuration builds");
     let reported: Vec<Statement> = config.statements.iter().map(|(s, _)| *s).collect();
     assert_eq!(reported, Statement::ALL);
@@ -1088,6 +1097,13 @@ fn hold_coin_rejected() {
     let data_ctx = hold_context(&d, 1, [0x0c; 32]);
     assert_eq!(data_ctx.check(), Ok(()));
     assert!(hold_binding(&params(), &data_ctx).is_ok());
+    // A salted data commitment's type passes the same check.
+    let salted_ctx = HoldContext {
+        type_tag: DATA_V2,
+        ..data_ctx.clone()
+    };
+    assert_eq!(salted_ctx.check(), Ok(()));
+    assert!(hold_binding(&params(), &salted_ctx).is_ok());
     let coin_ctx = HoldContext {
         type_tag: COIN,
         ..data_ctx.clone()
