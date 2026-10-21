@@ -4,7 +4,7 @@
 // running in a worker_threads worker through the browser worker's message
 // interface, against the scripted node stand-in. The stand-in verifies each
 // reveal's proof with the real verifier before it accepts it, and records
-// every request so the test can check that no key digit, seed word or secret
+// every request so the test can check that no key word, seed word or secret
 // reached the endpoint. The commit is an account transaction (type 0x52)
 // signed by the app's own wallet, which the stand-in checks as the node does.
 
@@ -47,21 +47,21 @@ const ENDPOINT_METHODS = new Set([
 ]);
 
 function answersFor(key, positions) {
-  const groups = key.split(" ");
-  return positions.map((p) => groups[p - 1]);
+  const words = key.split(" ");
+  return positions.map((p) => words[p - 1]);
 }
 
-// A group that differs from the right one in its last digit.
-function mistype(group) {
-  return group.slice(0, 3) + String((Number(group[3]) + 1) % 10);
+// A word that differs from the right one in its last letter.
+function mistype(word) {
+  return word.slice(0, -1) + (word.at(-1) === "a" ? "b" : "a");
 }
 
-// Every run of three groups of a key, without separators: no request may
-// hold any of them.
-function digitRuns(key) {
-  const digits = key.replace(/\s/g, "");
+// Every run of three words of a key: no request may hold any of them, in any
+// case.
+function wordRuns(key) {
+  const words = key.split(" ");
   const runs = [];
-  for (let i = 0; i + 12 <= digits.length; i += 4) runs.push(digits.slice(i, i + 12));
+  for (let i = 0; i + 3 <= words.length; i += 1) runs.push(words.slice(i, i + 3).join(" "));
   return runs;
 }
 
@@ -116,15 +116,15 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
 
     // --- Vanish ---
     const key = await flow.vanishStart("1");
-    assert.match(key, /^\d{4}( \d{4}){11}$/, "a standard key of twelve groups");
+    assert.match(key, /^[a-z]+( [a-z]+){23}$/, "a key of 24 words");
     assert.equal(flow.state.vanish.stage, "shown");
     assert.throws(() => flow.claimSaved(), /show the key first/);
 
     const positions = flow.vanishSaved();
     assert.equal(positions.length, 3);
-    assert.equal(new Set(positions).size, 3, "three distinct groups");
+    assert.equal(new Set(positions).size, 3, "three distinct words");
     assert.deepEqual([...positions].sort((a, b) => a - b), positions, "asked in order");
-    for (const p of positions) assert.ok(p >= 1 && p <= 12);
+    for (const p of positions) assert.ok(p >= 1 && p <= 24);
 
     // A wrong re-type blocks the commit: nothing reaches the wallet or the chain.
     const right = answersFor(key, positions);
@@ -199,7 +199,7 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
 
     // --- Claim ---
     const newKey = await flow.claimStart();
-    assert.match(newKey, /^\d{4}( \d{4}){11}$/);
+    assert.match(newKey, /^[a-z]+( [a-z]+){23}$/);
     assert.notEqual(newKey, key);
     const claimPositions = flow.claimSaved();
     const claimWrong = answersFor(newKey, claimPositions);
@@ -234,7 +234,7 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
     for (const secretKey of [key, newKey]) {
       for (const r of traffic) {
         assert.ok(!r.body.includes(secretKey), "a whole key was sent");
-        for (const run of digitRuns(secretKey)) assert.ok(!r.body.includes(run), `key digits were sent in ${r.method}`);
+        for (const run of wordRuns(secretKey)) assert.ok(!r.body.toLowerCase().includes(run), `key words were sent in ${r.method}`);
       }
     }
     for (const r of node.requests) {

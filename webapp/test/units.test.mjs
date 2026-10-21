@@ -1,5 +1,6 @@
 // The flow's pure parts: the fee of spec 07 against its worked examples, the
-// base client's base fee, the settled height, amounts and the save check.
+// base client's base fee, the settled height, amounts and the save check on
+// a key's words.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -16,7 +17,7 @@ import {
   settledHeight,
   windowPrice,
 } from "../src/chain.mjs";
-import { keyStatus, pickGroups, wrongGroups } from "../src/flow.mjs";
+import { keyStatus, normalKey, pickGroups, wrongWords } from "../src/flow.mjs";
 
 test("window fees match spec 07, section 4", () => {
   assert.equal(G_PRIV, 21_090_372n, "g_priv of the worked examples");
@@ -103,21 +104,32 @@ test("GHOST amounts and addresses", () => {
   assert.throws(() => parseAddress("0x1234"), /40 hex digits/);
 });
 
-test("the save check picks three distinct groups without bias and checks them", () => {
-  // Bytes at or above 252 are discarded; the rest give 1 + byte mod 12.
-  const script = [255, 253, 252, 11, 23, 11, 0, 7];
+test("the save check picks three distinct words of 24 without bias and checks them", () => {
+  // Bytes at or above 240 are discarded; the rest give 1 + byte mod 24.
+  const script = [255, 241, 240, 23, 47, 23, 0, 7];
   const fixed = (n) => Uint8Array.from({ length: n }, (_, i) => script[i] ?? 0);
-  assert.deepEqual(pickGroups(fixed), [1, 8, 12]);
-  for (let i = 0; i < 200; i += 1) {
-    const groups = pickGroups((n) => crypto.getRandomValues(new Uint8Array(n)));
-    assert.equal(new Set(groups).size, 3);
-    assert.ok(groups.every((g) => g >= 1 && g <= 12));
-    assert.deepEqual([...groups].sort((a, b) => a - b), groups);
+  assert.deepEqual(pickGroups(fixed), [1, 8, 24]);
+  const seen = new Set();
+  for (let i = 0; i < 400; i += 1) {
+    const words = pickGroups((n) => crypto.getRandomValues(new Uint8Array(n)));
+    assert.equal(new Set(words).size, 3);
+    assert.ok(words.every((g) => g >= 1 && g <= 24));
+    assert.deepEqual([...words].sort((a, b) => a - b), words);
+    for (const w of words) seen.add(w);
   }
-  const key = "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417";
-  assert.deepEqual(wrongGroups(key, [2, 5, 12], ["2222", "5555", "0417"]), []);
-  assert.deepEqual(wrongGroups(key, [2, 5, 12], ["2222", "5556", "0417"]), [5]);
-  assert.deepEqual(wrongGroups(key, [2, 5, 12], ["22 22", "5555"]), [12], "a missing group is wrong");
+  assert.equal(seen.size, 24, "every word can be asked");
+  // The words of the wallet's seed, the same rule.
+  assert.deepEqual(pickGroups(fixed, 24), [1, 8, 24]);
+  const key = "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth various";
+  assert.deepEqual(wrongWords(key, [2, 5, 24], ["winner", "wave", "various"]), []);
+  assert.deepEqual(wrongWords(key, [2, 5, 24], [" WINNER ", "Wave", "VARIOUS"]), [], "in any case");
+  assert.deepEqual(wrongWords(key, [2, 5, 24], ["winner", "wav", "various"]), [5], "a word typed whole");
+  assert.deepEqual(wrongWords(key, [2, 5, 24], ["winner", "wave"]), [24], "a missing word is wrong");
+});
+
+test("a typed key is passed on with its white space made single spaces", () => {
+  assert.equal(normalKey("  Legal\nWINNER\t thank-year  "), "Legal WINNER thank-year");
+  assert.equal(normalKey("1111 2222\n3333"), "1111 2222 3333");
 });
 
 test("a key's status: not found, unclaimed or claimed", () => {

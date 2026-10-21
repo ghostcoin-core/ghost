@@ -46,11 +46,17 @@ export const TEST_CHAIN_PARAMS = Object.freeze({
   futureDrift: 30,
 });
 export const FAKE_CHAIN_ID = 7_777_001n;
-// The commit data the node takes (spec 07; ghostpriv.CommitData): version
-// 0x0001, F and the note, and the node's words for anything else.
+// The commit data the node takes (ghost-node core/ghostpriv/commit.go):
+// version 0x0002, F, the coin's salt and the note (206 bytes,
+// SaltedCommitDataSize), or version 0x0001, F and the note (190 bytes,
+// CommitDataSize), and the node's words for anything else, which it follows
+// with the length (`: N bytes`).
+export const SALT_BYTES = 16;
+export const SALTED_COMMIT_VERSION = Uint8Array.of(0x00, 0x02);
+export const SALTED_COMMIT_DATA_BYTES = 2 + 32 + SALT_BYTES + NOTE_BYTES;
 export const COMMIT_VERSION = Uint8Array.of(0x00, 0x01);
 export const COMMIT_DATA_BYTES = 2 + 32 + NOTE_BYTES;
-export const COMMIT_DATA_ERROR = "commit data is not 190 bytes of version 1";
+export const COMMIT_DATA_ERROR = "commit data is not 190 bytes of version 1 or 206 bytes of version 2";
 // The node's refusal of a reveal whose checks saw a new head every time
 // (ghost-node core/txpool/ghostpool): a transient bound on work per reveal.
 export const HEAD_MOVED_ERROR = "chain head kept moving while the reveal was checked";
@@ -148,7 +154,7 @@ export async function startFakeNode({
   const early = BigInt(earlyHalfLives) * BigInt(TEST_CHAIN_PARAMS.halfLife);
   const scheduled = 1n << BigInt(earlyHalfLives);
   let difficultyOverride = null;
-  const leaves = []; // { commitment, note, block }
+  const leaves = []; // { commitment, note, salt, block }; salt null but for a version 2 commit
   const spent = []; // { marker, block }
   const blocks = [];
   const receipts = new Map();
@@ -165,8 +171,10 @@ export async function startFakeNode({
   // lookup answered with `withhold(hash, reveal)`; with `forge` set to
   // { from, extra } the coin tree it serves as of block `from` and later
   // also holds the `extra` leaves ({ commitment, note }), and those blocks'
-  // headers carry that tree's root but keep their real hash.
-  const dishonest = { note: null, withhold: null, forge: null };
+  // headers carry that tree's root but keep their real hash; `salt(position,
+  // salt)` replaces the salt it serves beside each leaf (bytes, a hex text
+  // as it is sent, or null to leave it out).
+  const dishonest = { note: null, withhold: null, forge: null, salt: null };
   const withheld = [];
   // With `errorAfterAccountTx` set, an account transaction is taken and
   // answered with an error, as ghost-node answers one; with
@@ -313,13 +321,14 @@ export async function startFakeNode({
   }
 
   // A commit in a new block, or, with `pooled`, in the pool until the next.
-  function appendCommit(fingerprint, value, note, { pooled = false, txHash = null } = {}) {
-    const commitment = ghost.coinCommitment(fingerprint, value);
+  // A version 2 commit's salt is stored with its leaf.
+  function appendCommit(fingerprint, value, note, { pooled = false, txHash = null, salt = null } = {}) {
+    const commitment = ghost.coinCommitment(fingerprint, value, salt ? 2 : 1);
     const hash = txHash ?? toHex(sha256("fake commit", String((nonce += 1))));
     const entry = {
       hash,
       marker: null,
-      apply: (n) => leaves.push({ commitment, note, block: n }),
+      apply: (n) => leaves.push({ commitment, note, salt, block: n }),
       after: (n) =>
         receipts.set(hash, {
           transactionHash: hash,
@@ -334,16 +343,21 @@ export async function startFakeNode({
     return { hash, commitment };
   }
 
-  // A commit by a stranger: a random fingerprint and a note no key opens.
+  // A commit by a stranger: a random fingerprint and salt and a note no key
+  // opens, of version 2 as the app's are.
   function foreignCommit(value = 10n ** 18n) {
-    return appendCommit(sha256("stranger", String((nonce += 1))), value, concat([sha256("n1", String(nonce)), new Uint8Array(NOTE_BYTES - 32)]));
+    nonce += 1;
+    return appendCommit(sha256("stranger", String(nonce)), value, concat([sha256("n1", String(nonce)), new Uint8Array(NOTE_BYTES - 32)]), {
+      salt: sha256("stranger salt", String(nonce)).slice(0, SALT_BYTES),
+    });
   }
 
   // A commit sent by the wallet to the commit entry address (spec 03,
-  // section 6, in the layout of spec 07 and the node's ghostpriv.CommitData):
-  // version 0x0001 (2 bytes), F (32), the note (156); the amount is the
-  // value. It refuses what the real node refuses, in its words where it has
-  // them, and anything it cannot read as a commit.
+  // section 6, in the layout of the node's ghostpriv commit data): version
+  // 0x0002 (2 bytes), F (32), the salt (16), the note (156); or version
+  // 0x0001, F and the note. The amount is the value. It refuses what the
+  // real node refuses, in its words where it has them, and anything it
+  // cannot read as a commit.
   function walletCommit({ to, value, data }, txHash = null) {
     if (typeof to !== "string" || to.toLowerCase() !== String(commitEntry).toLowerCase()) {
       throw new Error("not the commit entry address");
@@ -354,9 +368,10 @@ export async function startFakeNode({
     } catch {
       throw new Error(COMMIT_DATA_ERROR);
     }
-    if (payload.length !== COMMIT_DATA_BYTES || payload[0] !== COMMIT_VERSION[0] || payload[1] !== COMMIT_VERSION[1]) {
-      throw new Error(COMMIT_DATA_ERROR);
-    }
+    const is = (version, bytes) => payload.length === bytes && payload[0] === version[0] && payload[1] === version[1];
+    let salt = null;
+    if (is(SALTED_COMMIT_VERSION, SALTED_COMMIT_DATA_BYTES)) salt = payload.slice(34, 34 + SALT_BYTES);
+    else if (!is(COMMIT_VERSION, COMMIT_DATA_BYTES)) throw new Error(`${COMMIT_DATA_ERROR}: ${payload.length} bytes`);
     let v;
     try {
       v = BigInt(value);
@@ -366,7 +381,8 @@ export async function startFakeNode({
     if (v < 1n || v >= 1n << 96n) throw new Error("commit amount out of range");
     const fingerprint = payload.slice(2, 34);
     if (fingerprint.every((b) => b === 0)) throw new Error("all-zero fingerprint");
-    const result = appendCommit(fingerprint, v, payload.slice(34), { pooled: pool.on, txHash });
+    const note = payload.slice(salt ? 34 + SALT_BYTES : 34);
+    const result = appendCommit(fingerprint, v, note, { pooled: pool.on, txHash, salt });
     commits.push({ ...result, value: v });
     return result.hash;
   }
@@ -441,7 +457,8 @@ export async function startFakeNode({
       hash,
       marker: reveal.marker,
       apply: (n) => {
-        leaves.push({ commitment: reveal.remainder, note: reveal.note, block: n });
+        // A remainder's salt, if any, is only in its note: none is served.
+        leaves.push({ commitment: reveal.remainder, note: reveal.note, salt: null, block: n });
         spent.push({ marker: reveal.marker, block: n });
         position = leaves.length - 1;
       },
@@ -498,7 +515,9 @@ export async function startFakeNode({
       return ghost.treeRoots(servedLeaves(block)).pageRoots.map(toHex);
     },
     // A coin or data page as `{ kind, treeIndex, page, filled, entries }`; a
-    // marker page as `{ count, markers }`.
+    // marker page as `{ count, markers }`. An entry is `{ leaf, note }`, with
+    // `salt` (16 bytes of hex) for a version 2 commit's leaf, as the node
+    // serves it.
     ghost_getTreePage: (params) => {
       const [kind, block] = treeArgs(params, 4, 3);
       let page;
@@ -512,7 +531,12 @@ export async function startFakeNode({
       if (kind === "coin" || kind === "data") {
         const part = kind === "coin" ? served(block).slice(start, start + PAGE) : [];
         const note = (l, i) => (dishonest.note ? dishonest.note(start + i, l.note) : l.note);
-        const entries = part.map((l, i) => ({ leaf: toHex(l.commitment), note: toHex(note(l, i)) }));
+        const entries = part.map((l, i) => {
+          const entry = { leaf: toHex(l.commitment), note: toHex(note(l, i)) };
+          const salt = dishonest.salt ? dishonest.salt(start + i, l.salt) : l.salt;
+          if (salt) entry.salt = typeof salt === "string" ? salt : toHex(salt);
+          return entry;
+        });
         return { kind, treeIndex: "0x0", page: q(page), filled: q(entries.length), entries };
       }
       const part = kind === "coin-markers" ? spent.slice(start, Math.min(start + PAGE, block.spentCount)) : [];

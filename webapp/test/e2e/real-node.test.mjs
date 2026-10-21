@@ -5,10 +5,12 @@
 // the commit is an account transaction (type 0x52) signed in the worker
 // with the ML-DSA-44 key of the tests' seed, sent with
 // eth_sendRawTransaction. That account is the miner's etherbase, so block
-// rewards fund it; no elliptic-curve key or keystore is used. The test then reads
-// the chain itself: the commit transaction's type and sender, its 190 bytes
-// and its leaf, the reveal's marker, the remainder's leaf, the recipient's
-// balance, and the claim.
+// rewards fund it; no elliptic-curve key or keystore is used. The Phantom
+// Keys are 24 words and the save checks are answered with words. The test
+// then reads the chain itself: the commit transaction's type and sender, its
+// 206 bytes of version 0x0002 with the coin's salt, its leaf and the salt the
+// node serves back beside it, the reveal's marker, the remainder's leaf, the
+// recipient's balance, and the claim.
 //
 // GHOST_NODE_GETH is the path to the geth binary (webapp/scripts/build-node.sh
 // builds one at the commit in NODE_COMMIT). Without it the test prints
@@ -36,6 +38,7 @@ const GETH = process.env.GHOST_NODE_GETH;
 const NETWORK_ID = 6_777_971n;
 const GHOST = 10n ** 18n;
 const NOTE_BYTES = 156;
+const SALT_BYTES = 16;
 const PAGE = 4096;
 // A reveal proves against the root of the block this many below the tip.
 const SETTLE_DEPTH = 2;
@@ -45,9 +48,10 @@ const INTERNAL_CHAIN_PARAMS = { blockTime: 30, halfLife: 3600, startDifficulty: 
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// The save check's answers: the key's words at `positions`.
 function answersFor(key, positions) {
-  const groups = key.split(" ");
-  return positions.map((p) => groups[p - 1]);
+  const words = key.split(" ");
+  return positions.map((p) => words[p - 1]);
 }
 
 function rpcClient(url) {
@@ -256,18 +260,21 @@ if (!GETH) {
 
     const receiptOf = (hash) => waitOnChain(`the receipt of ${hash}`, () => rpc("eth_getTransactionReceipt", [hash]), hash);
 
-    // Every leaf of coin tree 0, and every spent coin marker, as of the tip.
+    // Every leaf of coin tree 0 with the salt served beside it (null when
+    // there is none), and every spent coin marker, as of the tip.
     async function chainTree() {
       const tip = await rpc("eth_getBlockByNumber", ["latest", false]);
       // The node's shape: the page roots as an array, and a page as
-      // `{ kind, treeIndex, page, filled, entries: [{ leaf, note }] }`.
+      // `{ kind, treeIndex, page, filled, entries: [{ leaf, note, salt? }] }`.
       const pageRoots = await rpc("ghost_getPageRoots", ["coin", "0x0", tip.hash]);
       assert.ok(Array.isArray(pageRoots), "the page roots are an array");
       const leaves = [];
+      const salts = [];
       for (let p = 0; p < pageRoots.length; p += 1) {
         const page = await rpc("ghost_getTreePage", ["coin", "0x0", toQuantity(p), tip.hash]);
         assert.equal(page.entries.length, Number(BigInt(page.filled)), `page ${p} holds \`filled\` entries`);
         leaves.push(...page.entries.map((entry) => String(entry.leaf).toLowerCase()));
+        salts.push(...page.entries.map((entry) => (entry.salt === undefined ? null : String(entry.salt).toLowerCase())));
       }
       const markers = [];
       for (let p = 0; ; p += 1) {
@@ -275,15 +282,17 @@ if (!GETH) {
         markers.push(...page.markers.map((m) => String(m).toLowerCase()));
         if (Number(BigInt(page.count)) < PAGE) break;
       }
-      return { leaves, markers };
+      return { leaves, salts, markers };
     }
 
-    // A commit by someone else: a random F and a note no key opens. It puts
-    // a leaf after ours, which the tree-state rule waits for. It is an
-    // account transaction from the funded account, signed here with the
-    // module directly rather than through the flow.
+    // A commit by someone else: a version 2 commit of a random F and salt
+    // and a note no key opens. It puts a leaf after ours, which the
+    // tree-state rule waits for. It is an account transaction from the
+    // funded account, signed here with the module directly rather than
+    // through the flow.
     async function strangerCommit() {
-      const data = concat([Uint8Array.of(0x00, 0x01), randomBytes(32), randomBytes(NOTE_BYTES)]);
+      const data = concat([Uint8Array.of(0x00, 0x02), randomBytes(32), randomBytes(SALT_BYTES), randomBytes(NOTE_BYTES)]);
+      assert.equal(data.length, 206);
       const value = GHOST / 100n;
       const call = { from: node.miner, to: DEFAULT_COMMIT_ENTRY, value: toQuantity(value), data: toHex(data) };
       const tip = await rpc("eth_getBlockByNumber", ["latest", false]);
@@ -400,16 +409,19 @@ if (!GETH) {
       assert.equal(await flow.walletRestore(TEST_WALLET_WORDS), TEST_WALLET_ADDRESS);
       assert.ok(flow.state.wallet.balance >= 2n * GHOST, "the wallet shows the account's balance");
 
-      // --- Vanish: 1 GHOST into a new key ---
+      // --- Vanish: 1 GHOST into a new key of 24 words, its save check
+      // answered with three of its words ---
       const key = await flow.vanishStart("1");
+      assert.match(key, /^[a-z]+( [a-z]+){23}$/, "a new key of 24 words");
       const positions = flow.vanishSaved();
       const sent = await flow.vanishCheck(answersFor(key, positions));
       assert.equal(sent.ok, true);
       assert.equal(flow.state.vanish.stage, "done");
 
       // On chain: a transaction to the commit entry address of 1 GHOST whose
-      // data is the 190 bytes of ghostpriv.CommitData, version 0x0001, and a
-      // new leaf C = K(tag, COIN, F, v).
+      // data is the 206 bytes of a salted commit (ghostpriv
+      // SaltedCommitDataSize), version 0x0002, F, the salt and the note, and
+      // a new leaf C = K(tag, COIN_V2, F, v).
       const commitTx = await rpc("eth_getTransactionByHash", [sent.txHash]);
       assert.equal(commitTx.type, "0x52", "a quantum-safe account transaction");
       // The sender is derived from the key: the wallet's nonce moved.
@@ -417,27 +429,34 @@ if (!GETH) {
       assert.equal(String(commitTx.to).toLowerCase(), DEFAULT_COMMIT_ENTRY);
       assert.equal(BigInt(commitTx.value), GHOST);
       const data = fromHex(commitTx.input);
-      assert.equal(data.length, 190);
-      assert.equal(toHex(data.slice(0, 2)), "0x0001");
+      assert.equal(data.length, 206);
+      assert.equal(toHex(data.slice(0, 2)), "0x0002");
+      const salt = data.slice(34, 34 + SALT_BYTES);
+      const note = data.slice(34 + SALT_BYTES);
       const commitReceipt = await rpc("eth_getTransactionReceipt", [sent.txHash]);
       assert.equal(commitReceipt.status, "0x1");
       // Sent as soon as the wallet had it, Done in the block that holds it.
       assert.deepEqual(sentSeen.vanish, { txHash: sent.txHash, amount: GHOST });
       assert.equal(flow.state.vanish.block, Number(BigInt(commitReceipt.blockNumber)), "Done at the commit's own block");
-      const coin = toHex(ghost.coinCommitment(data.slice(2, 34), GHOST));
+      const coin = toHex(ghost.coinCommitment(data.slice(2, 34), GHOST, 2));
       let tree = await chainTree();
-      assert.ok(tree.leaves.includes(coin), "the commit's leaf is in the coin tree");
-      // The note on chain opens with the key.
+      const coinAt = tree.leaves.indexOf(coin);
+      assert.ok(coinAt >= 0, "the commit's leaf is in the coin tree");
+      // The node serves the coin's salt back beside its leaf.
+      assert.equal(tree.salts[coinAt], toHex(salt), "the salt is read back with the leaf");
+      // The note on chain opens with the key, the salt read back beside it.
       const restored = ghost.restore({
         chainId: NETWORK_ID,
         key,
-        records: concat([fromHex(coin, 32), data.slice(34)]),
+        records: concat([fromHex(coin, 32), note]),
+        salts: [fromHex(tree.salts[coinAt], SALT_BYTES)],
         markers: new Uint8Array(0),
       });
       assert.equal(restored.length, 1);
       assert.equal(restored[0].amount, GHOST);
-      // The coin's marker, from the key alone (the seed only changes the note).
-      const marker = toHex(ghost.commit({ chainId: NETWORK_ID, amount: GHOST, seed: new Uint8Array(32), key }).marker);
+      assert.equal(toHex(restored[0].salt), toHex(salt));
+      // The coin's marker, from the key and the coin's salt.
+      const marker = toHex(restored[0].marker);
       assert.ok(!tree.markers.includes(marker));
 
       // --- Nobody has committed since the coin: the app waits ---
@@ -482,6 +501,7 @@ if (!GETH) {
       tree = await chainTree();
       assert.ok(tree.markers.includes(marker), "the coin's marker is spent");
       assert.ok(tree.leaves.includes(remainder), "the remainder's leaf is in the coin tree");
+      assert.equal(tree.salts[tree.leaves.indexOf(remainder)], null, "a remainder's salt is only in its note");
       s = flow.state.summon;
       assert.equal(s.status, "unclaimed", "still unclaimed after a partial reveal");
       assert.equal(s.current.number, 1n);

@@ -4,20 +4,27 @@ Status: first version, 2026-10-18. Experimental and unaudited. How to build,
 check and run it is in [webapp/README.md](../webapp/README.md).
 
 The web app is the first product on the client library: a user opens the
-app's own quantum-safe wallet and uses GHOST privately. It does three things.
+app's own quantum-safe wallet and uses GHOST privately, with Phantom Keys of
+24 words over salted coins (see Phantom Keys). It does three things.
 
-- **Vanish.** It creates a standard Phantom Key, shows it (blurred until
-  asked), and lets the user copy it, write it down or download it as an
-  image. Before the commit is sent, the **save check** asks for three of the
-  key's twelve groups, chosen at random with `crypto.getRandomValues`, shown by
-  position and asked in order. The commit is signed and sent only when all
-  three match; a wrong group sends nothing. Once the node has the commit,
-  the app forgets the key.
-- **Summon.** The user types any valid standard or long key. The app finds
-  the key's coin on the chain and reveals any available amount to any address;
-  the rest, minus the fee, stays under the same key as the next commitment.
-- **Claim.** The app creates a new key, shows it and runs the same save
-  check on it, then moves the coin's value minus the fee to the new key. A
+- **Vanish.** It creates a new Phantom Key of 24 words, shows it (blurred
+  until asked) for the user to write down, and offers its digit view, the
+  same key as 21 groups of four digits, beside the words. Copying the key
+  and downloading it as an image are conveniences, never the only backup:
+  before the commit is sent, the **save check** asks for three of the key's
+  24 words, chosen at random with `crypto.getRandomValues`, shown by
+  position and asked in order, whichever view is shown. A word is compared
+  in any case and only whole; the commit is signed and sent only when all
+  three match, and a wrong word sends nothing. Once the node has the
+  commit, the app forgets the key and its digit view.
+- **Summon.** The user types any valid key: its 24 words, or its digits.
+  Keys issued before the words, twelve (or twenty-four) groups of digits,
+  still open, restore, reveal and claim. The app finds the key's coin on the
+  chain and reveals any available amount to any address; the rest, minus the
+  fee, stays under the same key as the next commitment.
+- **Claim.** The app creates a new key of 24 words, shows it and runs the
+  same save check on it, then moves the coin's value minus the fee to the
+  new key. A
   received key shows **unclaimed** until a verified block holds the claim;
   from that block on it shows **claimed**, and the new key holds the coin.
   Every block the app counts is one the page checked itself, its
@@ -29,6 +36,38 @@ block that holds it, with no block on top waited for (founder decision,
 2026-10-20: at 30-second blocks a wait for more blocks kept the holder
 waiting minutes). If a later reorganisation drops that block, the app says
 so plainly and the holder can send again (see Status below).
+
+## Phantom Keys
+
+A new key comes from the client library's default (`KeyFormat::Words`,
+[spec 01](spec/01-commitments-and-keys.md), section 5): a 256-bit secret
+from `crypto.getRandomValues` and an 8-bit check, written as 24 words of the
+BIP-39 English list. `ghost_new_key` returns the words separated by single
+spaces; `ghost_key_digits` writes the digit view, 21 groups of four digits,
+the last the check group. With the per-coin salt (see Wallet), so that one
+guess at a key checks one leaf rather than every leaf, such a key keeps
+about 128 bits of strength even against a quantum search. A key of twelve
+digit groups holds about 146 bits of secret and was made before the salt:
+its coins are version 1 and unsalted, and the app does not call it
+quantum-safe. Such keys still work; new keys are always words.
+
+A typed key is read only by the client library's `PhantomKey::parse`, in
+the worker:
+
+- **Words**: 24 whole words of the list, in any case, separated by any mix
+  of spaces and hyphens (the flow makes any other white space, a line break
+  of a pasted key, one space). A word cut short, run on or misspelled is
+  refused and named by its position (`word 5 is not in the word list`),
+  never corrected to a near word; 23 or 25 words is its own error.
+- **Digits**: 84 digits (the digit view of a words key), 48 (twelve groups)
+  or 96 (twenty-four groups), with spaces or hyphens between them.
+- **The check first.** The words' check, or the digit view's check groups,
+  is verified before anything is derived from the key. A wrong word of the
+  list, or two words swapped, fails it (`the words do not pass the check`).
+
+Anything uncertain about a typed key is refused, never guessed, and no
+refusal holds a word or a digit of the key: it names at most a position or
+a count.
 
 ## Layout
 
@@ -61,7 +100,7 @@ network, `http://127.0.0.1:8545`. The app sends only these requests:
 | `eth_blockNumber` | none | The tip |
 | `eth_getBlockByNumber` | height, `false` | A header with its `hash` and the 18 fields of spec 05, section 10, by their base client names (`parentHash` to `nonce`, `baseFeePerGas`, `coinTreeRoot`, `dataTreeRoot`) |
 | `ghost_getPageRoots` | `"coin"`, tree index, anchor block hash | An array of 32-byte page roots, of pages 0 to the last page with a leaf (`[]` for an empty tree) |
-| `ghost_getTreePage` | `"coin"`, tree index, page, anchor block hash | `{ kind, treeIndex, page, filled, entries }`: `filled` positions of the page, and `entries`, one `{ leaf, note }` (32 and 156 bytes of hex) per filled position, in order |
+| `ghost_getTreePage` | `"coin"`, tree index, page, anchor block hash | `{ kind, treeIndex, page, filled, entries }`: `filled` positions of the page, and `entries`, one `{ leaf, note, salt }` (32, 156 and 16 bytes of hex) per filled position, in order; `salt` only beside the leaf of a version 2 commit, left out for a version 1 commit and for a reveal's remainder |
 | `ghost_getTreePage` | `"coin-markers"`, tree index, page, anchor block hash | `{ count, markers }`: a page of 4,096 spent coin markers in inclusion order |
 | `eth_sendRawTransaction` | the reveal envelope, or the commit's account transaction | The transaction hash |
 | `eth_getBalance` | the wallet's address, `"latest"` | The account's balance |
@@ -86,8 +125,9 @@ The tree answers are read in the node's shape (ghost-node
 `docs/trees-and-headers.md`, "Wallet tree pages") and in no other. The app
 refuses page roots that are not an array, and a coin page whose `filled` is
 not the number of its `entries`, or that is not whole: every page but the
-last holds 4,096 leaves and the last 1 to 4,096. The page roots and leaves
-must then give the anchor header's coin root.
+last holds 4,096 leaves and the last 1 to 4,096. An entry's `salt`, when
+present, must be 16 bytes of hex, or the page is refused as malformed. The
+page roots and leaves must then give the anchor header's coin root.
 
 ## Headers
 
@@ -156,8 +196,11 @@ wallet shows its words (blurred until asked) and opens only after the same
 save check as a key, on three of the 24 words. A saved wallet is restored by
 typing its words. The words are kept in the flow controller's memory while
 the wallet is open, never in its rendered state, browser storage, a file or a
-server, and are dropped when it is closed. Digits are refused as a seed, and
-words as a Phantom Key.
+server, and are dropped when it is closed. Digits are refused as a seed. The
+seed's words and a Phantom Key's words come from the same list, with checks
+of their own, and derive nothing in common: each derives its values under
+its own tags, so a seed typed as a key finds no coin of the wallet's, and a
+key typed as a seed opens no account of the key's.
 
 The account is index 0 of the seed:
 
@@ -171,14 +214,24 @@ The page shows the address and its balance. The commit is an account
 transaction, type `0x52` in ghost-node (`docs/account-transactions.md` there;
 spec 09 proposes `0x51`, which is the node's data reveal), to the commit
 entry address, whose value is the amount and whose data is the commit
-payload of [spec 03](spec/03-coin-rules.md), section 6, in the layout
-of [spec 07](spec/07-private-transaction.md) that the node reads as
-`ghostpriv.CommitData`: the 2-byte version `0x0001` (`TX_VERSION`), the
-fingerprint `F` (32 bytes) and the encrypted note of commitment number 0
-(156 bytes), 190 bytes in all. The node refuses any other length or version
-(`commit data is not 190 bytes of version 1`).
-`webapp/test/vectors/commit-payload.json` holds one such payload, built from
-spec 01, vector coin-commit.
+payload of [spec 03](spec/03-coin-rules.md), section 6, as the node reads
+it (ghost-node `core/ghostpriv/commit.go`). The app sends version 2, a
+salted commit (`SaltedCommitDataSize`): the 2-byte version `0x0002`, the
+fingerprint `F` (32 bytes), the coin's salt (16 bytes) and the encrypted
+note of commitment number 0 (156 bytes), 206 bytes in all. The salt is
+fresh for every coin, drawn in the worker from `crypto.getRandomValues`
+through the client library's `salted_coin_commit`; it goes into `F` and
+the marker, travels in the clear beside `F`, and is in the note too (note
+version 2). The node computes the leaf as `K(tag, COIN_V2, F, v)`, keeps the
+salt beside it and serves it back as the page entry's `salt`. The flow
+checks the payload is 206 bytes of version 2 before it signs anything.
+
+The node still takes version 1 (`CommitDataSize`): `0x0001`, `F` and the
+note, 190 bytes, the commits made before the salt; the app never sends one.
+It refuses any other length or version (`commit data is not 190 bytes of
+version 1 or 206 bytes of version 2: N bytes`).
+`webapp/test/vectors/commit-payload.json` holds a version 1 payload, built
+from spec 01, vector coin-commit, for the coins made before the salt.
 
 The worker signs it with the client library (`client/src/account.rs`,
 RustCrypto's `ml-dsa` 0.1.1): hedged ML-DSA-44 in pure mode with the context
@@ -213,9 +266,15 @@ app makes no data commitments.
    checks each page against the page-root list and the list against the tip's
    `coinTreeRoot`. It reads the spent markers the same way, as of the tip
    (the depth of Done, the block itself), so a key shows claimed as soon as
-   a block holds its spend. The worker tries the key's note key on every note and recomputes
-   each found commitment (spec 01, section 8). The current coin is the found
-   commitment whose marker is not spent. Notes are not checked against the
+   a block holds its spend. With each leaf and its note the app reads the
+   salt served beside it, if any, and hands restore one salt (or none) per
+   leaf, beside the leaf (the records stay leaf and note, 188 bytes each).
+   The worker tries the key's note key on every note and recomputes
+   each found commitment (spec 01, section 8): a version 2 note carries its
+   coin's salt, which goes into `F`, `C` and the marker; a version 2 coin
+   whose salt beside the leaf is not its note's is not trusted. Restore
+   returns each found coin's salt (none for version 1). The current coin is
+   the found commitment whose marker is not spent. Notes are not checked against the
    tree, so an endpoint can alter them; the app therefore asks for everything
    a reveal needs (the headers, the tree and the markers, all fixed by the
    tip) before the key is tried.
@@ -226,7 +285,9 @@ app makes no data commitments.
    headers for the next block. Before these requests the worker always
    makes a proof and sends nothing: of the coin when it can be revealed,
    otherwise of a decoy, a throwaway key's coin placed at the last position
-   of the same leaves, of the same kind. A coin's proof that the worker
+   of the same leaves, of the same kind. The decoy mirrors the version of
+   the key's coin (salted, as a new coin is, unless the key's current coin
+   is of version 1), so the work does not depend on the coin. A coin's proof that the worker
    refuses before proving (its coin not under the root, amounts that do not
    balance) proves a decoy in its place and only then returns the refusal.
    So the time before them is a proof's on every path, refusals and fee
@@ -266,7 +327,13 @@ app makes no data commitments.
 5. **Proof.** The worker computes the witness from the leaves under the
    settled root, proves with the client library (partial reveal or claim to a
    new key), verifies the proof itself, and builds the envelope of spec 07,
-   section 3. A claim sends nothing out and names the zero address.
+   section 3. The reveal and the claim pass the coin's salt, from restore,
+   to the prover as a private witness: a salted coin is proved as salted and
+   its remainder is salted under a fresh salt, carried only in the
+   remainder's note; a version 1 coin is proved as before, with a version 1
+   remainder. The worker verifies a salted proof as salted; the stand-in,
+   like the node, verifies a reveal as salted first, then as version 1. A
+   claim sends nothing out and names the zero address.
 6. **Send.** A node that mines fast can refuse the reveal with `chain head
    kept moving while the reveal was checked`: its pool checks a reveal on a
    snapshot of the head, checks again a bounded number of times when the
@@ -397,7 +464,7 @@ app makes no data commitments.
   (`test/support/fake-node.mjs`). The stand-in verifies every reveal's proof
   with the real verifier, checks the fee, the root and the marker as a node
   admits a reveal, and records every request. The test checks that no run of
-  a key's digits, no seed word and no commitment of the key reached the
+  a key's words, no seed word and no commitment of the key reached the
   endpoint, and that `index.html` loads only same-origin scripts. Playing a
   dishonest endpoint, it also checks that altered notes leave the requests,
   and where the worker's proof falls among them, the same whether the key
@@ -424,11 +491,30 @@ app makes no data commitments.
   until the competing chain outweighs it and the page follows the
   reorganisation. An empty table, and a start whose hash is not the pinned
   one, show no confirmations either.
+- `words-key.test.mjs`: a new key is 24 words of the list, its digit view
+  21 groups that open the same key; words round-trip through the save
+  check; a typed key is taken in any case with spaces or hyphens, whole
+  words only; a word cut short or run on is refused and named by position,
+  a swapped or wrong word fails the check, and no refusal holds a word or
+  digit of the key, nor is anything derived from it; an old 12-group key
+  still restores, in the module and through the app against the stand-in.
+- `salted-coin.test.mjs`: the commit is 206 bytes of version 2 with a fresh
+  salt, in the module and as the wallet signs it, and the stand-in keeps
+  that salt with the leaf; restore reads the salt beside the leaf, finds the
+  coin with it (or from its note when none is served), refuses a coin whose
+  salt beside the leaf is not its note's, and a page with a salt that is not
+  16 bytes is refused.
+- `words-flow.test.mjs`: the save check takes three typed words, whichever
+  view is shown, and refuses a wrong, short or digit answer; a salted coin is
+  revealed and claimed, its salt passed to the prover and its remainders
+  salted; a version 1 coin of an old 12-group key still reveals and claims,
+  with no salt and a version 1 decoy when its reveal cannot be made.
 - `wasm.test.mjs`: the module against the golden vectors of spec 01 and
-  spec 05, the header's RLP and hash included.
-- `commit-layout.test.mjs`: the commit payload against spec 07's layout and
-  the shared vector `test/vectors/commit-payload.json`, and the default
-  commit entry address.
+  spec 05, the header's RLP and hash included, the version 2 commit and the
+  words key.
+- `commit-layout.test.mjs`: the version 2 commit payload (206 bytes) and the
+  version 1 payload against the node's layouts and the shared vector
+  `test/vectors/commit-payload.json`, and the default commit entry address.
 - `reveal-fast-node.test.mjs`: a Summon reveal against the stand-in playing
   a fast-mining node: a block every 500 ms (the page checks each seal, so a
   node much faster than that cannot be followed), a send refused because the head
@@ -452,9 +538,10 @@ app makes no data commitments.
   refuses every send stops the reveal after 10 minutes, or at 200 proofs, of
   at most 5 sends each.
 - `stand-in.test.mjs`: the stand-in refuses what the node refuses for a
-  commit (not to the commit entry address, data not 190 bytes, a version
-  other than `0x0001`, among them the old 189-byte layout) and accepts the
-  190-byte payload.
+  commit (not to the commit entry address, data neither 206 bytes of
+  version `0x0002` nor 190 bytes of version `0x0001`, among them the old
+  189-byte layout, in the node's words) and accepts both payloads, serving a
+  version 2 commit's salt beside its leaf.
 - `sent-and-done.test.mjs`: against the stand-in holding each transaction
   in its pool until the next block, Vanish, a partial Summon and a Claim
   show Sent, with the amount and hash, while no block holds the
@@ -469,15 +556,15 @@ app makes no data commitments.
   then shows it Done and releases the pin. A receipt from a block replaced
   while the app checks it shows the claim dropped.
 - `units.test.mjs`: the fee against the worked examples of spec 07, the
-  base fee rule, the settled height, amounts and the save check.
+  base fee rule, the settled height, amounts and the save check on words.
 - `early-reveal.test.mjs`, with nothing built: the tree-state choice with a
   stub prover. A coin is revealed against the root 2 blocks below the tip
   right after a later commit, the plan reports the leaf count that root
   covers, and a coin nobody followed waits with the plain warning and is
   never proved against its own block root.
 
-The key image download is drawn on a canvas in the page and is not covered
-by the headless tests.
+The key image download, drawn on a canvas in the page, and the digit-view
+button are not covered by the headless tests; the flow's digit view is.
 
 ### Against a real node
 
@@ -488,9 +575,11 @@ the release `geth` named by `GHOST_NODE_GETH` as a one-node internal network
 partial Summon and a Claim with the real prover. The wallet is restored from
 the tests' seed words; its account is the miner's etherbase, so block rewards
 fund it, and the commit and the strangers' commits are account transactions
-it signs. It checks on chain that the commit is type `0x52` from the wallet's
-address, the commit's 190 bytes and its
-leaf, the spent marker, the remainder's leaf, the recipient's balance and the
+it signs. The keys are 24 words, and the save checks are answered with
+words. It checks on chain that the commit is type `0x52` from the wallet's
+address, the commit's 206 bytes of version `0x0002` and its leaf, the salt
+the node serves back beside that leaf (and none beside the remainder's),
+the spent marker, the remainder's leaf, the recipient's balance and the
 claimed coin. It also checks the tree-state rule: opened before anyone else
 commits, the coin waits with the plain warning and its reveal is refused;
 once a stranger's commit is 2 blocks deep the Summon goes out with no

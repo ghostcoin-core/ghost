@@ -3,7 +3,7 @@
 // the element that shows it, which is emptied when the step ends.
 
 import { formatGhost } from "./chain.mjs";
-import { DEFAULT_COMMIT_ENTRY, createFlow } from "./flow.mjs";
+import { DEFAULT_COMMIT_ENTRY, createFlow, normalKey } from "./flow.mjs";
 import { downloadKeyImage } from "./keyimage.mjs";
 import { browserProver } from "./prover.mjs";
 import { DEFAULT_ENDPOINT } from "./rpc.mjs";
@@ -43,20 +43,21 @@ function act(step) {
   };
 }
 
-// `words`: the inputs ask for seed words rather than a key's digit groups.
-function checkInputs(container, positions, wrong, { words = false } = {}) {
+// The save check's inputs: one whole word for each position asked, of a
+// key's 24 words or of the wallet's seed.
+function checkInputs(container, positions, wrong) {
   if (container.dataset.positions !== positions.join(",")) {
     container.replaceChildren(
       ...positions.map((p) => {
         const label = document.createElement("label");
-        label.textContent = words ? `Word ${p}` : `Group ${p}`;
+        label.textContent = `Word ${p}`;
         const input = document.createElement("input");
         input.type = "text";
-        input.inputMode = words ? "text" : "numeric";
+        input.inputMode = "text";
         input.autocomplete = "off";
         input.autocapitalize = "off";
         input.spellcheck = false;
-        input.maxLength = words ? 8 : 4;
+        input.maxLength = 8;
         input.dataset.position = String(p);
         label.appendChild(input);
         return label;
@@ -78,6 +79,11 @@ function clearCheck(container) {
   delete container.dataset.positions;
 }
 
+// The key of Vanish or Claim as it is shown: its words, or its digit view.
+function shownKey(holder) {
+  return holder.view === "digits" && holder.digits ? holder.digits : holder.key;
+}
+
 // The key panel and save check of Vanish or Claim.
 function renderKeyStep(prefix, holder) {
   const panel = $(`${prefix}-key`);
@@ -87,11 +93,13 @@ function renderKeyStep(prefix, holder) {
   const showing = Boolean(holder && holder.key && (holder.stage === "shown" || holder.stage === "check"));
   panel.hidden = !showing;
   if (showing) {
-    if (text.textContent !== holder.key) {
-      text.textContent = holder.key;
+    const shown = shownKey(holder);
+    if (text.textContent !== shown) {
+      text.textContent = shown;
       text.classList.add("blurred");
       $(`${prefix}-show`).textContent = "Show";
     }
+    $(`${prefix}-digits`).textContent = holder.view === "digits" ? "Show as words" : "Show as digits";
   } else {
     text.textContent = "";
   }
@@ -162,7 +170,7 @@ function renderWallet(w) {
   }
   $("wallet-saved").disabled = !w || w.stage !== "shown";
   $("wallet-check").hidden = !w || w.stage !== "check";
-  if (w && w.stage === "check") checkInputs($("wallet-check-words"), w.groups, w.wrong, { words: true });
+  if (w && w.stage === "check") checkInputs($("wallet-check-words"), w.groups, w.wrong);
   else clearCheck($("wallet-check-words"));
   const open = Boolean(w && w.stage === "open");
   $("wallet-open").hidden = !open;
@@ -222,24 +230,34 @@ setInterval(() => {
   if (flow.state.progress) render(flow.state);
 }, 1000);
 
-function wireKeyButtons(prefix, holder) {
+// `view(v)` shows the key as "words" or "digits". Copy and the image take
+// the key as it is shown; both are conveniences beside writing it down.
+function wireKeyButtons(prefix, holder, view) {
   $(`${prefix}-show`).addEventListener("click", () => {
     const text = $(`${prefix}-key-text`);
     const hidden = text.classList.toggle("blurred");
     $(`${prefix}-show`).textContent = hidden ? "Show" : "Hide";
   });
+  $(`${prefix}-digits`).addEventListener(
+    "click",
+    act(() => {
+      const h = holder();
+      if (h && h.key) return view(h.view === "digits" ? "words" : "digits");
+      return null;
+    }),
+  );
   $(`${prefix}-copy`).addEventListener(
     "click",
     act(async () => {
       const h = holder();
-      if (h && h.key) await navigator.clipboard.writeText(h.key);
+      if (h && h.key) await navigator.clipboard.writeText(shownKey(h));
     }),
   );
   $(`${prefix}-download`).addEventListener(
     "click",
     act(async () => {
       const h = holder();
-      if (h && h.key) await downloadKeyImage(h.key);
+      if (h && h.key) await downloadKeyImage(shownKey(h));
     }),
   );
 }
@@ -279,7 +297,7 @@ $("wallet-refresh").addEventListener("click", act(() => flow.walletRefresh()));
 $("wallet-close").addEventListener("click", act(() => flow.walletClose()));
 
 $("vanish-form").addEventListener("submit", act(() => flow.vanishStart($("vanish-amount").value)));
-wireKeyButtons("vanish", () => flow.state.vanish);
+wireKeyButtons("vanish", () => flow.state.vanish, (view) => flow.vanishView(view));
 $("vanish-saved").addEventListener("click", act(() => flow.vanishSaved()));
 $("vanish-check").addEventListener("submit", act(() => flow.vanishCheck(answers($("vanish-check-groups")))));
 $("vanish-recheck").addEventListener("click", act(() => flow.vanishRecheck()));
@@ -287,15 +305,15 @@ $("vanish-recheck").addEventListener("click", act(() => flow.vanishRecheck()));
 $("summon-form").addEventListener(
   "submit",
   act(async () => {
-    // The digits leave the field once the key is open; a typo stays there
-    // to be corrected.
+    // The key leaves the field once it is open; a typo stays there to be
+    // corrected. The refusal names at most a position, never a word.
     const field = $("summon-key");
     const text = field.value;
     field.value = "";
     try {
       await flow.summonOpen(text);
     } catch (err) {
-      if (!flow.state.summon || flow.state.summon.key !== text.trim()) field.value = text;
+      if (!flow.state.summon || flow.state.summon.key !== normalKey(text)) field.value = text;
       throw err;
     }
   }),
@@ -307,7 +325,11 @@ $("reveal-form").addEventListener(
   act(() => flow.summonReveal({ amount: $("reveal-amount").value, recipient: $("reveal-to").value })),
 );
 $("claim-start").addEventListener("click", act(() => flow.claimStart()));
-wireKeyButtons("claim", () => flow.state.summon && flow.state.summon.claim);
+wireKeyButtons(
+  "claim",
+  () => flow.state.summon && flow.state.summon.claim,
+  (view) => flow.claimView(view),
+);
 $("claim-saved").addEventListener("click", act(() => flow.claimSaved()));
 $("claim-check").addEventListener("submit", act(() => flow.claimCheck(answers($("claim-check-groups")))));
 

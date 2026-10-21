@@ -90,7 +90,8 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
   commit(sha256("stranger", "0"));
   commit(sha256("stranger", "1"));
   commit(sha256("coin"));
-  coins.push({ position: COIN_POSITION, number: 0n, amount: GHOST, spent: false });
+  // A salted coin, as the app commits one; restore reads its salt.
+  coins.push({ position: COIN_POSITION, number: 0n, amount: GHOST, spent: false, salt: sha256("salt").slice(0, 16) });
   commit(sha256("stranger", "2"));
   while (tip() < 120) mine();
 
@@ -123,7 +124,8 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
     coin.spent = true;
     const position = leaves.length;
     const number = commit(proof.remainder.commitment);
-    coins.push({ position, number: proof.number + 1n, amount: proof.remainder.amount, spent: false });
+    // A salted coin's remainder is salted, its salt read from its note.
+    coins.push({ position, number: proof.number + 1n, amount: proof.remainder.amount, spent: false, salt: sha256("salt", String(proof.n)).slice(0, 16) });
     balances.set(proof.recipient, (balances.get(proof.recipient) ?? 0n) + proof.out);
     reveals.push({ proof: proof.n, block: number, hash: proof.txHash, fee: proof.fee });
     receipts.set(proof.txHash, { transactionHash: proof.txHash, blockNumber: q(number), blockHash: blocks[number].json.hash, status: "0x1" });
@@ -215,7 +217,7 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
           };
         }
         case "checkKey":
-          return { groups: 12 };
+          return { format: "words", groups: 21 };
         case "keccak256":
           return { hash: sha256(args.bytes) };
         case "treeCheck":
@@ -231,6 +233,8 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
         }
         case "prove": {
           assert.ok(!args.decoy, "the coin can be proved each time");
+          const coin = coins.find((c) => c.position === args.position);
+          assert.equal(toHex(args.salt), toHex(coin.salt), "the coin's salt is passed to the prover");
           // The flow asks nothing between its scan and the proof, so the
           // proof's root is that of the block SETTLE_DEPTH below this tip.
           const n = proofs.length;
