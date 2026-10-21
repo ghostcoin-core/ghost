@@ -163,13 +163,30 @@ tree its block appended to: the block's coin root is a prefix root of that
 tree, and its parent's one of the same tree, or the final root of the tree
 before when the block started it.
 
-The worker checks the notes and salts of coin tree 0 alone against the
-block receipts (`ghost_receipts_check`), so the notes of a later tree would
-be unchecked. A scan whose tip is past tree 0 therefore stops once the
-trees are read, before the marker pages, the receipts check or the key is
-tried on any note, and says so: the coin tree has rolled over, and this
-build checks only the notes of coin tree 0. `createFlow`'s `treeLeaves`
-sets a smaller tree for a test node; the release never sets it.
+The worker's receipts check (`ghost_receipts_check`) covers coin tree 0
+alone and takes a rollover only at 2^32 leaves. A scan whose tip is past
+tree 0 therefore makes the same checks in the page, over every tree
+(`checkTreesAgainstReceipts`): from the coin tree logs of the receipts the
+worker has just checked against each header's `receiptsRoot`, read in the
+client library's layout (`coinRecord`), every record must follow the one
+before (the next position, or position 0 of the next tree once a tree
+holds `treeLeaves`), each tree's leaves, notes and salts from the chain's
+start on must be exactly those the records appended to it, no record may be
+of a tree not read, and the markers must be those of the reveal records.
+Anything else is refused before the key is tried on any note. The key is
+then tried on each tree's notes, one restore per tree, and each coin found
+carries its tree index; the current coin is the unspent one in the latest
+tree, at its highest position.
+
+A coin of a full earlier tree is proven against that tree's final root,
+which every leaf of the tree shares and the header of the block that filled
+it carries (spec 05, section 5, item 5, and section 13, item 4): no root of
+the next tree holds it, so there is no wait, and Summon shows that block as
+the tree state. A coin of the tip's tree follows the tree-state rule of
+Summon and Claim, with
+each header's leaf count taken in the tip's tree (none for a header of an
+earlier tree). `createFlow`'s `treeLeaves` sets a smaller tree for a test
+node; the release never sets it.
 
 ## Headers
 
@@ -536,13 +553,13 @@ app makes no data commitments.
   watching whether a reveal follows; see Block receipts.)
 - **The zero address.** The app refuses it as a reveal's recipient and as
   the commit entry address, because what it is credited cannot be spent.
-- **Restore from tree 0 only.** Every coin tree index up to the tip's is
-  read and checked against its root (Coin trees), but a scan restores only
-  while the tip is in coin tree 0: the worker's receipts check covers tree 0
-  alone, so once the tree rolls over, 2^32 leaves away, a scan is refused
-  before the key is tried. Reading the receipts of later trees, and choosing
-  a full earlier tree's final root as a coin's tree state (spec 05, section
-  13, item 4), are not built.
+- **Later trees are checked in the page.** Once the coin tree has rolled
+  over, 2^32 leaves away, the receipts check of every tree is the page's own
+  (Coin trees), not the worker's, which covers tree 0 alone: the two read the
+  same log layout and must agree. The worker still checks every block's
+  receipts against its header's `receiptsRoot` first, and its trees are of
+  32 levels, so a test node whose smaller trees are also shallower needs the
+  worker to hash those too.
 - **Reorganisations are found when asked.** A step shown Done is checked
   again only on Refresh or "Check the commit is still in the chain"; the
   page does not watch the chain on its own.
@@ -614,9 +631,16 @@ app makes no data commitments.
   earlier block's tree, a tree of too many leaves, a full tree whose final
   root no header carries and a tree served twice are refused. A commit is
   followed into the full tree 0 after the tip has moved to tree 1, and to
-  tree 1's first position; a scan of the rolled-over chain is refused before
-  restore or the receipts check, while one whose tree 0 is just full still
-  finds the coin that filled it.
+  tree 1's first position, where a scan of both trees finds it, while one
+  whose tree 0 is just full still finds the coin that filled it. A coin of
+  the full tree 0 is revealed against tree 0's final root with no wait, a
+  clean device restores it spent and its remainder in tree 1, and that
+  remainder is revealed against a settled root of tree 1. A note of either
+  tree, a salt or a spent marker that the receipts do not show is refused
+  before restore; the page's check of every tree also refuses, on its own,
+  a changed leaf, note or salt, a leaf missing or invented, a record of a
+  tree not read, a rollover before or after `treeLeaves` and a marker
+  missing, invented or changed.
 - `salted-coin.test.mjs`: the commit is 206 bytes of version 2 with a fresh
   salt, in the module and as the wallet signs it, and the stand-in keeps
   that salt with the leaf; restore reads the salt beside the leaf, finds the
