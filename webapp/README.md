@@ -107,7 +107,13 @@ and open `http://localhost:8080`. The page has the wallet button top right
 ("Open wallet", then the wallet's short address once it is open: it holds
 the create and restore flows) and one card with two tabs, **Vanish** (an
 amount box, the open wallet's balance and Max, and the Vanish button) and
-**Summon** (a key, its coin and Reveal). Claim has no visible control in
+**Summon** (a key, its coin and Reveal). Vanish then steps through three
+screens in the card: **Save your Phantom Key** (the 24 words in a numbered
+grid, Copy, Download and "I saved it"), **Check your key** (three of the
+words typed back; a wrong one sends nothing, and "Vanish *amount* GHOST"
+sends the commit with a thin waiting bar) and **Done** ("*amount* GHOST
+vanished"; Done drops the key). The key also leaves memory when you switch
+to Summon or close the page. Claim has no visible control in
 this layout; its code stays. The footer holds the experimental warning and
 two small panels: **About**, on what the app keeps and sends, and
 **Network**. Under **Network**, the endpoint defaults to
@@ -139,6 +145,11 @@ worker's messages, against a scripted stand-in for the node's JSON-RPC that
 verifies every proof and records every request. Set `GHOST_WEBAPP_WASM` to
 test another build of the module, for example
 `webapp/dist/ghost_webapp_wasm.wasm`.
+
+`webapp/test/vanish-screens.test.mjs` needs no build: it reads the page and
+`app.mjs` as text and runs the Vanish screens against a stand-in page and
+flow (the wording, a wrong check word that sends nothing, the right words
+that send, and Done or a tab switch that drops the key).
 
 To run the same flow against a real node, build ghost-node's `geth` at the
 pinned commit and point the real-node test at it:

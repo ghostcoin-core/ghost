@@ -468,7 +468,86 @@ main {
   border-color: var(--danger);
 }
 
+/* The Vanish screens: save the key, check it, the waiting bar, Done */
+
+.screen h2 {
+  font-size: 1.15rem;
+}
+
+.word-grid {
+  display: grid;
+  gap: 0.4rem 0.75rem;
+  grid-auto-flow: column;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(8, auto);
+  list-style: none;
+  margin: 0.9rem 0;
+  padding: 0;
+}
+
+.word-grid li {
+  background: var(--surface-behind);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  display: flex;
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+}
+
+.word-grid .n {
+  color: var(--muted);
+  flex: none;
+  min-width: 1.4em;
+  text-align: right;
+}
+
+.waiting {
+  padding: 1.5rem 0 0.5rem;
+  text-align: center;
+}
+
+.bar {
+  background: var(--surface-behind);
+  border-radius: 999px;
+  height: 3px;
+  overflow: hidden;
+}
+
+.bar span {
+  background: var(--violet);
+  border-radius: 999px;
+  display: block;
+  height: 100%;
+  width: 40%;
+}
+
+.waiting p {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.done {
+  text-align: center;
+}
+
+.icon-done {
+  color: var(--violet-bright);
+  display: block;
+  height: 3rem;
+  margin: 0.5rem auto 0.25rem;
+  width: 3rem;
+}
+
+.error-line {
+  color: var(--danger);
+  font-size: 0.875rem;
+}
+
 .status:empty,
+.error-line:empty,
 .activity p:empty,
 .chain-status:empty {
   display: none;
@@ -594,6 +673,20 @@ main {
 
   .sheet:not([hidden]) {
     animation-name: rise-sheet;
+  }
+
+  .bar span {
+    animation: slide 1.2s var(--ease) infinite;
+  }
+
+  @keyframes slide {
+    from {
+      transform: translateX(-100%);
+    }
+
+    to {
+      transform: translateX(250%);
+    }
   }
 
   @keyframes rise {

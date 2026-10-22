@@ -2,8 +2,8 @@
 // input to it. All logic is in flow.mjs; nothing here keeps a key beyond
 // the element that shows it, which is emptied when the step ends.
 
-import { formatGhost } from "./chain.mjs";
-import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, createFlow, normalKey } from "./flow.mjs";
+import { formatGhost, parseGhost } from "./chain.mjs";
+import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, createFlow, normalKey, wrongWords } from "./flow.mjs";
 import { downloadKeyImage } from "./keyimage.mjs";
 import { browserProver } from "./prover.mjs";
 import { DEFAULT_ENDPOINT } from "./rpc.mjs";
@@ -31,10 +31,64 @@ const flow = createFlow({
 $("endpoint").value = flow.state.endpoint;
 $("commit-entry").value = flow.state.commitEntry;
 
+// The Vanish card's own state, beside the flow's: whether the commit is being
+// sent (from the moment the three words match until the flow's check call
+// returns), whether the key is shown again from the check screen, and the
+// card's one plain error line. "vanish" in `errorOwner` keeps the flow's raw
+// error text out of the page while that line speaks for it.
+let vanishSending = false;
+let vanishShowAgain = false;
+let vanishError = null;
+let errorOwner = null;
+
+const WRONG_WORDS = "Those words don't match your key. Check what you saved and try again.";
+
+// The card's error line for a Vanish step that failed: a fixed sentence
+// chosen by what failed, never the exception's own text.
+function vanishErrorText(err, step) {
+  const said = String((err && err.message) || "");
+  if (/^enter an amount|largest amount a coin can hold/.test(said)) return "Enter an amount of GHOST, for example 1.5.";
+  if (/less than the amount/.test(said)) return "Your balance is too low for this amount and the network fee.";
+  if (/the app signs/.test(said)) return "The network's fee is higher than the app pays right now. Try again later.";
+  if (/^open a wallet/.test(said)) return "Open your wallet first.";
+  if (/^wait until/.test(said)) return "Wait until the current step is done.";
+  const v = flow.state.vanish;
+  if (step === "send" && v && v.stage === "dropped") {
+    return "The chain dropped the commit. The key you saved still holds the coin if it comes back.";
+  }
+  if (step === "send" && v && v.stage === "sent") return "The commit was sent, but no checked block holds it yet.";
+  const fixed = {
+    start: "The key could not be made. Try again.",
+    send: "The network refused the commit. Try again.",
+    copy: "The key could not be copied. Write it down instead.",
+    download: "The image could not be made. Write the key down instead.",
+    recheck: "The commit could not be checked. Try again.",
+  };
+  return fixed[step] || "Something went wrong. Try again.";
+}
+
+// Runs a Vanish step from a user action; a failure shows as the card's one
+// plain error line.
+function vanishAct(step, run) {
+  return (event) => {
+    if (event) event.preventDefault();
+    errorOwner = "vanish";
+    vanishError = null;
+    render(flow.state);
+    Promise.resolve()
+      .then(run)
+      .catch((err) => {
+        vanishError = vanishErrorText(err, step);
+        render(flow.state);
+      });
+  };
+}
+
 // Runs a flow step from a user action; errors are shown from the state.
 function act(step) {
   return (event) => {
     if (event) event.preventDefault();
+    errorOwner = null;
     Promise.resolve()
       .then(step)
       .catch((err) => {
@@ -79,12 +133,12 @@ function clearCheck(container) {
   delete container.dataset.positions;
 }
 
-// The key of Vanish or Claim as it is shown: its words, or its digit view.
+// The key of Claim as it is shown: its words, or its digit view.
 function shownKey(holder) {
   return holder.view === "digits" && holder.digits ? holder.digits : holder.key;
 }
 
-// The key panel and save check of Vanish or Claim.
+// The key panel and save check of Claim (`prefix`).
 function renderKeyStep(prefix, holder) {
   const panel = $(`${prefix}-key`);
   const text = $(`${prefix}-key-text`);
@@ -199,11 +253,68 @@ function maxVanish(balance) {
   return balance > MAX_COMMIT_FEE ? balance - MAX_COMMIT_FEE : 0n;
 }
 
+// The 24 words in the numbered grid, put in with textContent only. The grid
+// is filled while the key is shown or checked and emptied otherwise.
+function renderWords(key) {
+  const grid = $("vanish-words");
+  if (!key) {
+    grid.replaceChildren();
+    return;
+  }
+  if (grid.childElementCount > 0) return;
+  grid.replaceChildren(
+    ...key.trim().split(/\s+/).map((word, i) => {
+      const item = document.createElement("li");
+      const number = document.createElement("span");
+      number.className = "n";
+      number.textContent = String(i + 1);
+      const text = document.createElement("span");
+      text.textContent = word;
+      item.append(number, text);
+      return item;
+    }),
+  );
+}
+
+// The Vanish card: the amount box, then Save your Phantom Key, Check your
+// key, the waiting bar while the commit is sent, and Done.
+function renderVanish(v) {
+  const holding = Boolean(v && v.key && (v.stage === "shown" || v.stage === "check"));
+  renderWords(holding ? v.key : null);
+  const screen = vanishSending
+    ? "waiting"
+    : !v
+      ? "form"
+      : v.stage === "shown" || (v.stage === "check" && vanishShowAgain)
+        ? "key"
+        : v.stage === "check"
+          ? "check"
+          : v.stage === "done"
+            ? "done"
+            : "after";
+  $("vanish-form").hidden = screen !== "form";
+  $("vanish-key").hidden = screen !== "key";
+  $("vanish-check").hidden = screen !== "check";
+  $("vanish-waiting").hidden = screen !== "waiting";
+  $("vanish-done").hidden = screen !== "done";
+  $("vanish-after").hidden = screen !== "after";
+
+  const amount = v ? formatGhost(v.amount) : "";
+  for (const id of ["vanish-key-amount", "vanish-send-amount", "vanish-done-amount"]) $(id).textContent = amount;
+  if (v && v.stage === "check") checkInputs($("vanish-check-groups"), v.groups, v.wrong);
+  else clearCheck($("vanish-check-groups"));
+  $("vanish-waiting-text").textContent =
+    screen !== "waiting" ? "" : v && v.stage === "sent" ? "Sent. Waiting for a block to hold it…" : "Sending your commit…";
+
+  const wrong = screen === "check" && v.wrong.length > 0;
+  $("vanish-error").textContent = vanishError || (wrong ? WRONG_WORDS : "");
+}
+
 function render(state) {
   renderWallet(state.wallet);
 
   const v = state.vanish;
-  renderKeyStep("vanish", v);
+  renderVanish(v);
   const vanishStatus = {
     sent: () => `Sent: a commit of ${formatGhost(v.amount)} GHOST, transaction ${v.txHash}. ${IN_A_BLOCK}`,
     done: () =>
@@ -240,8 +351,17 @@ function render(state) {
   $("network-button").classList.toggle("attention", Boolean(state.chainRefused));
 
   const p = state.progress;
-  $("progress").textContent = p ? `${p.stage}… ${Math.round((Date.now() - p.since) / 1000)} s` : state.busy ? `${state.busy}…` : "";
-  $("error").textContent = state.error || "";
+  // A Vanish step speaks in the card: its waiting line and its error line.
+  const vanishOwns = errorOwner === "vanish";
+  $("progress").textContent =
+    vanishSending
+      ? ""
+      : p
+        ? `${p.stage}… ${Math.round((Date.now() - p.since) / 1000)} s`
+        : state.busy
+          ? `${state.busy}…`
+          : "";
+  $("error").textContent = vanishOwns ? "" : state.error || "";
   for (const button of document.querySelectorAll("main button, #wallet-panel button, #network-panel button")) {
     if (!button.dataset.keepEnabled) button.toggleAttribute("aria-busy", Boolean(state.busy));
   }
@@ -318,23 +438,96 @@ $("wallet-restore-form").addEventListener(
 $("wallet-refresh").addEventListener("click", act(() => flow.walletRefresh()));
 $("wallet-close").addEventListener("click", act(() => flow.walletClose()));
 
+// The key leaves the page's memory: the flow drops the Vanish step and the
+// grid is emptied. On Done, on leaving the Vanish tab and on pagehide; before
+// the three words match, nothing has been sent.
+function forgetVanish() {
+  $("vanish-words").replaceChildren();
+  clearCheck($("vanish-check-groups"));
+  vanishShowAgain = false;
+  vanishError = null;
+  flow.vanishCancel();
+}
+
 // The Vanish button opens the wallet panel while no wallet is open.
 $("vanish-form").addEventListener(
   "submit",
-  act(() => {
+  vanishAct("start", async () => {
     const w = flow.state.wallet;
     if (!w || w.stage !== "open") return openPanel("wallet-panel");
-    return flow.vanishStart($("vanish-amount").value);
+    const amount = parseGhost($("vanish-amount").value);
+    if (w.balance !== null && amount > maxVanish(w.balance)) {
+      throw new Error("the wallet holds less than the amount and the most the gas can cost");
+    }
+    vanishShowAgain = false;
+    await flow.vanishStart($("vanish-amount").value);
+    // The tab was left while the key was made: it goes at once.
+    if ($("card").dataset.tab !== "vanish") forgetVanish();
+    return null;
   }),
 );
 $("vanish-max").addEventListener("click", () => {
   const w = flow.state.wallet;
   if (w && w.stage === "open" && w.balance !== null) $("vanish-amount").value = formatGhost(maxVanish(w.balance));
 });
-wireKeyButtons("vanish", () => flow.state.vanish, (view) => flow.vanishView(view));
-$("vanish-saved").addEventListener("click", act(() => flow.vanishSaved()));
-$("vanish-check").addEventListener("submit", act(() => flow.vanishCheck(answers($("vanish-check-groups")))));
-$("vanish-recheck").addEventListener("click", act(() => flow.vanishRecheck()));
+// Copy and Download take the 24 words; both are conveniences beside writing
+// them down.
+$("vanish-copy").addEventListener(
+  "click",
+  vanishAct("copy", async () => {
+    const v = flow.state.vanish;
+    if (v && v.key) await navigator.clipboard.writeText(v.key);
+  }),
+);
+$("vanish-download").addEventListener(
+  "click",
+  vanishAct("download", async () => {
+    const v = flow.state.vanish;
+    if (v && v.key) await downloadKeyImage(v.key);
+  }),
+);
+$("vanish-saved").addEventListener(
+  "click",
+  vanishAct("saved", () => {
+    if (vanishShowAgain) {
+      vanishShowAgain = false;
+      render(flow.state);
+      return;
+    }
+    flow.vanishSaved();
+  }),
+);
+$("vanish-back").addEventListener("click", () => {
+  vanishShowAgain = true;
+  vanishError = null;
+  render(flow.state);
+});
+// The only place the commit is sent: the check form's submit. The waiting
+// bar shows once the three words match, until the flow's check returns; a
+// wrong word sends nothing and the card stays on the check.
+$("vanish-check").addEventListener(
+  "submit",
+  vanishAct("send", async () => {
+    const v = flow.state.vanish;
+    const given = answers($("vanish-check-groups"));
+    vanishSending = Boolean(v && v.key && v.groups && wrongWords(v.key, v.groups, given).length === 0);
+    render(flow.state);
+    try {
+      await flow.vanishCheck(given);
+    } finally {
+      vanishSending = false;
+      render(flow.state);
+    }
+  }),
+);
+$("vanish-recheck").addEventListener("click", vanishAct("recheck", () => flow.vanishRecheck()));
+for (const id of ["vanish-done-button", "vanish-after-done"]) {
+  $(id).addEventListener("click", () => {
+    forgetVanish();
+    $("vanish-amount").value = "";
+  });
+}
+window.addEventListener("pagehide", forgetVanish);
 
 $("summon-form").addEventListener(
   "submit",
@@ -371,6 +564,8 @@ $("claim-check").addEventListener("submit", act(() => flow.claimCheck(answers($(
 const TABS = ["vanish", "summon"];
 
 function selectTab(name, focus) {
+  // Leaving Vanish drops its key; nothing is sent unless the check passed.
+  if ($("card").dataset.tab === "vanish" && name !== "vanish") forgetVanish();
   for (const t of TABS) {
     const on = t === name;
     const tab = $(`tab-${t}`);

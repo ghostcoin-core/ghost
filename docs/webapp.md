@@ -7,10 +7,11 @@ The web app is the first product on the client library: a user opens the
 app's own quantum-safe wallet and uses GHOST privately, with Phantom Keys of
 24 words over salted coins (see Phantom Keys). It does three things.
 
-- **Vanish.** It creates a new Phantom Key of 24 words, shows it (blurred
-  until asked) for the user to write down, and offers its digit view, the
-  same key as 21 groups of four digits, beside the words. Copying the key
-  and downloading it as an image are conveniences, never the only backup:
+- **Vanish.** It creates a new Phantom Key of 24 words and shows them, in a
+  numbered grid, for the user to write down (the flow can also write the
+  same key as 21 groups of four digits; the Vanish card shows the words
+  only). Copying the key and downloading it as an image are conveniences,
+  never the only backup:
   before the commit is sent, the **save check** asks for three of the key's
   24 words, chosen at random with `crypto.getRandomValues`, shown by
   position and asked in order, whichever view is shown. A word is compared
@@ -60,7 +61,33 @@ file ships yet). It fits a phone's width with no sideways scroll.
   Max, which fills in the balance less the most the commit's gas can cost
   (0.01 GHOST). The main button reads "Vanish", or "Open wallet" with no
   wallet open, when it opens the wallet panel instead. Vanish runs the
-  flow above: the key, its save check, then Sent and Done.
+  flow above in three screens inside the card, with the Vanish tab kept in
+  front:
+  1. **Save your Phantom Key.** "These 24 words are the only way to summon
+     your *amount* GHOST. Anyone with them can take it. If you lose them,
+     no one can get it back." The 24 words in a numbered grid of three
+     columns, put in as text only; Copy and Download (the key image of
+     `keyimage.mjs`); the main button "I saved it".
+  2. **Check your key.** "Type these three words from your saved key."
+     Three inputs, each labelled with its word's position. A wrong word
+     shows "Those words don't match your key. Check what you saved and try
+     again." and sends nothing. "Show key again" goes back to the grid. The
+     main button, "Vanish *amount* GHOST", is the only control that sends
+     the commit, from the open wallet. From the moment the three words
+     match until the flow's check returns, the card shows a thin moving bar
+     and one short line instead of the screen.
+  3. **Done**, once the check returns with the commit in a block: the ghost
+     icon, "*amount* GHOST vanished", "Your Phantom Key now holds it. To use
+     it, open Summon and paste your key." and the button "Done", which
+     drops the key from memory and returns to an empty Vanish tab.
+
+  An error (the balance too low, the network refusing the commit) is one
+  plain red line in the card, a fixed sentence chosen by what failed and
+  never the error's own text; a failed send returns to the check screen.
+  The key leaves the page's memory on Done, when the Summon tab is chosen
+  and when the page is closed (`pagehide`): the grid is emptied and the
+  flow's Vanish step cancelled. Leaving before the check passes sends
+  nothing.
 - **Summon tab.** The Summon controls: the key field, the coin's status and
   cover, Refresh, Close the key, and Reveal (amount and address).
 - **Claim** has no tab and no visible control. Its markup stays in the
@@ -811,10 +838,19 @@ app makes no data commitments.
   external URL, inline script or inline style; the Midnight violet colors
   are CSS variables of one dark theme; the glow and motion sit inside
   `prefers-reduced-motion: no-preference`.
+- `vanish-screens.test.mjs`, with nothing built: `index.html` read as text
+  for the three Vanish screens' fixed wording, and `app.mjs` read as text
+  and run against a small stand-in page and a stand-in flow. The key shows
+  as a grid of its 24 numbered words; the check has three labelled inputs;
+  a wrong word shows the wrong-answer line, no waiting bar and sends
+  nothing; the right words show the waiting bar until the check returns,
+  then Done; the send happens only from the check form's submit; Done, the
+  switch to Summon and `pagehide` empty the grid and call `vanishCancel`;
+  an error is a fixed plain line, never the error's own text.
 
-The key image download, drawn on a canvas in the page, and the digit-view
-button are not covered by the headless tests; the flow's digit view is.
-Neither are the tab, panel and Max wiring of `app.mjs`, which needs a
+The key image download, drawn on a canvas in the page, and Claim's
+digit-view button are not covered by the headless tests; the flow's digit
+view is. Neither are the panel and Max wiring of `app.mjs`, which needs a
 browser.
 
 ### Against a real node
