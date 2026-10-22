@@ -213,6 +213,11 @@ function startPage({ refuse = null } = {}) {
         state.vanish = null;
         emit();
       },
+      // Leaving Summon, and pagehide, close the Summon key too.
+      summonClose() {
+        state.summon = null;
+        emit();
+      },
     };
   }
 

@@ -112,11 +112,25 @@ test("the Vanish panel holds the amount box, the balance line and the main butto
   for (const id of ["vanish-key", "vanish-check", "vanish-status", "vanish-recheck"]) assert.ok(panel.includes(`id="${id}"`), id);
 });
 
-test("the Summon panel keeps the current Summon controls", () => {
+test("the Summon panel holds the paste box, the amount box, the waiting and Done screens", () => {
   const panel = element("panel-summon");
-  for (const id of ["summon-form", "summon-key", "summon-panel", "summon-status", "reveal-form", "reveal-amount", "reveal-to"]) {
+  for (const id of [
+    "summon-form",
+    "summon-key",
+    "summon-amount",
+    "summon-in-key",
+    "summon-max",
+    "summon-submit",
+    "summon-waiting",
+    "summon-done",
+    "summon-done-button",
+    "summon-error",
+  ]) {
     assert.ok(panel.includes(`id="${id}"`), id);
   }
+  assert.match(element("summon-submit"), /type="submit"[^>]*>Paste a key</);
+  // No payout address field and no reveal form of their own.
+  assert.doesNotMatch(panel, /id="reveal-/);
 });
 
 test("the wallet button opens a panel with the create and restore flows", () => {

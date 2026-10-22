@@ -1,8 +1,8 @@
 # Ghost web app
 
 A web app for committing and revealing GHOST with the link between the two hidden on chain (amounts, timing and network address can still give it away, and one block holding a transaction is neither final settlement nor privacy; see [privacy under attack](../docs/research/privacy-under-attack.md)): open its quantum-safe wallet, **Vanish**
-GHOST into a new Phantom Key, **Summon** any amount of a key's coin to any
-address, and **Claim** a received key's coin to a new key. It is plain ES
+GHOST into a new Phantom Key, **Summon** any amount of a key's coin to the
+open wallet, and **Claim** a received key's coin to a new key. It is plain ES
 modules with no framework and no npm dependencies, on top of the client
 library, which runs in a background worker as WebAssembly.
 
@@ -107,13 +107,21 @@ and open `http://localhost:8080`. The page has the wallet button top right
 ("Open wallet", then the wallet's short address once it is open: it holds
 the create and restore flows) and one card with two tabs, **Vanish** (an
 amount box, the open wallet's balance and Max, and the Vanish button) and
-**Summon** (a key, its coin and Reveal). Vanish then steps through three
+**Summon** (a box to paste a key, then an amount box and the Summon button).
+Vanish then steps through three
 screens in the card: **Save your Phantom Key** (the 24 words in a numbered
 grid, Copy, Download and "I saved it"), **Check your key** (three of the
 words typed back; a wrong one sends nothing, and "Vanish *amount* GHOST"
 sends the commit with a thin waiting bar) and **Done** ("*amount* GHOST
 vanished"; Done drops the key). The key also leaves memory when you switch
-to Summon or close the page. Claim has no visible control in
+to Summon or close the page. Summon opens the pasted key once it holds 24
+words (or the digit form), or when you leave the box, shows what the key
+holds with Max, and pays only the open wallet's address ("Open wallet"
+with none open). While the reveal goes out the card shows three steps that
+tick off as the app reaches them (Making your proof, Sending to the network,
+Confirming), then **Done** ("*amount* GHOST summoned", what is still in the
+key, or "This key is now empty."). Done, a tab switch or closing the page
+drops the key. Claim has no visible control in
 this layout; its code stays. The footer holds the experimental warning and
 two small panels: **About**, on what the app keeps and sends, and
 **Network**. Under **Network**, the endpoint defaults to
@@ -150,6 +158,10 @@ test another build of the module, for example
 `app.mjs` as text and runs the Vanish screens against a stand-in page and
 flow (the wording, a wrong check word that sends nothing, the right words
 that send, and Done or a tab switch that drops the key).
+`webapp/test/summon-screens.test.mjs` does the same for Summon: the paste
+box and its plain errors, the amount checks, the reveal paid to the open
+wallet's address, the three steps, Done with the rest or an empty key, and
+Done or a tab switch that drops the key.
 
 To run the same flow against a real node, build ghost-node's `geth` at the
 pinned commit and point the real-node test at it:
