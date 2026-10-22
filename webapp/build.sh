@@ -49,6 +49,8 @@ for m in "${modules[@]}"; do
   cp "$here/src/$m.mjs" "$dist/src/$m.mjs"
 done
 cp "$module" "$dist/ghost_webapp_wasm.wasm"
+# The self-hosted Inter font and its licence.
+cp -R "$here/fonts" "$dist/fonts"
 
 (
   cd "$dist"
