@@ -74,6 +74,26 @@ The module's bytes depend on the toolchain version, the locked crates and
 the build flags in `build.sh`, not on the machine's paths. A difference in
 any line means the files differ from what the commit builds; do not use them.
 
+## Check the hosted site
+
+The hosted site is deployed from `main` by
+`.github/workflows/deploy-webapp.yml`. It serves exactly the files
+`build.sh` makes, nothing added, with the checksum list at `/SHA256SUMS`.
+To check it, fetch the list and each file it names into an empty folder,
+then check them (`SITE` is the site's address):
+
+```sh
+mkdir site && cd site
+curl -fsSO "$SITE/SHA256SUMS"
+awk '{print $2}' SHA256SUMS | while read -r f; do
+  curl -fsS --create-dirs -o "$f" "$SITE/$f"
+done
+sha256sum -c SHA256SUMS
+```
+
+Every line must say `OK`. Then compare the list with your own build of the
+same commit, as above: `diff SHA256SUMS ../webapp/dist/SHA256SUMS`.
+
 ## Run it
 
 Serve `webapp/dist` over HTTP from any static file server (a module worker

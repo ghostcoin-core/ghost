@@ -1,0 +1,27 @@
+{
+  "version": 3,
+  "routes": [
+    {
+      "src": "/(.*)",
+      "headers": {
+        "Content-Security-Policy": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self' http: https:; style-src 'self'; img-src 'self' blob:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "X-Frame-Options": "DENY"
+      },
+      "continue": true
+    },
+    {
+      "handle": "filesystem"
+    }
+  ],
+  "overrides": {
+    "ghost_webapp_wasm.wasm": {
+      "contentType": "application/wasm"
+    },
+    "SHA256SUMS": {
+      "contentType": "text/plain; charset=utf-8"
+    }
+  }
+}

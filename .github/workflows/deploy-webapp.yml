@@ -1,0 +1,60 @@
+name: Deploy web app
+
+# Builds the web app with webapp/build.sh and deploys webapp/dist to Vercel
+# as a prebuilt static site. It runs after a merge to main (or by hand),
+# never on a proposed change, so a failed deploy cannot block a merge.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time; a newer run waits instead of cancelling one that is
+# halfway through uploading.
+concurrency:
+  group: deploy-webapp
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy-webapp
+    # GitHub-hosted, like the jobs in ci.yml: this repository is public.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # The toolchain webapp/build.sh names.
+      RUST_TOOLCHAIN: 1.99.1
+      # The Vercel CLI, pinned to an exact version.
+      VERCEL_CLI_VERSION: 65.1.0
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      - name: Build the web app
+        run: webapp/build.sh
+      # The Build Output API layout: the files build.sh made, unchanged, as
+      # the static site, and webapp/vercel/config.json for the headers.
+      - name: Lay out the prebuilt site
+        run: |
+          rm -rf .vercel/output
+          mkdir -p .vercel/output/static
+          cp -R webapp/dist/. .vercel/output/static/
+          cp webapp/vercel/config.json .vercel/output/config.json
+          (cd .vercel/output/static && sha256sum -c SHA256SUMS)
+      - name: Install the Vercel CLI
+        run: |
+          npm install --global --no-fund --no-audit "vercel@$VERCEL_CLI_VERSION"
+          vercel --version
+      - name: Deploy to production
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel deploy --prebuilt --prod --yes --token "$VERCEL_TOKEN"
