@@ -86,6 +86,88 @@ pub(crate) fn pad(msg: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The round constants of Keccak-f[1600], one per round.
+const ROUND_CONSTANTS: [u64; 24] = [
+    0x0000_0000_0000_0001,
+    0x0000_0000_0000_8082,
+    0x8000_0000_0000_808a,
+    0x8000_0000_8000_8000,
+    0x0000_0000_0000_808b,
+    0x0000_0000_8000_0001,
+    0x8000_0000_8000_8081,
+    0x8000_0000_0000_8009,
+    0x0000_0000_0000_008a,
+    0x0000_0000_0000_0088,
+    0x0000_0000_8000_8009,
+    0x0000_0000_8000_000a,
+    0x0000_0000_8000_808b,
+    0x8000_0000_0000_008b,
+    0x8000_0000_0000_8089,
+    0x8000_0000_0000_8003,
+    0x8000_0000_0000_8002,
+    0x8000_0000_0000_0080,
+    0x0000_0000_0000_800a,
+    0x8000_0000_8000_000a,
+    0x8000_0000_8000_8081,
+    0x8000_0000_0000_8080,
+    0x0000_0000_8000_0001,
+    0x8000_0000_8000_8008,
+];
+
+/// The chi step on one plane of five lanes.
+#[inline(always)]
+fn chi(b: [u64; 5]) -> [u64; 5] {
+    [
+        b[0] ^ (!b[1] & b[2]),
+        b[1] ^ (!b[2] & b[3]),
+        b[2] ^ (!b[3] & b[4]),
+        b[3] ^ (!b[4] & b[0]),
+        b[4] ^ (!b[0] & b[1]),
+    ]
+}
+
+/// One round of Keccak-f[1600]: theta, then rho and pi folded into the lanes
+/// chi reads, then chi and iota. Lane `(x, y)` is `a[x + 5 * y]`; output
+/// plane `y` reads input lanes `(x + 3y, x)` for `x` in `0..5`.
+#[inline(always)]
+fn round(a: &[u64; 25], round_constant: u64) -> [u64; 25] {
+    let c: [u64; 5] = core::array::from_fn(|x| a[x] ^ a[x + 5] ^ a[x + 10] ^ a[x + 15] ^ a[x + 20]);
+    let d: [u64; 5] = core::array::from_fn(|x| c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1));
+    let lane = |x: usize, y: usize, rotation: u32| (a[x + 5 * y] ^ d[x]).rotate_left(rotation);
+    let mut p0 = chi([lane(0, 0, 0), lane(1, 1, 44), lane(2, 2, 43), lane(3, 3, 21), lane(4, 4, 14)]);
+    let p1 = chi([lane(3, 0, 28), lane(4, 1, 20), lane(0, 2, 3), lane(1, 3, 45), lane(2, 4, 61)]);
+    let p2 = chi([lane(1, 0, 1), lane(2, 1, 6), lane(3, 2, 25), lane(4, 3, 8), lane(0, 4, 18)]);
+    let p3 = chi([lane(4, 0, 27), lane(0, 1, 36), lane(1, 2, 10), lane(2, 3, 15), lane(3, 4, 56)]);
+    let p4 = chi([lane(2, 0, 62), lane(3, 1, 55), lane(4, 2, 39), lane(0, 3, 41), lane(1, 4, 2)]);
+    p0[0] ^= round_constant;
+    let mut out = [0; 25];
+    for (y, plane) in [p0, p1, p2, p3, p4].into_iter().enumerate() {
+        out[5 * y..5 * y + 5].copy_from_slice(&plane);
+    }
+    out
+}
+
+/// Keccak-f[1600], the permutation of Keccak-256, on 25 lanes.
+///
+/// The same function as `p3_keccak::KeccakF` (the gate of `stark.rs` checks
+/// it), written round by round on a local copy of the state so the compiler
+/// keeps every lane in a register. The Merkle commitments of a proof run it
+/// several million times, most of the prover's time.
+pub(crate) fn keccak_f(state: &mut [u64; 25]) {
+    *state = keccak_f_inline(*state);
+}
+
+/// [`keccak_f`] on a state held by value and inlined into its caller, so
+/// that a caller absorbing block after block keeps the state in registers
+/// rather than storing and reloading it around every permutation.
+#[inline(always)]
+pub(crate) fn keccak_f_inline(mut a: [u64; 25]) -> [u64; 25] {
+    for round_constant in ROUND_CONSTANTS {
+        a = round(&a, round_constant);
+    }
+    a
+}
+
 /// Number of permutations Keccak-256 spends on a message of this length.
 pub const fn permutations(len: usize) -> usize {
     len / RATE_BYTES + 1
@@ -253,6 +335,19 @@ mod tests {
             let msg: Vec<u8> = (0..len).map(|i| (i * 7 + 3) as u8).collect();
             let expected = Keccak256Hash {}.hash_iter(msg.iter().copied());
             assert_eq!(keccak256(&msg), expected, "length {len}");
+        }
+    }
+
+    /// Three applications from the zero state, each against the library's
+    /// Keccak-f[1600].
+    #[test]
+    fn keccak_f_is_the_library_permutation() {
+        let mut state = [0u64; 25];
+        let mut library = state;
+        for _ in 0..3 {
+            keccak_f(&mut state);
+            KeccakF.permute_mut(&mut library);
+            assert_eq!(state, library);
         }
     }
 
