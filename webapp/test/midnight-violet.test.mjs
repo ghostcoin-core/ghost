@@ -319,5 +319,6 @@ test("style.css has one dark theme only, with Inter first in the font stack", ()
   assert.doesNotMatch(css, /\[data-theme/);
   assert.match(html, /<meta name="color-scheme" content="dark">/);
   assert.match(vars["--font"], /^"Inter", system-ui/);
-  assert.doesNotMatch(css, new RegExp("@font-" + "face"));
+  // Inter is self-hosted (test/self-hosted-font.test.mjs): no font from another host.
+  assert.doesNotMatch(css, /url\(\s*["']?(https?:)?\/\//);
 });
