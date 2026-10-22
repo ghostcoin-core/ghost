@@ -101,24 +101,39 @@
             <button id="vanish-submit" class="primary wide big" type="submit">Open wallet</button>
             <p class="note">The commit's gas costs at most 0.01 GHOST; the app refuses to sign one that could cost more.</p>
           </form>
-          <div id="vanish-key" class="key-panel" hidden>
-            <p>Your Phantom Key: 24 words. Write them down in order. Copying the key or downloading it as an image is a convenience, not a backup on its own. The same key can be shown as 21 groups of digits. It is shown here only; the app never stores it.</p>
-            <p id="vanish-key-text" class="secret blurred"></p>
+          <div id="vanish-key" class="screen" hidden>
+            <h2>Save your Phantom Key</h2>
+            <p>These 24 words are the only way to summon your <span id="vanish-key-amount"></span> GHOST. Anyone with them can take it. If you lose them, no one can get it back.</p>
+            <ol id="vanish-words" class="word-grid" aria-label="Your Phantom Key's 24 words"></ol>
             <p class="row">
-              <button id="vanish-show" type="button">Show</button>
-              <button id="vanish-digits" type="button">Show as digits</button>
               <button id="vanish-copy" type="button">Copy</button>
-              <button id="vanish-download" type="button">Download image</button>
-              <button id="vanish-saved" class="primary" type="button">I have written it down</button>
+              <button id="vanish-download" type="button">Download</button>
             </p>
+            <button id="vanish-saved" class="primary wide big" type="button">I saved it</button>
           </div>
-          <form id="vanish-check" class="check" hidden>
-            <p>Save check: type these words of your key. The commit is sent only when all three match.</p>
+          <form id="vanish-check" class="screen" hidden>
+            <h2>Check your key</h2>
+            <p>Type these three words from your saved key.</p>
             <div id="vanish-check-groups" class="groups"></div>
-            <button class="primary wide" type="submit">Send the commit</button>
+            <p><button id="vanish-back" class="link" type="button">Show key again</button></p>
+            <button id="vanish-send" class="primary wide big" type="submit">Vanish <span id="vanish-send-amount"></span> GHOST</button>
           </form>
-          <p id="vanish-status" class="status" role="status"></p>
-          <p><button id="vanish-recheck" type="button" hidden>Check the commit is still in the chain</button></p>
+          <div id="vanish-waiting" class="screen waiting" hidden>
+            <div class="bar" aria-hidden="true"><span></span></div>
+            <p id="vanish-waiting-text" role="status"></p>
+          </div>
+          <div id="vanish-done" class="screen done" hidden>
+            <svg class="icon icon-done" aria-hidden="true" focusable="false"><use href="#icon-ghost"></use></svg>
+            <h2><span id="vanish-done-amount"></span> GHOST vanished</h2>
+            <p>Your Phantom Key now holds it. To use it, open Summon and paste your key.</p>
+            <button id="vanish-done-button" class="primary wide big" type="button">Done</button>
+          </div>
+          <div id="vanish-after" class="screen" hidden>
+            <p id="vanish-status" class="status" role="status"></p>
+            <p><button id="vanish-recheck" type="button" hidden>Check the commit is still in the chain</button></p>
+            <button id="vanish-after-done" class="wide" type="button">Done</button>
+          </div>
+          <p id="vanish-error" class="error-line" role="alert"></p>
         </section>
 
         <section id="panel-summon" class="tab-panel" role="tabpanel" aria-labelledby="tab-summon" tabindex="0" hidden>
