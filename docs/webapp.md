@@ -47,6 +47,23 @@ motion and font stack are CSS variables at the top of `webapp/style.css`;
 the font stack names Inter first, then the system UI font, and no font
 file ships yet). It fits a phone's width with no sideways scroll.
 
+The palette: page `#0A0A12`; card and the tab in front `#15142A` with a
+1px `#2A2850` border and 18px corners; the tab behind `#0E0D1C`, border
+`#1E1C38`, text `#6E6A99`; input boxes `#0E0D1C`, border `#23214A`,
+placeholder `#4E4A7A`; the GHOST token label a `#1F1D3D` pill with the
+ghost icon in `#A78BFF`; main and secondary text `#ECEBFF` and `#8C88B8`;
+accent (Max, links, focus ring, logo) `#A78BFF`; the main button a
+`#6B4CFF` to `#A64CFF` gradient with large bold white text and a slightly
+brighter hover; the wallet button a `rgba(167,139,255,.12)` tint, a
+`rgba(167,139,255,.3)` border and `#CFC3FF` text; error text `#FF7A9A`.
+Behind the card two large blurred circles glow, violet `#6B4CFF` at 35%
+and cyan `#2EC5FF` at 18%. Motion: the circles drift in a 20s loop, the
+tab slides forward in 200ms, the coin fades out on Vanish's Done screen
+and fades in on Summon's. All motion sits inside
+`prefers-reduced-motion: no-preference`. Text colors meet WCAG AA on their
+backgrounds; white on the gradient's light end is 4.1:1, so the button
+text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
+
 - **Top bar.** The ghost icon and "Ghost" top left; the wallet button top
   right. With no wallet open the button reads "Open wallet" and opens a
   small panel holding the create-wallet flow (the 24 words, then their save
@@ -874,6 +891,17 @@ app makes no data commitments.
   external URL, inline script or inline style; the Midnight violet colors
   are CSS variables of one dark theme; the glow and motion sit inside
   `prefers-reduced-motion: no-preference`.
+- `midnight-violet.test.mjs`, with nothing built: `style.css`,
+  `index.html` and `vercel/config.json` read as text. Every color of the
+  Midnight violet table is a `:root` variable with its role, and the card,
+  tabs, inputs, token label, main button, wallet button and error lines
+  use it; the card's corners are 18px; the two glow circles are violet at
+  35% and cyan at 18%, blurred, fixed behind the page; their drift (about
+  20s), the tab slide (about 200ms) and the coin fades sit inside
+  `prefers-reduced-motion: no-preference` and nothing moves outside it;
+  main, secondary, accent, error, button and wallet text meet WCAG AA; the
+  served CSP is the page's plus `frame-ancestors 'none'`, with
+  `font-src 'self'` in both; one dark theme with Inter first.
 - `vanish-screens.test.mjs`, with nothing built: `index.html` read as text
   for the three Vanish screens' fixed wording, and `app.mjs` read as text
   and run against a small stand-in page and a stand-in flow. The key shows

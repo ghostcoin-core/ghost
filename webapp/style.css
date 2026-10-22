@@ -2,32 +2,55 @@
 :root {
   color-scheme: dark;
 
+  /* Page and the two glow circles behind the card */
   --bg: #0A0A12;
-  --bg-glow: #1B1033;
-  --surface: #15121F;
-  --surface-behind: #0E0C17;
-  --raised: #1D1930;
-  --border: #2A2442;
-  --border-strong: #3B3260;
-  --text: #ECE9F7;
-  --muted: #9B96B4;
-  --violet: #8B5CF6;
-  --violet-bright: #A78BFA;
-  --violet-deep: #6D28D9;
-  --on-violet: #FFFFFF;
-  --danger: #F87171;
+  --glow-violet: #6B4CFF;
+  --glow-violet-opacity: 0.35;
+  --glow-cyan: #2EC5FF;
+  --glow-cyan-opacity: 0.18;
+
+  /* The card and the tab in front; the tab behind */
+  --surface: #15142A;
+  --border: #2A2850;
+  --surface-behind: #0E0D1C;
+  --border-behind: #1E1C38;
+  --text-behind: #6E6A99;
+
+  /* Input boxes and the GHOST token label */
+  --input: #0E0D1C;
+  --input-border: #23214A;
+  --placeholder: #4E4A7A;
+  --token: #1F1D3D;
+
+  /* Text, accent and errors */
+  --text: #ECEBFF;
+  --muted: #8C88B8;
+  --accent: #A78BFF;
+  --danger: #FF7A9A;
   --caution: #FBBF24;
-  --glow: 0 0 0 1px rgba(139, 92, 246, 0.25), 0 12px 48px rgba(139, 92, 246, 0.22);
+
+  /* The main button's gradient and the wallet button */
+  --violet: #6B4CFF;
+  --violet-end: #A64CFF;
+  --on-violet: #FFFFFF;
+  --wallet-tint: rgba(167, 139, 255, 0.12);
+  --wallet-border: rgba(167, 139, 255, 0.3);
+  --wallet-text: #CFC3FF;
+
+  --raised: #1F1D3D;
+  --border-strong: #3A3770;
+  --glow: 0 0 0 1px rgba(107, 76, 255, 0.25), 0 12px 48px rgba(107, 76, 255, 0.22);
   --shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-  --glow-focus:0 0 0 3px rgba(167, 139, 250, 0.45);
+  --glow-focus: 0 0 0 3px rgba(167, 139, 255, 0.45);
 
   --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --radius: 16px;
+  --radius: 18px;
   --radius-small: 10px;
   --card-width: 420px;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
-  --speed: 180ms;
+  --speed: 200ms;
+  --drift: 20s;
 
   background: var(--bg);
   color: var(--text);
@@ -51,12 +74,42 @@ body {
 }
 
 body {
-  background: radial-gradient(ellipse 80% 50% at 50% 0%, var(--bg-glow), var(--bg) 70%) fixed, var(--bg);
+  background: var(--bg);
   display: flex;
   flex-direction: column;
+  isolation: isolate;
   margin: 0;
   min-height: 100vh;
   overflow-x: hidden;
+}
+
+/* The glow: two large blurred circles behind the card. */
+body::before,
+body::after {
+  border-radius: 50%;
+  content: "";
+  filter: blur(110px);
+  pointer-events: none;
+  position: fixed;
+  z-index: -1;
+}
+
+body::before {
+  background: var(--glow-violet);
+  height: 560px;
+  left: calc(50% - 440px);
+  opacity: var(--glow-violet-opacity);
+  top: 8vh;
+  width: 560px;
+}
+
+body::after {
+  background: var(--glow-cyan);
+  height: 460px;
+  left: calc(50% - 20px);
+  opacity: var(--glow-cyan-opacity);
+  top: 34vh;
+  width: 460px;
 }
 
 h2,
@@ -139,8 +192,8 @@ label {
 
 input,
 textarea {
-  background: var(--surface-behind);
-  border: 1px solid var(--border);
+  background: var(--input);
+  border: 1px solid var(--input-border);
   border-radius: var(--radius-small);
   color: var(--text);
   display: block;
@@ -157,15 +210,15 @@ textarea {
 
 input::placeholder,
 textarea::placeholder {
-  color: var(--muted);
-  opacity: 0.6;
+  color: var(--placeholder);
+  opacity: 1;
 }
 
 input:focus,
 textarea:focus,
 button:focus-visible,
 .tab-panel:focus-visible {
-  border-color: var(--violet);
+  border-color: var(--accent);
   box-shadow: var(--glow-focus);
   outline: none;
 }
@@ -190,11 +243,20 @@ button:disabled {
   opacity: 0.45;
 }
 
+/* White on the gradient's light end is 4.1:1, so the main button's text is
+   large and bold (WCAG large text from 18.66px bold); on the dark end and
+   the middle, where the text sits, it is above 4.5:1. */
 button.primary {
-  background: linear-gradient(180deg, var(--violet), var(--violet-deep));
+  background: linear-gradient(90deg, var(--violet), var(--violet-end));
   border-color: transparent;
   color: var(--on-violet);
-  font-weight: 600;
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+button.primary:hover:not(:disabled) {
+  border-color: transparent;
+  filter: brightness(1.08);
 }
 
 button.wide {
@@ -204,14 +266,13 @@ button.wide {
 }
 
 button.big {
-  font-size: 1.05rem;
-  padding: 0.85rem 1rem;
+  padding: 0.8rem 1rem;
 }
 
 button.link {
   background: none;
   border: none;
-  color: var(--violet-bright);
+  color: var(--accent);
   padding: 0.15rem 0.35rem;
 }
 
@@ -250,7 +311,7 @@ button.link:hover:not(:disabled) {
 }
 
 .icon-brand {
-  color: var(--violet-bright);
+  color: var(--accent);
   height: 1.6em;
   width: 1.6em;
 }
@@ -261,14 +322,19 @@ button.link:hover:not(:disabled) {
 
 .wallet-button {
   align-items: center;
+  background: var(--wallet-tint);
+  border: 1px solid var(--wallet-border);
   border-radius: 999px;
+  color: var(--wallet-text);
   display: flex;
+  font-weight: 600;
   gap: 0.5rem;
   padding: 0.5rem 1rem;
 }
 
+.wallet-button:hover:not(:disabled),
 .wallet-button[aria-expanded="true"] {
-  border-color: var(--violet);
+  border-color: var(--accent);
 }
 
 #wallet-button-text {
@@ -320,27 +386,36 @@ main {
 .tabs {
   display: flex;
   gap: 0.25rem;
-  position: relative;
-  z-index: 1;
 }
 
+/* The tab behind sits lower, under the card's edge; the tab in front
+   covers the card's top border so the two join. */
 .tab {
   background: var(--surface-behind);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-behind);
   border-bottom: none;
   border-radius: var(--radius) var(--radius) 0 0;
-  color: var(--muted);
+  color: var(--text-behind);
   font-size: 1rem;
   font-weight: 600;
   margin-bottom: -1px;
   padding: 0.7rem 1.4rem 0.6rem;
-  transform: translateY(4px);
+  position: relative;
+  transform: translateY(5px);
+  z-index: 0;
+}
+
+.tab:hover:not(:disabled) {
+  border-color: var(--border-behind);
+  color: var(--muted);
 }
 
 .tab[aria-selected="true"] {
   background: var(--surface);
+  border-color: var(--border);
   color: var(--text);
   transform: none;
+  z-index: 2;
 }
 
 .tab:focus-visible {
@@ -353,6 +428,7 @@ main {
   border-radius: var(--radius);
   padding: 1.25rem;
   position: relative;
+  z-index: 1;
 }
 
 .card[data-tab="vanish"] {
@@ -367,8 +443,8 @@ main {
 
 .amount-box {
   align-items: center;
-  background: var(--surface-behind);
-  border: 1px solid var(--border);
+  background: var(--input);
+  border: 1px solid var(--input-border);
   border-radius: var(--radius);
   display: flex;
   gap: 0.75rem;
@@ -377,7 +453,7 @@ main {
 }
 
 .amount-box:focus-within {
-  border-color: var(--violet);
+  border-color: var(--accent);
   box-shadow: var(--glow-focus);
 }
 
@@ -400,7 +476,7 @@ main {
 
 .token {
   align-items: center;
-  background: var(--raised);
+  background: var(--token);
   border-radius: 999px;
   color: var(--text);
   display: flex;
@@ -412,7 +488,7 @@ main {
 }
 
 .token .icon {
-  color: var(--violet-bright);
+  color: var(--accent);
 }
 
 .balance-line {
@@ -429,8 +505,8 @@ main {
 
 .key-panel,
 .check {
-  background: var(--surface-behind);
-  border: 1px solid var(--border);
+  background: var(--input);
+  border: 1px solid var(--input-border);
   border-radius: var(--radius-small);
   margin-top: 1rem;
   padding: 0.9rem;
@@ -486,8 +562,8 @@ main {
 }
 
 .word-grid li {
-  background: var(--surface-behind);
-  border: 1px solid var(--border);
+  background: var(--input);
+  border: 1px solid var(--input-border);
   border-radius: var(--radius-small);
   display: flex;
   font-family: var(--mono);
@@ -510,14 +586,14 @@ main {
 }
 
 .bar {
-  background: var(--surface-behind);
+  background: var(--input);
   border-radius: 999px;
   height: 3px;
   overflow: hidden;
 }
 
 .bar span {
-  background: var(--violet);
+  background: linear-gradient(90deg, var(--violet), var(--violet-end));
   border-radius: 999px;
   display: block;
   height: 100%;
@@ -534,7 +610,7 @@ main {
 }
 
 .icon-done {
-  color: var(--violet-bright);
+  color: var(--accent);
   display: block;
   height: 3rem;
   margin: 0.5rem auto 0.25rem;
@@ -615,7 +691,7 @@ main {
 }
 
 .step-list li[data-state="now"]::before {
-  border-color: var(--violet-bright);
+  border-color: var(--accent);
 }
 
 .step-list li[data-state="done"] {
@@ -656,7 +732,7 @@ main {
 }
 
 #progress {
-  color: var(--violet-bright);
+  color: var(--accent);
 }
 
 #error,
@@ -739,13 +815,32 @@ main {
       transform var(--speed) var(--ease);
   }
 
+  /* The two glow circles drift slowly, in opposite directions. */
+  body::before {
+    animation: drift var(--drift) ease-in-out infinite;
+  }
+
+  body::after {
+    animation: drift var(--drift) ease-in-out infinite reverse;
+  }
+
   button,
   input,
   textarea,
   .amount-box {
     transition:
       border-color var(--speed) var(--ease),
-      box-shadow var(--speed) var(--ease);
+      box-shadow var(--speed) var(--ease),
+      filter var(--speed) var(--ease);
+  }
+
+  /* The coin fades out when it vanishes and fades in when it is summoned. */
+  #vanish-done:not([hidden]) .icon-done {
+    animation: coin-out 1.2s var(--ease) forwards;
+  }
+
+  #summon-done:not([hidden]) .icon-done {
+    animation: coin-in 1.2s var(--ease);
   }
 
   .tab-panel:not([hidden]),
@@ -789,6 +884,40 @@ main {
     from {
       opacity: 0;
       transform: translate(-50%, 8px);
+    }
+  }
+
+  @keyframes drift {
+    0%,
+    100% {
+      transform: translate(0, 0);
+    }
+
+    33% {
+      transform: translate(8vw, 6vh);
+    }
+
+    66% {
+      transform: translate(-6vw, 3vh);
+    }
+  }
+
+  @keyframes coin-out {
+    from {
+      opacity: 1;
+      transform: none;
+    }
+
+    to {
+      opacity: 0.3;
+      transform: translateY(-8px) scale(0.9);
+    }
+  }
+
+  @keyframes coin-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px) scale(0.9);
     }
   }
 }
