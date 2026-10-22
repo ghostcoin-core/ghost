@@ -1349,3 +1349,197 @@ pub extern "C" fn ghost_receipts_check(ptr: *const u8, len: usize) -> u32 {
         Ok(Vec::new())
     })
 }
+
+/// The test-depth reveal, only with the `test-tree-depth` feature: a reveal
+/// against the root of a coin tree of [`test_depth::TEST_DEPTH_LEVELS`]
+/// levels, as the test node of spec 05, RT-1 Part B builds them (ghost-node's
+/// `ghosttreetest14` tag), for the tests and scripts/recovery-blackout.sh.
+///
+/// The STARK is made for 32 levels only, and that node checks a reveal with
+/// its stub verifier (spec 05, RT-8 Part B; ghost-node's
+/// `core/ghostpriv/ghostprivtest`), which takes exactly
+/// `K("ghost/test-proof/v1", binding digest)` in the first 32 bytes of the
+/// proof field and zeros after. So the reveal is built as a real one is (the
+/// same marker, remainder, note and envelope) and carries that stub, never a
+/// proof that claims to be real. The module the page ships is built without
+/// the feature and has none of this; it is the last item of this file, so that
+/// module's source is the same with or without it.
+#[cfg(feature = "test-tree-depth")]
+mod test_depth {
+    use super::*;
+    use ghost_proofs::{coin_reveal_binding, salted_coin_reveal_binding, tagged};
+
+    /// Levels of the test node's coin trees: 16,384 leaves each.
+    pub const TEST_DEPTH_LEVELS: usize = 14;
+    /// The tag of the test node's stub proof.
+    const TEST_PROOF_TAG: &str = "ghost/test-proof/v1";
+
+    /// `K("ghost/test-proof/v1", binding digest)`, the digest of a salted
+    /// reveal or of a version 1 one.
+    fn stub(params: &ChainParams, reveal: &CoinReveal, salted: bool) -> [u8; 32] {
+        let binding =
+            if salted { salted_coin_reveal_binding(params, reveal) } else { coin_reveal_binding(params, reveal) };
+        tagged(TEST_PROOF_TAG, &[&binding])
+    }
+
+    /// Whether a proof field is the stub of `reveal`, salted or version 1:
+    /// the stub in its first 32 bytes and zeros after.
+    fn is_stub_proof(params: &ChainParams, reveal: &CoinReveal, field: &[u8]) -> bool {
+        field.len() == PROOF_FIELD_BYTES
+            && field[32..].iter().all(|&byte| byte == 0)
+            && [true, false].into_iter().any(|salted| field[..32] == stub(params, reveal, salted))
+    }
+
+    /// Levels of the coin trees this module's test-depth reveal is made for.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_test_depth_levels() -> u32 {
+        TEST_DEPTH_LEVELS as u32
+    }
+
+    /// Builds a partial reveal or a claim against the root of a tree of
+    /// [`TEST_DEPTH_LEVELS`] levels, with the stub proof in its proof field.
+    /// Input and output: those of [`ghost_prove`], kind 0 (partial) or 1
+    /// (claim) only, the leaves those of the 14-level tree under the root;
+    /// the zero-knowledge randomness is read and not used. Nothing is proved
+    /// in place of a refused reveal: a test node needs no decoy.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_prove_test_depth(ptr: *const u8, len: usize) -> u32 {
+        run(ptr, len, |input| {
+            let chain_id = input.u64()?;
+            let params = params(chain_id, input.array()?);
+            let claim = match input.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(String::from("a test-depth reveal is a partial reveal or a claim")),
+            };
+            let root: [u8; 32] = input.array()?;
+            let recipient = input.array()?;
+            let out = amount(input.array()?)?;
+            let fee = amount(input.array()?)?;
+            let number = input.u64()?;
+            let value = amount(input.array()?)?;
+            let position = input.u32()? as usize;
+            let salt = salt_of(&input.array()?)?;
+            let leaves = input.records::<32>()?;
+            let mut rng = rng(input.array()?);
+            let _zk: [u8; 32] = input.array()?;
+            let key = key(input.text()?)?;
+            let new_key = if claim { Some(key_for_claim(input.text()?)?) } else { None };
+
+            // The coin must be the leaf at its position of the 14-level tree
+            // under the root.
+            let z = zeros();
+            let commit = match salt {
+                Some(salt) => key.coin_commit_with_salt(number, value, Rule::EMPTY, salt),
+                None => key.coin_commit(number, value, Rule::EMPTY),
+            }
+            .map_err(|e| e.to_string())?;
+            let held = leaves.len() <= 1 << TEST_DEPTH_LEVELS
+                && leaves.get(position) == Some(commit.commitment.as_bytes())
+                && climb(leaves, 0, TEST_DEPTH_LEVELS, &z).first().copied().unwrap_or(z[TEST_DEPTH_LEVELS]) == root;
+            if !held {
+                return Err(String::from("the coin is not in the 14-level tree under the chosen root"));
+            }
+
+            // The remainder, as the client library builds it: the same key's
+            // next number for a partial reveal, the new key's number 0 for a
+            // claim, salted under a fresh salt when the coin is salted.
+            let holder = match &new_key {
+                Some(new_key) if new_key.key_bytes().as_bytes() == key.key_bytes().as_bytes() => {
+                    return Err(String::from("a claim must go to a new key"));
+                }
+                Some(new_key) => new_key,
+                None => &key,
+            };
+            let next = if claim {
+                0
+            } else {
+                number.checked_add(1).ok_or_else(|| String::from("the key has no commitment number left"))?
+            };
+            let left = value
+                .wei()
+                .checked_sub(out.wei())
+                .and_then(|wei| wei.checked_sub(fee.wei()))
+                .and_then(|wei| Amount::new(wei).ok())
+                .ok_or_else(|| String::from("the amounts do not balance: out and fee are more than the coin holds"))?;
+            let remainder_salt = salt.map(|_| Salt::random(&mut rng));
+            let remainder = match remainder_salt {
+                Some(salt) => holder.coin_commit_with_salt(next, left, Rule::EMPTY, salt),
+                None => holder.coin_commit(next, left, Rule::EMPTY),
+            }
+            .map_err(|e| e.to_string())?;
+            let contents = match remainder_salt {
+                Some(salt) => NoteContents::salted_coin(next, left, Rule::EMPTY, salt),
+                None => NoteContents::coin(next, left, Rule::EMPTY),
+            };
+            let remainder_note = encrypt_note(&holder.note_key(), chain_id, &remainder.commitment, &contents, &mut rng);
+
+            let reveal = CoinReveal {
+                root,
+                marker: *commit.marker.as_bytes(),
+                remainder: *remainder.commitment.as_bytes(),
+                remainder_note,
+                recipient,
+                out: out.to_bytes(),
+                fee: fee.to_bytes(),
+                rule: *Rule::EMPTY.as_bytes(),
+            };
+            let proof = Proof::from_bytes(stub(&params, &reveal, salt.is_some()).to_vec());
+            let envelope = encode_envelope(chain_id, &reveal, &proof)?;
+
+            let mut result = Vec::with_capacity(136 + envelope.len());
+            result.extend_from_slice(&keccak256(&envelope));
+            result.extend_from_slice(&reveal.marker);
+            result.extend_from_slice(&reveal.remainder);
+            result.extend_from_slice(&next.to_be_bytes());
+            result.extend_from_slice(&left.to_bytes());
+            result.extend_from_slice(&envelope);
+            Ok(result)
+        })
+    }
+
+    /// [`ghost_decode_envelope`] as the test node decodes a reveal: the same
+    /// input, checks and output, and a proof field that is the stub of the
+    /// reveal's binding digest is taken as its verifier takes it; any other
+    /// proof is verified as a STARK. The tests' stand-in node uses it for a
+    /// test-depth reveal.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_decode_envelope_test_depth(ptr: *const u8, len: usize) -> u32 {
+        run(ptr, len, |input| {
+            let chain_id = input.u64()?;
+            let params = params(chain_id, input.array()?);
+            let envelope = input.rest();
+            if envelope.len() != ENVELOPE_BYTES || envelope[0] != TYPE_BYTE {
+                return Err(String::from("not a private transaction of the expected size"));
+            }
+            let mut tx = Input { bytes: &envelope[1..], at: 0 };
+            if tx.array::<2>()? != TX_VERSION {
+                return Err(String::from("unknown transaction version"));
+            }
+            if tx.u64()? != chain_id {
+                return Err(String::from("wrong chain identifier"));
+            }
+            let marker = tx.array()?;
+            let root = tx.array()?;
+            let remainder = tx.array()?;
+            let recipient = tx.array()?;
+            let out: [u8; 32] = tx.array()?;
+            let fee: [u8; 32] = tx.array()?;
+            amount(out)?;
+            amount(fee)?;
+            let field = tx.take(PROOF_FIELD_BYTES)?;
+            let remainder_note = tx.array()?;
+            tx.end()?;
+            let reveal = CoinReveal { root, marker, remainder, remainder_note, recipient, out, fee, rule: [0; 32] };
+            if !is_stub_proof(&params, &reveal, field) {
+                verify_any(&params, &reveal, &Proof::from_bytes(field.to_vec()))
+                    .map_err(|e| format!("the proof does not verify: {e}"))?;
+            }
+            let mut result = keccak256(envelope).to_vec();
+            for field in [&marker[..], &root, &remainder, &recipient, &out, &fee, &remainder_note] {
+                result.extend_from_slice(field);
+            }
+            Ok(result)
+        })
+    }
+}

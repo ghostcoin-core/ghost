@@ -12,6 +12,11 @@
 #      the release build, whose trees hold 2^32 leaves), twice in two
 #      directories, and the two binaries must be byte for byte the same; and
 #      the wallet with webapp/build.sh, whose SHA256SUMS must check.
+#      For a node of trees below 32 levels, also the wallet's module with the
+#      test-tree-depth feature, into its own target directory under the work
+#      directory: the devices of the test run use it to reveal against the
+#      14-level trees with the stub proof the test node's verifier takes
+#      (spec 05, RT-8 Part B). The wallet in webapp/dist stays as built.
 #   2. Block: a network namespace of its own whose only way out is a dummy
 #      interface behind an nftables table that rejects and counts every
 #      packet not on loopback, with one counter for the addresses of the
@@ -184,6 +189,24 @@ say "building the wallet with webapp/build.sh"
 wasm="$webapp/dist/ghost_webapp_wasm.wasm"
 say "wallet built: sha256 $(sha256sum "$wasm" | cut -d' ' -f1) ghost_webapp_wasm.wasm"
 
+# The test node's coin trees are smaller than 32 levels, and the STARK is
+# made for 32 only: that node takes a reveal with its stub verifier (spec 05,
+# RT-8 Part B). So the devices of the test run use the same crate built with
+# the test-tree-depth feature, which reveals a coin of a 14-level tree with
+# that stub (webapp/wasm/src/lib.rs, test_depth), built into a target
+# directory of its own under the work directory. webapp/dist and its sums
+# are not touched; the page's module has no such reveal.
+test_wasm="$wasm"
+if [ -n "$tree_depth" ] && [ "$tree_depth" -lt 32 ]; then
+  test_depth_target="$work/ghost-test-depth"
+  say "building the test-depth module (feature test-tree-depth) into $test_depth_target"
+  cargo +1.99.1 build --release --locked --target wasm32-unknown-unknown --features test-tree-depth \
+    --target-dir "$test_depth_target" --manifest-path "$webapp/wasm/Cargo.toml" >&2
+  test_wasm="$test_depth_target/wasm32-unknown-unknown/release/ghost_webapp_wasm.wasm"
+  [ -s "$test_wasm" ] || die "the test-depth build made no module"
+  say "test-depth module built: sha256 $(sha256sum "$test_wasm" | cut -d' ' -f1), for the test run only"
+fi
+
 # --- 2. The blackout ---
 
 # The project-run hosts' addresses, resolved now, while they still resolve.
@@ -301,7 +324,7 @@ say "running the recovery test in namespace $ns (this takes a while)"
 set +e
 as_user env -i \
   PATH="$PATH" HOME="$HOME" TMPDIR="$work" \
-  GHOST_NODE_GETH="$geth_a" GHOST_WEBAPP_WASM="$wasm" \
+  GHOST_NODE_GETH="$geth_a" GHOST_WEBAPP_WASM="$test_wasm" \
   GHOST_RECOVERY_NETNS="$ns" GHOST_RECOVERY_RESULTS="$results" \
   ${tree_leaves:+GHOST_RECOVERY_TREE_LEAVES="$tree_leaves"} \
   ${tree_depth:+GHOST_RECOVERY_TREE_DEPTH="$tree_depth"} \

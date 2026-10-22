@@ -197,9 +197,29 @@ prefix roots itself (`treeCheckAt`, `prefixRootsAt`), with the same hash:
 Keccak-256 of the node tag, the level and the two children, written in
 `flow.mjs` and checked against the module's in the tests. At 32 levels the
 worker's check is used, as before. The worker proves a coin only against a
-32-level root, so at a smaller depth a reveal is refused before it is proved
-(`SMALL_TREE_REVEAL`); spec 05 has Part B's node take such reveals with a stub
-verifier, and the wallet still needs a prover of that depth to make them.
+32-level root, so with the module the page ships a reveal at a smaller depth
+is refused before it is proved (`SMALL_TREE_REVEAL`).
+
+Part B's node takes such reveals with a stub verifier (spec 05, RT-8 Part B),
+which accepts exactly `K("ghost/test-proof/v1", binding digest)` in the first
+32 bytes of the proof field and zeros after. For it, `webapp/wasm` has a
+Cargo feature, `test-tree-depth`, off by default and never in the module the
+page ships. Built with it (into a target directory of its own, as the tests
+and `scripts/recovery-blackout.sh` do), the module also exports
+`ghost_prove_test_depth` and `ghost_test_depth_levels`: the reveal of a coin of
+a 14-level tree, built as a real one (the same marker, remainder, note and
+envelope) against the page's 14-level root, with that stub of its binding
+digest (`coin_reveal_binding`, or `salted_coin_reveal_binding` for a salted
+coin) in place of a STARK, never a proof that claims to be real. It also
+exports `ghost_decode_envelope_test_depth`, the envelope decoder that takes
+that stub as the test node does, for the tests' stand-in node; its
+`ghost_decode_envelope` still takes real proofs only. All of it is the last
+item of `lib.rs`, behind the feature, so the module the page ships is built
+from the same source as before. At a depth below 32 the flow asks the worker
+`testDepthProver` for the depth the module's reveal is made for; when that is
+the flow's depth it asks `proveTestDepth` for the coin, and otherwise refuses
+with `SMALL_TREE_REVEAL`. A decoy is always proved at 32 levels, and a flow of
+32 levels asks for neither.
 
 ## Headers
 
@@ -660,6 +680,15 @@ app makes no data commitments.
   (16,384 leaves per tree), a device of the release depth refuses them, and
   one told the depth finds a coin in the full tree 0 with tree 0's final
   root as its tree state and one in tree 1, and refuses to prove.
+- `test-depth-reveal.test.mjs`: the module built with `test-tree-depth`
+  (`GHOST_WEBAPP_TEST_DEPTH_WASM`, or built into `ghost-test-depth` under the
+  temporary directory) reveals a coin of a full 14-level tree against that
+  tree's root in its header, and the stand-in takes it; the proof field is
+  1,310,720 bytes, the stub of the binding digest the test computes from the
+  envelope's own fields, then zeros, and a changed stub, a byte after it or
+  a decoder of real proofs refuse it. The default module has none of the
+  three test-depth exports and otherwise exports the same, and still refuses with `SMALL_TREE_REVEAL`, sending nothing, and a
+  flow of 32 levels proves a STARK and never asks for the test-depth reveal.
 - `salted-coin.test.mjs`: the commit is 206 bytes of version 2 with a fresh
   salt, in the module and as the wallet signs it, and the stand-in keeps
   that salt with the leaf; restore reads the salt beside the leaf, finds the
