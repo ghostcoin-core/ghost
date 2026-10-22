@@ -34,8 +34,8 @@ $("commit-entry").value = flow.state.commitEntry;
 // The Vanish card's own state, beside the flow's: whether the commit is being
 // sent (from the moment the three words match until the flow's check call
 // returns), whether the key is shown again from the check screen, and the
-// card's one plain error line. "vanish" in `errorOwner` keeps the flow's raw
-// error text out of the page while that line speaks for it.
+// card's one plain error line. "vanish" or "summon" in `errorOwner` keeps the
+// flow's raw error text out of the page while that card's line speaks for it.
 let vanishSending = false;
 let vanishShowAgain = false;
 let vanishError = null;
@@ -82,6 +82,145 @@ function vanishAct(step, run) {
         render(flow.state);
       });
   };
+}
+
+// The Summon card's own state, beside the flow's: whether the pasted key is
+// being opened (and whether its error is to be shown: a paste or leaving
+// the box, not typing), whether the reveal is being sent, the reveal record
+// from before it (so the steps tick only for this one), the amount sent,
+// the Done screen's figures and the card's one plain error line. The
+// reveal is paid to the open wallet's address only.
+let summonOpening = false;
+let summonLoud = false;
+let summonSending = false;
+let summonBefore = null;
+let summonPending = null;
+let summonAmount = "";
+let summonDone = null;
+let summonRecheck = null;
+let summonError = null;
+
+const NOT_A_KEY = "That doesn't look like a Phantom Key. It should be 24 words.";
+const NO_AMOUNT = "Enter an amount to summon.";
+const SPENT = "This key's coin has already been summoned or moved. The key holds nothing now.";
+const REFUSED = "The network's chain failed the app's own check, so nothing from it is shown. Try another node under Network.";
+const DROPPED = "The chain dropped the summon before a block kept it. Your key still holds the coin. Summon again.";
+const SUMMON_STEPS = ["summon-step-proof", "summon-step-send", "summon-step-confirm"];
+const STEP_NAMES = ["Making your proof", "Sending to the network", "Confirming"];
+
+// "This key holds <value> GHOST.", and, when the amount fits the key but not
+// beside the network fee, the most that can go out.
+function holdsText(s, out) {
+  const holds = `This key holds ${formatGhost(s.current.amount)} GHOST.`;
+  if (out === undefined || out > s.current.amount) return holds;
+  return `${holds} After the network fee, at most ${formatGhost(s.available)} GHOST can be summoned.`;
+}
+
+// The card's error line for a Summon step that failed: a fixed sentence
+// chosen by what failed, never the exception's own text. A key that does
+// not pass its check is named by a word's position at most.
+function summonErrorText(err, step) {
+  const said = String((err && err.message) || "");
+  if (/^wait until/.test(said)) return "Wait until the current step is done.";
+  const s = flow.state.summon;
+  if (s && s.status === "refused") return REFUSED;
+  if (step === "open") {
+    if (s) return "The network could not be read. Check the node under Network and try again.";
+    const word = /word (\d+) is not in the word list/.exec(said);
+    if (word) return `Word ${word[1]} isn't a Phantom Key word. Check it against the key you saved.`;
+    if (/do not pass the check/.test(said)) {
+      return "This key doesn't pass its check. A word may be wrong or out of order: check it against the key you saved.";
+    }
+    if (/^not a valid Phantom Key: group \d+ does not match/.test(said)) {
+      return "These digits don't pass their check. A digit may be wrong: check them against the key you saved.";
+    }
+    return NOT_A_KEY;
+  }
+  const r = s && s.lastReveal;
+  if (r && r !== summonBefore && r.stage === "dropped") return DROPPED;
+  if (r && r !== summonBefore && r.stage === "sent") {
+    return "The summon was sent, but no checked block holds it yet. Press Check again in a minute.";
+  }
+  if (/^enter an amount/.test(said)) return NO_AMOUNT;
+  if (s && s.current && /^the coin holds/.test(said)) return holdsText(s, 0n);
+  if (/unspent|no coin to reveal/.test(said)) return SPENT;
+  if (step === "recheck") return "The summon could not be checked. Try again.";
+  return "The network didn't take the summon. Nothing left your key. Try again.";
+}
+
+// What the open key holds after a summon, or null when the chain was not
+// read.
+function restOf(s) {
+  if (!s || (s.status !== "unclaimed" && s.status !== "claimed")) return null;
+  return s.current ? s.current.amount : 0n;
+}
+
+// The step of the waiting screen, from the flow's own progress and the
+// reveal record: 1 while the proof is made, 2 while it is sent, 3 while a
+// block is waited for and checked.
+function summonStepOf(state) {
+  const p = state.progress ? state.progress.stage : "";
+  if (/waiting for a block|checking the block/.test(p)) return 3;
+  if (/sending/.test(p)) return 2;
+  if (p) return 1;
+  const r = state.summon && state.summon.lastReveal;
+  return r && r !== summonBefore ? 3 : 1;
+}
+
+// A line under the fields while the key is read or its coin must wait.
+function summonNote(s) {
+  if (summonOpening) return "Looking for your key's coin…";
+  if (!s) return "";
+  if (s.status === "not-found") return "No coin for this key yet. A Vanish shows here once a block holds it.";
+  if (s.current && s.wait && s.wait.alone) {
+    return "Your coin is the newest in the chain. So that it cannot be matched to your Vanish, it can be summoned a few blocks after someone else vanishes. Press Check again later.";
+  }
+  if (s.current && s.wait) return "Your coin can be summoned in a few blocks. Press Check again in a minute.";
+  return "";
+}
+
+// The Summon card: the paste box and the amount box, the waiting screen
+// with its three steps while the reveal goes out, and Done.
+function renderSummon(state) {
+  const s = state.summon;
+  const screen = summonSending ? "waiting" : summonDone ? "done" : "form";
+  $("summon-form").hidden = screen !== "form";
+  $("summon-waiting").hidden = screen !== "waiting";
+  $("summon-done").hidden = screen !== "done";
+
+  const coin = Boolean(s && s.status === "unclaimed" && s.current && s.current.amount > 0n && !summonOpening);
+  $("summon-amount-area").hidden = !coin;
+  $("summon-in-key").textContent = coin ? `${formatGhost(s.current.amount)} GHOST` : "—";
+  $("summon-note").textContent = summonNote(s);
+  const pending = Boolean(s && s.lastReveal && s.lastReveal.stage === "sent");
+  $("summon-refresh").hidden = !(coin && s.wait) && !pending;
+  const w = state.wallet;
+  const open = Boolean(w && w.stage === "open");
+  $("summon-submit").textContent = !coin ? "Paste a key" : open ? "Summon" : "Open wallet";
+  $("summon-submit").disabled = !coin || (open && Boolean(s.wait || pending));
+
+  const step = screen === "waiting" ? summonStepOf(state) : 0;
+  $("summon-waiting-amount").textContent = screen === "waiting" ? summonAmount : "";
+  $("summon-bar").dataset.step = String(Math.max(step, 1));
+  SUMMON_STEPS.forEach((id, i) => {
+    $(id).dataset.state = i + 1 < step ? "done" : i + 1 === step ? "now" : "";
+  });
+  $("summon-waiting-step").textContent = step ? `${STEP_NAMES[step - 1]}…` : "";
+
+  const d = summonDone;
+  $("summon-done-amount").textContent = d ? d.amount : "";
+  $("summon-done-address").textContent = d ? d.address : "";
+  $("summon-done-rest").textContent =
+    !d || d.rest === null
+      ? ""
+      : d.rest > 0n
+        ? `${formatGhost(d.rest)} GHOST is still in your key. The same key still works.`
+        : "This key is now empty.";
+  $("summon-recheck-status").textContent = d && summonRecheck ? summonRecheck : "";
+
+  const spent = Boolean(s && !summonOpening && (s.status === "claimed" || (s.current && s.current.amount === 0n)));
+  const refused = Boolean(s && s.status === "refused");
+  $("summon-error").textContent = summonError || (refused ? REFUSED : spent && screen === "form" ? SPENT : "");
 }
 
 // Runs a flow step from a user action; errors are shown from the state.
@@ -163,6 +302,9 @@ function renderKeyStep(prefix, holder) {
   else clearCheck(groups);
 }
 
+// The flow's full Summon status and cover wording. The Summon card shows its
+// own plain lines instead; these stay as the reference wording on cover and
+// on a block holding a reveal, which the privacy wording test runs.
 function describeSummon(s) {
   const lines = [];
   if (s.status === "scanning") return "Reading the chain…";
@@ -325,16 +467,9 @@ function render(state) {
   $("vanish-status").textContent = v && vanishStatus[v.stage] ? vanishStatus[v.stage]() : "";
   $("vanish-recheck").hidden = !v || (v.stage !== "done" && v.stage !== "dropped");
 
+  renderSummon(state);
   const s = state.summon;
-  $("summon-panel").hidden = !s;
   if (s) {
-    $("summon-status").textContent = describeSummon(s);
-    const cover = describeCover(s);
-    $("summon-cover").hidden = !cover;
-    $("summon-cover").textContent = cover ? cover.text : "";
-    $("summon-cover").classList.toggle("warning", Boolean(cover && cover.warning));
-    $("reveal-form").hidden = !s.current;
-    $("reveal-submit").disabled = Boolean(s.wait);
     $("claim").hidden = !s.current && !(s.claim && (s.claim.stage === "done" || s.claim.stage === "dropped"));
     renderKeyStep("claim", s.claim);
     const c = s.claim;
@@ -351,17 +486,18 @@ function render(state) {
   $("network-button").classList.toggle("attention", Boolean(state.chainRefused));
 
   const p = state.progress;
-  // A Vanish step speaks in the card: its waiting line and its error line.
-  const vanishOwns = errorOwner === "vanish";
+  // A Vanish or Summon step speaks in the card: its waiting screen and its
+  // error line.
+  const cardOwns = errorOwner === "vanish" || errorOwner === "summon";
   $("progress").textContent =
-    vanishSending
+    vanishSending || summonOpening || summonSending
       ? ""
       : p
         ? `${p.stage}… ${Math.round((Date.now() - p.since) / 1000)} s`
         : state.busy
           ? `${state.busy}…`
           : "";
-  $("error").textContent = vanishOwns ? "" : state.error || "";
+  $("error").textContent = cardOwns ? "" : state.error || "";
   for (const button of document.querySelectorAll("main button, #wallet-panel button, #network-panel button")) {
     if (!button.dataset.keepEnabled) button.toggleAttribute("aria-busy", Boolean(state.busy));
   }
@@ -529,28 +665,175 @@ for (const id of ["vanish-done-button", "vanish-after-done"]) {
 }
 window.addEventListener("pagehide", forgetVanish);
 
-$("summon-form").addEventListener(
-  "submit",
-  act(async () => {
-    // The key leaves the field once it is open; a typo stays there to be
-    // corrected. The refusal names at most a position, never a word.
-    const field = $("summon-key");
-    const text = field.value;
-    field.value = "";
-    try {
-      await flow.summonOpen(text);
-    } catch (err) {
-      if (!flow.state.summon || flow.state.summon.key !== normalKey(text)) field.value = text;
-      throw err;
+// The key leaves the page's memory: the paste box and the amount are
+// emptied and the flow closes the key. On Done, on leaving the Summon tab
+// and on pagehide.
+function forgetSummon() {
+  $("summon-key").value = "";
+  $("summon-amount").value = "";
+  summonDone = null;
+  summonPending = null;
+  summonRecheck = null;
+  summonError = null;
+  summonLoud = false;
+  flow.summonClose();
+}
+
+// A pasted key is checked once it holds 24 words, or the 48, 84 or 96
+// digits of the digit form's groups.
+function keyComplete(text) {
+  const parts = String(text).split(/[\s-]+/).filter(Boolean);
+  if (parts.length === 24 && parts.every((p) => /^[a-z]+$/i.test(p))) return true;
+  const digits = parts.join("");
+  return parts.length > 0 && /^\d+$/.test(digits) && [48, 84, 96].includes(digits.length);
+}
+
+// Opens the pasted key: the worker checks it, then the flow scans for its
+// coin. `loud` shows a refusal (a paste, or leaving the box); while typing
+// none shows.
+async function openKey(loud) {
+  const text = $("summon-key").value;
+  if (summonOpening) {
+    summonLoud ||= loud;
+    return;
+  }
+  const s = flow.state.summon;
+  if (!text.trim() || (s && s.key === normalKey(text))) return;
+  if (s) flow.summonClose();
+  errorOwner = "summon";
+  summonError = null;
+  summonLoud = loud;
+  summonOpening = true;
+  render(flow.state);
+  try {
+    await flow.summonOpen(text);
+  } catch (err) {
+    if (summonLoud || flow.state.summon) summonError = summonErrorText(err, "open");
+    // A key whose chain could not be read is closed, to be opened again.
+    if (flow.state.summon && flow.state.summon.status === "scanning") flow.summonClose();
+  } finally {
+    summonOpening = false;
+  }
+  const now = flow.state.summon;
+  // The tab was left while the key opened: it goes at once. A key edited
+  // meanwhile is closed, to be checked again.
+  if ($("card").dataset.tab !== "summon") forgetSummon();
+  else if (now && now.key !== normalKey($("summon-key").value)) flow.summonClose();
+  render(flow.state);
+}
+
+$("summon-key").addEventListener("input", (event) => {
+  summonError = null;
+  const s = flow.state.summon;
+  if (s && !summonOpening && s.key !== normalKey($("summon-key").value)) flow.summonClose();
+  const pasted = Boolean(event && /^insertFrom(Paste|Drop)/.test(event.inputType || ""));
+  if (keyComplete($("summon-key").value)) openKey(pasted);
+  else render(flow.state);
+});
+$("summon-key").addEventListener("blur", () => openKey(true));
+
+// The Done screen's figures for a reveal the flow shows Done.
+function summonDoneOf(r) {
+  return { amount: formatGhost(r.out), address: shortAddress(r.recipient), rest: restOf(flow.state.summon) };
+}
+
+// Summon pays the open wallet's address only; with no wallet open the main
+// button opens the wallet panel. An amount that does not parse, or is more
+// than the key can send, is refused here, never rounded.
+$("summon-form").addEventListener("submit", async (event) => {
+  if (event) event.preventDefault();
+  const s = flow.state.summon;
+  if (!s || !s.current || summonOpening || summonSending) return;
+  const w = flow.state.wallet;
+  if (!w || w.stage !== "open") {
+    openPanel("wallet-panel");
+    return;
+  }
+  errorOwner = "summon";
+  summonError = null;
+  const text = $("summon-amount").value;
+  let out = null;
+  try {
+    out = parseGhost(text);
+  } catch {
+    out = null;
+  }
+  if (out === null || out === 0n) summonError = NO_AMOUNT;
+  else if (out > s.available) summonError = holdsText(s, out);
+  if (summonError) {
+    render(flow.state);
+    return;
+  }
+  summonAmount = formatGhost(out);
+  summonBefore = s.lastReveal;
+  summonSending = true;
+  render(flow.state);
+  try {
+    const r = await flow.summonReveal({ amount: text, recipient: flow.state.wallet.address });
+    summonDone = summonDoneOf(r);
+    summonRecheck = null;
+  } catch (err) {
+    summonError = summonErrorText(err, "send");
+    const r = flow.state.summon && flow.state.summon.lastReveal;
+    summonPending = r && r !== summonBefore && r.stage === "sent" ? r : null;
+  } finally {
+    summonSending = false;
+    summonBefore = null;
+  }
+  if ($("card").dataset.tab !== "summon") forgetSummon();
+  render(flow.state);
+});
+$("summon-max").addEventListener("click", () => {
+  const s = flow.state.summon;
+  if (s && s.current) $("summon-amount").value = formatGhost(s.available);
+});
+
+// Check again: the flow asks about a reveal shown Sent again, and reads the
+// key's coin and the tree-state rule anew.
+$("summon-refresh").addEventListener("click", async () => {
+  errorOwner = "summon";
+  summonError = null;
+  try {
+    await flow.summonRefresh();
+    const r = flow.state.summon && flow.state.summon.lastReveal;
+    if (summonPending && r === summonPending && r.stage === "done") summonDone = summonDoneOf(r);
+    if (r && r === summonPending && r.stage === "dropped") summonError = DROPPED;
+    if (!r || r.stage !== "sent") summonPending = null;
+  } catch (err) {
+    summonError = summonErrorText(err, "recheck");
+  }
+  render(flow.state);
+});
+
+// After Done, the reveal's block is asked about again: a reorganisation can
+// have dropped it, and the key then holds the coin again.
+$("summon-recheck").addEventListener("click", async () => {
+  errorOwner = "summon";
+  summonError = null;
+  summonRecheck = null;
+  render(flow.state);
+  try {
+    await flow.summonRefresh();
+    const s = flow.state.summon;
+    const r = s && s.lastReveal;
+    if (r && r.stage === "dropped") {
+      summonDone = null;
+      summonError = DROPPED;
+    } else if (r && r.stage === "done" && summonDone) {
+      summonRecheck = `Still in the chain at block ${r.block}.`;
+      const rest = restOf(s);
+      if (rest !== null) summonDone.rest = rest;
     }
-  }),
-);
-$("summon-refresh").addEventListener("click", act(() => flow.summonRefresh()));
-$("summon-close").addEventListener("click", act(() => flow.summonClose()));
-$("reveal-form").addEventListener(
-  "submit",
-  act(() => flow.summonReveal({ amount: $("reveal-amount").value, recipient: $("reveal-to").value })),
-);
+  } catch (err) {
+    summonError = summonErrorText(err, "recheck");
+  }
+  render(flow.state);
+});
+$("summon-done-button").addEventListener("click", () => {
+  forgetSummon();
+  render(flow.state);
+});
+window.addEventListener("pagehide", forgetSummon);
 $("claim-start").addEventListener("click", act(() => flow.claimStart()));
 wireKeyButtons(
   "claim",
@@ -566,6 +849,8 @@ const TABS = ["vanish", "summon"];
 function selectTab(name, focus) {
   // Leaving Vanish drops its key; nothing is sent unless the check passed.
   if ($("card").dataset.tab === "vanish" && name !== "vanish") forgetVanish();
+  // Leaving Summon drops its key from the page and the flow.
+  if ($("card").dataset.tab === "summon" && name !== "summon") forgetSummon();
   for (const t of TABS) {
     const on = t === name;
     const tab = $(`tab-${t}`);

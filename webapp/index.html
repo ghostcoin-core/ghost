@@ -137,53 +137,72 @@
         </section>
 
         <section id="panel-summon" class="tab-panel" role="tabpanel" aria-labelledby="tab-summon" tabindex="0" hidden>
-          <p class="note">Type a Phantom Key's 24 words, in any case, separated by spaces or hyphens, or its digits. Keys issued earlier as 12 groups of digits still open. A key whose check fails is refused before anything is derived from it; a wrong word is named by its position, never corrected.</p>
           <form id="summon-form">
-            <label>Phantom Key (24 words, or digits)
-              <textarea id="summon-key" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+            <label class="key-box">
+              <span class="visually-hidden">Phantom Key (24 words, or digits)</span>
+              <textarea id="summon-key" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="Paste your Phantom Key"></textarea>
             </label>
-            <button class="primary wide" type="submit">Open</button>
+            <div id="summon-amount-area" hidden>
+              <label class="amount-box">
+                <span class="visually-hidden">Amount to summon (GHOST)</span>
+                <input id="summon-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00">
+                <span class="token">
+                  <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-ghost"></use></svg>
+                  GHOST
+                </span>
+              </label>
+              <p class="balance-line">
+                In this key: <span id="summon-in-key">—</span>
+                <button id="summon-max" class="link" type="button">Max</button>
+              </p>
+            </div>
+            <p id="summon-note" class="status" role="status"></p>
+            <p><button id="summon-refresh" class="link" type="button" hidden>Check again</button></p>
+            <button id="summon-submit" class="primary wide big" type="submit" disabled>Paste a key</button>
           </form>
-          <div id="summon-panel" hidden>
-            <p id="summon-status" class="status" role="status"></p>
-            <p id="summon-cover" class="cover" role="status" hidden></p>
-            <p class="row">
-              <button id="summon-refresh" type="button">Refresh</button>
-              <button id="summon-close" type="button">Close the key</button>
-            </p>
-            <form id="reveal-form">
-              <h3>Reveal</h3>
-              <label>Amount (GHOST)
-                <input id="reveal-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00">
-              </label>
-              <label>To address
-                <input id="reveal-to" type="text" spellcheck="false" autocomplete="off" placeholder="0x…">
-              </label>
-              <button id="reveal-submit" class="primary wide" type="submit">Reveal</button>
-            </form>
-            <div id="claim-container" hidden>
-              <div id="claim">
-                <h3>Claim</h3>
-                <p>Move the remaining value, minus the fee, to a new key. The claim shows Sent as soon as the node takes it and Done at the first block that holds it; from that block on the received key shows claimed. If the chain is later reorganised and drops that block, Refresh says so and you can claim again. Confirmation comes only from blocks this page checked itself, proof-of-work seal and difficulty included.</p>
-                <button id="claim-start" type="button">Claim to a new key</button>
-                <div id="claim-key" class="key-panel" hidden>
-                  <p>Your new Phantom Key: 24 words. Write them down in order: after the claim it is the only authority over the coin. Copying it or downloading it as an image is a convenience, not a backup on its own.</p>
-                  <p id="claim-key-text" class="secret blurred"></p>
-                  <p class="row">
-                    <button id="claim-show" type="button">Show</button>
-                    <button id="claim-digits" type="button">Show as digits</button>
-                    <button id="claim-copy" type="button">Copy</button>
-                    <button id="claim-download" type="button">Download image</button>
-                    <button id="claim-saved" type="button">I have written it down</button>
-                  </p>
-                </div>
-                <form id="claim-check" class="check" hidden>
-                  <p>Save check: type these words of the new key. The claim is sent only when all three match.</p>
-                  <div id="claim-check-groups" class="groups"></div>
-                  <button type="submit">Send the claim</button>
-                </form>
-                <p id="claim-status" role="status"></p>
+          <div id="summon-waiting" class="screen waiting" hidden>
+            <h2>Summoning <span id="summon-waiting-amount"></span> GHOST</h2>
+            <div id="summon-bar" class="bar steps" data-step="1" aria-hidden="true"><span></span></div>
+            <ol class="step-list" aria-label="Summon steps">
+              <li id="summon-step-proof">Making your proof</li>
+              <li id="summon-step-send">Sending to the network</li>
+              <li id="summon-step-confirm">Confirming</li>
+            </ol>
+            <p id="summon-waiting-step" class="visually-hidden" role="status"></p>
+            <p>Keep this page open. This takes about 10 seconds.</p>
+          </div>
+          <div id="summon-done" class="screen done" hidden>
+            <svg class="icon icon-done" aria-hidden="true" focusable="false"><use href="#icon-ghost"></use></svg>
+            <h2><span id="summon-done-amount"></span> GHOST summoned</h2>
+            <p>Sent to your wallet <span id="summon-done-address"></span>.</p>
+            <p id="summon-done-rest"></p>
+            <p><button id="summon-recheck" class="link" type="button">Check the summon is still in the chain</button></p>
+            <p id="summon-recheck-status" class="status" role="status"></p>
+            <button id="summon-done-button" class="primary wide big" type="button">Done</button>
+          </div>
+          <p id="summon-error" class="error-line" role="alert"></p>
+          <div id="claim-container" hidden>
+            <div id="claim">
+              <h3>Claim</h3>
+              <p>Move the remaining value, minus the fee, to a new key. The claim shows Sent as soon as the node takes it and Done at the first block that holds it; from that block on the received key shows claimed. If the chain is later reorganised and drops that block, Refresh says so and you can claim again. Confirmation comes only from blocks this page checked itself, proof-of-work seal and difficulty included.</p>
+              <button id="claim-start" type="button">Claim to a new key</button>
+              <div id="claim-key" class="key-panel" hidden>
+                <p>Your new Phantom Key: 24 words. Write them down in order: after the claim it is the only authority over the coin. Copying it or downloading it as an image is a convenience, not a backup on its own.</p>
+                <p id="claim-key-text" class="secret blurred"></p>
+                <p class="row">
+                  <button id="claim-show" type="button">Show</button>
+                  <button id="claim-digits" type="button">Show as digits</button>
+                  <button id="claim-copy" type="button">Copy</button>
+                  <button id="claim-download" type="button">Download image</button>
+                  <button id="claim-saved" type="button">I have written it down</button>
+                </p>
               </div>
+              <form id="claim-check" class="check" hidden>
+                <p>Save check: type these words of the new key. The claim is sent only when all three match.</p>
+                <div id="claim-check-groups" class="groups"></div>
+                <button type="submit">Send the claim</button>
+              </form>
+              <p id="claim-status" role="status"></p>
             </div>
           </div>
         </section>
@@ -228,7 +247,7 @@
       <button class="link" type="button" data-close="about-panel">Close</button>
     </div>
     <p><strong>Vanish</strong> commits GHOST from your wallet to a new Phantom Key of 24 words. The key is the only authority over the coin: write it down before anything is sent. Each coin's commit carries its own random salt, and the 24 words hold a 256-bit secret, so the key stays strong even against a quantum computer. A Phantom Key is not your wallet's words: keep the two apart. A Phantom Key's digits never open a wallet, and the wallet's words never open a coin.</p>
-    <p><strong>Summon</strong> opens a Phantom Key to see its coin and reveals any available amount to any address.</p>
+    <p><strong>Summon</strong> opens a pasted Phantom Key, finds its coin and sends any amount of it to your open wallet. The rest, less the network fee, stays under the same key. A key whose check fails is refused before anything is derived from it; a wrong word is named by its position, never corrected.</p>
     <p>No key or wallet seed is stored: not in the browser, not in a file, not on a server. Proofs are made in this browser in a background worker; there is no proving key to download. Every request goes to the endpoint set under Network, and none names your key or your coin.</p>
     <p>Amounts, timing and your network address can still link a reveal to its commit, and one block holding a transaction is neither final settlement nor privacy.</p>
   </section>

@@ -546,6 +546,89 @@ main {
   font-size: 0.875rem;
 }
 
+/* The Summon screens: the paste box, the amount box, the three steps, Done */
+
+.key-box {
+  margin: 0 0 0.75rem;
+}
+
+.key-box textarea {
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 0.95rem;
+  margin: 0;
+  padding: 0.9rem 1rem;
+}
+
+#summon-note {
+  color: var(--muted);
+}
+
+.bar.steps span {
+  width: 33%;
+}
+
+.bar.steps[data-step="2"] span {
+  width: 66%;
+}
+
+.bar.steps[data-step="3"] span {
+  width: 90%;
+}
+
+.bar.steps[data-step="4"] span {
+  width: 100%;
+}
+
+.step-list {
+  display: inline-block;
+  list-style: none;
+  margin: 1rem 0 0.25rem;
+  padding: 0;
+  text-align: left;
+}
+
+.step-list li {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  gap: 0.6rem;
+  margin: 0.4rem 0;
+}
+
+.step-list li::before {
+  border: 1.5px solid var(--border-strong);
+  border-radius: 50%;
+  color: var(--on-violet);
+  content: "";
+  display: inline-flex;
+  flex: none;
+  font-size: 0.7rem;
+  height: 1.1rem;
+  justify-content: center;
+  line-height: 1;
+  width: 1.1rem;
+}
+
+.step-list li[data-state="now"] {
+  color: var(--text);
+}
+
+.step-list li[data-state="now"]::before {
+  border-color: var(--violet-bright);
+}
+
+.step-list li[data-state="done"] {
+  color: var(--text);
+}
+
+.step-list li[data-state="done"]::before {
+  align-items: center;
+  background: var(--violet);
+  border-color: var(--violet);
+  content: "✓";
+}
+
 .status:empty,
 .error-line:empty,
 .activity p:empty,
@@ -677,6 +760,12 @@ main {
 
   .bar span {
     animation: slide 1.2s var(--ease) infinite;
+  }
+
+  /* The Summon bar grows with the step the flow has reached. */
+  .bar.steps span {
+    animation: none;
+    transition: width var(--speed) var(--ease);
   }
 
   @keyframes slide {

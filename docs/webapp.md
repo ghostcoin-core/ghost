@@ -21,8 +21,10 @@ app's own quantum-safe wallet and uses GHOST privately, with Phantom Keys of
 - **Summon.** The user types any valid key: its 24 words, or its digits.
   Keys issued before the words, twelve (or twenty-four) groups of digits,
   still open, restore, reveal and claim. The app finds the key's coin on the
-  chain and reveals any available amount to any address; the rest, minus the
-  fee, stays under the same key as the next commitment.
+  chain and reveals any available amount to the open wallet's address; the
+  rest, minus the fee, stays under the same key as the next commitment. (The
+  flow controller's `summonReveal` still takes any 20-byte recipient, which
+  the tests use; only the page pays the open wallet alone.)
 - **Claim.** The app creates a new key of 24 words, shows it and runs the
   same save check on it, then moves the coin's value minus the fee to the
   new key. A
@@ -88,8 +90,41 @@ file ships yet). It fits a phone's width with no sideways scroll.
   and when the page is closed (`pagehide`): the grid is emptied and the
   flow's Vanish step cancelled. Leaving before the check passes sends
   nothing.
-- **Summon tab.** The Summon controls: the key field, the coin's status and
-  cover, Refresh, Close the key, and Reveal (amount and address).
+- **Summon tab.** One box, "Paste your Phantom Key" (the 24 words, or the
+  digit form), and a greyed main button "Paste a key". The key is checked
+  once the pasted text holds 24 words or the digits of the digit form's
+  groups, and when the box is left; no error shows while typing, and a key
+  that does not pass its check is not opened. Once it passes, the app scans
+  for its coin and shows an amount box like Vanish's (`0.00`, the ghost icon
+  and "GHOST"), with `In this key:` and the coin's amount and Max (the
+  amount less the network fee) under it, right-aligned. The main button
+  reads "Summon", or "Open wallet" with no wallet open, when it opens the
+  wallet panel. Summon pays only the open wallet's address
+  (`flow.state.wallet.address`); the page has no payout address field. A
+  coin the tree-state rule holds back (see Summon and Claim) shows a plain
+  line and "Check again" instead of a Summon it would refuse.
+  1. **Waiting**, while the reveal goes out: "Summoning *amount* GHOST", a
+     thin bar and three steps, Making your proof, Sending to the network and
+     Confirming, each ticked off as the flow reaches it (from the flow's own
+     progress and the reveal record's Sent, never from a timer), then "Keep
+     this page open. This takes about 10 seconds."
+  2. **Done**, once the reveal is in a block: the ghost icon, "*amount*
+     GHOST summoned", "Sent to your wallet *short address*.", then
+     "*rest* GHOST is still in your key. The same key still works." or
+     "This key is now empty.", "Check the summon is still in the chain"
+     (Refresh's recheck of the reveal's block), and the main button "Done",
+     which drops the key from memory and returns to an empty Summon tab.
+
+  An error is one plain red line under the fields, a fixed sentence and
+  never the error's own text: "That doesn't look like a Phantom Key. It
+  should be 24 words.", a word not in the list named by its position, a key
+  or digits that fail their check, "Enter an amount to summon.", "This key
+  holds *value* GHOST." (with the most that can go out after the fee when
+  the amount fits the coin but not the fee), a key whose coin is already
+  spent, a chain the page refused, and a reveal the network did not take or
+  the chain dropped. An amount that does not parse or is more than the key
+  can send is flagged, never rounded. The key leaves the page's memory on
+  Done, when the Vanish tab is chosen (`summonClose`) and on `pagehide`.
 - **Claim** has no tab and no visible control. Its markup stays in the
   page, inside a container with the `hidden` attribute, so the app's
   wiring and the tests that drive the flow keep working.
@@ -456,7 +491,8 @@ node holds it: ghost-node at the pinned commit takes a type `0x52`
 transaction into its pool and still answers `transaction type not supported`,
 and its JSON shows such a transaction's `from` as the zero address until its
 RPC derives it from the public key. A reveal is a native transaction with no account, so Summon and
-Claim need no wallet, and Summon pays to any 20-byte address as before.
+Claim sign nothing with the wallet. The page pays a Summon to the open wallet's address; the flow
+controller's `summonReveal` still pays any 20-byte address it is given.
 
 The commit entry address defaults to the internal network's coin commit
 entry, `0x67686f7374000000000000000000000000000005` ("ghost" in ASCII, then
@@ -847,6 +883,19 @@ app makes no data commitments.
   then Done; the send happens only from the check form's submit; Done, the
   switch to Summon and `pagehide` empty the grid and call `vanishCancel`;
   an error is a fixed plain line, never the error's own text.
+- `summon-screens.test.mjs`, with nothing built: `index.html` read as text
+  for the Summon tab's fixed wording (the paste box, the amount box with
+  `In this key:` and Max, the waiting steps, Done), with no payout address
+  field, and `app.mjs` read as text and run against a small stand-in page
+  and a stand-in flow. A pasted key opens and shows its coin; an unfinished
+  or wrong key typed shows no error until the box is left, and then a plain
+  line naming a position at most; an amount that does not parse, or more
+  than the key can send, is flagged and sends nothing; the reveal goes to
+  the open wallet's address, with the three steps ticking off from the
+  flow's progress; Done shows the rest, then "This key is now empty." after
+  the rest is summoned; with no wallet open the button opens the wallet
+  panel; Done, the switch to Vanish and `pagehide` empty the box and call
+  `summonClose`; a failed reveal is a fixed plain line.
 
 The key image download, drawn on a canvas in the page, and Claim's
 digit-view button are not covered by the headless tests; the flow's digit
