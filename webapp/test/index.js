@@ -15,5 +15,6 @@ import "./flow.test.mjs";
 import "./sent-and-done.test.mjs";
 import "./block-pacer.test.mjs";
 import "./page-layout.test.mjs";
+import "./midnight-violet.test.mjs";
 import "./vanish-screens.test.mjs";
 import "./summon-screens.test.mjs";
