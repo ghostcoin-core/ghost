@@ -283,36 +283,43 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
             KeccakAir {}.eval(&mut sub);
         }
 
+        // The rows are read in place: the window outlives the builder's
+        // borrow, so no row is copied per evaluation.
         let main = builder.main();
-        let local: Vec<AB::Var> = main.current_slice().to_vec();
-        let next: Vec<AB::Var> = main.next_slice().to_vec();
-        let pv: Vec<AB::Expr> = builder.public_values().iter().map(|&v| v.into()).collect();
-        let per: Vec<AB::Expr> = builder.periodic_values().iter().map(|&v| v.into()).collect();
+        let local = main.current_slice();
+        let next = main.next_slice();
+        let pv: Vec<AB::PublicVar> = builder.public_values().to_vec();
+        let per: Vec<AB::PeriodicVar> = builder.periodic_values().to_vec();
         let kl: &KeccakCols<AB::Var> = local[..NUM_KECCAK_COLS].borrow();
         let kn: &KeccakCols<AB::Var> = next[..NUM_KECCAK_COLS].borrow();
         let e = |v: AB::Var| -> AB::Expr { v.into() };
         let c = |x: u32| AB::Expr::from(F::from_u32(x));
+        let p = |k: usize| -> AB::Expr { pv[k].into() };
+        let s = |k: usize| -> AB::Expr { per[k].into() };
 
-        let bits_l: Vec<AB::Expr> = local[BITS..BITS + NUM_BITS].iter().map(|&v| v.into()).collect();
-        let bits_n: Vec<AB::Expr> = next[BITS..BITS + NUM_BITS].iter().map(|&v| v.into()).collect();
-        let byte = |bits: &[AB::Expr], i: usize| -> AB::Expr {
-            (0..8).rev().fold(AB::Expr::ZERO, |acc, z| acc.double() + bits[8 * i + z].clone())
+        let bits_l = &local[BITS..BITS + NUM_BITS];
+        let bits_n = &next[BITS..BITS + NUM_BITS];
+        let byte = |bits: &[AB::Var], i: usize| -> AB::Expr {
+            (0..8).rev().fold(AB::Expr::ZERO, |acc, z| acc.double() + bits[8 * i + z].into())
         };
-        let bytes_l: Vec<AB::Expr> = (0..RATE_BYTES).map(|i| byte(&bits_l, i)).collect();
-        let bytes_n: Vec<AB::Expr> = (0..RATE_BYTES).map(|i| byte(&bits_n, i)).collect();
+        // Every byte of this row's bits; the next row's are read only where a
+        // link or a tree node needs them.
+        let bytes_l: Vec<AB::Expr> = (0..RATE_BYTES).map(|i| byte(bits_l, i)).collect();
         // Limb `j` of a byte run starting at `at`: two bytes, low first.
         let limb = |bytes: &[AB::Expr], at: usize, j: usize| -> AB::Expr {
             bytes[at + 2 * j].clone() + bytes[at + 2 * j + 1].clone() * c(256)
         };
-        let pv_limb = |at: usize, j: usize| -> AB::Expr { pv[at + 2 * j].clone() + pv[at + 2 * j + 1].clone() * c(256) };
+        let limb_n =
+            |at: usize, j: usize| -> AB::Expr { byte(bits_n, at + 2 * j) + byte(bits_n, at + 2 * j + 1) * c(256) };
+        let pv_limb = |at: usize, j: usize| -> AB::Expr { p(at + 2 * j) + p(at + 2 * j + 1) * c(256) };
 
-        for bit in &local[BITS..BITS + NUM_BITS] {
+        for bit in bits_l {
             builder.assert_bool(*bit);
         }
         builder.assert_bool(local[DIR]);
 
         // 2. First block of a hash: input = block, capacity zero.
-        let first = per[self.first].clone();
+        let first = s(self.first);
         for j in 0..RATE_LIMBS {
             builder.assert_zero(first.clone() * (e(pre(kl, j)) - limb(&bytes_l, 0, j)));
         }
@@ -322,12 +329,12 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
 
         // 3. Continuation block, checked from the last row of the permutation
         // before: its output bits, then the next input as output XOR block.
-        let cont = per[self.cont].clone();
+        let cont = s(self.cont);
         for j in 0..RATE_LIMBS {
             builder.assert_zero(cont.clone() * (e(out(kl, j)) - limb(&bytes_l, 0, j)));
             let xored = (0..16).rev().fold(AB::Expr::ZERO, |acc, z| {
-                let o = bits_l[16 * j + z].clone();
-                let m = bits_n[16 * j + z].clone();
+                let o = e(bits_l[16 * j + z]);
+                let m = e(bits_n[16 * j + z]);
                 acc.double() + o.clone() + m.clone() - (o * m).double()
             });
             builder.assert_zero(cont.clone() * (e(pre(kn, j)) - xored));
@@ -338,13 +345,13 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
 
         // 4. Block bytes against their sources.
         for i in 0..RATE_BYTES {
-            builder.assert_zero(per[self.const_sel + i].clone() * bytes_l[i].clone() - per[self.const_val + i].clone());
+            builder.assert_zero(s(self.const_sel + i) * bytes_l[i].clone() - s(self.const_val + i));
         }
         for check in &self.checks {
-            let sel = per[check.selector].clone();
+            let sel = s(check.selector);
             for &(i, target) in &check.bytes {
                 let value = match target {
-                    Target::Public(k) => pv[k].clone(),
+                    Target::Public(k) => p(k),
                     Target::Carried(col) => e(local[CARRY + col]),
                 };
                 builder.assert_zero(sel.clone() * (bytes_l[i].clone() - value));
@@ -355,17 +362,17 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
             }
         }
         for &(selector, at) in &self.links {
-            let sel = per[selector].clone();
+            let sel = s(selector);
             for j in 0..DIGEST_LIMBS {
-                builder.assert_zero(sel.clone() * (e(out(kl, j)) - limb(&bytes_n, at, j)));
+                builder.assert_zero(sel.clone() * (e(out(kl, j)) - limb_n(at, j)));
             }
         }
         if let Some((selector, at)) = self.node {
-            let sel = per[selector].clone();
+            let sel = s(selector);
             let right = e(next[DIR]);
             for j in 0..DIGEST_LIMBS {
-                let left_limb = limb(&bytes_n, at, j);
-                let right_limb = limb(&bytes_n, at + 32, j);
+                let left_limb = limb_n(at, j);
+                let right_limb = limb_n(at + 32, j);
                 let child = left_limb.clone() + right.clone() * (right_limb - left_limb);
                 builder.assert_zero(sel.clone() * (e(out(kl, j)) - child));
             }
@@ -373,7 +380,7 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
 
         // 5. Digests with a public destination.
         for &(selector, at) in &self.outputs {
-            let sel = per[selector].clone();
+            let sel = s(selector);
             for j in 0..DIGEST_LIMBS {
                 builder.assert_zero(sel.clone() * (e(out(kl, j)) - pv_limb(at, j)));
             }
@@ -384,7 +391,7 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
             builder.when_transition().assert_eq(next[CARRY + col], local[CARRY + col]);
         }
         for &(k, value) in &self.schedule.public_consts {
-            builder.when_first_row().assert_eq(pv[k].clone(), c(u32::from(value)));
+            builder.when_first_row().assert_eq(p(k), c(u32::from(value)));
         }
         if let Some(cons) = self.schedule.conservation {
             let carry = |j: usize| -> AB::Expr {
@@ -404,7 +411,7 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
             }
             let word_limb = |at: usize, j: usize| -> AB::Expr {
                 let (hi, lo) = limb_bytes(j);
-                pv[at + hi].clone() * c(256) + pv[at + lo].clone()
+                p(at + hi) * c(256) + p(at + lo)
             };
             for j in 0..AMOUNT_LIMBS {
                 let left = word_limb(cons.out, j) + e(local[CARRY + cons.remainder + j]) + word_limb(cons.fee, j) + carry(j);

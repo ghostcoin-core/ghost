@@ -39,21 +39,27 @@
 //! [`proof_length_bound`] shows
 //! that a proof of such a trace fits [`PROOF_FIELD_BYTES`].
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use p3_air::BaseAir;
 use p3_baby_bear::BabyBear;
 use p3_challenger::{HashChallenger, SerializingChallenger32};
 use p3_commit::ExtensionMmcs;
-use p3_dft::Radix2DitParallel;
+use p3_dft::{Layout, Radix2DitParallel, TwoAdicSubgroupDft};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
 use p3_field::extension::BinomialExtensionField;
-use p3_field::PrimeCharacteristicRing;
+use p3_field::{PrimeCharacteristicRing, PrimeField32};
 use p3_fri::{FriParameters, HidingFriPcs};
 use p3_keccak::{Keccak256Hash, KeccakF};
+use p3_matrix::bitrev::BitReversedMatrixView;
+use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView, RowMajorMatrixViewMut};
 use p3_merkle_tree::MerkleTreeHidingMmcs;
-use p3_symmetric::{CompressionFunctionFromHasher, CryptographicHasher, PaddingFreeSponge, SerializingHasher};
+use p3_symmetric::{
+    CompressionFunctionFromHasher, CryptographicHasher, CryptographicPermutation, PaddingFreeSponge, Permutation,
+    SerializingHasher,
+};
 use p3_uni_stark::{
     AirLayout, ConjecturedSecurity, OpeningShape, Proof as StarkProof, ProvenSecurity,
     StarkConfig, StarkGenericConfig, StarkSecurityParams, get_max_constraint_degree,
@@ -63,6 +69,7 @@ use rand::rngs::StdRng;
 
 use crate::ProofError;
 use crate::air::{F, StatementAir};
+use crate::hash::{keccak_f, keccak_f_inline};
 use crate::schedule::{Assignment, Schedule, execute};
 
 /// Degree of the challenge field over BabyBear.
@@ -130,14 +137,13 @@ pub const MAX_TRACE_WIDTH: usize = 3824;
 
 /// The challenge field.
 pub(crate) type Challenge = BinomialExtensionField<BabyBear, EXTENSION_DEGREE>;
-type Dft = Radix2DitParallel<F>;
-type KeccakU64Hash = PaddingFreeSponge<KeccakF, 25, SPONGE_RATE_LANES, DIGEST_WORDS>;
-type KeccakFieldHash = SerializingHasher<KeccakU64Hash>;
+type Dft = MemoDft;
+type KeccakU64Hash = PaddingFreeSponge<MerkleKeccak, 25, SPONGE_RATE_LANES, DIGEST_WORDS>;
 type KeccakCompress = CompressionFunctionFromHasher<KeccakU64Hash, 2, DIGEST_WORDS>;
 type ValMmcs = MerkleTreeHidingMmcs<
     [F; p3_keccak::VECTOR_LEN],
     [u64; p3_keccak::VECTOR_LEN],
-    KeccakFieldHash,
+    MerkleLeafHash,
     KeccakCompress,
     StdRng,
     2,
@@ -149,6 +155,321 @@ type Challenger = SerializingChallenger32<F, HashChallenger<u8, Keccak256Hash, T
 type Pcs = HidingFriPcs<F, Dft, ValMmcs, ChallengeMmcs, StdRng>;
 /// The one configuration type: hiding commitments only.
 pub(crate) type Config = StarkConfig<Pcs, Challenge, Challenger>;
+
+/// States the Merkle trees permute at once: the width of the library's
+/// vector Keccak-f[1600] on this target.
+const MERKLE_LANES: usize = p3_keccak::VECTOR_LEN;
+
+/// Keccak-f[1600] for the Merkle trees. One state takes [`keccak_f`]. A packed
+/// state takes the library's vector permutation (SHA3 instructions, AVX2,
+/// AVX-512, wasm SIMD), except on aarch64 without the SHA3 instructions, where
+/// [`keccak_f`] run on each lane in turn is the faster: 131 against 147 ns a
+/// state on the build machine.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MerkleKeccak;
+
+/// Whether a packed state is permuted one lane at a time with [`keccak_f`]:
+/// on aarch64 without the SHA3 instructions.
+const SCALAR_MERKLE_LANES: bool = cfg!(all(target_arch = "aarch64", not(target_feature = "sha3")));
+
+impl Permutation<[u64; 25]> for MerkleKeccak {
+    fn permute_mut(&self, state: &mut [u64; 25]) {
+        keccak_f(state);
+    }
+}
+
+impl CryptographicPermutation<[u64; 25]> for MerkleKeccak {}
+
+impl Permutation<[[u64; MERKLE_LANES]; 25]> for MerkleKeccak {
+    fn permute_mut(&self, state: &mut [[u64; MERKLE_LANES]; 25]) {
+        if SCALAR_MERKLE_LANES {
+            for lane in 0..MERKLE_LANES {
+                let mut one = core::array::from_fn(|i| state[i][lane]);
+                keccak_f(&mut one);
+                for (word, value) in state.iter_mut().zip(one) {
+                    word[lane] = value;
+                }
+            }
+        } else {
+            KeccakF.permute_mut(state);
+        }
+    }
+}
+
+impl CryptographicPermutation<[[u64; MERKLE_LANES]; 25]> for MerkleKeccak {}
+
+/// Field elements per block of the leaf sponge: two to a lane.
+const LEAF_BLOCK_ELEMS: usize = 2 * SPONGE_RATE_LANES;
+
+/// The Merkle leaf hash: the digest `SerializingHasher<KeccakU64Hash>` gives
+/// a row of field elements, computed from the row itself rather than through
+/// a stream of bytes. Elements are read in their internal (Montgomery) form,
+/// two to a 64-bit lane with the first in the low half; each block of
+/// [`LEAF_BLOCK_ELEMS`] elements overwrites the rate and is permuted, and a
+/// last, shorter block overwrites only the lanes it fills (the odd element
+/// alone in its lane) and is permuted. An empty row hashes to zero. The gate
+/// checks it against the library's hasher.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MerkleLeafHash;
+
+/// The rate lane of two elements, the first in the low half.
+#[inline(always)]
+fn leaf_lane(low: F, high: F) -> u64 {
+    u64::from(low.to_unique_u32()) | u64::from(high.to_unique_u32()) << 32
+}
+
+/// Overwrite the rate with one block of at most [`LEAF_BLOCK_ELEMS`]
+/// elements, through `set(word, value)`.
+#[inline(always)]
+fn overwrite_leaf_block(block: &[F], mut set: impl FnMut(usize, u64)) {
+    if let Ok(full) = <&[F; LEAF_BLOCK_ELEMS]>::try_from(block) {
+        for (word, pair) in full.as_chunks::<2>().0.iter().enumerate() {
+            set(word, leaf_lane(pair[0], pair[1]));
+        }
+    } else {
+        for (word, pair) in block.chunks(2).enumerate() {
+            set(word, leaf_lane(pair[0], pair.get(1).copied().unwrap_or(F::ZERO)));
+        }
+    }
+}
+
+/// Absorb one block of at most [`LEAF_BLOCK_ELEMS`] elements and permute.
+#[inline(always)]
+fn absorb_leaf_block(state: &mut [u64; 25], block: &[F]) {
+    overwrite_leaf_block(block, |word, value| state[word] = value);
+    keccak_f(state);
+}
+
+/// The leaf digest of one row, the state passed from permutation to
+/// permutation by value ([`keccak_f_inline`]) and only the rate lanes read
+/// from the row.
+fn leaf_digest(row: &[F]) -> [u64; DIGEST_WORDS] {
+    let mut state = [0; 25];
+    let (blocks, last) = row.as_chunks::<LEAF_BLOCK_ELEMS>();
+    for block in blocks {
+        for (word, pair) in block.as_chunks::<2>().0.iter().enumerate() {
+            state[word] = leaf_lane(pair[0], pair[1]);
+        }
+        state = keccak_f_inline(state);
+    }
+    if !last.is_empty() {
+        absorb_leaf_block(&mut state, last);
+    }
+    core::array::from_fn(|i| state[i])
+}
+
+/// The leaf digests of [`MERKLE_LANES`] rows of one length, one row to a lane
+/// of a packed state.
+fn leaf_digests(rows: [&[F]; MERKLE_LANES]) -> [[u64; DIGEST_WORDS]; MERKLE_LANES] {
+    let mut state = [[0; MERKLE_LANES]; 25];
+    for start in (0..rows[0].len()).step_by(LEAF_BLOCK_ELEMS) {
+        for (lane, row) in rows.iter().enumerate() {
+            let block = &row[start..row.len().min(start + LEAF_BLOCK_ELEMS)];
+            overwrite_leaf_block(block, |word, value| state[word][lane] = value);
+        }
+        MerkleKeccak.permute_mut(&mut state);
+    }
+    core::array::from_fn(|lane| core::array::from_fn(|word| state[word][lane]))
+}
+
+/// The leaf sponge fed one element at a time.
+#[derive(Clone, Copy)]
+struct LeafSponge {
+    state: [u64; 25],
+    block: [F; LEAF_BLOCK_ELEMS],
+    len: usize,
+}
+
+impl LeafSponge {
+    const fn new() -> Self {
+        Self {
+            state: [0; 25],
+            block: [F::ZERO; LEAF_BLOCK_ELEMS],
+            len: 0,
+        }
+    }
+
+    fn absorb(&mut self, x: F) {
+        self.block[self.len] = x;
+        self.len += 1;
+        if self.len == LEAF_BLOCK_ELEMS {
+            absorb_leaf_block(&mut self.state, &self.block);
+            self.len = 0;
+        }
+    }
+
+    fn finish(mut self) -> [u64; DIGEST_WORDS] {
+        if self.len > 0 {
+            absorb_leaf_block(&mut self.state, &self.block[..self.len]);
+        }
+        core::array::from_fn(|i| self.state[i])
+    }
+}
+
+impl CryptographicHasher<F, [u64; DIGEST_WORDS]> for MerkleLeafHash {
+    /// More than one, so the tree hands whole rows to [`Self::hash_many`].
+    const LANES: usize = if MERKLE_LANES > 1 { MERKLE_LANES } else { 2 };
+
+    fn hash_iter<I>(&self, input: I) -> [u64; DIGEST_WORDS]
+    where
+        I: IntoIterator<Item = F>,
+    {
+        let mut sponge = LeafSponge::new();
+        input.into_iter().for_each(|x| sponge.absorb(x));
+        sponge.finish()
+    }
+
+    fn hash_slice(&self, input: &[F]) -> [u64; DIGEST_WORDS] {
+        leaf_digest(input)
+    }
+
+    fn hash_many(&self, input: &[F], out: &mut [[u64; DIGEST_WORDS]]) {
+        if out.is_empty() {
+            return;
+        }
+        assert!(input.len().is_multiple_of(out.len()), "rows of unequal length");
+        let len = input.len() / out.len();
+        if len == 0 {
+            out.fill([0; DIGEST_WORDS]);
+            return;
+        }
+        if SCALAR_MERKLE_LANES {
+            for (digest, row) in out.iter_mut().zip(input.chunks_exact(len)) {
+                *digest = leaf_digest(row);
+            }
+            return;
+        }
+        let mut rows = input.chunks_exact(len);
+        let (groups, rest) = out.as_chunks_mut::<MERKLE_LANES>();
+        for digests in groups {
+            *digests = leaf_digests(core::array::from_fn(|_| rows.next().expect("one row per digest")));
+        }
+        for (digest, row) in rest.iter_mut().zip(rows) {
+            *digest = leaf_digest(row);
+        }
+    }
+}
+
+impl<const N: usize> CryptographicHasher<[F; N], [[u64; N]; DIGEST_WORDS]> for MerkleLeafHash {
+    fn hash_iter<I>(&self, input: I) -> [[u64; N]; DIGEST_WORDS]
+    where
+        I: IntoIterator<Item = [F; N]>,
+    {
+        let mut sponges = [LeafSponge::new(); N];
+        for packed in input {
+            for (sponge, x) in sponges.iter_mut().zip(packed) {
+                sponge.absorb(x);
+            }
+        }
+        let digests = sponges.map(LeafSponge::finish);
+        core::array::from_fn(|word| core::array::from_fn(|lane| digests[lane][word]))
+    }
+}
+
+/// Most field elements [`MemoDft`] keeps, inputs and LDEs together: 64 MiB.
+/// The coin reveal's periodic columns take at most a third of it (290 columns
+/// of 2,048 rows and their 16,384-row LDEs; equal columns share one entry),
+/// the salted coin reveal's as much again.
+const LDE_MEMO_ELEMS: usize = 1 << 24;
+
+/// The single-column LDEs [`MemoDft`] has computed, keyed by the added bits,
+/// the shift and the column, with the elements they hold.
+struct LdeMemo {
+    ldes: BTreeMap<(usize, F, Vec<F>), Vec<F>>,
+    elems: usize,
+}
+
+static LDE_MEMO: Mutex<LdeMemo> = Mutex::new(LdeMemo {
+    ldes: BTreeMap::new(),
+    elems: 0,
+});
+
+/// The library's DFT (`Radix2DitParallel`), whose twiddles every
+/// configuration shares, and which remembers the LDE of a single column.
+///
+/// The quotient reads the statement's periodic columns (selectors and
+/// constants, several hundred of them) on the quotient domain, and the
+/// library extends each one with its own LDE on every proof: about 57 ms of
+/// a coin reveal on the build machine. They depend on the statement alone,
+/// so each is computed once, by the library, and the same values are handed
+/// back after that, up to [`LDE_MEMO_ELEMS`]. Every batch transform is the
+/// library's own, so the commitments and the proof are unchanged.
+#[derive(Clone, Debug)]
+pub(crate) struct MemoDft(Radix2DitParallel<F>);
+
+impl Default for MemoDft {
+    fn default() -> Self {
+        static SHARED: OnceLock<Radix2DitParallel<F>> = OnceLock::new();
+        Self(SHARED.get_or_init(Radix2DitParallel::default).clone())
+    }
+}
+
+fn lde_memo() -> MutexGuard<'static, LdeMemo> {
+    LDE_MEMO.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl TwoAdicSubgroupDft<F> for MemoDft {
+    type Evaluations = <Radix2DitParallel<F> as TwoAdicSubgroupDft<F>>::Evaluations;
+
+    fn dft_batch(&self, mat: RowMajorMatrix<F>) -> Self::Evaluations {
+        self.0.dft_batch(mat)
+    }
+
+    fn coset_dft_batch(&self, mat: RowMajorMatrix<F>, shift: F) -> Self::Evaluations {
+        self.0.coset_dft_batch(mat, shift)
+    }
+
+    fn idft_batch(&self, mat: RowMajorMatrix<F>) -> RowMajorMatrix<F> {
+        self.0.idft_batch(mat)
+    }
+
+    fn coset_idft_batch(&self, mat: RowMajorMatrix<F>, shift: F) -> RowMajorMatrix<F> {
+        self.0.coset_idft_batch(mat, shift)
+    }
+
+    fn coset_lde_batch_with_transform<T>(
+        &self,
+        mat: RowMajorMatrix<F>,
+        added_bits: usize,
+        shift: F,
+        transform: T,
+    ) -> Self::Evaluations
+    where
+        T: FnOnce(&mut RowMajorMatrixViewMut<'_, F>, Layout),
+    {
+        self.0.coset_lde_batch_with_transform(mat, added_bits, shift, transform)
+    }
+
+    fn coset_lde_batch_with_blocks<T, K, C>(
+        &self,
+        mat: RowMajorMatrix<F>,
+        added_bits: usize,
+        shift: F,
+        transform: T,
+        make_consumer: K,
+    ) -> BitReversedMatrixView<RowMajorMatrix<F>>
+    where
+        T: FnOnce(&mut RowMajorMatrixViewMut<'_, F>, Layout),
+        K: FnOnce(usize) -> C,
+        C: Fn(usize, RowMajorMatrixView<'_, F>) + Sync,
+    {
+        self.0.coset_lde_batch_with_blocks(mat, added_bits, shift, transform, make_consumer)
+    }
+
+    fn coset_lde(&self, vec: Vec<F>, added_bits: usize, shift: F) -> Vec<F> {
+        let key = (added_bits, shift, vec);
+        if let Some(lde) = lde_memo().ldes.get(&key) {
+            return lde.clone();
+        }
+        let lde = self.0.coset_lde(key.2.clone(), added_bits, shift);
+        let mut memo = lde_memo();
+        let elems = key.2.len() + lde.len();
+        if memo.elems + elems <= LDE_MEMO_ELEMS && memo.ldes.insert(key, lde.clone()).is_none() {
+            memo.elems += elems;
+        }
+        lde
+    }
+}
 
 /// The library's minimum trace height for zero-knowledge:
 /// `N >= 2 * (num_queries + D * points)` (`HidingFriPcs`).
@@ -193,8 +514,7 @@ pub(crate) fn stark_config(zk_seed: [u8; 32]) -> Result<Config, ProofError> {
     let mut master = StdRng::from_seed(zk_seed);
     let salts = StdRng::from_rng(&mut master);
     let masks = StdRng::from_rng(&mut master);
-    let u64_hash = KeccakU64Hash::new(KeccakF {});
-    let val_mmcs = ValMmcs::new(KeccakFieldHash::new(u64_hash), KeccakCompress::new(u64_hash), 0, salts);
+    let val_mmcs = ValMmcs::new(MerkleLeafHash, KeccakCompress::new(KeccakU64Hash::new(MerkleKeccak)), 0, salts);
     let fri = fri_parameters(&SHIPPED_FRI, ChallengeMmcs::new(val_mmcs.clone()));
     let pcs = Pcs::new(Dft::default(), val_mmcs, fri, NUM_RANDOM_CODEWORDS, masks);
     let config = Config::new(pcs, Challenger::from_hasher(Vec::new(), Keccak256Hash {}));
@@ -221,13 +541,32 @@ pub(crate) enum CommitmentHash {
     Other,
 }
 
+/// The library's leaf hash, which [`MerkleLeafHash`] computes faster: field
+/// elements serialized to 64-bit words for a padding-free sponge over the
+/// library's Keccak-f[1600].
+type LibraryLeafHash = SerializingHasher<PaddingFreeSponge<KeccakF, 25, SPONGE_RATE_LANES, DIGEST_WORDS>>;
+
 /// The transcript hash is Keccak-256 when it agrees with spec 01's Keccak-256
 /// on a message longer than one block, and the Merkle sponge runs
-/// Keccak-f[1600] at Keccak-256's rate.
+/// Keccak-f[1600] at Keccak-256's rate: this crate's permutation and leaf
+/// hash agree with the library's on a probe longer than two blocks.
 fn commitment_hash() -> CommitmentHash {
     const PROBE: &[u8; 200] = &[0x47; 200];
     let transcript = Keccak256Hash {}.hash_iter(PROBE.iter().copied());
-    if transcript == crate::hash::keccak256(PROBE) && SPONGE_RATE_LANES * 8 == crate::hash::RATE_BYTES {
+    let mut state: [u64; 25] = core::array::from_fn(|i| 0x0123_4567_89ab_cdef_u64.rotate_left(7 * i as u32));
+    let mut library_state = state;
+    keccak_f(&mut state);
+    KeccakF.permute_mut(&mut library_state);
+    let row: Vec<F> = (0..2 * LEAF_BLOCK_ELEMS + 3)
+        .map(|i| F::from_u32(u32::from(PROBE[i]) << (i % 24)))
+        .collect();
+    let leaf = MerkleLeafHash.hash_slice(&row);
+    let library_leaf: [u64; DIGEST_WORDS] = LibraryLeafHash::new(PaddingFreeSponge::new(KeccakF)).hash_slice(&row);
+    if transcript == crate::hash::keccak256(PROBE)
+        && state == library_state
+        && leaf == library_leaf
+        && SPONGE_RATE_LANES * 8 == crate::hash::RATE_BYTES
+    {
         CommitmentHash::Keccak256
     } else {
         CommitmentHash::Other
@@ -784,6 +1123,141 @@ mod tests {
                 bits: MIN_SALT_BITS - 1
             })
         );
+    }
+
+    /// Field elements from a counter, spread over the field.
+    fn elements(seed: u32, len: usize) -> Vec<F> {
+        (0..len as u32).map(|i| F::from_u32(seed.wrapping_mul(0x9e37_79b9) ^ i.wrapping_mul(0x85eb_ca6b))).collect()
+    }
+
+    /// The Merkle permutation is the library's Keccak-f[1600], on one state
+    /// and on a packed state.
+    #[test]
+    fn merkle_permutation_is_the_library_permutation() {
+        for seed in 0..4u64 {
+            let state: [u64; 25] =
+                core::array::from_fn(|i| (seed * 25 + i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+            let (mut ours, mut library) = (state, state);
+            MerkleKeccak.permute_mut(&mut ours);
+            KeccakF.permute_mut(&mut library);
+            assert_eq!(ours, library);
+
+            let packed: [[u64; MERKLE_LANES]; 25] =
+                core::array::from_fn(|i| core::array::from_fn(|lane| state[i].rotate_left(lane as u32 * 9)));
+            let (mut ours, mut library) = (packed, packed);
+            MerkleKeccak.permute_mut(&mut ours);
+            KeccakF.permute_mut(&mut library);
+            assert_eq!(ours, library);
+        }
+    }
+
+    /// The leaf hash gives the library's digest for rows of every shape: empty,
+    /// one element, part blocks of odd and even length, whole blocks, and the
+    /// width of the salted coin reveal's committed rows; one row at a time, a
+    /// batch of rows (whole lane groups and a remainder) and packed rows.
+    #[test]
+    fn leaf_hash_is_the_library_leaf_hash() {
+        let library = LibraryLeafHash::new(PaddingFreeSponge::new(KeccakF));
+        let lengths = [0, 1, 2, 3, 33, 34, 35, 67, 68, 69, 101, MAX_TRACE_WIDTH + NUM_RANDOM_CODEWORDS + SALT_ELEMS];
+        for len in lengths {
+            let count = 2 * MERKLE_LANES + 1;
+            let rows: Vec<Vec<F>> = (0..count as u32).map(|seed| elements(seed + 1, len)).collect();
+            let expected: Vec<[u64; DIGEST_WORDS]> = rows.iter().map(|row| library.hash_slice(row)).collect();
+
+            for (row, want) in rows.iter().zip(&expected) {
+                assert_eq!(&MerkleLeafHash.hash_slice(row), want, "length {len}");
+                assert_eq!(&MerkleLeafHash.hash_iter(row.iter().copied()), want, "length {len}");
+            }
+
+            let mut batch = vec![[0; DIGEST_WORDS]; count];
+            MerkleLeafHash.hash_many(&rows.concat(), &mut batch);
+            assert_eq!(batch, expected, "length {len}");
+
+            let packed: [[u64; MERKLE_LANES]; DIGEST_WORDS] =
+                MerkleLeafHash.hash_iter((0..len).map(|i| core::array::from_fn(|lane| rows[lane][i])));
+            for (lane, want) in expected.iter().take(MERKLE_LANES).enumerate() {
+                let digest: [u64; DIGEST_WORDS] = core::array::from_fn(|word| packed[word][lane]);
+                assert_eq!(&digest, want, "length {len}, lane {lane}");
+            }
+        }
+    }
+
+    /// A commitment with this crate's hashes is the one the library's hashes
+    /// make from the same rows and salts, and its openings verify.
+    #[test]
+    fn commitments_match_the_library_trees() {
+        use p3_commit::Mmcs;
+        use p3_matrix::Matrix;
+        use p3_matrix::dense::RowMajorMatrix;
+
+        type LibraryU64Hash = PaddingFreeSponge<KeccakF, 25, SPONGE_RATE_LANES, DIGEST_WORDS>;
+        type LibraryMmcs = MerkleTreeHidingMmcs<
+            [F; p3_keccak::VECTOR_LEN],
+            [u64; p3_keccak::VECTOR_LEN],
+            LibraryLeafHash,
+            CompressionFunctionFromHasher<LibraryU64Hash, 2, DIGEST_WORDS>,
+            StdRng,
+            2,
+            DIGEST_WORDS,
+            SALT_ELEMS,
+        >;
+        let compress = KeccakCompress::new(KeccakU64Hash::new(MerkleKeccak));
+        let ours = ValMmcs::new(MerkleLeafHash, compress, 0, StdRng::seed_from_u64(9));
+        let u64_hash = LibraryU64Hash::new(KeccakF);
+        let library_compress = CompressionFunctionFromHasher::new(u64_hash);
+        let library = LibraryMmcs::new(LibraryLeafHash::new(u64_hash), library_compress, 0, StdRng::seed_from_u64(9));
+
+        for (height, width) in [(64, 77), (37, 3), (8, 1)] {
+            let matrix = RowMajorMatrix::new(elements(height as u32, height * width), width);
+            let (commitment, data) = ours.commit_matrix(matrix.clone());
+            let (library_commitment, _) = library.commit_matrix(matrix.clone());
+            assert_eq!(commitment, library_commitment, "{height} by {width}");
+
+            let index = height / 3;
+            let opening = ours.open_batch(index, &data);
+            assert_eq!(opening.opened_values[0], matrix.row_slice(index).unwrap().to_vec());
+            assert!(ours.verify_batch(&commitment, &[matrix.dimensions()], index, (&opening).into()).is_ok());
+        }
+    }
+
+    /// The periodic tables built with the memoizing DFT are the library's, cell
+    /// for cell, for both coin reveals, at two shifts and two blowups, on the
+    /// first build (computed) and the second (remembered); and a single column
+    /// gets the library's LDE at each shift, not one remembered for another.
+    #[test]
+    fn memoized_periodic_ldes_are_the_library_ones() {
+        use p3_field::Field;
+        use p3_fri::build_periodic_lde_table_two_adic;
+
+        let library = Radix2DitParallel::<F>::default();
+        for statement in [Statement::CoinReveal, Statement::SaltedCoinReveal] {
+            let air = statement.air();
+            let columns = air.periodic_columns();
+            let log_height = air.height().trailing_zeros() as usize;
+            let trace_domain = TwoAdicMultiplicativeCoset::new(F::ONE, log_height).unwrap();
+            for (shift, added_bits) in [(F::GENERATOR, 2), (F::GENERATOR.square(), 3)] {
+                let lde = TwoAdicMultiplicativeCoset::new(shift, log_height + added_bits).unwrap();
+                let expected = build_periodic_lde_table_two_adic(&library, &*columns, &trace_domain, &lde);
+                for _ in 0..2 {
+                    let table = build_periodic_lde_table_two_adic(&Dft::default(), &*columns, &trace_domain, &lde);
+                    assert_eq!((table.width(), table.height()), (expected.width(), expected.height()));
+                    for row in 0..expected.height() {
+                        for col in 0..expected.width() {
+                            assert_eq!(table.get(row, col), expected.get(row, col), "{statement:?} {row} {col}");
+                        }
+                    }
+                }
+            }
+        }
+
+        let column = elements(7, 64);
+        for shift in [F::GENERATOR, F::GENERATOR.square(), F::ONE] {
+            for added_bits in [1, 3] {
+                let expected = library.coset_lde(column.clone(), added_bits, shift);
+                assert_eq!(Dft::default().coset_lde(column.clone(), added_bits, shift), expected);
+                assert_eq!(Dft::default().coset_lde(column.clone(), added_bits, shift), expected);
+            }
+        }
     }
 
     /// A multiproof never needs more than one digest per query per level, nor
