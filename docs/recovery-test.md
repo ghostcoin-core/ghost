@@ -96,6 +96,12 @@ starting each batch at least 1.1 s after the last (`webapp/test/e2e/fillers.mjs`
 checked without a node by `webapp/test/filler-pacing.test.mjs`). A send the
 node answers with "already known" counts as sent; any other refusal fails
 the case with the index of the send and the node's message.
+The node takes no commitment in the block in which a coin tree fills (the
+next tree starts in a later block, [spec 05](spec/05-trees-and-headers.md)),
+so after the filler the test waits until the head is past the block of the
+last filler's receipt before the next commit (`waitPastBlock` in
+`webapp/test/e2e/fillers.mjs`, checked without a node by
+`webapp/test/next-block-wait.test.mjs`); it gives up after 120 s.
 The web app reads every coin tree index from 0 up to the tip's, each full
 earlier tree checked against its final root in a header and the last
 against the tip's root, checks every tree's leaves, notes and salts and the

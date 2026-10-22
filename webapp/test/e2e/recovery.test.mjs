@@ -75,7 +75,7 @@ import test from "node:test";
 import { concat, fromHex, toHex, toQuantity } from "../../src/bytes.mjs";
 import { ACCOUNT_EXTRA_GAS, DEFAULT_COMMIT_ENTRY, STALE_ROOT_DEPTH, createFlow } from "../../src/flow.mjs";
 import { startBlockPacer } from "../support/block-pacer.mjs";
-import { sendPaced } from "./fillers.mjs";
+import { sendPaced, waitPastBlock } from "./fillers.mjs";
 import { TEST_WALLET_ADDRESS, TEST_WALLET_WORDS, loadModule, nodeProver } from "../support/env.mjs";
 
 const GETH = process.env.GHOST_NODE_GETH;
@@ -655,17 +655,27 @@ if (!GETH || !NETNS) {
           assert.ok(Number.isSafeInteger(TREE_LEAVES) && TREE_LEAVES > 0 && TREE_LEAVES < 2 ** 32, `GHOST_RECOVERY_TREE_LEAVES is ${TREE_LEAVES_SET}`);
           const KB = await vanish("0.4");
           const KA = await vanish("1");
-          let at = appendedAt(await strangerCommitReceipt());
+          const before = await strangerCommitReceipt();
+          let at = appendedAt(before);
           assert.equal(at.tree, 0, "coin tree 0 is not full before the filler");
           // The filler: strangers' commits of 1 wei, in batches the pool
           // takes, until coin tree 0 holds TREE_LEAVES leaves.
+          let filledIn = Number(BigInt(before.blockNumber));
           for (let left = TREE_LEAVES - at.position - 1; left > 0; ) {
             const batch = Math.min(left, 200);
             const hashes = await sendStrangerCommits(batch, 1n);
-            for (const hash of hashes) assert.equal((await receiptOn(A, hash, "a filler commit")).status, "0x1");
+            for (const hash of hashes) {
+              const receipt = await receiptOn(A, hash, "a filler commit");
+              assert.equal(receipt.status, "0x1");
+              filledIn = Math.max(filledIn, Number(BigInt(receipt.blockNumber)));
+            }
             left -= batch;
             console.log(`coin tree 0: ${TREE_LEAVES - left} of ${TREE_LEAVES} leaves`);
           }
+          // The node takes no commitment in the block in which tree 0 filled;
+          // tree 1 starts in a later block (spec 05).
+          const head = await waitPastBlock({ rpc: A.rpc, block: filledIn });
+          console.log(`coin tree 0 filled in block ${filledIn}; head ${head}`);
           at = appendedAt(await strangerCommitReceipt());
           assert.deepEqual(at, { tree: 1, position: 0 }, "the next commit starts coin tree 1 at position 0");
           // KA's partial reveal: its remainder lands in tree 1.
