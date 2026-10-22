@@ -51,3 +51,33 @@ export async function sendPaced({
   }
   return hashes;
 }
+
+// Waits until the node's head (`eth_blockNumber`) is past `block`. The node
+// refuses a commitment in the block in which a coin tree fills: the next
+// tree starts in a later block (spec 05). A commit, or its gas estimate
+// against the pending block, sent right after the filler would land in that
+// block, so the test waits past the last filler's block first. Polls every
+// `pollMs` (500 ms) and gives up after `timeoutMs` (120 s) with an error
+// naming the block and the last head seen. Resolves to the head's number.
+export const PAST_BLOCK_POLL_MS = 500;
+export const PAST_BLOCK_TIMEOUT_MS = 120_000;
+
+export async function waitPastBlock({
+  rpc,
+  block,
+  pollMs = PAST_BLOCK_POLL_MS,
+  timeoutMs = PAST_BLOCK_TIMEOUT_MS,
+  now = Date.now,
+  sleep = realSleep,
+}) {
+  if (!Number.isSafeInteger(block) || block < 0) throw new Error(`block is ${block}`);
+  const deadline = now() + timeoutMs;
+  for (;;) {
+    const head = Number(BigInt(await rpc("eth_blockNumber", [])));
+    if (head > block) return head;
+    if (now() >= deadline) {
+      throw new Error(`timed out after ${timeoutMs / 1000} s waiting for a block past ${block}; the head is still ${head}`);
+    }
+    await sleep(pollMs);
+  }
+}
