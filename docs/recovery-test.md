@@ -89,6 +89,13 @@ The script no longer skips any case: every case runs on every run, and
 default (an override must match the node built): the script hands
 it to the test, the devices are told it (createFlow's `treeLeaves`), and the
 rollover case sends enough strangers' commits of 1 wei to fill coin tree 0.
+The node refuses a send over its per-connection budget of 80 signature
+verifications a second ([spec 09](spec/09-quantum-safe-accounts.md), RPC
+budget), so the test sends these filler commits at most 60 at a time,
+starting each batch at least 1.1 s after the last (`webapp/test/e2e/fillers.mjs`,
+checked without a node by `webapp/test/filler-pacing.test.mjs`). A send the
+node answers with "already known" counts as sent; any other refusal fails
+the case with the index of the send and the node's message.
 The web app reads every coin tree index from 0 up to the tip's, each full
 earlier tree checked against its final root in a header and the last
 against the tip's root, checks every tree's leaves, notes and salts and the

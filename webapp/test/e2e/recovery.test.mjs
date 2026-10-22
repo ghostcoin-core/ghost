@@ -75,6 +75,7 @@ import test from "node:test";
 import { concat, fromHex, toHex, toQuantity } from "../../src/bytes.mjs";
 import { ACCOUNT_EXTRA_GAS, DEFAULT_COMMIT_ENTRY, STALE_ROOT_DEPTH, createFlow } from "../../src/flow.mjs";
 import { startBlockPacer } from "../support/block-pacer.mjs";
+import { sendPaced } from "./fillers.mjs";
 import { TEST_WALLET_ADDRESS, TEST_WALLET_WORDS, loadModule, nodeProver } from "../support/env.mjs";
 
 const GETH = process.env.GHOST_NODE_GETH;
@@ -423,17 +424,17 @@ if (!GETH || !NETNS) {
       }
 
       // Commits by someone else from the funded account on A, `count` of
-      // them sent at once with consecutive nonces: version 2 commits of a
-      // random F and salt and a note no key opens, of `value` each. Returns
-      // their hashes.
+      // them with consecutive nonces, paced under the node's per-connection
+      // signature budget (fillers.mjs): version 2 commits of a random F and
+      // salt and a note no key opens, of `value` each. A send the node
+      // refuses fails the case. Returns their hashes.
       async function sendStrangerCommits(count, value = GHOST / 100n) {
         const tip = await A.rpc("eth_getBlockByNumber", ["latest", false]);
         const priority = BigInt(await A.rpc("eth_maxPriorityFeePerGas"));
         const genesis = fromHex((await A.rpc("eth_getBlockByNumber", ["0x0", false])).hash, 32);
         const first = BigInt(await A.rpc("eth_getTransactionCount", [TEST_WALLET_ADDRESS, "pending"]));
-        const hashes = [];
         let gasLimit = null;
-        for (let i = 0n; i < BigInt(count); i += 1n) {
+        const sign = async (i) => {
           const data = concat([Uint8Array.of(0x00, 0x02), randomBytes(32), randomBytes(SALT_BYTES), randomBytes(NOTE_BYTES)]);
           const call = { from: TEST_WALLET_ADDRESS, to: DEFAULT_COMMIT_ENTRY, value: toQuantity(value), data: toHex(data) };
           gasLimit ??= BigInt(await A.rpc("eth_estimateGas", [call])) + ACCOUNT_EXTRA_GAS;
@@ -442,7 +443,7 @@ if (!GETH || !NETNS) {
             index: 0,
             chainId: NETWORK_ID,
             genesis,
-            nonce: first + i,
+            nonce: first + BigInt(i),
             maxPriorityFeePerGas: priority,
             maxFeePerGas: 2n * BigInt(tip.baseFeePerGas) + priority,
             gasLimit,
@@ -451,10 +452,9 @@ if (!GETH || !NETNS) {
             data,
             seed: randomBytes(32),
           });
-          await A.rpc("eth_sendRawTransaction", [toHex(signed.envelope)]).catch(() => null);
-          hashes.push(toHex(signed.txHash));
-        }
-        return hashes;
+          return { raw: toHex(signed.envelope), hash: toHex(signed.txHash) };
+        };
+        return sendPaced({ rpc: A.rpc, count, sign });
       }
 
       // A commit by someone else, waited for until SETTLE_DEPTH blocks are
