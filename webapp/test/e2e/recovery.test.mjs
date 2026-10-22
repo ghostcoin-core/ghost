@@ -57,9 +57,12 @@
 // fewer than the release's 2^32 (spec 05, RT-1 Part B), and the devices are
 // told the same count and the trees' depth (GHOST_RECOVERY_TREE_DEPTH, 14
 // in Part B), whose roots they check. Otherwise they are skipped with the
-// reason below. At a depth below 32 both cases fail, not skip, at their
-// reveal: the worker proves only against 32-level roots (SMALL_TREE_REVEAL),
-// and Part B's node takes those reveals with a stub verifier (RT-8).
+// reason below. At a depth below 32 every reveal, these cases' included, is
+// made by the test-depth module the script builds (the test-tree-depth
+// feature, lib.rs test_depth), which carries the stub proof Part B's node
+// takes with its stub verifier (RT-8) in place of a STARK, and the node must
+// accept it; with the page's module, which proves only against 32-level
+// roots, the run stops at once rather than fail at a reveal.
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -313,6 +316,14 @@ if (!GETH || !NETNS) {
     }
 
     const ghost = await loadModule();
+    if (TREE_DEPTH !== 32) {
+      // A node of smaller trees takes only the test-depth module's reveals.
+      const levels = ghost.w.ghost_test_depth_levels;
+      assert.ok(
+        typeof ghost.w.ghost_prove_test_depth === "function" && typeof levels === "function" && levels() === TREE_DEPTH,
+        `a node of ${TREE_DEPTH}-level trees needs GHOST_WEBAPP_WASM to be the test-depth module of that depth (test-tree-depth)`,
+      );
+    }
     const root = await mkdtemp(join(tmpdir(), "ghost-recovery-"));
     await writeFile(join(root, "genesis.json"), await readFile(new URL("./internal-genesis.json", import.meta.url)));
     const nodes = [];

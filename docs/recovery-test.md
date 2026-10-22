@@ -32,6 +32,11 @@ touched.
    twice in two directories, and fails unless the two
    binaries are byte for byte the same. It builds the wallet with
    `webapp/build.sh` and checks `webapp/dist` against its `SHA256SUMS`.
+   For a node of trees below 32 levels it also builds the wallet's module
+   with the `test-tree-depth` feature of `webapp/wasm`, into a target
+   directory of its own (`ghost-test-depth` in the work directory), and the
+   test run uses that module (`GHOST_WEBAPP_WASM`); `webapp/dist` stays as
+   built and checked ([web app](webapp.md), Coin trees).
 2. **Block every project-run host.** It resolves the project-run hosts (the
    project's website, its code and release downloads, its container
    registry, and any in `GHOST_RECOVERY_HOSTS`), then makes a network
@@ -53,7 +58,8 @@ touched.
    the keys' digit views and talks to B and nothing else: its requests to
    any other address are refused and fail the test, and so is any request
    of the test process that leaves loopback. Both devices are the web app's
-   flow controller and the WebAssembly module the wallet build made, in a
+   flow controller and the WebAssembly module the wallet build made (its
+   test-depth build for a node of smaller trees), in a
    worker that speaks the browser worker's messages; every header the clean
    device counts is one its worker checked, seal and difficulty included.
 4. **Verdict.** The run fails if a counter moved (a project-run host was
@@ -72,7 +78,7 @@ touched.
 | `partial-reveal-then-claim` | Key K1 commits 1 GHOST and the original device reveals 0.25 of it. The clean device restores K1 from its digits, finds coin 0 spent and the remainder unspent, and claims the remainder to a new key; K1 then shows claimed and the new key holds the remainder | Runs |
 | `reorganisation-during-recovery` | C is cut off. A mines a few blocks, one with key K4's commit, and the clean device sees K4's coin through B. C mines a longer branch without it and rejoins while the clean device is scanning another key: the scan is held at its first tree page, after it adopted A's tip, until B has switched to C's branch, and then goes on. B and the clean device follow the heavier branch: the device's tip is C's head, the block after the fork is C's, and K4's coin is gone from its view. A scan the reorganisation cut short is started again, as a holder would | Runs |
 | `older-tree-state` | Key K2, committed before everything above and more than 34 blocks (the scan's header window and the settle depth) below the tip, on the branch that won the reorganisation, is restored from its digits and 0.2 GHOST of it is revealed | Runs |
-| `rollover` | Keys KB and KA commit in coin tree 0, strangers' commits fill it, the next commit starts tree index 1 at position 0, and KA's remainder of a partial reveal lands in tree 1; the clean device reads both trees and restores KA's spent coin and its remainder | Runs: the script builds the `ghosttreetest14` node and sets `GHOST_RECOVERY_TREE_LEAVES` to its 16,384 leaves ([spec 05](spec/05-trees-and-headers.md), RT-1 Part B). It fails at its reveal until the wallet proves coins of 14-level trees (below). The test still skips it when run without `GHOST_RECOVERY_TREE_LEAVES`, since the release build holds 2^32 leaves per coin tree |
+| `rollover` | Keys KB and KA commit in coin tree 0, strangers' commits fill it, the next commit starts tree index 1 at position 0, and KA's remainder of a partial reveal lands in tree 1; the clean device reads both trees and restores KA's spent coin and its remainder | Runs: the script builds the `ghosttreetest14` node and sets `GHOST_RECOVERY_TREE_LEAVES` to its 16,384 leaves ([spec 05](spec/05-trees-and-headers.md), RT-1 Part B), and KA's reveal against the 14-level tree carries the test node's stub proof (below). The test still skips it when run without `GHOST_RECOVERY_TREE_LEAVES`, since the release's node holds 2^32 leaves per coin tree |
 | `commitment-in-full-tree` | KB's coin, left unspent in the full tree 0, is restored by the clean device and revealed in part | The same as `rollover` (spec 05, RT-2 Part B) |
 
 The script no longer skips any case: every case runs on every run, and
@@ -91,12 +97,15 @@ trees, and proves a coin of a full earlier tree against that tree's final
 root ([web app](webapp.md), Coin trees). The trees' depth is
 `GHOST_RECOVERY_TREE_DEPTH` (by default the depth whose 2^depth is the leaf
 count, so 14 for spec 05's 16,384), and the devices check that depth's roots.
-One part of the wallet still stands between that and a pass at a depth below
-32, and both cases fail, not skip, at their reveal on it: the worker proves a
-coin only against a 32-level root, which no header of such a node carries,
-so the app refuses the reveal before proving it. Spec 05 (RT-8) has Part B's
-node take those reveals with a stub verifier; the wallet needs a prover of
-that depth, a change to the WebAssembly module.
+The page's module proves a coin only against a 32-level root, which no header
+of such a node carries, and the STARK is made for 32 levels only; Part B's
+node takes a reveal with a stub verifier instead (spec 05, RT-8 Part B). So
+the devices run the module built with the `test-tree-depth` feature, which
+reveals a coin of a 14-level tree as a real reveal is built, with
+`K("ghost/test-proof/v1", binding digest)` in the first 32 bytes of the proof
+field and zeros after; the test refuses to start at a depth below 32 with any
+other module. Every reveal of the run, the two tree cases' included, is made
+that way.
 
 ## Release condition
 
@@ -109,9 +118,10 @@ launch does not go ahead unless it passes on the frozen release: the node
 and wallet built from the published release source, with every case run and
 none skipped. The script now skips no case: it builds the test node of the
 `ghosttreetest14` tag, so the rollover and commitment-in-full-tree cases
-run. They do not pass yet: both fail at their reveal until the wallet's
-WebAssembly module has a prover of 14-level trees (above), so
-`--require-all` fails on them, as a failure and not a skip.
+run, and their reveals carry the test node's stub proof from the wallet's
+test-depth module (above), so `--require-all` can pass with every case run.
+That full run needs the network namespace, Go and sudo, and is made on a
+host that has them.
 
 ## What it assumes, and what no wallet can do
 

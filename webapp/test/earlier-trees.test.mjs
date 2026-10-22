@@ -10,9 +10,6 @@
 // earlier tree against that tree's final root.
 
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
 import test from "node:test";
 
 import { concat, toHex } from "../src/bytes.mjs";
@@ -28,17 +25,12 @@ import {
   treeCheckAt,
   treeRootsAt,
 } from "../src/flow.mjs";
-import { loadModule, nodeProver, openTestWallet, wasmPath, webappDir } from "./support/env.mjs";
+import { buildModuleIfMissing, loadModule, nodeProver, openTestWallet, wasmPath } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
 
 // The module is built as webapp/README.md's "Test it" builds it, when no
 // build is there yet, with the toolchain CI pins.
-if (!existsSync(wasmPath)) {
-  const env = { ...process.env, RUSTUP_TOOLCHAIN: process.env.RUSTUP_TOOLCHAIN || "1.99.1" };
-  if (!env.RUSTUP_HOME && existsSync("/usr/local/rustup")) env.RUSTUP_HOME = "/usr/local/rustup";
-  const manifest = resolve(webappDir, "wasm/Cargo.toml");
-  execFileSync("cargo", ["build", "--release", "--locked", "--target", "wasm32-unknown-unknown", "--manifest-path", manifest], { env, stdio: "inherit" });
-}
+buildModuleIfMissing(wasmPath);
 const ghost = await loadModule();
 const TREE_LEAVES = 3;
 
@@ -568,8 +560,9 @@ test("on a node of 14-level trees the flow checks, follows and restores across t
       assert.deepEqual([s.current.treeIndex, s.current.position], [0, SMALL_LEAVES - 2]);
       assert.equal(s.wait, null);
       assert.deepEqual(s.cover, { height: filled, covers: SMALL_LEAVES, total: SMALL_LEAVES });
-      // The worker proves only against 32-level roots: the reveal is refused
-      // before anything is sent.
+      // The default module's worker proves only against 32-level roots: the
+      // reveal is refused before anything is sent. The test-depth module's
+      // reveal is test-depth-reveal.test.mjs's.
       await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), (err) => err.message === SMALL_TREE_REVEAL);
       assert.equal(node.reveals.length, 0);
       flow.summonClose();

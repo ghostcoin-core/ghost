@@ -679,6 +679,15 @@ const PAGE_LEVELS = 12;
 // levels (lib.rs, ghost_prove), which no header of a test node of smaller
 // trees carries, so a reveal there is refused before it is proved, as any
 // coin the worker cannot prove: the work done is a decoy's.
+//
+// TEST_DEPTH_REVEAL: the one exception is a module built with the
+// test-tree-depth feature, for the tests and scripts/recovery-blackout.sh
+// only. Its worker answers `testDepthProver` with the depth it builds reveals
+// for (14), and for a coin of a tree of that depth the flow asks it for
+// `proveTestDepth`: the same reveal, with the stub proof the test node's
+// verifier takes (spec 05, RT-8 Part B) in place of a STARK. The module the
+// page ships has no such reveal, so there the refusal stands. A flow of
+// TREE_DEPTH never asks for either.
 export const SMALL_TREE_REVEAL =
   "this build proves a coin only against a coin tree of 32 levels; a test node of smaller trees needs a prover of that depth " +
   "(spec 05, RT-8 Part B)";
@@ -1545,7 +1554,9 @@ export function createFlow({
         `the coin holds ${formatGhost(current.amount)} GHOST; with the fee of ${formatGhost(plan.fee)} GHOST at most ${formatGhost(current.amount > plan.fee ? current.amount - plan.fee : 0n)} can go out`,
       );
     }
-    if (treeDepth !== TREE_DEPTH) throw new Error(SMALL_TREE_REVEAL);
+    if (treeDepth !== TREE_DEPTH && (await prover.request("testDepthProver")).depth !== treeDepth) {
+      throw new Error(SMALL_TREE_REVEAL);
+    }
     return {
       chainId: scan.chain.chainId,
       domain: plan.domain,
@@ -1663,7 +1674,10 @@ export function createFlow({
       let proved = null;
       progress("proving in the background worker");
       try {
-        const result = await prover.request("prove", args ?? (await decoyArgs(scan, request)), (stage) =>
+        // A coin of a test node's smaller tree carries that node's stub
+        // proof (TEST_DEPTH_REVEAL); a decoy is always of 32 levels.
+        const op = args && treeDepth !== TREE_DEPTH ? "proveTestDepth" : "prove";
+        const result = await prover.request(op, args ?? (await decoyArgs(scan, request)), (stage) =>
           progress(stage === "proving" ? "proving in the background worker" : stage),
         );
         if (args) proved = result;

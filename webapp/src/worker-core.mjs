@@ -13,7 +13,7 @@
 // which are public data only: a key's words or a wallet
 // seed's words arrive with a request and are gone when it is answered.
 
-import { loadGhost } from "./wasm.mjs";
+import { Ghost, loadGhost } from "./wasm.mjs";
 
 const random = (n) => crypto.getRandomValues(new Uint8Array(n));
 
@@ -111,6 +111,28 @@ const OPS = {
     const result = ghost.prove({ ...args, seed: random(32), zk: random(32) });
     progress("proved");
     return { ...result, provingMs: performance.now() - started };
+  },
+
+  // The levels of the coin trees the module's test-depth reveal is made for
+  // (lib.rs, test_depth), or null: only a module built with the
+  // test-tree-depth feature has one, never the one the page ships.
+  testDepthProver(ghost) {
+    const levels = ghost.w.ghost_test_depth_levels;
+    return { depth: typeof levels === "function" && typeof ghost.w.ghost_prove_test_depth === "function" ? levels() : null };
+  },
+
+  // A reveal against a test node's smaller tree, with that node's stub proof
+  // in place of a STARK (lib.rs, ghost_prove_test_depth): the input and the
+  // result of `prove`, so it is read and written as `prove` is.
+  proveTestDepth(ghost, args, progress) {
+    if (typeof ghost.w.ghost_prove_test_depth !== "function") {
+      throw new Error("this module has no test-depth reveal: it proves only against a coin tree of 32 levels");
+    }
+    progress("proving");
+    const testDepth = new Ghost({ ...ghost.w, ghost_prove: ghost.w.ghost_prove_test_depth });
+    const result = testDepth.prove({ ...args, decoy: false, seed: random(32), zk: random(32) });
+    progress("proved");
+    return { ...result, provingMs: 0 };
   },
 };
 
