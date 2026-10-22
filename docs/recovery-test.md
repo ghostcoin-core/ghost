@@ -24,8 +24,12 @@ touched.
 
 1. **Build from the published source, before anything is blocked.** It
    builds ghost-node at the commit in `webapp/test/e2e/NODE_COMMIT` from its
-   public repository (`GHOST_NODE_REPO` selects any mirror) with the
-   release build, twice in two directories, and fails unless the two
+   public repository (`GHOST_NODE_REPO` selects any mirror) as the test
+   node of its `ghosttreetest14` build tag (coin trees of 14 levels and
+   16,384 leaves instead of the release's 2^32; the release build refuses
+   any other depth, and the tag does not compile with the release tag),
+   through `webapp/scripts/build-node.sh` with `GHOST_NODE_BUILD_TAGS`,
+   twice in two directories, and fails unless the two
    binaries are byte for byte the same. It builds the wallet with
    `webapp/build.sh` and checks `webapp/dist` against its `SHA256SUMS`.
 2. **Block every project-run host.** It resolves the project-run hosts (the
@@ -40,7 +44,7 @@ touched.
    from inside, and the run fails if any answers. The counters are then
    reset.
 3. **Recover inside the namespace.** `webapp/test/e2e/recovery.test.mjs`
-   runs the internal network as three release nodes on the namespace's
+   runs the internal network as three nodes of that build on the namespace's
    loopback, with discovery off, no bootstrap nodes and peers only on
    `127.0.0.0/8`: two miners (A and C) and an independent node (B), with no
    miner, started from the genesis file and synced from A and C over the
@@ -68,14 +72,15 @@ touched.
 | `partial-reveal-then-claim` | Key K1 commits 1 GHOST and the original device reveals 0.25 of it. The clean device restores K1 from its digits, finds coin 0 spent and the remainder unspent, and claims the remainder to a new key; K1 then shows claimed and the new key holds the remainder | Runs |
 | `reorganisation-during-recovery` | C is cut off. A mines a few blocks, one with key K4's commit, and the clean device sees K4's coin through B. C mines a longer branch without it and rejoins while the clean device is scanning another key: the scan is held at its first tree page, after it adopted A's tip, until B has switched to C's branch, and then goes on. B and the clean device follow the heavier branch: the device's tip is C's head, the block after the fork is C's, and K4's coin is gone from its view. A scan the reorganisation cut short is started again, as a holder would | Runs |
 | `older-tree-state` | Key K2, committed before everything above and more than 34 blocks (the scan's header window and the settle depth) below the tip, on the branch that won the reorganisation, is restored from its digits and 0.2 GHOST of it is revealed | Runs |
-| `rollover` | Keys KB and KA commit in coin tree 0, strangers' commits fill it, the next commit starts tree index 1 at position 0, and KA's remainder of a partial reveal lands in tree 1; the clean device reads both trees and restores KA's spent coin and its remainder | Runs only with `GHOST_RECOVERY_TREE_LEAVES`; skipped otherwise: the node's release build holds 2^32 leaves per coin tree and its tree package refuses any other size, so a rollover needs 2^32 commits. It needs a node built with smaller coin trees ([spec 05](spec/05-trees-and-headers.md), RT-1 Part B), a change in the node's own repository |
+| `rollover` | Keys KB and KA commit in coin tree 0, strangers' commits fill it, the next commit starts tree index 1 at position 0, and KA's remainder of a partial reveal lands in tree 1; the clean device reads both trees and restores KA's spent coin and its remainder | Runs: the script builds the `ghosttreetest14` node and sets `GHOST_RECOVERY_TREE_LEAVES` to its 16,384 leaves ([spec 05](spec/05-trees-and-headers.md), RT-1 Part B). It fails at its reveal until the wallet proves coins of 14-level trees (below). The test still skips it when run without `GHOST_RECOVERY_TREE_LEAVES`, since the release build holds 2^32 leaves per coin tree |
 | `commitment-in-full-tree` | KB's coin, left unspent in the full tree 0, is restored by the clean device and revealed in part | The same as `rollover` (spec 05, RT-2 Part B) |
 
-The two skipped cases are part of the test on purpose: the script lists them
-on every run, and `--require-all` fails until they run.
+The script no longer skips any case: every case runs on every run, and
+`--require-all` would fail if one were skipped.
 
-**Running the two tree cases.** Given a node whose coin trees hold fewer
-leaves, `GHOST_RECOVERY_TREE_LEAVES` is set to that count: the script hands
+**Running the two tree cases.** The script builds the node with the
+`ghosttreetest14` tag and sets `GHOST_RECOVERY_TREE_LEAVES` to 16384 by
+default (an override must match the node built): the script hands
 it to the test, the devices are told it (createFlow's `treeLeaves`), and the
 rollover case sends enough strangers' commits of 1 wei to fill coin tree 0.
 The web app reads every coin tree index from 0 up to the tip's, each full
@@ -98,11 +103,15 @@ that depth, a change to the WebAssembly module.
 This test is a release condition. The base-client plan's phase 4 gate
 requires clean-device recovery without project data, and spec 05's recovery
 test (RT-1 to RT-12) is the full procedure; this script is the repeatable
-part of it that runs today. No launch-readiness gate script exists in this
-repository yet. When it is written, it runs
-`scripts/recovery-blackout.sh --require-all`, and the launch does not go
-ahead unless that passes on the frozen release: the node and wallet built
-from the published release source, with every case run and none skipped.
+part of it that runs today. `scripts/recovery-blackout.sh --require-all` is
+the command the launch-readiness gate runs once that gate exists, and the
+launch does not go ahead unless it passes on the frozen release: the node
+and wallet built from the published release source, with every case run and
+none skipped. The script now skips no case: it builds the test node of the
+`ghosttreetest14` tag, so the rollover and commitment-in-full-tree cases
+run. They do not pass yet: both fail at their reveal until the wallet's
+WebAssembly module has a prover of 14-level trees (above), so
+`--require-all` fails on them, as a failure and not a skip.
 
 ## What it assumes, and what no wallet can do
 
@@ -123,6 +132,8 @@ from the published release source, with every case run and none skipped.
   dependencies, and the wallet's crates, from where they are published.
   The project's code is meant to be mirrored in more than one place (the
   outline, Maintenance); `GHOST_NODE_REPO` builds from any mirror.
-- **The internal network stands in for the real one.** The nodes are the
-  release build, but the chain is the internal test network with its test
-  consensus values, and all its nodes run on one machine.
+- **The internal network stands in for the real one.** The nodes are built
+  from the published source with the test-only coin tree depth of the
+  `ghosttreetest14` tag rather than the release build's, the chain is the
+  internal test network with its test consensus values, and all its nodes
+  run on one machine.

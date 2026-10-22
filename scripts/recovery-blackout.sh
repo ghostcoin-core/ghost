@@ -6,7 +6,10 @@
 # reachable. docs/recovery-test.md explains what it shows and what it cannot.
 #
 #   1. Build, before anything is blocked: ghost-node from its published
-#      source at the commit in webapp/test/e2e/NODE_COMMIT, twice in two
+#      source at the commit in webapp/test/e2e/NODE_COMMIT, as the test node
+#      with the ghosttreetest14 build tag (coin trees of 14 levels, 16,384
+#      leaves, so that a coin tree fills and rolls over within the run; not
+#      the release build, whose trees hold 2^32 leaves), twice in two
 #      directories, and the two binaries must be byte for byte the same; and
 #      the wallet with webapp/build.sh, whose SHA256SUMS must check.
 #   2. Block: a network namespace of its own whose only way out is a dummy
@@ -42,12 +45,10 @@
 #   GHOST_RECOVERY_WORK      the work directory (default: a new one under TMPDIR)
 #   GHOST_RECOVERY_KEEP=1    keep the work directory
 #   GHOST_RECOVERY_TREE_LEAVES
-#                            leaves per coin tree of the node built, for a
-#                            node built with coin trees smaller than the
-#                            release's 2^32 (spec 05, RT-1 Part B); the
-#                            rollover and commitment-in-full-tree cases run
-#                            only with it, and are skipped with their reason
-#                            without it
+#                            leaves per coin tree of the node built (default
+#                            16384, the ghosttreetest14 node's; spec 05, RT-1
+#                            Part B), told to the test so that the rollover
+#                            and commitment-in-full-tree cases run
 #   GHOST_RECOVERY_TREE_DEPTH
 #                            levels of that node's coin trees, whose roots its
 #                            headers carry (spec 05, RT-1 Part B: 14 for
@@ -76,8 +77,12 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
 webapp="$repo/webapp"
 node_repo="${GHOST_NODE_REPO:-https://github.com/ghostcoin-core/ghost-node.git}"
-tree_leaves="${GHOST_RECOVERY_TREE_LEAVES:-}"
-if [ -n "$tree_leaves" ] && ! [[ "$tree_leaves" =~ ^[1-9][0-9]*$ ]]; then
+# The node is built with the test-only coin tree depth of ghost-node's
+# ghosttreetest14 build tag: 14 levels, 16,384 leaves per tree. It is never
+# combined with the release tag, which it does not compile with.
+node_build_tags=ghosttreetest14
+tree_leaves="${GHOST_RECOVERY_TREE_LEAVES:-16384}"
+if [ -n "$tree_leaves" ] &&! [[ "$tree_leaves" =~ ^[1-9][0-9]*$ ]]; then
   echo "recovery-blackout: GHOST_RECOVERY_TREE_LEAVES is not a leaf count: $tree_leaves" >&2
   exit 2
 fi
@@ -165,9 +170,9 @@ trap 'exit 130' INT TERM
 
 # --- 1. Build from the published source, before the blackout ---
 
-say "building ghost-node from $node_repo, twice"
-geth_a="$(GHOST_NODE_REPO="$node_repo" GHOST_NODE_DIR="$work/node-a" "$webapp/scripts/build-node.sh")"
-geth_b="$(GHOST_NODE_REPO="$node_repo" GHOST_NODE_DIR="$work/node-b" "$webapp/scripts/build-node.sh")"
+say "building ghost-node from $node_repo with tags $node_build_tags, twice"
+geth_a="$(GHOST_NODE_REPO="$node_repo" GHOST_NODE_DIR="$work/node-a" GHOST_NODE_BUILD_TAGS="$node_build_tags" "$webapp/scripts/build-node.sh")"
+geth_b="$(GHOST_NODE_REPO="$node_repo" GHOST_NODE_DIR="$work/node-b" GHOST_NODE_BUILD_TAGS="$node_build_tags" "$webapp/scripts/build-node.sh")"
 sum_a="$(sha256sum "$geth_a" | cut -d' ' -f1)"
 sum_b="$(sha256sum "$geth_b" | cut -d' ' -f1)"
 [ "$sum_a" = "$sum_b" ] || die "the two builds of ghost-node differ ($sum_a, $sum_b): the build is not reproducible"
