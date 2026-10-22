@@ -83,7 +83,14 @@ does not start from a `file:` page), for example:
 python3 -m http.server --directory webapp/dist 8080
 ```
 
-and open `http://localhost:8080`. Under **Network**, the endpoint defaults to
+and open `http://localhost:8080`. The page has the wallet button top right
+("Open wallet", then the wallet's short address once it is open: it holds
+the create and restore flows) and one card with two tabs, **Vanish** (an
+amount box, the open wallet's balance and Max, and the Vanish button) and
+**Summon** (a key, its coin and Reveal). Claim has no visible control in
+this layout; its code stays. The footer holds the experimental warning and
+two small panels: **About**, on what the app keeps and sends, and
+**Network**. Under **Network**, the endpoint defaults to
 the local internal network at `http://127.0.0.1:8545`; type another JSON-RPC
 URL to use another node. The node must allow requests from the page's origin
 (its CORS setting). The commit entry address is a setting next to it; it

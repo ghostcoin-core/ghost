@@ -37,6 +37,46 @@ block that holds it, with no block on top waited for (founder decision,
 waiting minutes). If a later reorganisation drops that block, the app says
 so plainly and the holder can send again (see Status below).
 
+## The page
+
+One full-size page in one dark theme ("Midnight violet": its colors, glow,
+motion and font stack are CSS variables at the top of `webapp/style.css`;
+the font stack names Inter first, then the system UI font, and no font
+file ships yet). It fits a phone's width with no sideways scroll.
+
+- **Top bar.** The ghost icon and "Ghost" top left; the wallet button top
+  right. With no wallet open the button reads "Open wallet" and opens a
+  small panel holding the create-wallet flow (the 24 words, then their save
+  check) and the restore-wallet flow. With a wallet open the button shows
+  the short address (`0x3a…91c`), and the panel the full address, the
+  balance, Refresh and "Close wallet".
+- **The card.** One centered card, about 420px wide, with two filing-folder
+  tabs, **Vanish** and **Summon** (a tab list: click, or the arrow keys,
+  Home and End). The selected tab joins the card; the other sits behind it
+  in a darker shade.
+- **Vanish tab.** One rounded amount box: a large input (`0.00`) with the
+  ghost icon and "GHOST" inside it on the right. Under it, right-aligned:
+  `Balance:` and the open wallet's balance (`—` with no wallet open), and
+  Max, which fills in the balance less the most the commit's gas can cost
+  (0.01 GHOST). The main button reads "Vanish", or "Open wallet" with no
+  wallet open, when it opens the wallet panel instead. Vanish runs the
+  flow above: the key, its save check, then Sent and Done.
+- **Summon tab.** The Summon controls: the key field, the coin's status and
+  cover, Refresh, Close the key, and Reveal (amount and address).
+- **Claim** has no tab and no visible control. Its markup stays in the
+  page, inside a container with the `hidden` attribute, so the app's
+  wiring and the tests that drive the flow keep working.
+- **Footer.** One short line: experimental and unaudited. Under it,
+  **Network** opens a small panel with the node endpoint, the commit entry
+  address and the chain status (the Network link carries a red dot while
+  the endpoint's chain is refused), and **About** opens the wording on
+  what the app stores, where proofs are made and what still links a reveal
+  to its commit.
+
+The icons are inline SVG in `index.html`; no font, script, style or image
+comes from anywhere but the page's own origin. The CSP stays
+`default-src 'none'`, with `font-src 'self'` for a later self-hosted font.
+
 ## Phantom Keys
 
 A new key comes from the client library's default (`KeyFormat::Words`,
@@ -759,8 +799,23 @@ app makes no data commitments.
   covers, and a coin nobody followed waits with the plain warning and is
   never proved against its own block root.
 
+- `page-layout.test.mjs`, with nothing built: `index.html` and `style.css`
+  read as text. Every id `app.mjs` wires is in the page, once; the Vanish
+  and Summon tabs are a tab list with Vanish selected; the Vanish panel
+  holds the amount box (`0.00`, the ghost icon and GHOST inside it), the
+  balance line reading `Balance: —` and Max, and the main button; the
+  wallet button opens a panel with the create and restore flows; the
+  Network and About panels are reached from the footer; Claim sits in a
+  hidden container; the icons are inline SVG with no namespace attribute;
+  the CSP keeps `default-src 'none'` and adds `font-src 'self'`; no
+  external URL, inline script or inline style; the Midnight violet colors
+  are CSS variables of one dark theme; the glow and motion sit inside
+  `prefers-reduced-motion: no-preference`.
+
 The key image download, drawn on a canvas in the page, and the digit-view
 button are not covered by the headless tests; the flow's digit view is.
+Neither are the tab, panel and Max wiring of `app.mjs`, which needs a
+browser.
 
 ### Against a real node
 

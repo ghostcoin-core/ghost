@@ -3,157 +3,219 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self' http: https:; style-src 'self'; img-src 'self' blob:; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self' http: https:; style-src 'self'; font-src 'self'; img-src 'self' blob:; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="dark">
   <title>Ghost</title>
   <link rel="stylesheet" href="style.css">
   <script type="module" src="src/app.mjs"></script>
 </head>
 <body>
-  <header>
-    <h1>Ghost</h1>
-    <p class="warn">Experimental. Nothing here has been audited. Do not use it for anything of value.</p>
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="icon-ghost" viewBox="0 0 24 24">
+      <path class="ghost-body" d="M12 2.5a7.5 7.5 0 0 0-7.5 7.5v10.6c0 .6.7.9 1.2.5l1.6-1.3 1.7 1.4c.3.3.8.3 1.1 0l1.9-1.5 1.9 1.5c.3.3.8.3 1.1 0l1.7-1.4 1.6 1.3c.5.4 1.2.1 1.2-.5V10A7.5 7.5 0 0 0 12 2.5z"/>
+      <ellipse class="ghost-eye" cx="9.3" cy="10.2" rx="1.3" ry="1.7"/>
+      <ellipse class="ghost-eye" cx="14.7" cy="10.2" rx="1.3" ry="1.7"/>
+    </symbol>
+    <symbol id="icon-wallet" viewBox="0 0 24 24">
+      <path class="line" d="M5 7.5V6.8A2.3 2.3 0 0 1 7.3 4.5h9.2a1.5 1.5 0 0 1 1.5 1.5v1.5"/>
+      <rect class="line" x="3" y="7.5" width="18" height="12.5" rx="2.6"/>
+      <path class="line" d="M21 11.5h-4a2 2 0 0 0 0 4h4"/>
+      <circle class="dot" cx="17" cy="13.5" r="1"/>
+    </symbol>
+  </svg>
+
+  <header class="top">
+    <a class="brand" href="./">
+      <svg class="icon icon-brand" aria-hidden="true" focusable="false"><use href="#icon-ghost"></use></svg>
+      <span>Ghost</span>
+    </a>
+
+    <div class="wallet-anchor">
+      <button id="wallet-button" class="wallet-button" type="button" aria-expanded="false" aria-controls="wallet-panel">
+        <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-wallet"></use></svg>
+        <span id="wallet-button-text">Open wallet</span>
+      </button>
+
+      <section id="wallet-panel" class="popover" aria-labelledby="wallet-title" hidden>
+        <h2 id="wallet-title">Wallet</h2>
+        <div id="wallet-closed">
+          <p class="note">The app's own wallet, with a quantum-safe account key (ML-DSA-44). Its 24 words are the only backup of the account; the app keeps them in this page's memory while the wallet is open and never stores them.</p>
+          <button id="wallet-create" class="primary wide" type="button">Create a new wallet</button>
+          <form id="wallet-restore-form">
+            <label>Restore a wallet from its 24 words
+              <textarea id="wallet-restore-words" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+            </label>
+            <button class="wide" type="submit">Restore</button>
+          </form>
+        </div>
+        <div id="wallet-words" class="key-panel" hidden>
+          <p>Your wallet's 24 words. Write them down in order and keep them safe: anyone who has them controls the account.</p>
+          <p id="wallet-words-text" class="secret blurred"></p>
+          <p class="row">
+            <button id="wallet-show" type="button">Show</button>
+            <button id="wallet-saved" class="primary" type="button">I have written them down</button>
+          </p>
+        </div>
+        <form id="wallet-check" class="check" hidden>
+          <p>Save check: type these words of your seed. The wallet opens only when all three match.</p>
+          <div id="wallet-check-words" class="groups"></div>
+          <button class="primary wide" type="submit">Open the wallet</button>
+        </form>
+        <div id="wallet-open" hidden>
+          <p class="field-label">Account address</p>
+          <p><code id="wallet-address" class="address"></code></p>
+          <p class="field-label">Balance</p>
+          <p class="balance-big"><span id="wallet-balance"></span> GHOST</p>
+          <p class="row">
+            <button id="wallet-refresh" type="button">Refresh</button>
+            <button id="wallet-close" type="button">Close wallet</button>
+          </p>
+        </div>
+      </section>
+    </div>
   </header>
 
   <main>
-    <section id="network">
-      <h2>Network</h2>
-      <form id="network-form">
-        <label>Node endpoint (JSON-RPC)
-          <input id="endpoint" type="text" spellcheck="false" autocomplete="off">
-        </label>
-        <label>Commit entry address
-          <input id="commit-entry" type="text" spellcheck="false" autocomplete="off">
-        </label>
-        <button type="submit">Use this network</button>
-      </form>
-      <p>The app checks every block it uses itself: its hash, its difficulty and its proof-of-work seal, from the start this build pins for the network, and keeps the chain with the most work. A chain that fails the check shows no confirmations.</p>
-      <p id="chain-status" role="alert"></p>
-    </section>
+    <div class="folder">
+      <div class="tabs" role="tablist" aria-label="Ghost">
+        <button id="tab-vanish" class="tab" type="button" role="tab" aria-selected="true" aria-controls="panel-vanish" tabindex="0">Vanish</button>
+        <button id="tab-summon" class="tab" type="button" role="tab" aria-selected="false" aria-controls="panel-summon" tabindex="-1">Summon</button>
+      </div>
 
-    <section id="wallet">
-      <h2>Wallet</h2>
-      <p>The app's own wallet, with a quantum-safe account key (ML-DSA-44). Its seed is 24 words: they are the only backup of the account. The app keeps them in this page's memory while the wallet is open and never stores them. A Phantom Key's digits never open a wallet, and these words never open a coin.</p>
-      <div id="wallet-closed">
-        <p><button id="wallet-create" type="button">Create a new wallet</button></p>
-        <form id="wallet-restore-form">
-          <label>Restore a wallet from its 24 words
-            <textarea id="wallet-restore-words" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
-          </label>
-          <button type="submit">Restore</button>
-        </form>
-      </div>
-      <div id="wallet-words" class="key-panel" hidden>
-        <p>Your wallet's 24 words. Write them down in order and keep them safe: anyone who has them controls the account.</p>
-        <p id="wallet-words-text" class="secret blurred"></p>
-        <p>
-          <button id="wallet-show" type="button">Show</button>
-          <button id="wallet-saved" type="button">I have written them down</button>
-        </p>
-      </div>
-      <form id="wallet-check" class="check" hidden>
-        <p>Save check: type these words of your seed. The wallet opens only when all three match.</p>
-        <div id="wallet-check-words" class="groups"></div>
-        <button type="submit">Open the wallet</button>
-      </form>
-      <div id="wallet-open" hidden>
-        <p>Account address: <code id="wallet-address"></code></p>
-        <p>
-          Balance: <span id="wallet-balance"></span> GHOST
-          <button id="wallet-refresh" type="button">Refresh</button>
-          <button id="wallet-close" type="button">Close the wallet</button>
-        </p>
-      </div>
-    </section>
-
-    <section id="vanish">
-      <h2>Vanish</h2>
-      <p>Commit GHOST from your wallet to a new Phantom Key of 24 words. The key is the only authority over the coin: write it down before anything is sent. Each coin's commit carries its own random salt, and the 24 words hold a 256-bit secret, so the key stays strong even against a quantum computer. A Phantom Key is not your wallet's words: keep the two apart. The commit's gas costs at most 0.01 GHOST; the app refuses to sign one that could cost more.</p>
-      <form id="vanish-form">
-        <label>Amount (GHOST)
-          <input id="vanish-amount" type="text" inputmode="decimal" autocomplete="off">
-        </label>
-        <button type="submit">Create a key</button>
-      </form>
-      <div id="vanish-key" class="key-panel" hidden>
-        <p>Your Phantom Key: 24 words. Write them down in order. Copying the key or downloading it as an image is a convenience, not a backup on its own. The same key can be shown as 21 groups of digits. It is shown here only; the app never stores it.</p>
-        <p id="vanish-key-text" class="secret blurred"></p>
-        <p>
-          <button id="vanish-show" type="button">Show</button>
-          <button id="vanish-digits" type="button">Show as digits</button>
-          <button id="vanish-copy" type="button">Copy</button>
-          <button id="vanish-download" type="button">Download image</button>
-          <button id="vanish-saved" type="button">I have written it down</button>
-        </p>
-      </div>
-      <form id="vanish-check" class="check" hidden>
-        <p>Save check: type these words of your key. The commit is sent only when all three match.</p>
-        <div id="vanish-check-groups" class="groups"></div>
-        <button type="submit">Send the commit</button>
-      </form>
-      <p id="vanish-status" role="status"></p>
-      <p><button id="vanish-recheck" type="button" hidden>Check the commit is still in the chain</button></p>
-    </section>
-
-    <section id="summon">
-      <h2>Summon</h2>
-      <p>Enter a Phantom Key to see its coin, reveal any available amount to any address, or claim it to a new key. Type its 24 words, in any case, separated by spaces or hyphens, or its digits. Keys issued earlier as 12 groups of digits still open. A key whose check fails is refused before anything is derived from it; a wrong word is named by its position, never corrected.</p>
-      <form id="summon-form">
-        <label>Phantom Key (24 words, or digits)
-          <textarea id="summon-key" rows="2" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
-        </label>
-        <button type="submit">Open</button>
-      </form>
-      <div id="summon-panel" hidden>
-        <p id="summon-status" role="status"></p>
-        <p id="summon-cover" class="cover" role="status" hidden></p>
-        <p>
-          <button id="summon-refresh" type="button">Refresh</button>
-          <button id="summon-close" type="button">Close the key</button>
-        </p>
-        <form id="reveal-form">
-          <h3>Reveal</h3>
-          <label>Amount (GHOST)
-            <input id="reveal-amount" type="text" inputmode="decimal" autocomplete="off">
-          </label>
-          <label>To address
-            <input id="reveal-to" type="text" spellcheck="false" autocomplete="off">
-          </label>
-          <button id="reveal-submit" type="submit">Reveal</button>
-        </form>
-        <div id="claim">
-          <h3>Claim</h3>
-          <p>Move the remaining value, minus the fee, to a new key. The claim shows Sent as soon as the node takes it and Done at the first block that holds it; from that block on the received key shows claimed. If the chain is later reorganised and drops that block, Refresh says so and you can claim again. Confirmation comes only from blocks this page checked itself, proof-of-work seal and difficulty included.</p>
-          <button id="claim-start" type="button">Claim to a new key</button>
-          <div id="claim-key" class="key-panel" hidden>
-            <p>Your new Phantom Key: 24 words. Write them down in order: after the claim it is the only authority over the coin. Copying it or downloading it as an image is a convenience, not a backup on its own.</p>
-            <p id="claim-key-text" class="secret blurred"></p>
-            <p>
-              <button id="claim-show" type="button">Show</button>
-              <button id="claim-digits" type="button">Show as digits</button>
-              <button id="claim-copy" type="button">Copy</button>
-              <button id="claim-download" type="button">Download image</button>
-              <button id="claim-saved" type="button">I have written it down</button>
+      <div id="card" class="card" data-tab="vanish">
+        <section id="panel-vanish" class="tab-panel" role="tabpanel" aria-labelledby="tab-vanish" tabindex="0">
+          <form id="vanish-form">
+            <label class="amount-box">
+              <span class="visually-hidden">Amount (GHOST)</span>
+              <input id="vanish-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00">
+              <span class="token">
+                <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-ghost"></use></svg>
+                GHOST
+              </span>
+            </label>
+            <p class="balance-line">
+              Balance: <span id="vanish-balance">—</span>
+              <button id="vanish-max" class="link" type="button" disabled>Max</button>
+            </p>
+            <button id="vanish-submit" class="primary wide big" type="submit">Open wallet</button>
+            <p class="note">The commit's gas costs at most 0.01 GHOST; the app refuses to sign one that could cost more.</p>
+          </form>
+          <div id="vanish-key" class="key-panel" hidden>
+            <p>Your Phantom Key: 24 words. Write them down in order. Copying the key or downloading it as an image is a convenience, not a backup on its own. The same key can be shown as 21 groups of digits. It is shown here only; the app never stores it.</p>
+            <p id="vanish-key-text" class="secret blurred"></p>
+            <p class="row">
+              <button id="vanish-show" type="button">Show</button>
+              <button id="vanish-digits" type="button">Show as digits</button>
+              <button id="vanish-copy" type="button">Copy</button>
+              <button id="vanish-download" type="button">Download image</button>
+              <button id="vanish-saved" class="primary" type="button">I have written it down</button>
             </p>
           </div>
-          <form id="claim-check" class="check" hidden>
-            <p>Save check: type these words of the new key. The claim is sent only when all three match.</p>
-            <div id="claim-check-groups" class="groups"></div>
-            <button type="submit">Send the claim</button>
+          <form id="vanish-check" class="check" hidden>
+            <p>Save check: type these words of your key. The commit is sent only when all three match.</p>
+            <div id="vanish-check-groups" class="groups"></div>
+            <button class="primary wide" type="submit">Send the commit</button>
           </form>
-          <p id="claim-status" role="status"></p>
+          <p id="vanish-status" class="status" role="status"></p>
+          <p><button id="vanish-recheck" type="button" hidden>Check the commit is still in the chain</button></p>
+        </section>
+
+        <section id="panel-summon" class="tab-panel" role="tabpanel" aria-labelledby="tab-summon" tabindex="0" hidden>
+          <p class="note">Type a Phantom Key's 24 words, in any case, separated by spaces or hyphens, or its digits. Keys issued earlier as 12 groups of digits still open. A key whose check fails is refused before anything is derived from it; a wrong word is named by its position, never corrected.</p>
+          <form id="summon-form">
+            <label>Phantom Key (24 words, or digits)
+              <textarea id="summon-key" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+            </label>
+            <button class="primary wide" type="submit">Open</button>
+          </form>
+          <div id="summon-panel" hidden>
+            <p id="summon-status" class="status" role="status"></p>
+            <p id="summon-cover" class="cover" role="status" hidden></p>
+            <p class="row">
+              <button id="summon-refresh" type="button">Refresh</button>
+              <button id="summon-close" type="button">Close the key</button>
+            </p>
+            <form id="reveal-form">
+              <h3>Reveal</h3>
+              <label>Amount (GHOST)
+                <input id="reveal-amount" type="text" inputmode="decimal" autocomplete="off" placeholder="0.00">
+              </label>
+              <label>To address
+                <input id="reveal-to" type="text" spellcheck="false" autocomplete="off" placeholder="0x…">
+              </label>
+              <button id="reveal-submit" class="primary wide" type="submit">Reveal</button>
+            </form>
+            <div id="claim-container" hidden>
+              <div id="claim">
+                <h3>Claim</h3>
+                <p>Move the remaining value, minus the fee, to a new key. The claim shows Sent as soon as the node takes it and Done at the first block that holds it; from that block on the received key shows claimed. If the chain is later reorganised and drops that block, Refresh says so and you can claim again. Confirmation comes only from blocks this page checked itself, proof-of-work seal and difficulty included.</p>
+                <button id="claim-start" type="button">Claim to a new key</button>
+                <div id="claim-key" class="key-panel" hidden>
+                  <p>Your new Phantom Key: 24 words. Write them down in order: after the claim it is the only authority over the coin. Copying it or downloading it as an image is a convenience, not a backup on its own.</p>
+                  <p id="claim-key-text" class="secret blurred"></p>
+                  <p class="row">
+                    <button id="claim-show" type="button">Show</button>
+                    <button id="claim-digits" type="button">Show as digits</button>
+                    <button id="claim-copy" type="button">Copy</button>
+                    <button id="claim-download" type="button">Download image</button>
+                    <button id="claim-saved" type="button">I have written it down</button>
+                  </p>
+                </div>
+                <form id="claim-check" class="check" hidden>
+                  <p>Save check: type these words of the new key. The claim is sent only when all three match.</p>
+                  <div id="claim-check-groups" class="groups"></div>
+                  <button type="submit">Send the claim</button>
+                </form>
+                <p id="claim-status" role="status"></p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div id="activity" class="activity">
+          <p id="progress" role="status"></p>
+          <p id="error" role="alert"></p>
         </div>
       </div>
-    </section>
-
-    <section id="activity">
-      <p id="progress" role="status"></p>
-      <p id="error" role="alert"></p>
-    </section>
+    </div>
   </main>
 
-  <footer>
-    <p>No key or wallet seed is stored: not in the browser, not in a file, not on a server. Proofs are made in this browser in a background worker; there is no proving key to download. Every request goes to the endpoint above, and none names your key or your coin.</p>
+  <footer class="bottom">
+    <p class="warn">Experimental and unaudited. Do not use it for anything of value.</p>
+    <p class="row">
+      <button id="network-button" class="link" type="button" aria-expanded="false" aria-controls="network-panel">Network</button>
+      <button id="about-button" class="link" type="button" aria-expanded="false" aria-controls="about-panel">About</button>
+    </p>
   </footer>
+
+  <section id="network-panel" class="sheet" aria-labelledby="network-title" hidden>
+    <div class="sheet-head">
+      <h2 id="network-title">Network</h2>
+      <button class="link" type="button" data-close="network-panel">Close</button>
+    </div>
+    <form id="network-form">
+      <label>Node endpoint (JSON-RPC)
+        <input id="endpoint" type="text" spellcheck="false" autocomplete="off">
+      </label>
+      <label>Commit entry address
+        <input id="commit-entry" type="text" spellcheck="false" autocomplete="off">
+      </label>
+      <button class="primary wide" type="submit">Use this network</button>
+    </form>
+    <p id="chain-status" class="chain-status" role="alert"></p>
+    <p class="note">The app checks every block it uses itself: its hash, its difficulty and its proof-of-work seal, from the start this build pins for the network, and keeps the chain with the most work. A chain that fails the check shows no confirmations.</p>
+  </section>
+
+  <section id="about-panel" class="sheet" aria-labelledby="about-title" hidden>
+    <div class="sheet-head">
+      <h2 id="about-title">About</h2>
+      <button class="link" type="button" data-close="about-panel">Close</button>
+    </div>
+    <p><strong>Vanish</strong> commits GHOST from your wallet to a new Phantom Key of 24 words. The key is the only authority over the coin: write it down before anything is sent. Each coin's commit carries its own random salt, and the 24 words hold a 256-bit secret, so the key stays strong even against a quantum computer. A Phantom Key is not your wallet's words: keep the two apart. A Phantom Key's digits never open a wallet, and the wallet's words never open a coin.</p>
+    <p><strong>Summon</strong> opens a Phantom Key to see its coin and reveals any available amount to any address.</p>
+    <p>No key or wallet seed is stored: not in the browser, not in a file, not on a server. Proofs are made in this browser in a background worker; there is no proving key to download. Every request goes to the endpoint set under Network, and none names your key or your coin.</p>
+    <p>Amounts, timing and your network address can still link a reveal to its commit, and one block holding a transaction is neither final settlement nor privacy.</p>
+  </section>
 </body>
 </html>

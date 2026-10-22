@@ -3,7 +3,7 @@
 // the element that shows it, which is emptied when the step ends.
 
 import { formatGhost } from "./chain.mjs";
-import { DEFAULT_COMMIT_ENTRY, createFlow, normalKey } from "./flow.mjs";
+import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, createFlow, normalKey } from "./flow.mjs";
 import { downloadKeyImage } from "./keyimage.mjs";
 import { browserProver } from "./prover.mjs";
 import { DEFAULT_ENDPOINT } from "./rpc.mjs";
@@ -178,6 +178,25 @@ function renderWallet(w) {
   $("wallet-open").hidden = !open;
   $("wallet-address").textContent = open ? w.address : "";
   $("wallet-balance").textContent = open && w.balance !== null ? formatGhost(w.balance) : "?";
+
+  // The top-right button and the Vanish tab's balance line.
+  $("wallet-button-text").textContent = open ? shortAddress(w.address) : "Open wallet";
+  $("wallet-button").title = open ? w.address : "";
+  const known = open && w.balance !== null;
+  $("vanish-balance").textContent = known ? `${formatGhost(w.balance)} GHOST` : "—";
+  $("vanish-max").disabled = !known;
+  $("vanish-submit").textContent = open ? "Vanish" : "Open wallet";
+}
+
+// An address as the wallet button shows it: 0x3a…91c.
+function shortAddress(address) {
+  return `${address.slice(0, 4)}…${address.slice(-3)}`;
+}
+
+// The most a Vanish can commit: the balance less the most the commit's gas
+// can cost.
+function maxVanish(balance) {
+  return balance > MAX_COMMIT_FEE ? balance - MAX_COMMIT_FEE : 0n;
 }
 
 function render(state) {
@@ -218,11 +237,12 @@ function render(state) {
   }
 
   $("chain-status").textContent = state.chainRefused ? `No confirmations: ${state.chainRefused}.` : "";
+  $("network-button").classList.toggle("attention", Boolean(state.chainRefused));
 
   const p = state.progress;
   $("progress").textContent = p ? `${p.stage}… ${Math.round((Date.now() - p.since) / 1000)} s` : state.busy ? `${state.busy}…` : "";
   $("error").textContent = state.error || "";
-  for (const button of document.querySelectorAll("main button")) {
+  for (const button of document.querySelectorAll("main button, #wallet-panel button, #network-panel button")) {
     if (!button.dataset.keepEnabled) button.toggleAttribute("aria-busy", Boolean(state.busy));
   }
 }
@@ -298,7 +318,19 @@ $("wallet-restore-form").addEventListener(
 $("wallet-refresh").addEventListener("click", act(() => flow.walletRefresh()));
 $("wallet-close").addEventListener("click", act(() => flow.walletClose()));
 
-$("vanish-form").addEventListener("submit", act(() => flow.vanishStart($("vanish-amount").value)));
+// The Vanish button opens the wallet panel while no wallet is open.
+$("vanish-form").addEventListener(
+  "submit",
+  act(() => {
+    const w = flow.state.wallet;
+    if (!w || w.stage !== "open") return openPanel("wallet-panel");
+    return flow.vanishStart($("vanish-amount").value);
+  }),
+);
+$("vanish-max").addEventListener("click", () => {
+  const w = flow.state.wallet;
+  if (w && w.stage === "open" && w.balance !== null) $("vanish-amount").value = formatGhost(maxVanish(w.balance));
+});
 wireKeyButtons("vanish", () => flow.state.vanish, (view) => flow.vanishView(view));
 $("vanish-saved").addEventListener("click", act(() => flow.vanishSaved()));
 $("vanish-check").addEventListener("submit", act(() => flow.vanishCheck(answers($("vanish-check-groups")))));
@@ -334,5 +366,59 @@ wireKeyButtons(
 );
 $("claim-saved").addEventListener("click", act(() => flow.claimSaved()));
 $("claim-check").addEventListener("submit", act(() => flow.claimCheck(answers($("claim-check-groups")))));
+
+// The folder tabs: a click, or the arrow keys, Home and End on the tab list.
+const TABS = ["vanish", "summon"];
+
+function selectTab(name, focus) {
+  for (const t of TABS) {
+    const on = t === name;
+    const tab = $(`tab-${t}`);
+    tab.setAttribute("aria-selected", String(on));
+    tab.tabIndex = on ? 0 : -1;
+    $(`panel-${t}`).hidden = !on;
+  }
+  $("card").dataset.tab = name;
+  if (focus) $(`tab-${name}`).focus();
+}
+
+for (const t of TABS) $(`tab-${t}`).addEventListener("click", () => selectTab(t, false));
+$("tab-vanish").parentElement.addEventListener("keydown", (event) => {
+  const at = TABS.indexOf($("card").dataset.tab);
+  const to = {
+    ArrowLeft: (at + TABS.length - 1) % TABS.length,
+    ArrowRight: (at + 1) % TABS.length,
+    Home: 0,
+    End: TABS.length - 1,
+  }[event.key];
+  if (to === undefined) return;
+  event.preventDefault();
+  selectTab(TABS[to], true);
+});
+
+// The wallet, Network and About panels: one open at a time, each toggled by
+// its button and closed by Escape.
+const PANELS = { "wallet-panel": "wallet-button", "network-panel": "network-button", "about-panel": "about-button" };
+
+function openPanel(id) {
+  for (const [panel, button] of Object.entries(PANELS)) {
+    $(panel).hidden = panel !== id;
+    $(button).setAttribute("aria-expanded", String(panel === id));
+  }
+}
+
+function closePanels() {
+  const open = Object.keys(PANELS).find((panel) => !$(panel).hidden);
+  openPanel(null);
+  if (open) $(PANELS[open]).focus();
+}
+
+for (const [panel, button] of Object.entries(PANELS)) {
+  $(button).addEventListener("click", () => ($(panel).hidden ? openPanel(panel) : closePanels()));
+}
+for (const button of document.querySelectorAll("[data-close]")) button.addEventListener("click", closePanels);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closePanels();
+});
 
 render(flow.state);
