@@ -13,16 +13,19 @@ The throttle in this run slowed the prover 4.8 times rather than the intended
 the Mac Studio's figures, the emulated phone would still miss the target: a
 warm median of about 10.9 s and a cold median of about 13.1 s.
 
-**The threaded build of the web app's prover is not measured in the browser
-yet.** It proves the same statements with the same configuration, and its
-section, [Threaded build](#threaded-build-blowup-23-43-queries), holds rows
-marked pending browser measurement until it is run.
+**The threaded build of the web app's prover meets the 10-second target on
+both devices** (2026-10-23), with the configuration unchanged: on the emulated
+mid-range phone, not a real device, the coin reveal's cold median is 5.20 s
+and its warm median 4.11 s, the salted coin reveal's 5.51 s and 4.20 s. On the
+Mac Studio both reveals take about 0.43 s warm. See
+[Threaded build](#threaded-build-blowup-23-43-queries).
 
 This page holds two runs of the same benchmark, and the section for the
 threaded build:
 
-- [The threaded build](#threaded-build-blowup-23-43-queries): the web app's
-  threaded module, the configuration unchanged; pending browser measurement.
+- [The threaded build](#threaded-build-blowup-23-43-queries) (2026-10-23):
+  the web app's threaded module, the configuration unchanged. Records in
+  [reveal-results/threads-blowup-2-3-queries-43/](reveal-results/threads-blowup-2-3-queries-43/).
 - [The current configuration](#current-configuration-blowup-23-43-queries)
   (2026-10-21): blowup 2^3 with 43 queries, from
   [the post-quantum parameter change](reveal-parameters.md). Records in
@@ -80,16 +83,45 @@ beside the single-thread one.
 
 ### Threaded results
 
-Pending browser measurement. No figure below is a measurement: each row is
-filled in from the records of a run with the method of this page, and a row
-counts toward the target only once its cold and warm medians are recorded.
+Measured 2026-10-23 with the method below: five sessions per device and
+statement, interleaved, each one cold run and ten warm runs, in Chrome
+155.0.8059.85 on the Mac Studio (the automation profile, with other sites'
+tabs open), 8 prover threads in every record (`thread_count`), no failed
+run. Produced by `benchmarks/summarize.py`:
+
+```sh
+python3 benchmarks/summarize.py --build wasm-threads docs/benchmarks/reveal-results/threads-blowup-2-3-queries-43/coin-reveal
+python3 benchmarks/summarize.py --build wasm-threads docs/benchmarks/reveal-results/threads-blowup-2-3-queries-43/salted-coin-reveal
+```
 
 | Statement | Build | Device | Configuration | Runs (cold/warm) | Cold median | Warm median | Meets target |
 |---|---|---|---|---|---|---|---|
-| coin reveal | wasm-threads | Mac Studio | blowup-2^3/queries-43 | pending browser measurement | pending browser measurement | pending browser measurement | pending browser measurement |
-| coin reveal | wasm-threads | emulated mid-range phone, not a real device | blowup-2^3/queries-43 | pending browser measurement | pending browser measurement | pending browser measurement | pending browser measurement |
-| salted coin reveal | wasm-threads | Mac Studio | blowup-2^3/queries-43 | pending browser measurement | pending browser measurement | pending browser measurement | pending browser measurement |
-| salted coin reveal | wasm-threads | emulated mid-range phone, not a real device | blowup-2^3/queries-43 | pending browser measurement | pending browser measurement | pending browser measurement | pending browser measurement |
+| coin reveal | wasm-threads | Mac Studio | blowup-2^3/queries-43 | 5/50 | 0.61 s | 0.43 s | yes |
+| coin reveal | wasm-threads | emulated mid-range phone, not a real device | blowup-2^3/queries-43 | 5/50 | 5.20 s | 4.11 s | yes |
+| salted coin reveal | wasm-threads | Mac Studio | blowup-2^3/queries-43 | 5/50 | 0.59 s | 0.43 s | yes |
+| salted coin reveal | wasm-threads | emulated mid-range phone, not a real device | blowup-2^3/queries-43 | 5/50 | 5.51 s | 4.20 s | yes |
+
+Slowest proofs: on the emulated phone the slowest cold run was 6.21 s (coin
+reveal) and 5.89 s (salted), the slowest warm run 5.40 s and 5.00 s; every
+one of the 110 phone proofs is under 10 s. WebAssembly memory is 630.1 MiB
+(coin reveal) and 632.5 MiB (salted), against 596.8 MiB for the single-thread
+module.
+
+The phone throttle was harsher than 4 times here: the warm medians are about
+9.6 times the Mac Studio's (4.11 / 0.43 and 4.20 / 0.43), where the
+single-thread run measured 4.8. Pausing the whole renderer costs the threaded
+prover more than its share, most likely because its threads wait on each
+other at every parallel step and each pause stalls all of them. Read the
+phone figures as slower than a 4x phone, so the target is met with room: at
+4 times the Mac Studio's figures the warm median would be about 1.7 s. The
+throttle was applied by a watcher on the Mac to every renderer process Chrome
+started after the session began (the tab's), from its start, so the cold run
+was throttled from its first instruction; the user's other tabs were left as
+they were. The DevTools 4x throttle alone does not reach the prover threads:
+a check session with it alone ran as fast as the Mac Studio (0.45 s warm).
+The watcher is not part of the repository; its readings in each record are
+`cpu_throttling` and `mac_load_average_at_session_start` (4.1 to 8.8). The
+renderer's memory was not read in this run.
 
 ### How to measure the threaded build
 
@@ -366,9 +398,10 @@ natively: run `ghost-reveal-verify` on the `.proofs` files afterwards.
   browser build. With 597 MiB of WebAssembly memory and about 1 GB for the
   renderer in the current configuration, memory on a real mid-range phone is
   untested.
-- **No threaded build.** Only the single-thread build was run; the web
-  app's threaded module is
-  [pending browser measurement](#threaded-build-blowup-23-43-queries).
+- **Threaded build measured separately.** This run measured only the
+  single-thread build; the web app's threaded module was measured on
+  2026-10-23 and meets the target on both devices (see
+  [Threaded build](#threaded-build-blowup-23-43-queries)).
 - **The proof of holding.** Its prover is compiled only for tests until the
   spent-marker set is settled (spec 02, section 13), and every public verifier
   rejects it, so it was not built for the browser or measured.
