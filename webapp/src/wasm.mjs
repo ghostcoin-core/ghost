@@ -127,10 +127,7 @@ export class Ghost {
   call(name, input) {
     const w = this.w;
     const len = input.length;
-    // Addresses as unsigned (above 2 GiB they come back negative), and
-    // every read copied out first: TextDecoder refuses a view of the
-    // threaded module's shared memory.
-    const ptr = w.ghost_alloc(Math.max(len, 1)) >>> 0;
+    const ptr = w.ghost_alloc(Math.max(len, 1));
     new Uint8Array(w.memory.buffer, ptr, len).set(input);
     input.fill(0);
     let rc;
@@ -141,10 +138,10 @@ export class Ghost {
       w.ghost_free(ptr, Math.max(len, 1));
     }
     if (rc !== 0) {
-      const message = decoder.decode(new Uint8Array(w.memory.buffer, w.ghost_error_ptr() >>> 0, w.ghost_error_len() >>> 0).slice());
+      const message = decoder.decode(new Uint8Array(w.memory.buffer, w.ghost_error_ptr(), w.ghost_error_len()));
       throw new Error(message);
     }
-    const out = new Uint8Array(w.memory.buffer, w.ghost_out_ptr() >>> 0, w.ghost_out_len() >>> 0).slice();
+    const out = new Uint8Array(w.memory.buffer, w.ghost_out_ptr(), w.ghost_out_len()).slice();
     w.ghost_clear();
     return out;
   }

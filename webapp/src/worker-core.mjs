@@ -136,10 +136,8 @@ const OPS = {
   },
 };
 
-// `loadBytes` returns the module's bytes; `post` sends one reply; `open`
-// makes the Ghost from what `loadBytes` gave (the browser worker loads the
-// threaded or the single-thread module itself and passes a Ghost).
-export function createWorker(loadBytes, post, open = loadGhost) {
+// `loadBytes` returns the module's bytes; `post` sends one reply.
+export function createWorker(loadBytes, post) {
   let ghost = null;
   return async function onMessage(message) {
     const { id, op, args } = message || {};
@@ -148,7 +146,7 @@ export function createWorker(loadBytes, post, open = loadGhost) {
       if (!Object.hasOwn(OPS, op)) throw new Error(`unknown request ${op}`);
       if (!ghost) {
         progress("loading the prover");
-        ghost = loadBytes().then(open);
+        ghost = loadBytes().then(loadGhost);
       }
       const result = OPS[op](await ghost, args || {}, progress);
       post({ id, type: "result", result });

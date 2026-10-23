@@ -54,9 +54,8 @@
 //! data only, never a key or a seed, and live as long as the module (the
 //! records until the chain is started again).
 //!
-//! The page's worker makes every call, so the `static mut` state below is
-//! never touched concurrently: the prover threads of the threaded build
-//! (`threads` below) run only the proofs crate's parallel work.
+//! A WebAssembly module runs on one thread, so the `static mut` state below
+//! is never touched concurrently.
 
 #![allow(static_mut_refs)]
 
@@ -1349,93 +1348,6 @@ pub extern "C" fn ghost_receipts_check(ptr: *const u8, len: usize) -> u32 {
         check_markers(up_to, listed).map_err(|e| e.to_string())?;
         Ok(Vec::new())
     })
-}
-
-/// The threaded build (feature `threads`, built by `../build.sh` with the
-/// nightly toolchain, `+atomics,+bulk-memory,+mutable-globals` and a shared,
-/// imported memory): the proofs crate's `parallel` feature over a rayon pool
-/// whose threads are Web Workers the page starts (`../src/threads.mjs`).
-///
-/// The worker that calls the exports joins the pool as thread 0. For every
-/// other thread the page has already started a Web Worker on the same module
-/// and memory, given it a stack and thread-local storage from
-/// [`threads::ghost_thread_memory`]; [`threads::ghost_threads_start`] hands
-/// it its rayon thread through the page's `ghost.ghost_thread_spawn` import,
-/// and that worker runs it with [`threads::ghost_thread_run`]. A proof is the
-/// same statement and the same configuration as on one thread; only the work
-/// is shared.
-#[cfg(feature = "threads")]
-mod threads {
-    #[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
-    compile_error!("the threads feature needs a shared memory: build with +atomics (webapp/build.sh)");
-
-    use std::alloc::{Layout, alloc_zeroed};
-
-    use rayon::{ThreadBuilder, ThreadPoolBuilder};
-
-    use super::ERROR;
-
-    #[link(wasm_import_module = "ghost")]
-    unsafe extern "C" {
-        /// Hands rayon thread `index` (1 and up) to the Web Worker the page
-        /// started for it; 0 when the worker took it.
-        fn ghost_thread_spawn(index: usize, thread: *mut ThreadBuilder) -> u32;
-    }
-
-    /// Starts the global pool with `count` threads, this one included.
-    /// Once only: a second call fails.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn ghost_threads_start(count: usize) -> u32 {
-        let built = ThreadPoolBuilder::new()
-            .num_threads(count)
-            .use_current_thread()
-            .spawn_handler(|thread| {
-                let index = thread.index();
-                let thread = Box::into_raw(Box::new(thread));
-                // SAFETY: the import only passes the pointer on to
-                // `ghost_thread_run` in the thread's worker.
-                if unsafe { ghost_thread_spawn(index, thread) } == 0 {
-                    Ok(())
-                } else {
-                    // SAFETY: the page refused it, so nothing else holds it.
-                    drop(unsafe { Box::from_raw(thread) });
-                    Err(std::io::Error::other("the page could not start a prover thread"))
-                }
-            })
-            .build_global();
-        match built {
-            Ok(()) => 0,
-            Err(err) => {
-                // SAFETY: only the calling worker touches ERROR.
-                unsafe { ERROR = format!("the prover threads did not start: {err}") };
-                1
-            }
-        }
-    }
-
-    /// Runs rayon thread `thread` in the calling Web Worker. It never returns:
-    /// the pool lives as long as the page's worker.
-    ///
-    /// # Safety
-    /// `thread` must come from `ghost_thread_spawn`, once, and the calling
-    /// instance must have its own stack and thread-local storage.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn ghost_thread_run(thread: *mut ThreadBuilder) {
-        // SAFETY: see above.
-        unsafe { Box::from_raw(thread) }.run();
-    }
-
-    /// Zeroed memory for a thread's stack or thread-local storage, never
-    /// freed (the threads never end); null when the layout is not valid or
-    /// the memory is full.
-    #[unsafe(no_mangle)]
-    pub extern "C" fn ghost_thread_memory(size: usize, align: usize) -> *mut u8 {
-        match Layout::from_size_align(size.max(1), align.max(1)) {
-            // SAFETY: the layout's size is not zero.
-            Ok(layout) => unsafe { alloc_zeroed(layout) },
-            Err(_) => std::ptr::null_mut(),
-        }
-    }
 }
 
 /// The test-depth reveal, only with the `test-tree-depth` feature: a reveal

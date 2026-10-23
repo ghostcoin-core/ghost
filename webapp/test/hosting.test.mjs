@@ -63,17 +63,14 @@ test("the other security headers are set", () => {
   assert.equal(header("Referrer-Policy"), "no-referrer");
   assert.equal(header("X-Content-Type-Options"), "nosniff");
   assert.equal(header("Cross-Origin-Opener-Policy"), "same-origin");
-  // With the opener policy, cross-origin isolation, which the threaded
-  // prover's shared memory needs.
-  assert.equal(header("Cross-Origin-Embedder-Policy"), "require-corp");
   assert.equal(header("X-Frame-Options"), "DENY");
 });
 
-test("the WebAssembly modules are served as application/wasm and SHA256SUMS as text", () => {
-  // The modules' names in dist, as build.sh copies them.
-  const wasm = [...buildScript.matchAll(/"\$dist\/([\w.-]+\.wasm)"/g)].map((m) => m[1]);
-  assert.deepEqual(wasm, ["ghost_webapp_wasm.wasm", "ghost_webapp_wasm_threads.wasm"]);
-  for (const name of wasm) assert.equal(config.overrides?.[name]?.contentType, "application/wasm", name);
+test("the WebAssembly module is served as application/wasm and SHA256SUMS as text", () => {
+  // The module's name in dist, as build.sh copies it.
+  const wasm = buildScript.match(/"\$dist\/([\w.-]+\.wasm)"/);
+  assert.ok(wasm, "build.sh names the module in dist");
+  assert.equal(config.overrides?.[wasm[1]]?.contentType, "application/wasm");
   assert.match(config.overrides?.SHA256SUMS?.contentType ?? "", /^text\/plain/);
 });
 
