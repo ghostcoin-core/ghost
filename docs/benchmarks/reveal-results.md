@@ -13,8 +13,16 @@ The throttle in this run slowed the prover 4.8 times rather than the intended
 the Mac Studio's figures, the emulated phone would still miss the target: a
 warm median of about 10.9 s and a cold median of about 13.1 s.
 
-This page holds two runs of the same benchmark:
+**The threaded build of the web app's prover is not measured in the browser
+yet.** It proves the same statements with the same configuration, and its
+section, [Threaded build](#threaded-build-blowup-23-43-queries), holds rows
+marked pending browser measurement until it is run.
 
+This page holds two runs of the same benchmark, and the section for the
+threaded build:
+
+- [The threaded build](#threaded-build-blowup-23-43-queries): the web app's
+  threaded module, the configuration unchanged; pending browser measurement.
 - [The current configuration](#current-configuration-blowup-23-43-queries)
   (2026-10-21): blowup 2^3 with 43 queries, from
   [the post-quantum parameter change](reveal-parameters.md). Records in
@@ -28,6 +36,89 @@ of the plan. Both runs here measure the statement that ships: the coin reveal
 (S1) of the `proofs/` crate, through its own `prove_coin_reveal`, with the
 same method as the [benchmark plan](plan.md), on the same Mac Studio and
 Chrome build. The raw records are one file per device and session.
+
+## Threaded build: blowup 2^3, 43 queries
+
+The single-thread prover cannot reach the target on the emulated phone at
+the configuration of spec 09, section 4.1: at 4 times the Mac Studio's
+figures its warm median is about 10.9 s and its cold median about 13.1 s,
+and native work on the single-thread prover took off only about 12% (median
+about 1,191 ms, salted 1,154 ms, against the 1,000 ms or so it would need).
+About 485 to 530 ms of each native proof is the scalar Keccak-f[1600] of the
+Merkle leaves (3.7 million permutations at about 131 ns) and about 275 ms the
+low-degree extension. Both are work Plonky3 already splits across threads
+with its `parallel` feature, so the web app now ships a threaded module
+beside the single-thread one.
+
+### What the threaded build changes
+
+- `webapp/build.sh` builds two modules. `ghost_webapp_wasm.wasm` is the
+  single-thread module as before (Rust 1.99.1, `+simd128`).
+  `ghost_webapp_wasm_threads.wasm` is the same crate with its `threads`
+  feature, which turns on the proofs crate's `parallel` feature: built with
+  the pinned nightly toolchain (`nightly-2026-08-13`, a 1.99 nightly) and the standard
+  library rebuilt for threads (`-Z build-std=std,panic_abort`), with
+  `+simd128,+atomics,+bulk-memory,+mutable-globals`, on a shared memory the
+  page creates (64 MiB to start, 4 GiB at most).
+- The background worker loads the threaded module when the page is
+  cross-origin isolated and the device reports more than one core, with up to
+  8 prover threads (`navigator.hardwareConcurrency`): itself and one Web
+  Worker per further thread (`webapp/src/threads.mjs`, `thread.mjs`), all on
+  the one memory. Otherwise, or if the threaded module does not start, it
+  loads the single-thread module.
+- The hosted site sends `Cross-Origin-Embedder-Policy: require-corp` beside
+  `Cross-Origin-Opener-Policy: same-origin` on every path, which makes the
+  page cross-origin isolated. The page's Content-Security-Policy is
+  unchanged.
+- The statement, the proof and the configuration are those of the
+  single-thread module: `keccak-256/hiding-fri/blowup-2^3/queries-43/grinding-q16-b16-o0/ext-5/zk`,
+  the configuration `blowup-2^3/queries-43` unchanged, which passes the
+  gate of spec 09, section 4.1 (`proofs/src/stark.rs`). No post-quantum
+  parameter changed. Natively, the acceptance test proves and verifies both
+  reveals with the `parallel` feature on (`cargo test --release --features
+  parallel --test prove_speed`).
+
+### Threaded results
+
+Pending browser measurement. No figure below is a measurement: each row is
+filled in from the records of a run with the method of this page, and a row
+counts toward the target only once its cold and warm medians are recorded.
+
+| Statement | Build | Device | Configuration | Runs (cold/warm) | Cold median | Warm median | Meets target |
+|---|---|---|---|---|---|---|---|
+| coin reveal | wasm-threads | Mac Studio | blowup-2^3/queries-43 | pending browser measurement | pending browser measurement | pending browser measurement | pending browser measurement |
+| coin reveal | wasm-threads | emulated mid-range phone, not a real device | blowup-2^3/queries-43 | pending browser measurement | pending browser measurement | pending browser measurement | pending browser measurement |
+| salted coin reveal | wasm-threads | Mac Studio | blowup-2^3/queries-43 | pending browser measurement | pending browser measurement | pending browser measurement | pending browser measurement |
+| salted coin reveal | wasm-threads | emulated mid-range phone, not a real device | blowup-2^3/queries-43 | pending browser measurement | pending browser measurement | pending browser measurement | pending browser measurement |
+
+### How to measure the threaded build
+
+The method is that of [the current configuration](#how-it-was-run): five
+sessions per device and statement, interleaved, each a fresh tab with one
+cold run and ten warm runs, 3 minutes of rest between sessions, the phone
+emulated by throttling the tab's renderer process (all of its workers, the
+prover threads included) and its warm median checked against 4 times the Mac
+Studio's. What differs is the page: `app-reveal.html` runs the web app's own
+modules, as `webapp/build.sh` ships them, through the web app's `prove` call,
+on a decoy partial reveal (a throwaway key's coin of 1,000 GHOST, 250 out, a
+fee of 0.001 GHOST), which is the same work as a real reveal. Each module
+checks every proof in the worker before it returns it; the page does not
+keep the proofs for `ghost-reveal-verify`.
+
+```sh
+benchmarks/run.sh --app --no-native
+python3 benchmarks/web/serve.py --port 8000
+node benchmarks/web/drive-reveal.mjs --devtools http://localhost:9222 \
+  --page "http://localhost:8000/app-reveal.html?build=wasm-threads&statement=coin-reveal" \
+  --sessions 1 --first-session 0 --rest 0 --mode phone \
+  --commit "$(git rev-parse HEAD)" --out results/threads/coin-reveal
+python3 benchmarks/summarize.py --build wasm-threads results/threads/coin-reveal
+```
+
+`statement=salted-coin-reveal` measures the salted coin reveal, into a
+directory of its own; `build=wasm-single` measures the single-thread module
+on the same page. The records name the build, the thread count
+(`thread_count`) and the statement.
 
 ## Current configuration: blowup 2^3, 43 queries
 
@@ -275,11 +366,14 @@ natively: run `ghost-reveal-verify` on the `.proofs` files afterwards.
   browser build. With 597 MiB of WebAssembly memory and about 1 GB for the
   renderer in the current configuration, memory on a real mid-range phone is
   untested.
-- **No threaded build.** Only the single-thread build was run.
+- **No threaded build.** Only the single-thread build was run; the web
+  app's threaded module is
+  [pending browser measurement](#threaded-build-blowup-23-43-queries).
 - **The proof of holding.** Its prover is compiled only for tests until the
   spent-marker set is settled (spec 02, section 13), and every public verifier
   rejects it, so it was not built for the browser or measured.
 - **The salted (version 2) coin reveal.** Its trace is 16 columns wider (3,824)
   than the version 1 coin reveal measured here; it was not built for the
-  browser or measured.
+  browser or measured in these runs. `app-reveal.html` measures it through
+  the web app's own modules.
 - **One browser.** Chrome only.
