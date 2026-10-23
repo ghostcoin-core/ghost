@@ -188,36 +188,27 @@ function tableRows(section) {
   });
 }
 
-// A median cell's seconds, or null while it awaits the browser run. Anything
-// else is neither and fails.
+// A median cell's seconds. A row still awaiting the browser run ("pending
+// browser measurement") or anything else that is not a median fails.
 function seconds(cell, what) {
-  if (cell === PENDING) return null;
   const m = cell.match(/^(\d+(?:\.\d+)?) s$/);
-  assert.ok(m, `${what}: "${cell}" is neither a median in seconds nor "${PENDING}"`);
+  assert.ok(m, `${what}: "${cell}" is not a measured median in seconds`);
   return Number(m[1]);
 }
 
-// The browser run of the threaded build happens on the Mac Studio after
-// merge. Until then its four rows may read "pending browser measurement";
-// a median that is recorded must be under the target, and no row may claim
-// the target without both medians.
+// Each threaded row must carry the measured cold and warm medians of a
+// browser run, both under the target, and say it meets the target.
 function checkThreadedRow(row, what) {
   assert.ok(row, `a wasm-threads row for the ${what}`);
   assert.ok(row.Configuration.includes(CONFIGURATION), `${what}: ${row.Configuration}`);
   const cold = seconds(row["Cold median"], `${what} cold`);
   const warm = seconds(row["Warm median"], `${what} warm`);
-  if (cold !== null) assert.ok(cold < TARGET_SECONDS, `${what}: cold median ${cold} s`);
-  if (warm !== null) assert.ok(warm < TARGET_SECONDS, `${what}: warm median ${warm} s`);
-  const meets = row["Meets target"];
-  if (cold === null || warm === null) {
-    assert.notEqual(meets, "yes", `${what}: meets the target without both medians`);
-    assert.equal(meets, PENDING, `${what}: "${meets}" while a median is pending`);
-  } else {
-    assert.equal(meets, "yes", `${what}: both medians are under ${TARGET_SECONDS} s`);
-  }
+  assert.ok(cold < TARGET_SECONDS, `${what}: cold median ${cold} s`);
+  assert.ok(warm < TARGET_SECONDS, `${what}: warm median ${warm} s`);
+  assert.equal(row["Meets target"], "yes", `${what}: both medians are under ${TARGET_SECONDS} s`);
 }
 
-test("the results hold the four threaded rows of both reveals, pending or under 10 s", () => {
+test("the results hold the four threaded rows of both reveals, measured and under 10 s", () => {
   const section = threadedSection();
   assert.ok(section.includes(CONFIGURATION), `the section names ${CONFIGURATION}`);
   const rows = tableRows(section).filter((r) => r.Build === "wasm-threads");
@@ -230,15 +221,16 @@ test("the results hold the four threaded rows of both reveals, pending or under 
   }
 });
 
-test("the threaded rows check fails on a median at or over 10 s, or a target met without medians", () => {
+test("the threaded rows check fails on a pending row, a median at or over 10 s, or a target met without medians", () => {
   const row = (cold, warm, meets) => ({
     Configuration: CONFIGURATION,
     "Cold median": cold,
     "Warm median": warm,
     "Meets target": meets,
   });
-  checkThreadedRow(row(PENDING, PENDING, PENDING), "pending");
   checkThreadedRow(row("8.2 s", "7.9 s", "yes"), "measured");
+  assert.throws(() => checkThreadedRow(row(PENDING, PENDING, PENDING), "pending"));
+  assert.throws(() => checkThreadedRow(row("8.2 s", "7.9 s", PENDING), "measured but not marked"));
   assert.throws(() => checkThreadedRow(row("10 s", "7.9 s", "yes"), "cold at 10 s"));
   assert.throws(() => checkThreadedRow(row("8.2 s", "10.4 s", "yes"), "warm over 10 s"));
   assert.throws(() => checkThreadedRow(row("10.4 s", PENDING, PENDING), "cold over, warm pending"));
