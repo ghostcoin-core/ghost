@@ -2,9 +2,11 @@
 //! regression budget (docs/benchmarks/reveal-parameters.md).
 //!
 //! The budget, [`MEDIAN_BUDGET_MS`], is a coarse regression guard, loose on
-//! purpose: the shared build host's load swings proving time by about 1.5
-//! times, so it sits well above the quiet-machine medians (about 1,190 ms)
-//! and catches only a gross slowdown, not the loss of a few per cent.
+//! purpose: it must hold on the GitHub-hosted x86_64 CI runner (median about
+//! 4.5 s, no vector field arithmetic) as well as on the aarch64 build host
+//! (quiet-machine medians about 1,190 ms, whose load swings proving time by
+//! about 1.5 times), so it catches only a gross slowdown, not the loss of a
+//! few per cent.
 //! It holds on one thread (the default features), in the release profile.
 //! The rest of the gap to the browser target is left for a threaded or SIMD
 //! build. Each test makes one
@@ -21,7 +23,7 @@ use std::time::Instant;
 use ghost_proofs::*;
 
 /// The most a median native proof may take, in milliseconds.
-const MEDIAN_BUDGET_MS: f64 = 3000.0;
+const MEDIAN_BUDGET_MS: f64 = 10000.0;
 
 /// Proofs timed per test, after the warm-up.
 const PROOFS: u8 = 9;
