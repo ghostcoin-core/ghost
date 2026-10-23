@@ -5,6 +5,11 @@
 // be verified again natively. No dependencies.
 
 const $ = (id) => document.getElementById(id);
+// The worker the page runs: reveal-worker.js, or the one the page names
+// (app-reveal.html runs the web app's modules), with the choices in the
+// page's address, e.g. ?build=wasm-threads&statement=salted-coin-reveal.
+const WORKER = document.body.dataset.worker || "./reveal-worker.js";
+const QUERY = Object.fromEntries(new URLSearchParams(location.search));
 const records = [];
 // One line per proof: <label> TAB <public fields, hex> TAB <proof, hex>.
 const proofLines = [];
@@ -104,7 +109,7 @@ function run() {
   const warm = Math.max(0, Number($("warm").value));
   const seed = Number($("seed").value) >>> 0;
   const base = sessionFields();
-  const worker = new Worker(new URL("./reveal-worker.js", import.meta.url), { type: "module" });
+  const worker = new Worker(new URL(WORKER, import.meta.url), { type: "module" });
   let expected = warm + 1;
   $("run").disabled = true;
   $("status").textContent = "running…";
@@ -143,7 +148,7 @@ function run() {
     for (let i = warm + 1 - expected; i <= warm; i += 1) {
       const r = {
         ...base,
-        statement: "coin-reveal",
+        statement: QUERY.statement || "coin-reveal",
         run_index: i,
         run_kind: i === 0 ? "cold" : "warm",
         outcome: "killed",
@@ -160,6 +165,7 @@ function run() {
     witnessSeed: seed,
     sameKey: !$("newkey").checked,
     warm,
+    query: QUERY,
   });
 }
 
