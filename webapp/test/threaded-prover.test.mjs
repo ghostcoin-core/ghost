@@ -91,6 +91,13 @@ test("build.sh builds the threaded module with threads, atomics and SIMD on a sh
     /cargo "\+\$threads_toolchain" build --release --locked --offline --target wasm32-unknown-unknown \\\n\s+-Z build-std=std,panic_abort --features threads --target-dir "\$threads_target"/,
   );
   assert.match(build, /RUSTFLAGS="\$remap \$\{threads_flags\[\*\]\}"/);
+  // The standard library's own crates are fetched before the offline build
+  // rebuilds it.
+  const fetchStd = build.search(
+    /cargo "\+\$threads_toolchain" fetch --locked -Z build-std=std,panic_abort --target wasm32-unknown-unknown \\\n\s+--manifest-path "\$manifest"/,
+  );
+  assert.ok(fetchStd > 0, "build.sh fetches the standard library's crates with the nightly");
+  assert.ok(fetchStd < build.indexOf("--offline --target wasm32-unknown-unknown \\\n"), "before the offline build");
   // The single-thread module keeps SIMD, as before.
   assert.match(build, /RUSTFLAGS="\$remap -C target-feature=\+simd128" \\\n\s+cargo "\+\$toolchain" build --release --locked --offline/);
 });
