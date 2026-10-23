@@ -4,7 +4,8 @@
 #   1. checks that the pinned toolchain (the one CI uses) is installed, and
 #      installs the pinned nightly toolchain of the threaded module if it is
 #      missing;
-#   2. fetches the crates Cargo.lock pins, and nothing else;
+#   2. fetches the crates Cargo.lock pins and those the nightly standard
+#      library's own lock file pins, and nothing else;
 #   3. builds the two WebAssembly modules offline, with --locked, with every
 #      local path remapped so neither depends on where it was built:
 #      - the single-thread module, with SIMD (+simd128), on the pinned
@@ -60,6 +61,11 @@ rustup run "$threads_toolchain" rustc --version
 
 # The only network access: the crates and the Plonky3 revision Cargo.lock pins.
 cargo "+$toolchain" fetch --locked --manifest-path "$manifest"
+# And the crates the nightly standard library depends on, which the offline
+# -Z build-std build below needs in the cache: rust-src brings their sources'
+# lock file, not the crates.
+cargo "+$threads_toolchain" fetch --locked -Z build-std=std,panic_abort --target wasm32-unknown-unknown \
+  --manifest-path "$manifest"
 
 remap="--remap-path-prefix=$repo=/ghost --remap-path-prefix=$cargo_home=/cargo --remap-path-prefix=$rustup_home=/rustup"
 
