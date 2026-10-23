@@ -9,16 +9,13 @@
 #   3. run a short native reference (context only, never counted);
 #   4. print the summary of every record found.
 #
-# Usage: benchmarks/run.sh [--web] [--reveal] [--app] [--native-warm N] [--no-native] [RECORDS...]
+# Usage: benchmarks/run.sh [--web] [--reveal] [--native-warm N] [--no-native] [RECORDS...]
 #
 #   --web            also produce the browser bundle in web/pkg with a pinned
 #                    wasm-bindgen, installed into benchmarks/.tools on first use
 #   --reveal         also build the real coin reveal prover (benchmarks/reveal)
 #                    into web/reveal-pkg for reveal.html, and run its tests;
 #                    no bindings generator is needed
-#   --app            also build the web app with webapp/build.sh (its
-#                    single-thread and threaded prover modules) and copy it
-#                    into web/reveal-pkg/app for app-reveal.html
 #   --native-warm N  warm runs per configuration in the native reference (2)
 #   --no-native      skip the native reference
 #   RECORDS          record files or directories to summarize
@@ -34,7 +31,6 @@ bindgen_version="0.2.105"
 
 web=0
 reveal=0
-app=0
 native=1
 native_warm=2
 records=()
@@ -44,8 +40,7 @@ while [ "$#" -gt 0 ]; do
     --no-native) native=0 ;;
     --native-warm) shift; native_warm="$1" ;;
     --reveal) reveal=1 ;;
-    --app) app=1 ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) records+=("$1") ;;
   esac
   shift
@@ -89,16 +84,6 @@ if [ "$reveal" -eq 1 ]; then
   cargo test --release --locked --manifest-path "$reveal_manifest"
   cargo build --release --locked --manifest-path "$reveal_manifest" --bin ghost-reveal-verify
   echo "serve with: python3 $here/web/serve.py, then open http://localhost:8000/reveal.html"
-fi
-
-if [ "$app" -eq 1 ]; then
-  step "build: the web app's prover modules (webapp/build.sh)"
-  "$repo/webapp/build.sh"
-  rm -rf "$here/web/reveal-pkg/app"
-  mkdir -p "$here/web/reveal-pkg"
-  cp -R "$repo/webapp/dist" "$here/web/reveal-pkg/app"
-  echo "serve with: python3 $here/web/serve.py, then open"
-  echo "  http://localhost:8000/app-reveal.html?build=wasm-threads&statement=coin-reveal"
 fi
 
 step "correctness checks"

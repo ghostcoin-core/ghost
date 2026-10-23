@@ -8,7 +8,6 @@
         "Referrer-Policy": "no-referrer",
         "X-Content-Type-Options": "nosniff",
         "Cross-Origin-Opener-Policy": "same-origin",
-        "Cross-Origin-Embedder-Policy": "require-corp",
         "X-Frame-Options": "DENY"
       },
       "continue": true
@@ -19,9 +18,6 @@
   ],
   "overrides": {
     "ghost_webapp_wasm.wasm": {
-      "contentType": "application/wasm"
-    },
-    "ghost_webapp_wasm_threads.wasm": {
       "contentType": "application/wasm"
     },
     "SHA256SUMS": {
