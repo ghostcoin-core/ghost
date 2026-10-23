@@ -47,17 +47,36 @@ The design, the node methods it calls and its limits are in
 ## Build it yourself
 
 You need `rustup` and `sha256sum`. The build pins Rust 1.99.1, the version
-CI uses:
+CI uses, for the single-thread module, and the nightly
+`nightly-2026-10-15` with its `rust-src` component for the threaded module
+(build.sh installs that one when it is missing):
 
 ```sh
 rustup toolchain install 1.99.1 --profile minimal --target wasm32-unknown-unknown
+rustup toolchain install nightly-2026-10-15 --profile minimal --component rust-src --target wasm32-unknown-unknown
 webapp/build.sh
 ```
 
 The script fetches only the crates `webapp/wasm/Cargo.lock` pins, builds the
-WebAssembly module offline with `--locked` and with every local path
+two WebAssembly modules offline with `--locked` and with every local path
 remapped (`--remap-path-prefix`), copies the page into `webapp/dist`, and
 writes `webapp/dist/SHA256SUMS` with one line per file.
+
+- `ghost_webapp_wasm.wasm`, the single-thread module, with SIMD.
+- `ghost_webapp_wasm_threads.wasm`, the threaded module: the same crate with
+  its `threads` feature (the proofs crate's `parallel` prover), built with
+  SIMD, threads and atomics on a shared memory, and the standard library
+  rebuilt for them (`-Z build-std`). The background worker loads it when the
+  page is cross-origin isolated and the device has more than one core, and
+  runs up to 8 prover threads, itself and one Web Worker for each of the
+  others (`src/threads.mjs`, `src/thread.mjs`); otherwise, or when it does
+  not start, it loads the single-thread module. Both prove the same
+  statements with the same configuration.
+
+The hosted site makes the page cross-origin isolated with
+`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp` (`vercel/config.json`). A plain
+static server without those headers gets the single-thread module.
 
 ## Check a build
 

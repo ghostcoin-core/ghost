@@ -20,14 +20,23 @@ crate-type = ["cdylib"]
 ghost-client = { path = "../../client" }
 ghost-proofs = { path = "../../proofs" }
 rand = { version = "0.10.1", default-features = false, features = ["std_rng"] }
+# The pool of the threaded build only: the rayon the proofs crate's
+# `parallel` feature already pins (proofs/Cargo.lock).
+rayon = { version = "1.12.0", optional = true }
 
 # `test-tree-depth` adds the test-depth reveal (lib.rs, `test_depth`): a reveal
 # against a coin tree of 14 levels carrying the test node's stub proof, never
 # a real one. It is for the tests and scripts/recovery-blackout.sh only, built
 # into a target directory of its own; the module the page ships is built
 # without it and has no such export.
+#
+# `threads` is the threaded module (lib.rs, `threads`): the proofs crate's
+# `parallel` feature over a pool of Web Workers. It needs a nightly toolchain
+# with `+atomics` and a rebuilt standard library; build.sh builds it beside
+# the single-thread module, into a target directory of its own.
 [features]
 test-tree-depth = []
+threads = ["dep:rayon", "ghost-proofs/parallel"]
 
 [profile.release]
 opt-level = 3

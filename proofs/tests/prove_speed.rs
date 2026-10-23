@@ -7,9 +7,10 @@
 //! (quiet-machine medians about 1,190 ms, whose load swings proving time by
 //! about 1.5 times), so it catches only a gross slowdown, not the loss of a
 //! few per cent.
-//! It holds on one thread (the default features), in the release profile.
-//! The rest of the gap to the browser target is left for a threaded or SIMD
-//! build. Each test makes one
+//! It holds on one thread (the default features) and with the `parallel`
+//! feature, the threaded prover the web app's threaded module ships
+//! (webapp/build.sh), in the release profile; every proof is verified either
+//! way. Each test makes one
 //! warm-up proof, not counted, then [`PROOFS`] proofs with as many
 //! zero-knowledge seeds, each timed and verified, and holds their median to
 //! the budget.
