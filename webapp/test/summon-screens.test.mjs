@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { formatGhost, parseGhost } from "../src/chain.mjs";
+import { WALLET_APPROVAL } from "../src/flow.mjs";
 import { injectedProvider, snapConnector } from "../src/wallet-connect.mjs";
 
 // A typed key as the flow controller's normalKey gives it to the module: any
@@ -173,7 +174,7 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, ethereum
   const window = new Element("window");
   if (ethereum !== undefined) window.ethereum = ethereum;
   const $ = (id) => document.getElementById(id);
-  const screens = () => ["form", "waiting", "done"].filter((s) => !$(`summon-${s}`).hidden);
+  const screens = () => ["form", "confirm", "waiting", "done"].filter((s) => !$(`summon-${s}`).hidden);
   const steps = () => ["proof", "send", "confirm"].map((s) => $(`summon-step-${s}`).dataset.state || "-").join(" ");
   const log = { opens: [], reveals: [], closes: 0, steps: [], bars: [], waitingAmount: [], connects: [], disconnects: 0 };
   let held = amount;
@@ -286,7 +287,7 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, ethereum
 
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
-  const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
+  const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "WALLET_APPROVAL", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
   const wallets = ["injectedProvider", "snapConnector"];
   new Function(...names, ...more, ...wallets, body)(
     document,
@@ -300,6 +301,7 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, ethereum
     () => [],
     "0x67686f7374000000000000000000000000000005",
     10n ** 16n,
+    WALLET_APPROVAL,
     "http://127.0.0.1:8545",
     () => ({}),
     async () => {},
@@ -317,9 +319,13 @@ async function paste(page, text) {
   await settle();
 }
 
+// Types `amount`, presses Summon and, when the confirm screen opens, Confirm
+// Summon.
 async function summon(page, amount) {
   page.$("summon-amount").value = amount;
   page.$("summon-form").fire("submit");
+  await settle();
+  if (!page.$("summon-confirm").hidden) page.$("summon-confirm-button").fire("click");
   await settle(8);
 }
 
@@ -448,6 +454,10 @@ test("paste a key, summon part of it to the wallet, see the rest, then summon th
   page.$("summon-max").fire("click");
   assert.equal(page.$("summon-amount").value, "1.4998");
   page.$("summon-form").fire("submit");
+  await settle();
+  assert.deepEqual(page.screens(), ["confirm"]);
+  assert.equal(page.log.reveals.length, 1, "nothing more is proved before Confirm Summon");
+  page.$("summon-confirm-button").fire("click");
   await settle(8);
   assert.equal(page.log.reveals[1].recipient, WALLET);
   assert.deepEqual(page.screens(), ["done"]);

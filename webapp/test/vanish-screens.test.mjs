@@ -10,8 +10,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { formatGhost, parseGhost } from "../src/chain.mjs";
-import { wrongWords } from "../src/flow.mjs";
-import { injectedProvider, snapConnector } from "../src/wallet-connect.mjs";
+import { WALLET_APPROVAL, wrongWords } from "../src/flow.mjs";
+import { WalletRejected, injectedProvider, snapConnector } from "../src/wallet-connect.mjs";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const source = readFileSync(new URL("../src/app.mjs", import.meta.url), "utf8");
@@ -133,7 +133,8 @@ const POSITIONS = [2, 9, 17];
 
 // Starts app.mjs on a fresh stand-in page with a stand-in flow whose
 // vanishCheck sends only when the three words match, as the real one does.
-// With `refuse`, the network refuses the commit after the check passes.
+// With `refuse`, the network refuses the commit after the check passes: that
+// raw text, or that error as the flow throws it.
 function startPage({ refuse = null } = {}) {
   const elements = new Map();
   const document = {
@@ -196,9 +197,10 @@ function startPage({ refuse = null } = {}) {
         emit();
         if (v.wrong.length > 0) return { ok: false, wrong: v.wrong };
         if (refuse) {
-          state.error = refuse;
+          const err = refuse instanceof Error ? refuse : new Error(refuse);
+          state.error = err.message;
           emit();
-          throw new Error(refuse);
+          throw err;
         }
         log.sent++;
         v.key = null;
@@ -222,7 +224,7 @@ function startPage({ refuse = null } = {}) {
 
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
-  const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
+  const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "WALLET_APPROVAL", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
   const wallets = ["injectedProvider", "snapConnector"];
   new Function(...names, ...more, ...wallets, body)(
     document,
@@ -236,6 +238,7 @@ function startPage({ refuse = null } = {}) {
     wrongWords,
     "0x67686f7374000000000000000000000000000005",
     10n ** 16n,
+    WALLET_APPROVAL,
     "http://127.0.0.1:8545",
     () => ({}),
     async () => {},
@@ -438,11 +441,13 @@ test("an error is one fixed plain line in the card, never the exception's text",
   assert.equal(refused.$("error").textContent, "");
   for (const id of tags.keys()) assert.ok(!refused.$(id).textContent.includes(raw), id);
 
-  // Turned down in the wallet: back to the check, where Vanish asks again.
-  const rejected = startPage({ refuse: "the transaction was rejected in your wallet; nothing was sent" });
+  // Turned down in the wallet: the key is dropped and the card is back at
+  // the amount (vanish-approval.test.mjs covers it in full).
+  const rejected = startPage({ refuse: new WalletRejected("the transaction") });
   await toCheck(rejected);
   await submitCheck(rejected, right);
-  assert.deepEqual(rejected.visible(), ["check"]);
-  assert.equal(rejected.$("vanish-error").textContent, "You rejected the transaction in your wallet. Nothing was sent.");
+  assert.deepEqual(rejected.visible(), ["form"]);
+  assert.equal(rejected.$("vanish-error").textContent, "You rejected it in your wallet. Nothing was sent.");
   assert.equal(rejected.log.sent, 0);
+  assert.equal(rejected.log.cancels, 1, "the key is dropped");
 });

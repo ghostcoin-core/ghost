@@ -40,6 +40,21 @@ export class WalletRejected extends Error {
   }
 }
 
+// A wallet that failed to sign for a reason other than the user turning it
+// down; nothing was signed or sent.
+export class WalletSignFailed extends Error {
+  constructor(cause) {
+    super(`the wallet could not sign the transaction: ${(cause && cause.message) || cause}; nothing was sent`, { cause });
+    this.name = "WalletSignFailed";
+  }
+}
+
+// Whether `err` is the user turning a request down in the wallet: the
+// EIP-1193 code, or a WalletRejected.
+export function isWalletRejection(err) {
+  return Boolean(err) && (err.code === USER_REJECTED || err.name === "WalletRejected");
+}
+
 // MetaMask's provider in this browser (window.ethereum), or null when there
 // is none.
 export function injectedProvider(win = globalThis) {

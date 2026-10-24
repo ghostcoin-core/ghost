@@ -675,6 +675,18 @@ main {
   text-align: center;
 }
 
+/* Summon's confirm screen: the amount and the address, then Confirm or Cancel */
+
+.confirm {
+  padding: 1rem 0 0.25rem;
+  text-align: center;
+}
+
+.confirm p {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .icon-done {
   color: var(--accent);
   display: block;
