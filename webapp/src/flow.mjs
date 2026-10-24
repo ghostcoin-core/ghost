@@ -17,7 +17,10 @@
 //   tried on a note;
 // - the background worker (prover.mjs), which holds the WebAssembly module
 //   and receives a key's words (or the digits of a key issued before the
-//   words) or the words of the wallet's seed for the length of one request.
+//   words) for the length of one request;
+// - the connected wallet (wallet-connect.mjs), which holds the account's
+//   key and signs the commit's account transaction when the user approves
+//   it there.
 //
 // A new Phantom Key is 24 words, the client library's default: a 256-bit
 // secret, so it stays strong even against a quantum search. Its coin's
@@ -27,16 +30,17 @@
 // prover. Keys already issued as twelve groups of digits still restore,
 // reveal and claim.
 //
-// The wallet is built in (spec 09, section 9): a 256-bit seed shown as 24
-// words, which derives a quantum-safe account key (ML-DSA-44). The commit is
-// an account transaction (type 0x52) the worker signs and the app sends with
-// eth_sendRawTransaction; no browser wallet and no elliptic-curve key is
-// used. Summon pays to any 20-byte address and needs no wallet.
+// The wallet is connected, not built in: a connector (wallet-connect.mjs)
+// whose wallet holds a quantum-safe account key (ML-DSA-44, spec 09,
+// section 9). The commit is an account transaction (type 0x52) the wallet
+// signs and the app sends with eth_sendRawTransaction; the app never sees a
+// seed or an account key, and no elliptic-curve key is used. Summon pays to
+// any 20-byte address and needs no wallet.
 //
-// A key or a seed lives only in this object's memory: it is never written to
-// browser storage, a file, a cookie or a server. A Phantom Key is dropped as
-// soon as the step that needs it is done; the seed is kept while the wallet
-// is open and dropped when it is closed.
+// A Phantom Key lives only in this object's memory: it is never written to
+// browser storage, a file, a cookie or a server, and it is dropped as soon
+// as the step that needs it is done. The connection is not remembered
+// either.
 
 import { concat, fromHex, quantity, toHex, toQuantity } from "./bytes.mjs";
 import {
@@ -87,10 +91,6 @@ export const COMMIT_DATA_BYTES = 2 + 32 + SALT_BYTES + NOTE_BYTES;
 // Words the user re-types before a new key is used, out of its 24.
 export const SAVE_CHECK_GROUPS = 3;
 export const KEY_WORDS = 24;
-// Words of a wallet seed, of which the user re-types SAVE_CHECK_GROUPS.
-export const SEED_WORDS = 24;
-// The account of the seed the app uses.
-export const ACCOUNT_INDEX = 0;
 // What an account transaction adds to the intrinsic gas of a type 0x02
 // transaction, which eth_estimateGas counts: 16 gas for each of the 2 + 1,312
 // + 2,420 bytes of scheme, public key and signature, and 3,000 for the
@@ -276,14 +276,14 @@ export function pickGroups(random, total = KEY_WORDS, count = SAVE_CHECK_GROUPS)
   return [...chosen].sort((a, b) => a - b);
 }
 
-// The positions whose typed word does not match the key's or the seed's, in
-// any case. A word must be typed whole: a prefix or a near word is wrong.
+// The positions whose typed word does not match the key's, in any case. A
+// word must be typed whole: a prefix or a near word is wrong.
 export function wrongWords(words, positions, answers) {
   const list = normalWords(words).split(" ");
   return positions.filter((position, i) => String(answers[i] ?? "").trim().toLowerCase() !== list[position - 1]);
 }
 
-// Seed words as the module reads them: lower case, single spaces.
+// Key words as the module reads them: lower case, single spaces.
 export function normalWords(text) {
   return String(text).trim().toLowerCase().split(/\s+/).join(" ");
 }
@@ -905,8 +905,8 @@ export function createFlow({
   checkDepth(treeDepth);
   if (!(treeLeaves >= 1 && treeLeaves <= 2 ** treeDepth)) throw new Error(`a tree of ${treeDepth} levels cannot hold ${treeLeaves} leaves`);
   let rpc = createRpc(endpoint, { fetch });
-  // The open wallet's seed words, never in `state`.
-  let walletWords = null;
+  // The connected wallet's connector, never in `state`.
+  let connector = null;
   // The page's header chain, held in the worker: the network it is of, the
   // endpoint it was last read from, its start height, every header the
   // worker adopted, by hash, and the hashes of the blocks whose receipts the
@@ -919,8 +919,7 @@ export function createFlow({
     // Why the endpoint's chain is refused, while it is: no confirmation is
     // shown from it.
     chainRefused: null,
-    // The wallet: null, or { stage, words, groups, wrong, address, balance }.
-    // `words` is set only while a new seed is shown and checked.
+    // The connected wallet: null, or { id, name, address, balance }.
     wallet: null,
     busy: null,
     progress: null,
@@ -1741,34 +1740,54 @@ export function createFlow({
     }
   }
 
-  // Opens the wallet of `words`: its account's address, read by the worker.
-  async function openWallet(words) {
-    const text = normalWords(words);
-    const { address } = await prover.request("walletAccount", { words: text, index: ACCOUNT_INDEX });
-    walletWords = text;
-    state.wallet = { stage: "open", words: null, groups: null, wrong: [], address: toHex(address), balance: null };
+  // Connects the wallet of connector `c` (wallet-connect.mjs): its account's
+  // address, as the wallet gives it, then its balance from the endpoint.
+  async function connectWallet(c) {
+    if (!c || typeof c.connect !== "function" || typeof c.signTransaction !== "function") {
+      throw new Error("not a wallet connector");
+    }
+    const answer = await c.connect();
+    const address = String((answer && answer.address) || "");
+    if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("the wallet answered without an account address");
+    const previous = connector;
+    connector = c;
+    state.wallet = { id: c.id ?? null, name: c.name ?? null, address: address.toLowerCase(), balance: null };
     emit();
+    if (previous && previous !== c) forget(previous);
     await readBalance();
     return state.wallet;
   }
 
+  // Lets a connector go; a wallet that fails to let go is gone all the same.
+  function forget(c) {
+    try {
+      if (typeof c.disconnect === "function") Promise.resolve(c.disconnect()).catch(() => {});
+    } catch {
+      // Nothing to do: the page no longer uses it.
+    }
+  }
+
   async function readBalance() {
     const w = state.wallet;
-    if (!w || w.stage !== "open") return null;
-    w.balance = quantity(await rpc.call("eth_getBalance", [w.address, "latest"]));
+    if (!w) return null;
+    const balance = quantity(await rpc.call("eth_getBalance", [w.address, "latest"]));
+    // The wallet may have been disconnected meanwhile.
+    if (state.wallet !== w) return null;
+    w.balance = balance;
     emit();
     return w.balance;
   }
 
-  // Signs and sends an account transaction (type 0x52) from the open
-  // wallet's account: the nonce, fee and gas from the endpoint, the genesis
-  // hash from this build's entry for the network (the signature binds the
-  // chain), the base fee from the tip the page's header chain adopted,
-  // signed in the worker. Returns the transaction hash.
+  // Has the connected wallet sign an account transaction (type 0x52) from
+  // its account, then sends it: the nonce, fee and gas from the endpoint,
+  // the genesis hash from this build's entry for the network (the signature
+  // binds the chain), the base fee from the tip the page's header chain
+  // adopted. The wallet asks the user to approve it. Its answer is sent only
+  // if it is from the connected account and its hash is the envelope's.
+  // Returns the transaction hash.
   async function sendFromWallet({ chainId, to, value, data }) {
-    if (!walletWords || !state.wallet || state.wallet.stage !== "open") {
-      throw new Error("open a wallet first: create one, or restore it from its 24 words");
-    }
+    if (!connector || !state.wallet) throw new Error("connect a wallet first");
+    const signer = connector;
     const from = state.wallet.address;
     const hc = await chainFor(chainId);
     const genesis = fromHex(hc.network.genesisHash, 32);
@@ -1789,13 +1808,12 @@ export function createFlow({
       );
     }
     const balance = await readBalance();
+    if (balance === null || connector !== signer) throw new Error("connect a wallet first");
     if (balance < value + gasLimit * maxFee) {
       throw new Error(`the wallet holds ${formatGhost(balance)} GHOST, less than the amount and the most the gas can cost`);
     }
-    progress("signing with the wallet's quantum-safe key");
-    const signed = await prover.request("walletSign", {
-      words: walletWords,
-      index: ACCOUNT_INDEX,
+    progress("waiting for your wallet to approve the transaction");
+    const signed = await signer.signTransaction({
       chainId,
       genesis,
       nonce,
@@ -1806,8 +1824,17 @@ export function createFlow({
       value,
       data,
     });
-    if (toHex(signed.sender) !== from) throw new Error("the signed transaction is not from the wallet's account");
+    if (connector !== signer || !state.wallet || state.wallet.address !== from) {
+      throw new Error("the wallet was disconnected before the transaction was sent; nothing was sent");
+    }
+    if (!signed || !(signed.sender instanceof Uint8Array) || !(signed.txHash instanceof Uint8Array) || !(signed.envelope instanceof Uint8Array)) {
+      throw new Error("the wallet answered without a signed transaction; nothing was sent");
+    }
+    if (toHex(signed.sender) !== from) throw new Error("the signed transaction is not from the wallet's account; nothing was sent");
     const txHash = toHex(signed.txHash);
+    if (toHex(keccak256(signed.envelope)) !== txHash) {
+      throw new Error("the wallet's transaction hash is not the hash of its envelope; nothing was sent");
+    }
     let answered;
     try {
       answered = await rpc.call("eth_sendRawTransaction", [toHex(signed.envelope)]);
@@ -1987,60 +2014,24 @@ export function createFlow({
       return state.commitEntry;
     },
 
-    // Wallet, new: a new seed, shown as 24 words to write down.
-    walletCreate() {
-      return run("creating a wallet", async () => {
-        const { words } = await prover.request("walletNew");
-        walletWords = null;
-        state.wallet = { stage: "shown", words, groups: null, wrong: [], address: null, balance: null };
-        emit();
-        return words;
-      });
-    },
-
-    // Wallet, new: the user says the words are saved; three to re-type.
-    walletSaved() {
-      const w = state.wallet;
-      if (!w || w.stage !== "shown") throw new Error("show the wallet's words first");
-      w.groups = pickGroups(random, SEED_WORDS);
-      w.wrong = [];
-      w.stage = "check";
-      emit();
-      return w.groups;
-    },
-
-    // Wallet, new: the re-typed words. The wallet opens only if all match.
-    walletCheck(answers) {
-      return run("opening the wallet", async () => {
-        const w = state.wallet;
-        if (!w || w.stage !== "check") throw new Error("the save check has not started");
-        const wrong = wrongWords(w.words, w.groups, answers);
-        w.wrong = wrong;
-        emit();
-        if (wrong.length > 0) return { ok: false, wrong };
-        const opened = await openWallet(w.words);
-        return { ok: true, address: opened.address };
-      });
-    },
-
-    // Wallet, restore: the 24 words of a seed saved before.
-    walletRestore(text) {
-      return run("restoring the wallet", async () => {
-        const opened = await openWallet(text);
-        return opened.address;
-      });
+    // Connects the wallet of `c`, a connector of wallet-connect.mjs, in
+    // place of any connected before. Returns its account's address.
+    walletConnect(c) {
+      return run("connecting the wallet", async () => (await connectWallet(c)).address);
     },
 
     walletRefresh() {
       return run("reading the wallet's balance", readBalance);
     },
 
-    // Drops the seed from memory.
-    walletClose() {
+    // Lets the connected wallet go; the next Vanish needs a wallet again.
+    walletDisconnect() {
       if (state.busy) throw new Error(`wait until "${state.busy}" is done`);
-      walletWords = null;
+      const c = connector;
+      connector = null;
       state.wallet = null;
       emit();
+      if (c) forget(c);
     },
 
     // Vanish, step 1: a new key of 24 words for `amountText` GHOST, shown
@@ -2048,7 +2039,7 @@ export function createFlow({
     // convenience beside that, never the only backup.
     vanishStart(amountText) {
       return run("creating a key", async () => {
-        if (!walletWords) throw new Error("open a wallet first: create one, or restore it from its 24 words");
+        if (!connector) throw new Error("connect a wallet first");
         const amount = parseGhost(amountText);
         if (amount === 0n) throw new Error("enter an amount above zero");
         const { key } = await prover.request("newKey");
@@ -2083,7 +2074,7 @@ export function createFlow({
         const v = state.vanish;
         const wrong = requireCheck(v, answers);
         if (wrong.length > 0) return { ok: false, wrong };
-        if (!walletWords) throw new Error("open a wallet first: create one, or restore it from its 24 words");
+        if (!connector) throw new Error("connect a wallet first");
         const chainId = quantity(await rpc.call("eth_chainId"));
         progress("building the commit");
         const sentAfter = await blockNumber();

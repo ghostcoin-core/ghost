@@ -6,7 +6,8 @@
 // reveal's proof with the real verifier before it accepts it, and records
 // every request so the test can check that no key word, seed word or secret
 // reached the endpoint. The commit is an account transaction (type 0x52)
-// signed by the app's own wallet, which the stand-in checks as the node does.
+// signed by the connected wallet (the tests' connector), which the stand-in
+// checks as the node does.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -25,7 +26,7 @@ import {
   createFlow,
 } from "../src/flow.mjs";
 import { DEFAULT_ENDPOINT } from "../src/rpc.mjs";
-import { TEST_WALLET_ADDRESS, TEST_WALLET_WORDS, loadModule, nodeProver, openTestWallet, webappDir } from "./support/env.mjs";
+import { TEST_WALLET_ADDRESS, loadModule, nodeProver, openTestWallet, webappDir } from "./support/env.mjs";
 import { COMMIT_ESTIMATE_GAS, PRIORITY_FEE, startFakeNode } from "./support/fake-node.mjs";
 
 const GHOST = 10n ** 18n;
@@ -85,35 +86,14 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
   try {
     // Strangers' coins before ours.
     node.foreignCommits(3);
-    // --- The wallet: a new seed, its save check, then the tests' funded seed ---
-    await assert.rejects(flow.vanishStart("1"), /open a wallet first/);
-    assert.equal(flow.state.vanish, null, "no key is made before a wallet is open");
-    const words = await flow.walletCreate();
-    assert.match(words, /^[a-z]+( [a-z]+){23}$/, "24 words");
-    assert.equal(flow.state.wallet.stage, "shown");
-    const wordPositions = flow.walletSaved();
-    assert.equal(wordPositions.length, 3);
-    for (const p of wordPositions) assert.ok(p >= 1 && p <= 24);
-    const seedWords = words.split(" ");
-    const badWords = wordPositions.map((p) => seedWords[p - 1]);
-    badWords[0] = badWords[0] === "zoo" ? "abandon" : "zoo";
-    assert.deepEqual(await flow.walletCheck(badWords), { ok: false, wrong: [wordPositions[0]] });
-    assert.equal(flow.state.wallet.stage, "check");
-    const created = await flow.walletCheck(wordPositions.map((p) => seedWords[p - 1].toUpperCase()));
-    assert.equal(created.ok, true);
-    assert.match(created.address, /^0x[0-9a-f]{40}$/);
-    assert.equal(flow.state.wallet.words, null, "the words leave the state once the wallet is open");
-    assert.equal(flow.state.wallet.balance, 0n);
-    flow.walletClose();
-    assert.equal(flow.state.wallet, null);
-    // A Phantom Key's digits never open a wallet.
-    await assert.rejects(flow.walletRestore("1234 5678 9012 3456 7890 1234 5678 9012 3456 7890 1234 5678"), /not digits/);
-    // The same words open the same account again.
-    assert.equal(await flow.walletRestore(`  ${words.replaceAll(" ", "\n")} `), created.address);
-    flow.walletClose();
+    // --- The wallet: connected, never created in the page ---
+    await assert.rejects(flow.vanishStart("1"), /connect a wallet first/);
+    assert.equal(flow.state.vanish, null, "no key is made before a wallet is connected");
     const address = await openTestWallet(flow, node);
     assert.equal(address, TEST_WALLET_ADDRESS);
+    assert.equal(flow.state.wallet.address, TEST_WALLET_ADDRESS);
     assert.equal(flow.state.wallet.balance, 100n * GHOST);
+    assert.deepEqual(Object.keys(flow.state.wallet).sort(), ["address", "balance", "id", "name"], "no seed or key in the state");
 
     // --- Vanish ---
     const key = await flow.vanishStart("1");
@@ -240,7 +220,6 @@ test("Vanish, a partial Summon and a Claim against the node stand-in", async () 
     }
     for (const r of node.requests) {
       assert.ok(!r.body.toLowerCase().includes(ourCommitment.slice(2)), `${r.method} named the coin's commitment`);
-      for (const w of TEST_WALLET_WORDS.split(" ").slice(0, 3)) assert.ok(!r.body.includes(`${w} `), `${r.method} held a seed word`);
     }
     // Tree data only ever in whole pages from page 0, as of a block hash.
     for (const r of node.requests.filter((x) => x.method === "ghost_getTreePage")) {

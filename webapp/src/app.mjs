@@ -7,6 +7,7 @@ import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, createFlow, normalKey, wrongWords
 import { downloadKeyImage } from "./keyimage.mjs";
 import { browserProver } from "./prover.mjs";
 import { DEFAULT_ENDPOINT } from "./rpc.mjs";
+import { injectedProvider, snapConnector } from "./wallet-connect.mjs";
 
 const $ = (id) => document.getElementById(id);
 
@@ -50,7 +51,12 @@ function vanishErrorText(err, step) {
   if (/^enter an amount|largest amount a coin can hold/.test(said)) return "Enter an amount of GHOST, for example 1.5.";
   if (/less than the amount/.test(said)) return "Your balance is too low for this amount and the network fee.";
   if (/the app signs/.test(said)) return "The network's fee is higher than the app pays right now. Try again later.";
-  if (/^open a wallet/.test(said)) return "Open your wallet first.";
+  if (/^connect a wallet/.test(said)) return "Connect your wallet first.";
+  if (/rejected in your wallet/.test(said)) return "You rejected the transaction in your wallet. Nothing was sent.";
+  if (/^the wallet was disconnected/.test(said)) return "The wallet was disconnected. Nothing was sent.";
+  if (/^the (wallet answered|signed transaction|wallet's transaction hash)/.test(said)) {
+    return "Your wallet's answer did not match the transaction. Nothing was sent.";
+  }
   if (/^wait until/.test(said)) return "Wait until the current step is done.";
   const v = flow.state.vanish;
   if (step === "send" && v && v.stage === "dropped") {
@@ -89,7 +95,7 @@ function vanishAct(step, run) {
 // the box, not typing), whether the reveal is being sent, the reveal record
 // from before it (so the steps tick only for this one), the amount sent,
 // the Done screen's figures and the card's one plain error line. The
-// reveal is paid to the open wallet's address only.
+// reveal is paid to the connected wallet's address only.
 let summonOpening = false;
 let summonLoud = false;
 let summonSending = false;
@@ -194,10 +200,9 @@ function renderSummon(state) {
   $("summon-note").textContent = summonNote(s);
   const pending = Boolean(s && s.lastReveal && s.lastReveal.stage === "sent");
   $("summon-refresh").hidden = !(coin && s.wait) && !pending;
-  const w = state.wallet;
-  const open = Boolean(w && w.stage === "open");
-  $("summon-submit").textContent = !coin ? "Paste a key" : open ? "Summon" : "Open wallet";
-  $("summon-submit").disabled = !coin || (open && Boolean(s.wait || pending));
+  const connected = Boolean(state.wallet);
+  $("summon-submit").textContent = !coin ? "Paste a key" : connected ? "Summon" : "Connect wallet";
+  $("summon-submit").disabled = !coin || (connected && Boolean(s.wait || pending));
 
   const step = screen === "waiting" ? summonStepOf(state) : 0;
   $("summon-waiting-amount").textContent = screen === "waiting" ? summonAmount : "";
@@ -237,7 +242,7 @@ function act(step) {
 }
 
 // The save check's inputs: one whole word for each position asked, of a
-// key's 24 words or of the wallet's seed.
+// key's 24 words.
 function checkInputs(container, positions, wrong) {
   if (container.dataset.positions !== positions.join(",")) {
     container.replaceChildren(
@@ -351,37 +356,62 @@ function describeCover(s) {
   };
 }
 
-// The wallet: new words and their save check, or the open account.
+// The wallet panel's own error line: a fixed sentence chosen by what failed,
+// never the exception's own text.
+let walletError = null;
+
+const SNAP_NOTE = "A quantum-safe Ghost account kept in MetaMask";
+const NO_METAMASK = "Install MetaMask to use this wallet, then reload this page";
+
+function walletErrorText(err, step) {
+  const said = String((err && err.message) || "");
+  if (/^wait until/.test(said)) return "Wait until the current step is done.";
+  if (step === "refresh") return "The balance could not be read. Check the node under Network.";
+  if (/MetaMask is not installed/.test(said)) return "MetaMask is not installed in this browser. Install MetaMask, then reload this page.";
+  if (/rejected in your wallet/.test(said)) return "You rejected the connection in your wallet.";
+  if (/cannot run MetaMask Snaps/.test(said)) return "This wallet cannot run the Ghost Snap. Use MetaMask.";
+  if (/did not install the Ghost Snap/.test(said)) return "The Ghost Snap was not installed. Try again.";
+  // Connected, but the balance could not be read.
+  if (flow.state.wallet) return "The balance could not be read. Check the node under Network.";
+  return "The wallet could not be connected. Try again.";
+}
+
+// Runs a wallet step from a user action; a failure shows as the panel's one
+// plain error line.
+function walletAct(step, run) {
+  return (event) => {
+    if (event) event.preventDefault();
+    errorOwner = "wallet";
+    walletError = null;
+    render(flow.state);
+    Promise.resolve()
+      .then(run)
+      .catch((err) => {
+        walletError = walletErrorText(err, step);
+        render(flow.state);
+      });
+  };
+}
+
+// The wallet: the list of wallets to connect while none is, or the
+// connected account. Only quantum-safe wallets are listed.
 function renderWallet(w) {
-  $("wallet-closed").hidden = Boolean(w);
-  const text = $("wallet-words-text");
-  const showing = Boolean(w && w.words && (w.stage === "shown" || w.stage === "check"));
-  $("wallet-words").hidden = !showing;
-  if (showing) {
-    if (text.textContent !== w.words) {
-      text.textContent = w.words;
-      text.classList.add("blurred");
-      $("wallet-show").textContent = "Show";
-    }
-  } else {
-    text.textContent = "";
-  }
-  $("wallet-saved").disabled = !w || w.stage !== "shown";
-  $("wallet-check").hidden = !w || w.stage !== "check";
-  if (w && w.stage === "check") checkInputs($("wallet-check-words"), w.groups, w.wrong);
-  else clearCheck($("wallet-check-words"));
-  const open = Boolean(w && w.stage === "open");
-  $("wallet-open").hidden = !open;
-  $("wallet-address").textContent = open ? w.address : "";
-  $("wallet-balance").textContent = open && w.balance !== null ? formatGhost(w.balance) : "?";
+  const connected = Boolean(w);
+  $("wallet-title").textContent = connected ? "Wallet" : "Connect a wallet";
+  $("wallet-connect").hidden = connected;
+  $("wallet-option-snap-note").textContent = injectedProvider(window) ? SNAP_NOTE : NO_METAMASK;
+  $("wallet-open").hidden = !connected;
+  $("wallet-address").textContent = connected ? w.address : "";
+  $("wallet-balance").textContent = connected && w.balance !== null ? formatGhost(w.balance) : "?";
+  $("wallet-error").textContent = walletError || "";
 
   // The top-right button and the Vanish tab's balance line.
-  $("wallet-button-text").textContent = open ? shortAddress(w.address) : "Open wallet";
-  $("wallet-button").title = open ? w.address : "";
-  const known = open && w.balance !== null;
+  $("wallet-button-text").textContent = connected ? shortAddress(w.address) : "Connect wallet";
+  $("wallet-button").title = connected ? w.address : "";
+  const known = connected && w.balance !== null;
   $("vanish-balance").textContent = known ? `${formatGhost(w.balance)} GHOST` : "—";
   $("vanish-max").disabled = !known;
-  $("vanish-submit").textContent = open ? "Vanish" : "Open wallet";
+  $("vanish-submit").textContent = connected ? "Vanish" : "Connect wallet";
 }
 
 // An address as the wallet button shows it: 0x3a…91c.
@@ -488,7 +518,7 @@ function render(state) {
   const p = state.progress;
   // A Vanish or Summon step speaks in the card: its waiting screen and its
   // error line.
-  const cardOwns = errorOwner === "vanish" || errorOwner === "summon";
+  const cardOwns = errorOwner === "vanish" || errorOwner === "summon" || errorOwner === "wallet";
   $("progress").textContent =
     vanishSending || summonOpening || summonSending
       ? ""
@@ -548,31 +578,25 @@ $("network-form").addEventListener(
     $("endpoint").value = flow.state.endpoint;
   }),
 );
-$("wallet-create").addEventListener("click", act(() => flow.walletCreate()));
-$("wallet-show").addEventListener("click", () => {
-  const hidden = $("wallet-words-text").classList.toggle("blurred");
-  $("wallet-show").textContent = hidden ? "Show" : "Hide";
-});
-$("wallet-saved").addEventListener("click", act(() => flow.walletSaved()));
-$("wallet-check").addEventListener("submit", act(() => flow.walletCheck(answers($("wallet-check-words")))));
-$("wallet-restore-form").addEventListener(
-  "submit",
-  act(async () => {
-    // The words leave the field once the wallet is open; a typo stays there
-    // to be corrected.
-    const field = $("wallet-restore-words");
-    const text = field.value;
-    field.value = "";
-    try {
-      await flow.walletRestore(text);
-    } catch (err) {
-      if (!flow.state.wallet) field.value = text;
-      throw err;
-    }
+// MetaMask with the Ghost Snap: MetaMask installs the Snap the first time
+// and the Snap gives the Ghost account. The provider is read at the click,
+// so a MetaMask that arrived after the page loaded is found.
+$("wallet-option-snap").addEventListener(
+  "click",
+  walletAct("connect", async () => {
+    const provider = injectedProvider(window);
+    if (!provider) throw new Error("MetaMask is not installed");
+    await flow.walletConnect(snapConnector(provider));
   }),
 );
-$("wallet-refresh").addEventListener("click", act(() => flow.walletRefresh()));
-$("wallet-close").addEventListener("click", act(() => flow.walletClose()));
+$("wallet-refresh").addEventListener(
+  "click",
+  walletAct("refresh", () => flow.walletRefresh()),
+);
+$("wallet-disconnect").addEventListener(
+  "click",
+  walletAct("disconnect", () => flow.walletDisconnect()),
+);
 
 // The key leaves the page's memory: the flow drops the Vanish step and the
 // grid is emptied. On Done, on leaving the Vanish tab and on pagehide; before
@@ -585,12 +609,12 @@ function forgetVanish() {
   flow.vanishCancel();
 }
 
-// The Vanish button opens the wallet panel while no wallet is open.
+// The Vanish button opens the wallet list while no wallet is connected.
 $("vanish-form").addEventListener(
   "submit",
   vanishAct("start", async () => {
     const w = flow.state.wallet;
-    if (!w || w.stage !== "open") return openPanel("wallet-panel");
+    if (!w) return openPanel("wallet-panel");
     const amount = parseGhost($("vanish-amount").value);
     if (w.balance !== null && amount > maxVanish(w.balance)) {
       throw new Error("the wallet holds less than the amount and the most the gas can cost");
@@ -604,7 +628,7 @@ $("vanish-form").addEventListener(
 );
 $("vanish-max").addEventListener("click", () => {
   const w = flow.state.wallet;
-  if (w && w.stage === "open" && w.balance !== null) $("vanish-amount").value = formatGhost(maxVanish(w.balance));
+  if (w && w.balance !== null) $("vanish-amount").value = formatGhost(maxVanish(w.balance));
 });
 // Copy and Download take the 24 words; both are conveniences beside writing
 // them down.
@@ -737,15 +761,14 @@ function summonDoneOf(r) {
   return { amount: formatGhost(r.out), address: shortAddress(r.recipient), rest: restOf(flow.state.summon) };
 }
 
-// Summon pays the open wallet's address only; with no wallet open the main
-// button opens the wallet panel. An amount that does not parse, or is more
-// than the key can send, is refused here, never rounded.
+// Summon pays the connected wallet's address only; with no wallet connected
+// the main button opens the wallet list. An amount that does not parse, or
+// is more than the key can send, is refused here, never rounded.
 $("summon-form").addEventListener("submit", async (event) => {
   if (event) event.preventDefault();
   const s = flow.state.summon;
   if (!s || !s.current || summonOpening || summonSending) return;
-  const w = flow.state.wallet;
-  if (!w || w.stage !== "open") {
+  if (!flow.state.wallet) {
     openPanel("wallet-panel");
     return;
   }

@@ -76,7 +76,7 @@ import { concat, fromHex, toHex, toQuantity } from "../../src/bytes.mjs";
 import { ACCOUNT_EXTRA_GAS, DEFAULT_COMMIT_ENTRY, STALE_ROOT_DEPTH, createFlow } from "../../src/flow.mjs";
 import { startBlockPacer } from "../support/block-pacer.mjs";
 import { sendPaced, waitPastBlock } from "./fillers.mjs";
-import { TEST_WALLET_ADDRESS, TEST_WALLET_WORDS, loadModule, nodeProver } from "../support/env.mjs";
+import { TEST_WALLET_ADDRESS, loadModule, nodeProver, testConnector, testSign } from "../support/env.mjs";
 
 const GETH = process.env.GHOST_NODE_GETH;
 const NETNS = process.env.GHOST_RECOVERY_NETNS;
@@ -438,9 +438,7 @@ if (!GETH || !NETNS) {
           const data = concat([Uint8Array.of(0x00, 0x02), randomBytes(32), randomBytes(SALT_BYTES), randomBytes(NOTE_BYTES)]);
           const call = { from: TEST_WALLET_ADDRESS, to: DEFAULT_COMMIT_ENTRY, value: toQuantity(value), data: toHex(data) };
           gasLimit ??= BigInt(await A.rpc("eth_estimateGas", [call])) + ACCOUNT_EXTRA_GAS;
-          const signed = ghost.walletSign({
-            words: TEST_WALLET_WORDS,
-            index: 0,
+          const signed = await testSign({
             chainId: NETWORK_ID,
             genesis,
             nonce: first + BigInt(i),
@@ -450,7 +448,6 @@ if (!GETH || !NETNS) {
             to: fromHex(DEFAULT_COMMIT_ENTRY, 20),
             value,
             data,
-            seed: randomBytes(32),
           });
           return { raw: toHex(signed.envelope), hash: toHex(signed.txHash) };
         };
@@ -491,7 +488,7 @@ if (!GETH || !NETNS) {
 
       // --- The original device makes the commitments ---
       const original = await device(A);
-      assert.equal(await original.walletRestore(TEST_WALLET_WORDS), TEST_WALLET_ADDRESS);
+      assert.equal(await original.walletConnect(testConnector()), TEST_WALLET_ADDRESS);
       async function vanish(amount) {
         const key = await original.vanishStart(amount);
         const sent = await original.vanishCheck(answersFor(key, original.vanishSaved()));

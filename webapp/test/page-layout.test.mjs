@@ -108,7 +108,7 @@ test("the Vanish panel holds the amount box, the balance line and the main butto
   assert.match(panel, /Balance: <span id="vanish-balance">—<\/span>/);
   assert.ok(panel.indexOf('id="vanish-balance"') < panel.indexOf('id="vanish-max"'));
   assert.match(element("vanish-max"), />Max</);
-  assert.match(element("vanish-submit"), /type="submit"[^>]*>Open wallet</);
+  assert.match(element("vanish-submit"), /type="submit"[^>]*>Connect wallet</);
   for (const id of ["vanish-key", "vanish-check", "vanish-status", "vanish-recheck"]) assert.ok(panel.includes(`id="${id}"`), id);
 });
 
@@ -133,21 +133,59 @@ test("the Summon panel holds the paste box, the amount box, the waiting and Done
   assert.doesNotMatch(panel, /id="reveal-/);
 });
 
-test("the wallet button opens a panel with the create and restore flows", () => {
-  assert.match(element("wallet-button"), /Open wallet/);
+test("the Connect wallet button top right opens a dialog listing the quantum-safe wallets", () => {
+  assert.match(element("wallet-button"), /Connect wallet/);
   assert.match(element("wallet-button"), /<use href="#icon-wallet">/);
   assert.match(tag("wallet-button"), /aria-controls="wallet-panel"/);
   assert.match(tag("wallet-panel"), /\bhidden\b/);
+  assert.match(tag("wallet-panel"), /role="dialog"/);
   const panel = element("wallet-panel");
-  for (const id of ["wallet-create", "wallet-restore-form", "wallet-words", "wallet-check", "wallet-open", "wallet-close"]) {
+  assert.match(element("wallet-title"), />Connect a wallet</);
+  // One wallet listed: MetaMask with the Ghost Snap, as a button in a list.
+  const list = element("wallet-connect");
+  const options = [...list.matchAll(/<button\b[^>]*class="wallet-option"[^>]*>/g)];
+  assert.equal(options.length, 1, "one wallet in the list");
+  assert.match(element("wallet-option-snap"), /<span id="wallet-option-snap-name"[^>]*>MetaMask \(Ghost Snap\)<\/span>/);
+  assert.match(list, /<ul class="wallet-list"/);
+  assert.match(list, /quantum-safe/);
+  assert.match(list, /never sees a seed or a key/);
+  // Connected: the full address, the balance, Refresh and Disconnect.
+  for (const id of ["wallet-open", "wallet-address", "wallet-balance", "wallet-refresh", "wallet-disconnect", "wallet-error"]) {
     assert.ok(panel.includes(`id="${id}"`), id);
   }
-  assert.match(element("wallet-close"), />Close wallet</);
+  assert.match(tag("wallet-open"), /\bhidden\b/);
+  assert.match(element("wallet-refresh"), />Refresh</);
+  assert.match(element("wallet-disconnect"), />Disconnect</);
   // The brand top left, the wallet button after it.
   const top = /<header class="top">[\s\S]*?<\/header>/.exec(html);
   assert.ok(top, "a top bar");
   assert.ok(top[0].indexOf("Ghost</span>") < top[0].indexOf('id="wallet-button"'));
   assert.ok(top[0].includes('id="wallet-panel"'));
+  assert.match(css, /\.wallet-option\s*\{/);
+});
+
+test("the page has no create or restore wallet flow and holds no seed", () => {
+  const source = readFileSync(new URL("../src/app.mjs", import.meta.url), "utf8");
+  const flow = readFileSync(new URL("../src/flow.mjs", import.meta.url), "utf8");
+  const panel = element("wallet-panel");
+  // No text box in the wallet dialog: nothing to type words into.
+  assert.doesNotMatch(panel, /<(textarea|input|form)\b/);
+  assert.doesNotMatch(panel, /24 words|seed words|save check|restore/i);
+  for (const id of ["wallet-closed", "wallet-words", "wallet-check", "wallet-show", "wallet-saved", "wallet-close"]) {
+    assert.ok(!ids.includes(id), `no element ${id}`);
+  }
+  // The worker's wallet requests are not used by the page.
+  for (const op of ["walletNew", "walletAccount", "walletSign"]) {
+    assert.ok(!flow.includes(`"${op}"`), `flow.mjs asks the worker for ${op}`);
+    assert.ok(!source.includes(op), `app.mjs names ${op}`);
+  }
+  assert.match(source, /flow\.walletConnect\(snapConnector\(provider\)\)/);
+  assert.match(source, /flow\.walletDisconnect\(\)/);
+  // The connection is not remembered: no browser storage and no cookie.
+  const stores = [["local", "Storage"].join(""), ["session", "Storage"].join(""), "document.cookie", "indexedDB"];
+  for (const text of [source, flow, readFileSync(new URL("../src/wallet-connect.mjs", import.meta.url), "utf8")]) {
+    for (const store of stores) assert.ok(!text.includes(store), store);
+  }
 });
 
 test("the network settings and privacy wording sit in Network and About panels from the footer", () => {

@@ -11,6 +11,7 @@ import { test } from "node:test";
 
 import { formatGhost, parseGhost } from "../src/chain.mjs";
 import { wrongWords } from "../src/flow.mjs";
+import { injectedProvider, snapConnector } from "../src/wallet-connect.mjs";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const source = readFileSync(new URL("../src/app.mjs", import.meta.url), "utf8");
@@ -161,10 +162,8 @@ function startPage({ refuse = null } = {}) {
       commitEntry: "0x67686f7374000000000000000000000000000005",
       chainRefused: null,
       wallet: {
-        stage: "open",
-        words: null,
-        groups: null,
-        wrong: [],
+        id: "test-wallet",
+        name: "Test wallet",
         address: "0x3a00000000000000000000000000000000091c",
         balance: 5n * 10n ** 18n,
       },
@@ -224,7 +223,8 @@ function startPage({ refuse = null } = {}) {
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
   const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
-  new Function(...names, ...more, body)(
+  const wallets = ["injectedProvider", "snapConnector"];
+  new Function(...names, ...more, ...wallets, body)(
     document,
     window,
     { clipboard: { writeText: async () => {} } },
@@ -239,6 +239,8 @@ function startPage({ refuse = null } = {}) {
     "http://127.0.0.1:8545",
     () => ({}),
     async () => {},
+    injectedProvider,
+    snapConnector,
   );
   return { $, log, visible, window };
 }
@@ -435,4 +437,12 @@ test("an error is one fixed plain line in the card, never the exception's text",
   assert.equal(refused.$("vanish-error").textContent, "The network refused the commit. Try again.");
   assert.equal(refused.$("error").textContent, "");
   for (const id of tags.keys()) assert.ok(!refused.$(id).textContent.includes(raw), id);
+
+  // Turned down in the wallet: back to the check, where Vanish asks again.
+  const rejected = startPage({ refuse: "the transaction was rejected in your wallet; nothing was sent" });
+  await toCheck(rejected);
+  await submitCheck(rejected, right);
+  assert.deepEqual(rejected.visible(), ["check"]);
+  assert.equal(rejected.$("vanish-error").textContent, "You rejected the transaction in your wallet. Nothing was sent.");
+  assert.equal(rejected.log.sent, 0);
 });

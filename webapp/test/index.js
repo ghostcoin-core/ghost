@@ -12,6 +12,7 @@ import "./tree-shape.test.mjs";
 import "./earlier-trees.test.mjs";
 import "./stand-in.test.mjs";
 import "./flow.test.mjs";
+import "./wallet-connect.test.mjs";
 import "./sent-and-done.test.mjs";
 import "./block-pacer.test.mjs";
 import "./page-layout.test.mjs";

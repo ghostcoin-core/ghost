@@ -3,9 +3,10 @@
 Status: first version, 2026-10-18. Experimental and unaudited. How to build,
 check and run it is in [webapp/README.md](../webapp/README.md).
 
-The web app is the first product on the client library: a user opens the
-app's own quantum-safe wallet and uses GHOST privately, with Phantom Keys of
-24 words over salted coins (see Phantom Keys). It does three things.
+The web app is the first product on the client library: a user connects a
+quantum-safe wallet and uses GHOST privately, with Phantom Keys of 24 words
+over salted coins (see Phantom Keys). The page never creates, restores or
+sees a wallet's seed or key (see Wallet). It does three things.
 
 - **Vanish.** It creates a new Phantom Key of 24 words and shows them, in a
   numbered grid, for the user to write down (the flow can also write the
@@ -15,16 +16,16 @@ app's own quantum-safe wallet and uses GHOST privately, with Phantom Keys of
   before the commit is sent, the **save check** asks for three of the key's
   24 words, chosen at random with `crypto.getRandomValues`, shown by
   position and asked in order, whichever view is shown. A word is compared
-  in any case and only whole; the commit is signed and sent only when all
-  three match, and a wrong word sends nothing. Once the node has the
+  in any case and only whole; the connected wallet is asked to sign the
+  commit only when all three match, and a wrong word sends nothing. Once the node has the
   commit, the app forgets the key and its digit view.
 - **Summon.** The user types any valid key: its 24 words, or its digits.
   Keys issued before the words, twelve (or twenty-four) groups of digits,
   still open, restore, reveal and claim. The app finds the key's coin on the
-  chain and reveals any available amount to the open wallet's address; the
-  rest, minus the fee, stays under the same key as the next commitment. (The
-  flow controller's `summonReveal` still takes any 20-byte recipient, which
-  the tests use; only the page pays the open wallet alone.)
+  chain and reveals any available amount to the connected wallet's address;
+  the rest, minus the fee, stays under the same key as the next commitment.
+  (The flow controller's `summonReveal` still takes any 20-byte recipient,
+  which the tests use; only the page pays the connected wallet alone.)
 - **Claim.** The app creates a new key of 24 words, shows it and runs the
   same save check on it, then moves the coin's value minus the fee to the
   new key. A
@@ -65,21 +66,26 @@ backgrounds; white on the gradient's light end is 4.1:1, so the button
 text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
 
 - **Top bar.** The ghost icon and "Ghost" top left; the wallet button top
-  right. With no wallet open the button reads "Open wallet" and opens a
-  small panel holding the create-wallet flow (the 24 words, then their save
-  check) and the restore-wallet flow. With a wallet open the button shows
-  the short address (`0x3a…91c`), and the panel the full address, the
-  balance, Refresh and "Close wallet".
+  right. With no wallet connected the button reads "Connect wallet" and
+  opens a small dialog, "Connect a wallet", listing the wallets the page can
+  connect, one row each with its name and a short line: today one,
+  **MetaMask (Ghost Snap)**. With no MetaMask in the browser
+  (`window.ethereum`) its line says to install MetaMask. Only wallets that
+  hold a quantum-safe Ghost account key are listed (see Wallet). With a
+  wallet connected the button shows the short address (`0x3a…91c`), and the
+  popover the full address, the balance, Refresh and "Disconnect". A failed
+  connection is one plain line in the dialog ("You rejected the connection
+  in your wallet.", "MetaMask is not installed in this browser. …").
 - **The card.** One centered card, about 420px wide, with two filing-folder
   tabs, **Vanish** and **Summon** (a tab list: click, or the arrow keys,
   Home and End). The selected tab joins the card; the other sits behind it
   in a darker shade.
 - **Vanish tab.** One rounded amount box: a large input (`0.00`) with the
   ghost icon and "GHOST" inside it on the right. Under it, right-aligned:
-  `Balance:` and the open wallet's balance (`—` with no wallet open), and
-  Max, which fills in the balance less the most the commit's gas can cost
-  (0.01 GHOST). The main button reads "Vanish", or "Open wallet" with no
-  wallet open, when it opens the wallet panel instead. Vanish runs the
+  `Balance:` and the connected wallet's balance (`—` with none connected),
+  and Max, which fills in the balance less the most the commit's gas can
+  cost (0.01 GHOST). The main button reads "Vanish", or "Connect wallet"
+  with no wallet connected, when it opens the wallet list instead. Vanish runs the
   flow above in three screens inside the card, with the Vanish tab kept in
   front:
   1. **Save your Phantom Key.** "These 24 words are the only way to summon
@@ -92,7 +98,10 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
      shows "Those words don't match your key. Check what you saved and try
      again." and sends nothing. "Show key again" goes back to the grid. The
      main button, "Vanish *amount* GHOST", is the only control that sends
-     the commit, from the open wallet. From the moment the three words
+     the commit: the connected wallet asks the user to approve it, and the
+     page sends what the wallet signed. Turned down in the wallet, nothing
+     is sent ("You rejected the transaction in your wallet. Nothing was
+     sent.") and the check screen stays. From the moment the three words
      match until the flow's check returns, the card shows a thin moving bar
      and one short line instead of the screen.
   3. **Done**, once the check returns with the commit in a block: the ghost
@@ -115,8 +124,8 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
   for its coin and shows an amount box like Vanish's (`0.00`, the ghost icon
   and "GHOST"), with `In this key:` and the coin's amount and Max (the
   amount less the network fee) under it, right-aligned. The main button
-  reads "Summon", or "Open wallet" with no wallet open, when it opens the
-  wallet panel. Summon pays only the open wallet's address
+  reads "Summon", or "Connect wallet" with no wallet connected, when it
+  opens the wallet list. Summon pays only the connected wallet's address
   (`flow.state.wallet.address`); the page has no payout address field. A
   coin the tree-state rule holds back (see Summon and Claim) shows a plain
   line and "Check again" instead of a Summon it would refuse.
@@ -444,29 +453,48 @@ is tried on any note:
 
 ## Wallet
 
-The wallet is built in (spec 09, section 9); no browser wallet and no
-elliptic-curve key is used. Its seed is 32 bytes from
-`crypto.getRandomValues`, shown as 24 words of the BIP-39 English list (the
-256 bits and an 8-bit SHA-256 checksum; no PBKDF2 and no passphrase). A new
-wallet shows its words (blurred until asked) and opens only after the same
-save check as a key, on three of the 24 words. A saved wallet is restored by
-typing its words. The words are kept in the flow controller's memory while
-the wallet is open, never in its rendered state, browser storage, a file or a
-server, and are dropped when it is closed. Digits are refused as a seed. The
-seed's words and a Phantom Key's words come from the same list, with checks
-of their own, and derive nothing in common: each derives its values under
-its own tags, so a seed typed as a key finds no coin of the wallet's, and a
-key typed as a seed opens no account of the key's.
-
-The account is index 0 of the seed:
+The wallet is connected, not built in (decision of 2026-10-24): the page
+has no create or restore flow and never sees a seed or an account key.
+Ghost accounts are quantum-safe from genesis: the account key is ML-DSA-44
+(spec 09, section 9) and the node refuses every elliptic-curve transaction,
+so a wallet that signs only with an elliptic curve cannot sign a Ghost
+transaction and the page never offers one. "Connect wallet" lists only
+wallets that hold a Ghost account key; today that is MetaMask with the
+Ghost Snap, a MetaMask Snap (its own package, `npm:@ghostcoin/ghost-snap`)
+that creates and keeps the Ghost account key inside MetaMask and signs the
+account's transactions there once the user approves them. The address is
+the account's as spec 09 gives it:
 
 ```text
-key_seed = X("ghost/wallet-account/v1", 32, seed, 0x0001, 0 as 4 bytes)
-(sk, pk) = ML-DSA-44.KeyGen_internal(key_seed)
 address  = first 20 bytes of K("ghost/account-address/v1", 0x0001, pk)
 ```
 
-The page shows the address and its balance. The commit is an account
+`webapp/src/wallet-connect.mjs` holds the connector interface and the Snap
+connector. A connector is `{ id, name, connect() -> { address },
+signTransaction(fields) -> { sender, txHash, envelope }, disconnect() }`,
+where `fields` is `{ chainId, genesis, nonce, maxPriorityFeePerGas,
+maxFeePerGas, gasLimit, to, value, data }` (bigints and byte arrays) and the
+answer is byte arrays. The flow controller takes one with
+`flow.walletConnect(connector)` and lets it go with `flow.walletDisconnect()`;
+`flow.state.wallet` is `{ id, name, address, balance }` and nothing else.
+
+The Snap connector talks to MetaMask's EIP-1193 provider, `window.ethereum`,
+read when the user picks the wallet, and calls exactly two of its methods:
+
+| Request | Parameters | Answer |
+|---|---|---|
+| `wallet_requestSnaps` | `{ "npm:@ghostcoin/ghost-snap": {} }` | The installed Snap; MetaMask asks the user the first time |
+| `wallet_invokeSnap`, `ghost_getAccount` | none | `{ address, publicKey }`, 0x hex |
+| `wallet_invokeSnap`, `ghost_signTransaction` | `{ chainId, genesisHash, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data }`, 0x hex (quantities without leading zeros, `to` null for a contract creation) | `{ sender, txHash, envelope }`, 0x hex |
+
+It asks for no account of MetaMask's own and calls no other signing
+method. A request the user turns down (EIP-1193 code 4001) becomes "the
+transaction was rejected in your wallet; nothing was sent" (or the
+connection); a provider without Snaps (code -32601) says to install
+MetaMask; an answer that is not the hex the protocol names is refused. The
+connection is not remembered: nothing goes to browser storage or a cookie,
+and after a reload the user connects again. The page shows the address and
+its balance, read from the endpoint. The commit is an account
 transaction, type `0x52` in ghost-node (`docs/account-transactions.md` there;
 spec 09 proposes `0x51`, which is the node's data reveal), to the commit
 entry address, whose value is the amount and whose data is the commit
@@ -489,10 +517,11 @@ version 1 or 206 bytes of version 2: N bytes`).
 `webapp/test/vectors/commit-payload.json` holds a version 1 payload, built
 from spec 01, vector coin-commit, for the coins made before the salt.
 
-The worker signs it with the client library (`client/src/account.rs`,
-RustCrypto's `ml-dsa` 0.1.1): hedged ML-DSA-44 in pure mode with the context
+The connected wallet signs it, as the client library does
+(`client/src/account.rs`): ML-DSA-44 in pure mode with the context
 `ghost/tx/v1`, over `K("ghost/account-tx/v1", 0x52, genesis_hash,
-keccak256(unsigned))`. The genesis hash is the one this build's table holds
+keccak256(unsigned))`; the user approves it in the wallet first. The page
+builds the fields it asks the wallet to sign. The genesis hash is the one this build's table holds
 for the network (see Headers), and the base fee is read from the tip the
 page's header chain adopted. The nonce is `eth_getTransactionCount` of the
 pending block, the priority fee `eth_maxPriorityFeePerGas` held at 2 gwei at
@@ -502,13 +531,16 @@ scheme, key and signature bytes and the check. Those answers come from the
 endpoint, so the app bounds what they can make it sign: it refuses a gas
 limit above 500,000 and a commit whose gas could cost more than 0.01 GHOST
 (`maxCommitFee`, a setting of the flow controller). A commit the balance
-cannot pay for is not signed either. When `eth_sendRawTransaction` answers the commit with an error, the
+cannot pay for is not sent to the wallet either. The wallet's answer is sent
+only if its sender is the connected address and its transaction hash is
+`keccak256` of its envelope; the endpoint must then answer with that same
+hash. When `eth_sendRawTransaction` answers the commit with an error, the
 app asks `eth_getTransactionByHash` and counts the commit as sent only if the
 node holds it: ghost-node at the pinned commit takes a type `0x52`
 transaction into its pool and still answers `transaction type not supported`,
 and its JSON shows such a transaction's `from` as the zero address until its
 RPC derives it from the public key. A reveal is a native transaction with no account, so Summon and
-Claim sign nothing with the wallet. The page pays a Summon to the open wallet's address; the flow
+Claim sign nothing with the wallet. The page pays a Summon to the connected wallet's address; the flow
 controller's `summonReveal` still pays any 20-byte address it is given.
 
 The commit entry address defaults to the internal network's coin commit
@@ -883,8 +915,12 @@ app makes no data commitments.
   read as text. Every id `app.mjs` wires is in the page, once; the Vanish
   and Summon tabs are a tab list with Vanish selected; the Vanish panel
   holds the amount box (`0.00`, the ghost icon and GHOST inside it), the
-  balance line reading `Balance: —` and Max, and the main button; the
-  wallet button opens a panel with the create and restore flows; the
+  balance line reading `Balance: —` and Max, and the main button reading
+  "Connect wallet"; the Connect wallet button top right opens a dialog
+  listing one wallet, MetaMask (Ghost Snap), and the connected view holds
+  the address, balance, Refresh and Disconnect; the wallet dialog has no
+  text box, no create or restore flow, and no code of the page asks the
+  worker for a wallet or uses browser storage; the
   Network and About panels are reached from the footer; Claim sits in a
   hidden container; the icons are inline SVG with no namespace attribute;
   the CSP keeps `default-src 'none'` and adds `font-src 'self'`; no
@@ -919,11 +955,29 @@ app makes no data commitments.
   or wrong key typed shows no error until the box is left, and then a plain
   line naming a position at most; an amount that does not parse, or more
   than the key can send, is flagged and sends nothing; the reveal goes to
-  the open wallet's address, with the three steps ticking off from the
+  the connected wallet's address, with the three steps ticking off from the
   flow's progress; Done shows the rest, then "This key is now empty." after
-  the rest is summoned; with no wallet open the button opens the wallet
-  panel; Done, the switch to Vanish and `pagehide` empty the box and call
+  the rest is summoned; with no wallet connected the button reads "Connect
+  wallet" and opens the wallet list; the list says to install MetaMask
+  without `window.ethereum`, connects through the Snap's two requests with
+  it, then shows the short address, the full address and the balance, and
+  Disconnect lets it go; a rejection in the wallet is a plain line; Done,
+  the switch to Vanish and `pagehide` empty the box and call
   `summonClose`; a failed reveal is a fixed plain line.
+- `wallet-connect.test.mjs`: the Ghost Snap connector against a stand-in
+  MetaMask, with nothing built, then the flow with a connected wallet
+  against the node stand-in. Connect asks `wallet_requestSnaps` for the
+  Snap and `ghost_getAccount`, and nothing else; signing sends every field
+  as 0x hex and reads the answer as bytes; a rejection (code 4001) is a
+  clear error at connect and at signing; answers that are not the
+  protocol's hex are refused; with no MetaMask it says to install it. A
+  Vanish through the Snap, with the tests' account signing behind it, is
+  first rejected in the wallet (nothing is sent and the check stays), then
+  approved and sent from the connected account; an answer from another
+  account, with a hash that is not its envelope's, or not bytes, is never
+  sent; Disconnect lets the wallet go and Vanish then needs one again. The
+  tests' wallet is a connector in `test/support/env.mjs`, the one place
+  that holds the tests' seed words and asks the worker's `walletSign`.
 
 The key image download, drawn on a canvas in the page, and Claim's
 digit-view button are not covered by the headless tests; the flow's digit
@@ -936,10 +990,10 @@ browser.
 the release `geth` named by `GHOST_NODE_GETH` as a one-node internal network
 (network 6777971, mining, the internal network's genesis, JSON-RPC
 `eth,net,web3,ghost` over HTTP on a port the system picks) and runs Vanish, a
-partial Summon and a Claim with the real prover. The wallet is restored from
-the tests' seed words; its account is the miner's etherbase, so block rewards
-fund it, and the commit and the strangers' commits are account transactions
-it signs. The keys are 24 words, and the save checks are answered with
+partial Summon and a Claim with the real prover. The tests' wallet connector
+is connected as the page connects the Ghost Snap; its account is the
+miner's etherbase, so block rewards fund it, and the commit and the
+strangers' commits are account transactions it signs. The keys are 24 words, and the save checks are answered with
 words. It checks on chain that the commit is type `0x52` from the wallet's
 address, the commit's 206 bytes of version `0x0002` and its leaf, the salt
 the node serves back beside that leaf (and none beside the remainder's),
