@@ -112,7 +112,7 @@ test("the Vanish panel holds the amount box, the balance line and the main butto
   for (const id of ["vanish-key", "vanish-check", "vanish-status", "vanish-recheck"]) assert.ok(panel.includes(`id="${id}"`), id);
 });
 
-test("the Summon panel holds the paste box, the amount box, the waiting and Done screens", () => {
+test("the Summon panel holds the paste box, the amount box, the confirm, waiting and Done screens", () => {
   const panel = element("panel-summon");
   for (const id of [
     "summon-form",
@@ -121,6 +121,10 @@ test("the Summon panel holds the paste box, the amount box, the waiting and Done
     "summon-in-key",
     "summon-max",
     "summon-submit",
+    "summon-confirm",
+    "summon-confirm-text",
+    "summon-confirm-button",
+    "summon-cancel",
     "summon-waiting",
     "summon-done",
     "summon-done-button",
@@ -129,6 +133,13 @@ test("the Summon panel holds the paste box, the amount box, the waiting and Done
     assert.ok(panel.includes(`id="${id}"`), id);
   }
   assert.match(element("summon-submit"), /type="submit"[^>]*>Paste a key</);
+  // The confirm screen starts hidden, between the form and the waiting
+  // screen, with one primary button.
+  assert.match(tag("summon-confirm"), /\bhidden\b/);
+  assert.ok(panel.indexOf('id="summon-form"') < panel.indexOf('id="summon-confirm"'));
+  assert.ok(panel.indexOf('id="summon-confirm"') < panel.indexOf('id="summon-waiting"'));
+  assert.equal(element("summon-confirm").match(/class="primary/g).length, 1);
+  assert.match(css, /\.confirm\s*\{/);
   // No payout address field and no reveal form of their own.
   assert.doesNotMatch(panel, /id="reveal-/);
 });

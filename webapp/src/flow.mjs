@@ -55,6 +55,7 @@ import {
 } from "./chain.mjs";
 import { NETWORKS, networkOf, readHeader, rlpList, rlpString } from "./header.mjs";
 import { DEFAULT_ENDPOINT, SERVER_ERROR, createRpc } from "./rpc.mjs";
+import { WalletRejected, WalletSignFailed, isWalletRejection } from "./wallet-connect.mjs";
 
 // The coin commit entry address of the internal network ("ghost" in ASCII,
 // then 5; ghost-node params/ghost/privaccounts.go). It stays a setting next
@@ -104,6 +105,9 @@ export const ACCOUNT_EXTRA_GAS = 62_744n;
 export const COMMIT_GAS_CAP = 500_000n;
 export const PRIORITY_FEE_CAP = 2_000_000_000n;
 export const MAX_COMMIT_FEE = 10n ** 16n;
+// The progress while the connected wallet shows the commit for the user to
+// approve; the page's waiting screen reads it.
+export const WALLET_APPROVAL = "approve the Vanish in your wallet";
 // Times a reveal is proved again when the fee window changes meanwhile.
 const FEE_ATTEMPTS = 3;
 // The node's refusal of a reveal it could not check while new blocks kept
@@ -1812,18 +1816,26 @@ export function createFlow({
     if (balance < value + gasLimit * maxFee) {
       throw new Error(`the wallet holds ${formatGhost(balance)} GHOST, less than the amount and the most the gas can cost`);
     }
-    progress("waiting for your wallet to approve the transaction");
-    const signed = await signer.signTransaction({
-      chainId,
-      genesis,
-      nonce,
-      maxPriorityFeePerGas: priority,
-      maxFeePerGas: maxFee,
-      gasLimit,
-      to: fromHex(to, 20),
-      value,
-      data,
-    });
+    progress(WALLET_APPROVAL);
+    let signed;
+    try {
+      signed = await signer.signTransaction({
+        chainId,
+        genesis,
+        nonce,
+        maxPriorityFeePerGas: priority,
+        maxFeePerGas: maxFee,
+        gasLimit,
+        to: fromHex(to, 20),
+        value,
+        data,
+      });
+    } catch (err) {
+      // Turned down in the wallet, or the wallet failed to sign: either way
+      // nothing is sent.
+      if (isWalletRejection(err)) throw new WalletRejected("the transaction");
+      throw new WalletSignFailed(err);
+    }
     if (connector !== signer || !state.wallet || state.wallet.address !== from) {
       throw new Error("the wallet was disconnected before the transaction was sent; nothing was sent");
     }
@@ -1835,6 +1847,7 @@ export function createFlow({
     if (toHex(keccak256(signed.envelope)) !== txHash) {
       throw new Error("the wallet's transaction hash is not the hash of its envelope; nothing was sent");
     }
+    progress("sending the commit");
     let answered;
     try {
       answered = await rpc.call("eth_sendRawTransaction", [toHex(signed.envelope)]);
@@ -2068,7 +2081,10 @@ export function createFlow({
       return saveCheckStep(state.vanish);
     },
 
-    // Vanish, step 3: the re-typed words. Nothing is sent unless all match.
+    // Vanish, step 3: the re-typed words. Nothing is sent unless all match
+    // and the wallet approves the commit. Turned down there (WalletRejected)
+    // or failing to sign (WalletSignFailed), nothing is sent and the step
+    // stays as it was; the page drops the key after a rejection.
     vanishCheck(answers) {
       return run("sending the commit", async () => {
         const v = state.vanish;

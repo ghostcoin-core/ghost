@@ -152,6 +152,12 @@
             <p><button id="summon-refresh" class="link" type="button" hidden>Check again</button></p>
             <button id="summon-submit" class="primary wide big" type="submit" disabled>Paste a key</button>
           </form>
+          <div id="summon-confirm" class="screen confirm" hidden>
+            <h2><span id="summon-confirm-text"></span></h2>
+            <p>The coin goes to your connected wallet. Nothing is proved or sent until you confirm.</p>
+            <button id="summon-confirm-button" class="primary wide big" type="button">Confirm Summon</button>
+            <button id="summon-cancel" class="wide" type="button">Cancel</button>
+          </div>
           <div id="summon-waiting" class="screen waiting" hidden>
             <h2>Summoning <span id="summon-waiting-amount"></span> GHOST</h2>
             <div id="summon-bar" class="bar steps" data-step="1" aria-hidden="true"><span></span></div>

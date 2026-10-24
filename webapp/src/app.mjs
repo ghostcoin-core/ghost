@@ -3,7 +3,7 @@
 // the element that shows it, which is emptied when the step ends.
 
 import { formatGhost, parseGhost } from "./chain.mjs";
-import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, createFlow, normalKey, wrongWords } from "./flow.mjs";
+import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, WALLET_APPROVAL, createFlow, normalKey, wrongWords } from "./flow.mjs";
 import { downloadKeyImage } from "./keyimage.mjs";
 import { browserProver } from "./prover.mjs";
 import { DEFAULT_ENDPOINT } from "./rpc.mjs";
@@ -43,6 +43,13 @@ let vanishError = null;
 let errorOwner = null;
 
 const WRONG_WORDS = "Those words don't match your key. Check what you saved and try again.";
+const REJECTED = "You rejected it in your wallet. Nothing was sent.";
+
+// Whether a Vanish failed because the user turned the commit down in the
+// wallet: the flow's WalletRejected, or the wallet's own code 4001.
+function rejectedInWallet(err) {
+  return Boolean(err) && (err.name === "WalletRejected" || err.code === 4001);
+}
 
 // The card's error line for a Vanish step that failed: a fixed sentence
 // chosen by what failed, never the exception's own text.
@@ -52,7 +59,8 @@ function vanishErrorText(err, step) {
   if (/less than the amount/.test(said)) return "Your balance is too low for this amount and the network fee.";
   if (/the app signs/.test(said)) return "The network's fee is higher than the app pays right now. Try again later.";
   if (/^connect a wallet/.test(said)) return "Connect your wallet first.";
-  if (/rejected in your wallet/.test(said)) return "You rejected the transaction in your wallet. Nothing was sent.";
+  if (rejectedInWallet(err)) return REJECTED;
+  if (/^the wallet could not sign/.test(said)) return "Your wallet could not sign the Vanish. Nothing was sent.";
   if (/^the wallet was disconnected/.test(said)) return "The wallet was disconnected. Nothing was sent.";
   if (/^the (wallet answered|signed transaction|wallet's transaction hash)/.test(said)) {
     return "Your wallet's answer did not match the transaction. Nothing was sent.";
@@ -95,9 +103,12 @@ function vanishAct(step, run) {
 // the box, not typing), whether the reveal is being sent, the reveal record
 // from before it (so the steps tick only for this one), the amount sent,
 // the Done screen's figures and the card's one plain error line. The
-// reveal is paid to the connected wallet's address only.
+// reveal is paid to the connected wallet's address only. `summonConfirm`
+// is the confirm screen's summon while it shows: the amount as typed, as
+// formatted, and the wallet's address it names.
 let summonOpening = false;
 let summonLoud = false;
+let summonConfirm = null;
 let summonSending = false;
 let summonBefore = null;
 let summonPending = null;
@@ -111,6 +122,7 @@ const NO_AMOUNT = "Enter an amount to summon.";
 const SPENT = "This key's coin has already been summoned or moved. The key holds nothing now.";
 const REFUSED = "The network's chain failed the app's own check, so nothing from it is shown. Try another node under Network.";
 const DROPPED = "The chain dropped the summon before a block kept it. Your key still holds the coin. Summon again.";
+const WALLET_CHANGED = "Your wallet changed before you confirmed. Nothing was sent. Press Summon again.";
 const SUMMON_STEPS = ["summon-step-proof", "summon-step-send", "summon-step-confirm"];
 const STEP_NAMES = ["Making your proof", "Sending to the network", "Confirming"];
 
@@ -185,14 +197,20 @@ function summonNote(s) {
   return "";
 }
 
-// The Summon card: the paste box and the amount box, the waiting screen
-// with its three steps while the reveal goes out, and Done.
+// The Summon card: the paste box and the amount box, the confirm screen,
+// the waiting screen with its three steps while the reveal goes out, and
+// Done.
 function renderSummon(state) {
   const s = state.summon;
-  const screen = summonSending ? "waiting" : summonDone ? "done" : "form";
+  const screen = summonSending ? "waiting" : summonDone ? "done" : summonConfirm ? "confirm" : "form";
   $("summon-form").hidden = screen !== "form";
+  $("summon-confirm").hidden = screen !== "confirm";
   $("summon-waiting").hidden = screen !== "waiting";
   $("summon-done").hidden = screen !== "done";
+
+  const c = screen === "confirm" ? summonConfirm : null;
+  $("summon-confirm-text").textContent = c ? `Summon ${c.amount} GHOST to ${shortAddress(c.address)}` : "";
+  $("summon-confirm").title = c ? c.address : "";
 
   const coin = Boolean(s && s.status === "unclaimed" && s.current && s.current.amount > 0n && !summonOpening);
   $("summon-amount-area").hidden = !coin;
@@ -449,8 +467,9 @@ function renderWords(key) {
 }
 
 // The Vanish card: the amount box, then Save your Phantom Key, Check your
-// key, the waiting bar while the commit is sent, and Done.
-function renderVanish(v) {
+// key, the waiting bar while the commit is sent (asking for the wallet's
+// approval first), and Done.
+function renderVanish(v, approving) {
   const holding = Boolean(v && v.key && (v.stage === "shown" || v.stage === "check"));
   renderWords(holding ? v.key : null);
   const screen = vanishSending
@@ -476,7 +495,13 @@ function renderVanish(v) {
   if (v && v.stage === "check") checkInputs($("vanish-check-groups"), v.groups, v.wrong);
   else clearCheck($("vanish-check-groups"));
   $("vanish-waiting-text").textContent =
-    screen !== "waiting" ? "" : v && v.stage === "sent" ? "Sent. Waiting for a block to hold it…" : "Sending your commit…";
+    screen !== "waiting"
+      ? ""
+      : v && v.stage === "sent"
+        ? "Sent. Waiting for a block to hold it…"
+        : approving
+          ? "Approve the Vanish in your wallet"
+          : "Sending your commit…";
 
   const wrong = screen === "check" && v.wrong.length > 0;
   $("vanish-error").textContent = vanishError || (wrong ? WRONG_WORDS : "");
@@ -486,7 +511,7 @@ function render(state) {
   renderWallet(state.wallet);
 
   const v = state.vanish;
-  renderVanish(v);
+  renderVanish(v, Boolean(state.progress && state.progress.stage === WALLET_APPROVAL));
   const vanishStatus = {
     sent: () => `Sent: a commit of ${formatGhost(v.amount)} GHOST, transaction ${v.txHash}. ${IN_A_BLOCK}`,
     done: () =>
@@ -664,7 +689,11 @@ $("vanish-back").addEventListener("click", () => {
 });
 // The only place the commit is sent: the check form's submit. The waiting
 // bar shows once the three words match, until the flow's check returns; a
-// wrong word sends nothing and the card stays on the check.
+// wrong word sends nothing and the card stays on the check. The connected
+// wallet then asks the user to approve the commit: turned down there,
+// nothing is sent, the new key is dropped and the card is back at the
+// amount. Any other failure to sign sends nothing either and stays on the
+// check, with its own line.
 $("vanish-check").addEventListener(
   "submit",
   vanishAct("send", async () => {
@@ -674,6 +703,9 @@ $("vanish-check").addEventListener(
     render(flow.state);
     try {
       await flow.vanishCheck(given);
+    } catch (err) {
+      if (rejectedInWallet(err)) forgetVanish();
+      throw err;
     } finally {
       vanishSending = false;
       render(flow.state);
@@ -695,6 +727,7 @@ window.addEventListener("pagehide", forgetVanish);
 function forgetSummon() {
   $("summon-key").value = "";
   $("summon-amount").value = "";
+  summonConfirm = null;
   summonDone = null;
   summonPending = null;
   summonRecheck = null;
@@ -763,11 +796,13 @@ function summonDoneOf(r) {
 
 // Summon pays the connected wallet's address only; with no wallet connected
 // the main button opens the wallet list. An amount that does not parse, or
-// is more than the key can send, is refused here, never rounded.
-$("summon-form").addEventListener("submit", async (event) => {
+// is more than the key can send, is refused here, never rounded. Pressing
+// Summon proves and sends nothing: it opens the confirm screen, which names
+// the amount and the wallet's address.
+$("summon-form").addEventListener("submit", (event) => {
   if (event) event.preventDefault();
   const s = flow.state.summon;
-  if (!s || !s.current || summonOpening || summonSending) return;
+  if (!s || !s.current || summonOpening || summonSending || summonConfirm) return;
   if (!flow.state.wallet) {
     openPanel("wallet-panel");
     return;
@@ -783,16 +818,47 @@ $("summon-form").addEventListener("submit", async (event) => {
   }
   if (out === null || out === 0n) summonError = NO_AMOUNT;
   else if (out > s.available) summonError = holdsText(s, out);
-  if (summonError) {
+  if (!summonError) summonConfirm = { amount: text.trim(), shown: formatGhost(out), address: flow.state.wallet.address };
+  render(flow.state);
+});
+$("summon-max").addEventListener("click", () => {
+  const s = flow.state.summon;
+  if (s && s.current) $("summon-amount").value = formatGhost(s.available);
+});
+
+// Cancel on the confirm screen: back to the form, the key and the amount
+// as they were; nothing is proved or sent.
+$("summon-cancel").addEventListener("click", () => {
+  if (summonSending) return;
+  summonConfirm = null;
+  render(flow.state);
+});
+
+// Confirm Summon: the only place a reveal is proved and sent, for the amount
+// and the address the confirm screen named. A second press while it runs
+// does nothing; a wallet changed since the screen opened sends nothing.
+$("summon-confirm-button").addEventListener("click", async () => {
+  const c = summonConfirm;
+  if (!c || summonSending) return;
+  summonConfirm = null;
+  errorOwner = "summon";
+  summonError = null;
+  const s = flow.state.summon;
+  if (!s || !s.current) {
     render(flow.state);
     return;
   }
-  summonAmount = formatGhost(out);
+  if (!flow.state.wallet || flow.state.wallet.address !== c.address) {
+    summonError = WALLET_CHANGED;
+    render(flow.state);
+    return;
+  }
+  summonAmount = c.shown;
   summonBefore = s.lastReveal;
   summonSending = true;
   render(flow.state);
   try {
-    const r = await flow.summonReveal({ amount: text, recipient: flow.state.wallet.address });
+    const r = await flow.summonReveal({ amount: c.amount, recipient: flow.state.wallet.address });
     summonDone = summonDoneOf(r);
     summonRecheck = null;
   } catch (err) {
@@ -805,10 +871,6 @@ $("summon-form").addEventListener("submit", async (event) => {
   }
   if ($("card").dataset.tab !== "summon") forgetSummon();
   render(flow.state);
-});
-$("summon-max").addEventListener("click", () => {
-  const s = flow.state.summon;
-  if (s && s.current) $("summon-amount").value = formatGhost(s.available);
 });
 
 // Check again: the flow asks about a reveal shown Sent again, and reads the

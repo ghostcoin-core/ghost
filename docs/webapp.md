@@ -98,12 +98,20 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
      shows "Those words don't match your key. Check what you saved and try
      again." and sends nothing. "Show key again" goes back to the grid. The
      main button, "Vanish *amount* GHOST", is the only control that sends
-     the commit: the connected wallet asks the user to approve it, and the
-     page sends what the wallet signed. Turned down in the wallet, nothing
-     is sent ("You rejected the transaction in your wallet. Nothing was
-     sent.") and the check screen stays. From the moment the three words
-     match until the flow's check returns, the card shows a thin moving bar
-     and one short line instead of the screen.
+     the commit: the connected wallet shows its own approval prompt with the
+     amount, the fee and the destination (the commit entry), and the page
+     sends only the envelope the wallet returned. From the moment the three
+     words match until the flow's check returns, the card shows a thin
+     moving bar and one short line instead of the screen; while the wallet
+     is asked (the flow's progress `WALLET_APPROVAL`) that line reads
+     "Approve the Vanish in your wallet". Turned down in the wallet (error
+     `code` 4001, or `name` `WalletRejected`), nothing is sent
+     (`eth_sendRawTransaction` is never called), the new key is dropped
+     from memory and the card returns to the amount screen, the amount
+     still typed, with "You rejected it in your wallet. Nothing was sent."
+     Any other failure to sign sends nothing either; it shows "Your wallet
+     could not sign the Vanish. Nothing was sent." and the check screen
+     stays, to try again.
   3. **Done**, once the check returns with the commit in a block: the ghost
      icon, "*amount* GHOST vanished", "Your Phantom Key now holds it. To use
      it, open Summon and paste your key." and the button "Done", which
@@ -129,12 +137,24 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
   (`flow.state.wallet.address`); the page has no payout address field. A
   coin the tree-state rule holds back (see Summon and Claim) shows a plain
   line and "Check again" instead of a Summon it would refuse.
-  1. **Waiting**, while the reveal goes out: "Summoning *amount* GHOST", a
+  1. **Confirm.** Pressing Summon proves and sends nothing: the card shows
+     "Summon *amount* GHOST to *short address*" (the amount as typed and
+     the connected wallet's address, the full address as the screen's
+     title), the primary button "Confirm Summon" and "Cancel". Cancel
+     returns to the form with the key and the amount kept and calls
+     nothing. Only Confirm Summon calls the flow's `summonReveal`, with
+     that amount and address; a second press while it runs does nothing,
+     and a wallet changed since the screen opened sends nothing. The
+     confirm step shows for every Summon. No wallet signature is asked
+     for: the reveal goes out as a type 0x50 reveal with no sender,
+     authorized by the Phantom Key's proof, so whoever holds the key can
+     summon.
+  2. **Waiting**, while the reveal goes out: "Summoning *amount* GHOST", a
      thin bar and three steps, Making your proof, Sending to the network and
      Confirming, each ticked off as the flow reaches it (from the flow's own
      progress and the reveal record's Sent, never from a timer), then "Keep
      this page open. This takes about 10 seconds."
-  2. **Done**, once the reveal is in a block: the ghost icon, "*amount*
+  3. **Done**, once the reveal is in a block: the ghost icon, "*amount*
      GHOST summoned", "Sent to your wallet *short address*.", then
      "*rest* GHOST is still in your key. The same key still works." or
      "This key is now empty.", "Check the summon is still in the chain"
@@ -490,7 +510,11 @@ read when the user picks the wallet, and calls exactly two of its methods:
 It asks for no account of MetaMask's own and calls no other signing
 method. A request the user turns down (EIP-1193 code 4001) becomes "the
 transaction was rejected in your wallet; nothing was sent" (or the
-connection); a provider without Snaps (code -32601) says to install
+connection). The flow treats any connector's signing error the same way
+for what is sent, which is nothing: one with `code` 4001 or `name`
+`WalletRejected` becomes a `WalletRejected`, any other a `WalletSignFailed`
+("the wallet could not sign the transaction: …; nothing was sent"), and in
+neither case is `eth_sendRawTransaction` called; a provider without Snaps (code -32601) says to install
 MetaMask; an answer that is not the hex the protocol names is refused. The
 connection is not remembered: nothing goes to browser storage or a cookie,
 and after a reload the user connects again. The page shows the address and
@@ -954,8 +978,8 @@ app makes no data commitments.
   and a stand-in flow. A pasted key opens and shows its coin; an unfinished
   or wrong key typed shows no error until the box is left, and then a plain
   line naming a position at most; an amount that does not parse, or more
-  than the key can send, is flagged and sends nothing; the reveal goes to
-  the connected wallet's address, with the three steps ticking off from the
+  than the key can send, is flagged and sends nothing; after Confirm Summon
+  the reveal goes to the connected wallet's address, with the three steps ticking off from the
   flow's progress; Done shows the rest, then "This key is now empty." after
   the rest is summoned; with no wallet connected the button reads "Connect
   wallet" and opens the wallet list; the list says to install MetaMask
@@ -972,12 +996,31 @@ app makes no data commitments.
   clear error at connect and at signing; answers that are not the
   protocol's hex are refused; with no MetaMask it says to install it. A
   Vanish through the Snap, with the tests' account signing behind it, is
-  first rejected in the wallet (nothing is sent and the check stays), then
+  first rejected in the wallet (nothing is sent and the flow keeps the
+  check; the page is what drops the key), then
   approved and sent from the connected account; an answer from another
   account, with a hash that is not its envelope's, or not bytes, is never
   sent; Disconnect lets the wallet go and Vanish then needs one again. The
   tests' wallet is a connector in `test/support/env.mjs`, the one place
   that holds the tests' seed words and asks the worker's `walletSign`.
+- `vanish-approval.test.mjs`: the wallet's approval of a Vanish, against
+  the node stand-in with the tests' wallet holding each signature until the
+  test answers it, first through the flow and then through `app.mjs` on a
+  stand-in page over that same flow. While the wallet is asked, nothing has
+  reached the endpoint and the waiting line reads "Approve the Vanish in
+  your wallet"; approved, the commit is sent once, with the envelope the
+  wallet returned; rejected (code 4001, or a `WalletRejected`),
+  `eth_sendRawTransaction` is never called, the key is gone from the flow
+  and the page, and the card is back at the amount with "You rejected it in
+  your wallet. Nothing was sent."; any other signing error sends nothing
+  and shows its own line, never the wallet's text.
+- `summon-confirm.test.mjs`: Summon's confirm step through `app.mjs` with a
+  stand-in flow that logs every call. Summon shows "Summon *amount* GHOST
+  to 0x3a…91c" with the full address as the title and calls nothing;
+  Cancel returns to the form with the key and amount kept and calls
+  nothing; Confirm Summon calls `summonReveal` once with the amount and the
+  wallet's address, and a second press does nothing; a wallet changed
+  meanwhile, leaving the tab and `pagehide` send nothing.
 
 The key image download, drawn on a canvas in the page, and Claim's
 digit-view button are not covered by the headless tests; the flow's digit
