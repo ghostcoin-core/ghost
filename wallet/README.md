@@ -16,10 +16,11 @@ same two requests.
   signed envelope, its hash and sender. Turned down or closed, the answer is
   code 4001 and nothing is signed.
 - **Origin checks both ways.** The wallet reads a message only from its
-  opener on one of the web app origins in `src/config.mjs`, and answers that
-  origin only; the web app (`webapp/src/popup-wallet.mjs`) reads a reply
-  only from the wallet's origin and the window it opened. Anything else is
-  ignored.
+  opener on one of the web app origins in `src/config.mjs` (the hosted web
+  app, `https://ghost-webapp-alpha.vercel.app`), and answers that origin
+  only; the web app (`webapp/src/popup-wallet.mjs`) reads a reply only from
+  the wallet's origin (`https://ghost-wallet-nine.vercel.app`) and the
+  window it opened. Anything else is ignored.
 - **Strict refusal, before any screen.** An unknown method, a chain id not
   in `CHAIN_IDS` (the test network, 7777001), a missing, extra or malformed
   field, a `to` that is not 20 bytes (no contract creation), or a priority

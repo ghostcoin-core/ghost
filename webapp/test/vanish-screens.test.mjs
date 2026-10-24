@@ -11,7 +11,7 @@ import { test } from "node:test";
 
 import { formatGhost, parseGhost } from "../src/chain.mjs";
 import { WALLET_APPROVAL, wrongWords } from "../src/flow.mjs";
-import { WalletRejected, injectedProvider, snapConnector } from "../src/wallet-connect.mjs";
+import { WalletRejected } from "../src/wallet-connect.mjs";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const source = readFileSync(new URL("../src/app.mjs", import.meta.url), "utf8");
@@ -225,8 +225,7 @@ function startPage({ refuse = null } = {}) {
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
   const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "WALLET_APPROVAL", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
-  const wallets = ["injectedProvider", "snapConnector"];
-  new Function(...names, ...more, ...wallets, body)(
+  new Function(...names, ...more, body)(
     document,
     window,
     { clipboard: { writeText: async () => {} } },
@@ -242,8 +241,6 @@ function startPage({ refuse = null } = {}) {
     "http://127.0.0.1:8545",
     () => ({}),
     async () => {},
-    injectedProvider,
-    snapConnector,
   );
   return { $, log, visible, window };
 }

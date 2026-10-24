@@ -68,14 +68,13 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
 - **Top bar.** The ghost icon and "Ghost" top left; the wallet button top
   right. With no wallet connected the button reads "Connect wallet" and
   opens a small dialog, "Connect a wallet", listing the wallets the page can
-  connect, one row each with its name and a short line: today one,
-  **MetaMask (Ghost Snap)**. With no MetaMask in the browser
-  (`window.ethereum`) its line says to install MetaMask. Only wallets that
-  hold a quantum-safe Ghost account key are listed (see Wallet). With a
-  wallet connected the button shows the short address (`0x3a…91c`), and the
+  connect, one row each with its name and a short line: today one, the
+  **Ghost wallet**, which opens in its own window. Only wallets that hold a
+  quantum-safe Ghost account key are listed (see Wallet). With a wallet
+  connected the button shows the short address (`0x3a…91c`), and the
   popover the full address, the balance, Refresh and "Disconnect". A failed
   connection is one plain line in the dialog ("You rejected the connection
-  in your wallet.", "MetaMask is not installed in this browser. …").
+  in your wallet.", "The wallet window was blocked. …").
 - **The card.** One centered card, about 420px wide, with two filing-folder
   tabs, **Vanish** and **Summon** (a tab list: click, or the arrow keys,
   Home and End). The selected tab joins the card; the other sits behind it
@@ -479,18 +478,21 @@ Ghost accounts are quantum-safe from genesis: the account key is ML-DSA-44
 (spec 09, section 9) and the node refuses every elliptic-curve transaction,
 so a wallet that signs only with an elliptic curve cannot sign a Ghost
 transaction and the page never offers one. "Connect wallet" lists only
-wallets that hold a Ghost account key; today that is MetaMask with the
-Ghost Snap, a MetaMask Snap (its own package, `npm:@ghostcoin/ghost-snap`)
-that creates and keeps the Ghost account key inside MetaMask and signs the
-account's transactions there once the user approves them. The address is
-the account's as spec 09 gives it:
+wallets that hold a Ghost account key; today that is the Ghost pop-up
+wallet (`wallet/` in this repository, with its own README), a small static
+site hosted on its own origin, `https://ghost-wallet-nine.vercel.app`, that
+creates and keeps the Ghost account key there and signs the account's
+transactions once the user approves them in its window. The wallet answers
+only the hosted web app, `https://ghost-webapp-alpha.vercel.app`
+(`wallet/src/config.mjs`). The address is the account's as spec 09 gives
+it:
 
 ```text
 address  = first 20 bytes of K("ghost/account-address/v1", 0x0001, pk)
 ```
 
-`webapp/src/wallet-connect.mjs` holds the connector interface and the Snap
-connector. A connector is `{ id, name, connect() -> { address },
+`webapp/src/wallet-connect.mjs` holds the connector interface, and
+`webapp/src/popup-wallet.mjs` the pop-up wallet's connector. A connector is `{ id, name, connect() -> { address },
 signTransaction(fields) -> { sender, txHash, envelope }, disconnect() }`,
 where `fields` is `{ chainId, genesis, nonce, maxPriorityFeePerGas,
 maxFeePerGas, gasLimit, to, value, data }` (bigints and byte arrays) and the
@@ -498,24 +500,26 @@ answer is byte arrays. The flow controller takes one with
 `flow.walletConnect(connector)` and lets it go with `flow.walletDisconnect()`;
 `flow.state.wallet` is `{ id, name, address, balance }` and nothing else.
 
-The Snap connector talks to MetaMask's EIP-1193 provider, `window.ethereum`,
-read when the user picks the wallet, and calls exactly two of its methods:
+The pop-up connector opens the wallet's origin with `window.open` when the
+user picks the wallet, posts its requests to that origin only over
+`postMessage`, reads replies only from that origin and the window it
+opened, and asks exactly two things:
 
 | Request | Parameters | Answer |
 |---|---|---|
-| `wallet_requestSnaps` | `{ "npm:@ghostcoin/ghost-snap": {} }` | The installed Snap; MetaMask asks the user the first time |
-| `wallet_invokeSnap`, `ghost_getAccount` | none | `{ address, publicKey }`, 0x hex |
-| `wallet_invokeSnap`, `ghost_signTransaction` | `{ chainId, genesisHash, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data }`, 0x hex (quantities without leading zeros, `to` null for a contract creation) | `{ sender, txHash, envelope }`, 0x hex |
+| `ghost_getAccount` | none | `{ address, publicKey }`, 0x hex |
+| `ghost_signTransaction` | `{ chainId, genesisHash, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data }`, 0x hex (quantities without leading zeros, `to` null for a contract creation) | `{ sender, txHash, envelope }`, 0x hex |
 
-It asks for no account of MetaMask's own and calls no other signing
-method. A request the user turns down (EIP-1193 code 4001) becomes "the
+It calls no other signing method. A request the user turns down, or a
+wallet window closed before it answers (code 4001), becomes "the
 transaction was rejected in your wallet; nothing was sent" (or the
 connection). The flow treats any connector's signing error the same way
 for what is sent, which is nothing: one with `code` 4001 or `name`
 `WalletRejected` becomes a `WalletRejected`, any other a `WalletSignFailed`
 ("the wallet could not sign the transaction: …; nothing was sent"), and in
-neither case is `eth_sendRawTransaction` called; a provider without Snaps (code -32601) says to install
-MetaMask; an answer that is not the hex the protocol names is refused. The
+neither case is `eth_sendRawTransaction` called; a browser that blocks the
+wallet's window asks the user to open the page in their browser; an answer
+that is not the hex the protocol names is refused. The
 connection is not remembered: nothing goes to browser storage or a cookie,
 and after a reload the user connects again. The page shows the address and
 its balance, read from the endpoint. The commit is an account
@@ -941,7 +945,7 @@ app makes no data commitments.
   holds the amount box (`0.00`, the ghost icon and GHOST inside it), the
   balance line reading `Balance: —` and Max, and the main button reading
   "Connect wallet"; the Connect wallet button top right opens a dialog
-  listing one wallet, MetaMask (Ghost Snap), and the connected view holds
+  listing one wallet, the Ghost wallet, and the connected view holds
   the address, balance, Refresh and Disconnect; the wallet dialog has no
   text box, no create or restore flow, and no code of the page asks the
   worker for a wallet or uses browser storage; the
@@ -982,20 +986,19 @@ app makes no data commitments.
   the reveal goes to the connected wallet's address, with the three steps ticking off from the
   flow's progress; Done shows the rest, then "This key is now empty." after
   the rest is summoned; with no wallet connected the button reads "Connect
-  wallet" and opens the wallet list; the list says to install MetaMask
-  without `window.ethereum`, connects through the Snap's two requests with
-  it, then shows the short address, the full address and the balance, and
-  Disconnect lets it go; a rejection in the wallet is a plain line; Done,
+  wallet" and opens the wallet list; the list holds only the Ghost wallet,
+  which connects through the pop-up connector, then shows the short
+  address, the full address and the balance, and Disconnect lets it go; a
+  rejection in the wallet, a blocked pop-up and any other failure are each
+  a plain line; Done,
   the switch to Vanish and `pagehide` empty the box and call
   `summonClose`; a failed reveal is a fixed plain line.
-- `wallet-connect.test.mjs`: the Ghost Snap connector against a stand-in
-  MetaMask, with nothing built, then the flow with a connected wallet
-  against the node stand-in. Connect asks `wallet_requestSnaps` for the
-  Snap and `ghost_getAccount`, and nothing else; signing sends every field
-  as 0x hex and reads the answer as bytes; a rejection (code 4001) is a
-  clear error at connect and at signing; answers that are not the
-  protocol's hex are refused; with no MetaMask it says to install it. A
-  Vanish through the Snap, with the tests' account signing behind it, is
+- `wallet-connect.test.mjs`: the wallet module, with nothing built, then
+  the flow with a connected wallet against the node stand-in. The module
+  offers no connector but the pop-up wallet's; the transaction fields go to
+  the wallet as 0x hex and read back the same. A Vanish through a stand-in
+  wallet that speaks the pop-up wallet's two requests, with the tests'
+  account signing behind it, is
   first rejected in the wallet (nothing is sent and the flow keeps the
   check; the page is what drops the key), then
   approved and sent from the connected account; an answer from another
@@ -1034,7 +1037,7 @@ the release `geth` named by `GHOST_NODE_GETH` as a one-node internal network
 (network 6777971, mining, the internal network's genesis, JSON-RPC
 `eth,net,web3,ghost` over HTTP on a port the system picks) and runs Vanish, a
 partial Summon and a Claim with the real prover. The tests' wallet connector
-is connected as the page connects the Ghost Snap; its account is the
+is connected as the page connects the Ghost wallet; its account is the
 miner's etherbase, so block rewards fund it, and the commit and the
 strangers' commits are account transactions it signs. The keys are 24 words, and the save checks are answered with
 words. It checks on chain that the commit is type `0x52` from the wallet's

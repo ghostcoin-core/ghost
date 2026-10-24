@@ -35,17 +35,15 @@ The design, the node methods it calls and its limits are in
   reload you connect again.
 - It uses no elliptic-curve key and offers no wallet that signs with one.
   Ghost accounts are quantum-safe: their key is ML-DSA-44, and every commit
-  is a quantum-safe account transaction (type 0x52). The default wallet is
-  the Ghost pop-up wallet (`wallet/`, with its own README): a site on its
-  own origin that keeps the account key, opened in a pop-up and asked over
-  `postMessage` (`src/popup-wallet.mjs`). The page posts only to the
-  wallet's origin and reads replies only from that origin and the window it
-  opened; the wallet shows each request and asks you to approve it. The
-  page holds no seed, words or key for it either. The other wallet listed
-  is MetaMask with the Ghost Snap, which keeps the Ghost account key inside
-  MetaMask (the Snap is its own package). The page asks MetaMask only to
-  install the Snap (`wallet_requestSnaps`) and to run its two requests
-  (`wallet_invokeSnap` with `ghost_getAccount` and `ghost_signTransaction`).
+  is a quantum-safe account transaction (type 0x52). The one wallet listed
+  is the Ghost pop-up wallet (`wallet/`, with its own README): a site on its
+  own origin, `https://ghost-wallet-nine.vercel.app`, that keeps the
+  account key, opened in a pop-up and asked over `postMessage`
+  (`src/popup-wallet.mjs`) for its two requests, `ghost_getAccount` and
+  `ghost_signTransaction`. The page posts only to the wallet's origin and
+  reads replies only from that origin and the window it opened; the wallet
+  shows each request and asks you to approve it. The page holds no seed,
+  words or key for it either.
 - It downloads no proving key. The prover needs none: the statement is
   built into the WebAssembly module, which proves in a background worker.
 - It talks to one thing only: the node endpoint you choose (JSON-RPC). No
@@ -146,11 +144,10 @@ and open `http://localhost:8080`. The page has the **Connect wallet** button
 top right and one card with two tabs, **Vanish** (an amount box, the
 connected wallet's balance and Max, and the Vanish button) and **Summon** (a
 box to paste a key, then an amount box and the Summon button). Connect
-wallet opens a list of two wallets: first, the default, **Ghost wallet**,
-which opens the pop-up wallet in its own window (when the browser blocks
-the pop-up, as in-app browsers do, the panel asks you to open the page in
-your browser); then the Ghost Snap's entry;
-without MetaMask in the browser the entry says to install it. Once
+wallet opens the wallet list, which holds one wallet, **Ghost wallet**: it
+opens the pop-up wallet in its own window (when the browser blocks the
+pop-up, as in-app browsers do, the panel asks you to open the page in your
+browser). Once
 connected, the button shows the account's short address, and its popover
 the full address, the balance, Refresh and Disconnect. While no wallet is
 connected the main buttons read "Connect wallet" and open that list.
@@ -200,15 +197,14 @@ worker's messages, against a scripted stand-in for the node's JSON-RPC that
 verifies every proof and records every request. The tests connect the
 tests' wallet, a connector in `webapp/test/support/env.mjs` that signs with
 a fixed test seed in the worker's message interface: the only place a seed
-is held. `webapp/test/wallet-connect.test.mjs` drives the Ghost Snap
-connector against a stand-in MetaMask (the exact requests and their 0x hex
-fields, a rejection that sends nothing, answers that are refused) and the
-flow with a connected wallet (an answer from another account, or whose hash
-is not its envelope's, is never sent). `webapp/test/popup-wallet.test.mjs` drives the pop-up
+is held. `webapp/test/wallet-connect.test.mjs` checks the transaction
+fields as the wallet gets them (0x hex, read back the same) and drives the
+flow with a connected wallet (a rejection that sends nothing; an answer from
+another account, or whose hash is not its envelope's, is never sent). `webapp/test/popup-wallet.test.mjs` drives the pop-up
 wallet connector against the wallet's own logic through a stand-in for
 `window.open` and `postMessage` (replies from another origin or window
 ignored, Reject or a closed pop-up as 4001 with nothing signed, a blocked
-pop-up). Set `GHOST_WEBAPP_WASM` to
+pop-up, and the hosted wallet's origin). Set `GHOST_WEBAPP_WASM` to
 test another build of the module, for example
 `webapp/dist/ghost_webapp_wasm.wasm`.
 
@@ -220,7 +216,7 @@ that send, and Done or a tab switch that drops the key).
 box and its plain errors, the amount checks, the reveal paid to the
 connected wallet's address, the three steps, Done with the rest or an empty
 key, Done or a tab switch that drops the key, and the Connect wallet list
-with and without MetaMask.
+with the Ghost wallet as its one entry.
 
 To run the same flow against a real node, build ghost-node's `geth` at the
 pinned commit and point the real-node test at it:
