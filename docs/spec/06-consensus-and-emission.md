@@ -775,6 +775,23 @@ includes a tool that derives the genesis from such a file. An announcement of th
 derived genesis hash is a convenience only: a node and an operator trust their
 own derivation, and if it differs from any announcement, the derivation wins.
 
+### 8.6 Running both tools and comparing
+
+Take 17 or more consecutive Bitcoin headers from your own node, each as hex
+(`bitcoin-cli getblockheader <hash> false`), one per line in chain order, into
+`headers.hex`, and turn them into the raw file both tools read:
+
+```sh
+xxd -r -p headers.hex headers.bin
+ghost-genesis derive -tl <T_L> -headers headers.bin
+python3 scripts/derive_genesis.py -tl <T_L> -headers headers.bin
+```
+
+The Python script is a second implementation written from this section and
+spec 05 alone. Compare the `genesis-hash` and `genesis-block` lines of the two
+outputs. If they differ, or either tool refuses, do not launch: find which
+derivation departs from this specification, and the one that follows it wins.
+
 ## 9. Reproducing the numbers
 
 ```sh
