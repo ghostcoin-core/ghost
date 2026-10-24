@@ -128,7 +128,7 @@ its author's (section 7). Web certificates are outside the chain (section 10.5).
 | Component | Today | Classical | Quantum | Against the target | What changes |
 |---|---|---|---|---|---|
 | Account signatures | ECDSA over secp256k1 (base client) | 128 bits | Broken (Shor) | Below | ML-DSA-44 (Category 2) and SLH-DSA-SHAKE-128s (Category 1); every secp256k1 type refused (sections 5 and 6) |
-| Reveal STARK: queries and grinding | Rate 1/4, 57 queries, 16 grinding bits (decision 0003) | 128 conjectured, 72 proven | About 65 conjectured, about 36 proven (section 4.1) | Conjectured at the floor with no margin; proven below | Raised by the rule of section 4.1 |
+| Reveal STARK: queries and grinding | Rate 1/4, 57 queries, 16 grinding bits (decision 0003) | 128 conjectured, 72 proven | About 65 conjectured, about 36 proven (section 4.1) | Conjectured at the floor with no margin; proven below | Raised by the rule of section 4.1; proven security over the whole bundled proof is a hard requirement before mainnet (section 4.1), not met today |
 | Reveal STARK: hash output | Keccak-256 digests in the Merkle commitments and the Fiat–Shamir transcript | 128 bits collision | About 85 bits collision; the quantum Fiat–Shamir hash term holds to about 2^85 queries | Meets | Nothing |
 | Reveal STARK: challenge field | Degree-5 extension of BabyBear, about 2^155 elements | Each field term near or below 2^-128 by a rough count | Half of that | At the floor; the build ticket computes it | Section 4.1 |
 | Reveal STARK: hiding | Hiding FRI, 5 random columns, 5 salt elements per opened row (about 155 bits) | Statistical for the masked openings; 155 bits for a salt | About 77 bits for a salt | Meets | Nothing |
@@ -209,11 +209,25 @@ needs.
    bits, so a quantum attacker who records proofs today and searches later
    gets at least 64 bits against a salt.
 5. **Both figures are stated** wherever a figure is quoted: conjectured and
-   proven, classical and quantum. The proven quantum figure is a goal, not a
-   gate (question 3).
+   proven, classical and quantum. Proven security is a hard requirement
+   before mainnet (below and question 3), not a goal.
 6. **The prover's security gate** refuses a configuration that breaks items 1
    to 4, as it already refuses a trace over budget (spec 07, section 3), and a
    test fails if the shipped configuration breaks them.
+
+**Hard requirement before mainnet (founder, 2026-10-24).** Proven security of
+at least 128 bits classical and NIST Category 1 against a quantum attacker
+(64 quantum bits, section 3), with grinding counted at half, is a hard
+requirement before mainnet. It covers the whole bundled proof: the leaf
+proofs, every layer of the recursion, the transcript, the verifier binding
+and the losses of composing them, added as a sum of per-layer terms. Proven
+means established by the argument above and its sources (the BCS
+transformation, and the Chiesa–Manohar–Spooner bound in the quantum random
+oracle model), not by the conjectured estimate. Today's proven figures, 80
+bits classical and 40 quantum at the configuration that ships (decision
+0003), do not meet it. The conjectured gate of items 1 to 6 stays in force
+beside it. The argument for the bundle, and every step of it not yet
+established, is in docs/scale/security.md.
 
 Candidates the proof build ticket measures, by the arithmetic of the table
 above (proof size and proving time are set by measurement):
@@ -828,7 +842,9 @@ passes with the check it names removed does not count (spec 03, section 10).
    authenticate under section 10; it never falls back to the secp256k1
    handshake.
 4. **The proof configuration.** Until a configuration meets section 4.1's
-   rule, the chain is not launched.
+   rule, the chain is not launched. Until the whole bundled proof meets
+   section 4.1's hard requirement on proven security, mainnet is not
+   launched.
 
 ## 14. Questions for the founder
 
@@ -842,8 +858,10 @@ Each has a default that this document already applies.
    every holder has a hash-only scheme from day one.
 3. **Proven security.** Gate the proof on conjectured figures (as decision
    0003 does) or require a proven quantum figure of 64 bits (rate 1/8 with
-   about 86 queries, a larger proof)? Default: the conjectured gate of section
-   4.1, with the proven figures stated.
+   about 86 queries, a larger proof)? Decided by the founder, 2026-10-24:
+   proven security of at least 128 bits classical and Category 1 quantum,
+   grinding at half, over the whole bundled proof, is a hard requirement
+   before mainnet (section 4.1); the conjectured gate stays beside it.
 4. **Proof length before genesis.** Spec 07 makes a change of `PROOF_BYTES` a
    new version. Nothing has launched: may version 1 be re-set before genesis?
    Default: yes, once, before the software freeze.

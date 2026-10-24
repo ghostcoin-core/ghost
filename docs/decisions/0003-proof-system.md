@@ -15,7 +15,7 @@ hash are one decision:
 | Field | BabyBear, with a degree-5 extension field for challenges (154 bits) |
 | Polynomial commitment | FRI, in its hiding form, with a hiding Merkle commitment |
 | Hash inside proofs and in the trees | Keccak-256 |
-| Security level | The rule of [spec 09, section 4.1](../spec/09-quantum-safe-accounts.md): 129 conjectured bits from the queries alone, and at least 128 for every term of the library's own estimator (`p3-uni-stark` security parameters, `p3-security`) with grinding counted at half. Conjectured: 128 bits classical, 64 quantum. Proven: 80 bits classical, 40 quantum (a goal, not gated) |
+| Security level | The rule of [spec 09, section 4.1](../spec/09-quantum-safe-accounts.md): 129 conjectured bits from the queries alone, and at least 128 for every term of the library's own estimator (`p3-uni-stark` security parameters, `p3-security`) with grinding counted at half. Conjectured: 128 bits classical, 64 quantum. Proven: 80 bits classical, 40 quantum. Proven security of at least 128 bits classical and NIST Category 1 quantum, grinding counted at half, over the whole bundled proof, is a hard requirement before mainnet; today's 80/40 proven figures do not meet it (amended 2026-10-24, see "Proven security") |
 | Zero-knowledge mode | On, in the configuration that ships, with 154-bit salts |
 | Blowup | 2^3 (rate 1/8), 43 queries, 16 grinding bits on the queries and 16 before the batching challenge |
 
@@ -52,7 +52,12 @@ Speed in the browser decided only among candidates that passed.
    counted at half. The configuration that ships gives 128 conjectured bits
    classical and 64 quantum, 80 proven classical and 40 proven quantum; the
    binding term is Keccak-256's collision resistance
-   ([measurements](../benchmarks/reveal-parameters.md)).
+   ([measurements](../benchmarks/reveal-parameters.md)). Since 2026-10-24
+   proven security is a hard requirement before mainnet: at least 128 bits
+   classical and NIST Category 1 quantum, grinding counted at half, proven for
+   the whole bundled proof, not only for one reveal. Today's 80 proven
+   classical and 40 proven quantum bits do not meet it (see "Proven
+   security").
 4. **Native verification.** The chain verifies every proof natively, never
    inside an elliptic-curve proof. The native build verified the chosen proof
    in a median of 8.51 ms (largest 9.23 ms) at blowup 2^2. The coin reveal at
@@ -106,9 +111,12 @@ build a user normally gets, and the single-thread build is the slower fallback,
 so the result holds for it too.
 
 The target is not relaxed. If a later measurement misses it (see "What would
-reverse this decision"), the first fallback is Poseidon2 in the same library,
-which met the target with more room; if no hash in Plonky3 meets it, the proof
-system is revisited as the outline requires.
+reverse this decision"), nothing switches automatically: Keccak-256 is the
+provisional baseline, not locked, and there is no automatic Poseidon2
+fallback. Switching the hash is a founder decision, informed by the evidence
+of the scale work (amended 2026-10-24, see "Proven security"); if no hash in
+Plonky3 meets the target, the proof system is revisited as the outline
+requires.
 
 ## Blowup
 
@@ -139,6 +147,30 @@ time: 1.62 times as long natively for the coin reveal (median 1.35 s against
 devices at this cost is measured separately; this amendment does not depend on
 it, and a miss is reported against the target, not answered by lowering the
 security level.
+
+## Proven security
+
+**Amended 2026-10-24: proven security is a hard requirement before mainnet.**
+The whole bundled proof (the leaf proofs, every layer of the recursion and
+the losses of composing them) must be proven to at least 128 bits classical
+and to NIST Category 1 against a quantum attacker, with grinding counted at
+half. Until it is, the chain does not launch on mainnet. This replaces the
+earlier rule that the proven figures were a goal and not a gate. Today's
+proven figures, 80 bits classical and 40 quantum at the configuration that
+ships, do not meet it; neither did the earlier 72 at blowup 2^2 with 57
+queries. The conjectured figures (128 classical, 64 quantum) are unchanged
+and are still stated, but they are not proven figures and do not count
+toward this requirement. A weaker proven bound is not a known attack; it
+means the argument is not finished.
+
+The argument, the parameters it would need and every step not yet
+established are in [the scale security argument](../scale/security.md). The
+configuration that ships and every measured number on this page are
+unchanged by this amendment.
+
+The same amendment settles the hash: Keccak-256 is the provisional baseline,
+not locked, and there is no automatic fallback to Poseidon2. Switching the
+hash is a founder decision informed by the evidence of the scale work.
 
 ## Cost on the chain
 
@@ -171,8 +203,9 @@ The block size limit is not decided here.
   10 runs; the largest length the encoding can produce was not measured.
 - **The proven security figure.** Only the conjectured estimate reaches 128
   bits; the best proven figure was 72, and is 80 classical and 40 quantum at
-  the configuration that ships since 2026-10-20, below the quantum target. Spec
-  09 (question 3) makes the proven quantum figure a goal, not a gate.
+  the configuration that ships since 2026-10-20, below the quantum target.
+  Since 2026-10-24 proven security over the whole bundled proof is a hard
+  requirement before mainnet (see "Proven security"), and it is not met.
 - **The rest of a transaction.** The chain figures count only the proof and
   its public inputs, not the transaction's other fields, the encrypted note or
   the block header.
