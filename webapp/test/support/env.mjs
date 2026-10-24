@@ -67,7 +67,8 @@ export function nodeProver(path = wasmPath) {
 // account 0, whose address ghost-node's own code gives for the key that seed
 // derives (client/tests/accounts.rs). The page never holds a seed: this is
 // the one place that does, standing in for the wallet the user connects
-// (a MetaMask Snap that keeps the key in MetaMask, wallet-connect.mjs).
+// (the Ghost pop-up wallet that keeps the key on its own origin,
+// popup-wallet.mjs).
 const TEST_WALLET_WORDS =
   "abandon amount liar amount expire adjust cage candy arch gather drum bullet absurd math era live bid rhythm alien crouch range attend journey unaware";
 const TEST_ACCOUNT_INDEX = 0;

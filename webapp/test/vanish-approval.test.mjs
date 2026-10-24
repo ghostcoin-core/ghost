@@ -12,7 +12,7 @@ import test from "node:test";
 import { toHex } from "../src/bytes.mjs";
 import { formatGhost, parseGhost } from "../src/chain.mjs";
 import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, WALLET_APPROVAL, createFlow, normalKey, wrongWords } from "../src/flow.mjs";
-import { USER_REJECTED, WalletRejected, injectedProvider, snapConnector } from "../src/wallet-connect.mjs";
+import { USER_REJECTED, WalletRejected } from "../src/wallet-connect.mjs";
 import { TEST_WALLET_ADDRESS, loadModule, nodeProver, testConnector } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
 
@@ -284,8 +284,7 @@ function startPage(make) {
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
   const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "WALLET_APPROVAL", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
-  const wallets = ["injectedProvider", "snapConnector"];
-  new Function(...names, ...more, ...wallets, body)(
+  new Function(...names, ...more, body)(
     document,
     window,
     { clipboard: { writeText: async () => {} } },
@@ -301,8 +300,6 @@ function startPage(make) {
     "http://127.0.0.1:8545",
     () => ({}),
     async () => {},
-    injectedProvider,
-    snapConnector,
   );
   return { $, visible, flow, ids: () => [...elements.keys()] };
 }

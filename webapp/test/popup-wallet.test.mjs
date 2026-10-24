@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { WEBAPP_ORIGINS } from "../../wallet/src/config.mjs";
 import { createWallet, vaultStore } from "../../wallet/src/wallet.mjs";
 import { fakeIndexedDB, loadTestGhost, scriptedUi, settle, spyGhost, testRandom } from "../../wallet/test/fakes.mjs";
 import { fromHex, toHex } from "../src/bytes.mjs";
@@ -143,8 +144,35 @@ test("replies from another origin or another window are ignored", async () => {
   assert.notEqual(address, forged.result.address);
   c.disconnect();
 
-  // The default wallet origin is the one constant the host step sets.
-  assert.equal(POPUP_WALLET_ORIGIN, "https://wallet.ghostcoin.com");
+});
+
+test("the page opens the hosted wallet, and the wallet answers the hosted page only", async () => {
+  assert.equal(POPUP_WALLET_ORIGIN, "https://ghost-wallet-nine.vercel.app");
+  assert.deepEqual(WEBAPP_ORIGINS, ["https://ghost-webapp-alpha.vercel.app"]);
+  assert.ok(Object.isFrozen(WEBAPP_ORIGINS));
+
+  // With no origin given, the connector opens the hosted wallet and posts
+  // to it only.
+  const page = fakePage();
+  const popup = { closed: false, close() {}, postMessage: (data, targetOrigin) => page.posts.push({ data, targetOrigin }) };
+  page.open = (url, target, features) => {
+    page.opened.push({ url, target, features });
+    return popup;
+  };
+  const c = popupConnector({ win: page, pollMs: 5 });
+  const connecting = c.connect();
+  assert.deepEqual(page.opened.map((o) => o.url), ["https://ghost-wallet-nine.vercel.app/"]);
+  // A ready message from another origin is not the wallet's; the hosted one is.
+  page.deliver({ data: { ready: true }, origin: "https://wallet.example", source: popup });
+  await settle();
+  assert.equal(page.posts.length, 0);
+  page.deliver({ data: { ready: true }, origin: POPUP_WALLET_ORIGIN, source: popup });
+  await settle();
+  assert.deepEqual(page.posts.map((p) => [p.targetOrigin, p.data.method]), [[POPUP_WALLET_ORIGIN, "ghost_getAccount"]]);
+  const address = `0x${"ab".repeat(20)}`;
+  page.deliver({ data: { id: page.posts[0].data.id, result: { address } }, origin: POPUP_WALLET_ORIGIN, source: popup });
+  assert.deepEqual(await connecting, { address });
+  c.disconnect();
 });
 
 test("Reject in the pop-up and closing the pop-up sign nothing and turn the request down (4001)", async () => {

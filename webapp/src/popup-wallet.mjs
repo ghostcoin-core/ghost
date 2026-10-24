@@ -10,8 +10,8 @@
 import { fromHex } from "./bytes.mjs";
 import { USER_REJECTED, WalletRejected, snapTransaction } from "./wallet-connect.mjs";
 
-// The wallet's origin; the host step sets the real one.
-export const POPUP_WALLET_ORIGIN = "https://wallet.ghostcoin.com";
+// The wallet's origin, where it is hosted.
+export const POPUP_WALLET_ORIGIN = "https://ghost-wallet-nine.vercel.app";
 export const POPUP_WALLET = { id: "ghost-popup-wallet", name: "Ghost wallet" };
 
 // The browser refused to open the wallet's window, as in-app browsers do.

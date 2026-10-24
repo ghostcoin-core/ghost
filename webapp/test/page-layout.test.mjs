@@ -152,17 +152,16 @@ test("the Connect wallet button top right opens a dialog listing the quantum-saf
   assert.match(tag("wallet-panel"), /role="dialog"/);
   const panel = element("wallet-panel");
   assert.match(element("wallet-title"), />Connect a wallet</);
-  // Two wallets listed, as buttons in a list: the Ghost pop-up wallet first,
-  // the default, then the Ghost Snap.
+  // One wallet listed, as a button in a list: the Ghost pop-up wallet.
   const list = element("wallet-connect");
   const options = [...list.matchAll(/<button\b[^>]*class="wallet-option"[^>]*>/g)];
   assert.deepEqual(
     options.map((m) => /id="([^"]+)"/.exec(m[0])[1]),
-    ["wallet-option-popup", "wallet-option-snap"],
+    ["wallet-option-popup"],
   );
   assert.match(element("wallet-option-popup"), /<span id="wallet-option-popup-name"[^>]*>Ghost wallet<\/span>/);
   assert.match(element("wallet-option-popup"), /its own window/);
-  assert.match(element("wallet-option-snap"), /<span id="wallet-option-snap-name"[^>]*>MetaMask \(Ghost Snap\)<\/span>/);
+  assert.doesNotMatch(html, /metamask|snap/i, "no MetaMask option is left on the page");
   assert.match(list, /<ul class="wallet-list"/);
   assert.match(list, /quantum-safe/);
   assert.match(list, /never sees a seed or a key/);
@@ -196,8 +195,9 @@ test("the page has no create or restore wallet flow and holds no seed", () => {
     assert.ok(!flow.includes(`"${op}"`), `flow.mjs asks the worker for ${op}`);
     assert.ok(!source.includes(op), `app.mjs names ${op}`);
   }
-  assert.match(source, /flow\.walletConnect\(snapConnector\(provider\)\)/);
+  assert.equal(source.match(/flow\.walletConnect\(/g).length, 1, "the pop-up wallet is the only one connected");
   assert.match(source, /flow\.walletConnect\(popupConnector\(\)\)/);
+  assert.doesNotMatch(source, /metamask|ethereum|snaps?\b/i);
   assert.match(source, /flow\.walletDisconnect\(\)/);
   // The connection is not remembered: no browser storage and no cookie.
   const stores = [["local", "Storage"].join(""), ["session", "Storage"].join(""), "document.cookie", "indexedDB"];

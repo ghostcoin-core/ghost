@@ -10,7 +10,6 @@ import { test } from "node:test";
 
 import { formatGhost, parseGhost } from "../src/chain.mjs";
 import { WALLET_APPROVAL } from "../src/flow.mjs";
-import { injectedProvider, snapConnector } from "../src/wallet-connect.mjs";
 
 const normalKey = (text) => String(text).trim().split(/\s+/).join(" ");
 
@@ -211,8 +210,7 @@ function startPage({ hold = false } = {}) {
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
   const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "WALLET_APPROVAL", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
-  const wallets = ["injectedProvider", "snapConnector"];
-  new Function(...names, ...more, ...wallets, body)(
+  new Function(...names, ...more, body)(
     document,
     window,
     { clipboard: { writeText: async () => {} } },
@@ -228,8 +226,6 @@ function startPage({ hold = false } = {}) {
     "http://127.0.0.1:8545",
     () => ({}),
     async () => {},
-    injectedProvider,
-    snapConnector,
   );
   $("tab-summon").fire("click");
   return { $, log, screens, window, release, state: () => state };

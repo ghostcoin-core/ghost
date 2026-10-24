@@ -1,72 +1,53 @@
-// The connected wallet: the Ghost Snap connector over an EIP-1193 provider
-// (wallet-connect.mjs), driven against a stand-in MetaMask, then the flow
-// controller with a connected wallet against the node stand-in. The
-// stand-in MetaMask answers the Snap's two requests the way the Ghost Snap
-// does, with the tests' account signing in the worker (support/env.mjs);
-// the page side holds no seed and no key.
+// The connected wallet: the wallet module (wallet-connect.mjs) and its
+// transaction fields as the wallets read them, then the flow controller with
+// a connected wallet against the node stand-in. The stand-in wallet answers
+// the requests the way the Ghost pop-up wallet does, with the tests' account
+// signing in the worker (support/env.mjs); the page side holds no seed and
+// no key.
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import { fromHex, toHex } from "../src/bytes.mjs";
 import { DEFAULT_COMMIT_ENTRY, createFlow } from "../src/flow.mjs";
-import {
-  GHOST_SNAP,
-  SNAP_WALLET,
-  USER_REJECTED,
-  WalletRejected,
-  fieldsFromSnap,
-  injectedProvider,
-  snapConnector,
-  snapTransaction,
-} from "../src/wallet-connect.mjs";
+import * as walletConnect from "../src/wallet-connect.mjs";
+import { USER_REJECTED, WalletRejected, fieldsFromSnap, isWalletRejection, snapTransaction } from "../src/wallet-connect.mjs";
 import { TEST_WALLET_ADDRESS, loadModule, nodeProver, testAccount, testConnector, testSign } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
 
 const GHOST = 10n ** 18n;
-const SNAP_METHODS = new Set(["wallet_requestSnaps", "wallet_invokeSnap"]);
 
-const rejection = () => Object.assign(new Error("User rejected the request."), { code: USER_REJECTED });
-
-// A stand-in for MetaMask's window.ethereum with the Ghost Snap installed.
-// Every request is logged. `account()` and `sign(params)` answer the Snap's
-// two methods; `approve` false turns the next requests down as the user
-// would; `snapInstalled` false answers wallet_requestSnaps without the Snap.
-function fakeMetaMask({ account, sign, snapInstalled = true } = {}) {
-  const provider = {
-    isMetaMask: true,
+// A stand-in wallet that speaks the pop-up wallet's two requests with the
+// tests' account: the account as { address, publicKey } and the signed
+// transaction as 0x hex, read back as bytes. Every request is logged;
+// `approve` false turns the next requests down as the user would.
+function hexWallet() {
+  let address = null;
+  const wallet = {
+    id: "test-hex-wallet",
+    name: "Test hex wallet",
     calls: [],
     approve: true,
-    async request(args) {
-      provider.calls.push(structuredClone(args));
-      const { method, params } = args;
-      if (method === "wallet_requestSnaps") {
-        if (!provider.approve) throw rejection();
-        return snapInstalled ? { [Object.keys(params)[0]]: { id: GHOST_SNAP, version: "0.1.0", enabled: true, blocked: false } } : {};
-      }
-      if (method === "wallet_invokeSnap") {
-        assert.equal(params.snapId, GHOST_SNAP);
-        if (!provider.approve) throw rejection();
-        if (params.request.method === "ghost_getAccount") return account();
-        if (params.request.method === "ghost_signTransaction") return sign(params.request.params);
-        throw Object.assign(new Error("unknown method"), { code: -32601 });
-      }
-      throw Object.assign(new Error(`the stand-in has no ${method}`), { code: -32601 });
+    async connect() {
+      wallet.calls.push({ method: "ghost_getAccount" });
+      if (!wallet.approve) throw new WalletRejected("the connection");
+      const account = await testAccount();
+      address = account.address;
+      return { address };
+    },
+    async signTransaction(fields) {
+      if (!address) throw new Error("connect the wallet first");
+      const params = snapTransaction(fields);
+      wallet.calls.push({ method: "ghost_signTransaction", params });
+      if (!wallet.approve) throw new WalletRejected("the transaction");
+      const signed = await testSign(fieldsFromSnap(params));
+      return { sender: fromHex(toHex(signed.sender), 20), txHash: fromHex(toHex(signed.txHash), 32), envelope: fromHex(toHex(signed.envelope)) };
+    },
+    disconnect() {
+      address = null;
     },
   };
-  return provider;
-}
-
-// The Ghost Snap's side of the protocol, with the tests' account: the
-// account as { address, publicKey } and the signed transaction as 0x hex.
-async function snapAccount() {
-  const { address, publicKey } = await testAccount();
-  return { address, publicKey: toHex(publicKey) };
-}
-
-async function snapSign(params) {
-  const signed = await testSign(fieldsFromSnap(params));
-  return { sender: toHex(signed.sender), txHash: toHex(signed.txHash), envelope: toHex(signed.envelope) };
+  return wallet;
 }
 
 const FIELDS = {
@@ -81,40 +62,25 @@ const FIELDS = {
   data: Uint8Array.of(0x00, 0x02, 0xab),
 };
 
-// --- The Snap connector against a stand-in MetaMask ---
+// --- The wallet module ---
 
-test("connect installs the Ghost Snap and reads its account, asking nothing else", async () => {
-  const address = "0x80992A5C983FC01CD9A0C16C4DFC47B9A750D022";
-  const provider = fakeMetaMask({ account: () => ({ address, publicKey: "0x01" }) });
-  const connector = snapConnector(provider);
-  assert.equal(connector.id, SNAP_WALLET.id);
-  assert.equal(connector.name, "MetaMask (Ghost Snap)");
-  assert.equal(connector.available, true);
-  assert.deepEqual(await connector.connect(), { address: address.toLowerCase() });
-  assert.deepEqual(provider.calls, [
-    { method: "wallet_requestSnaps", params: { "npm:@ghostcoin/ghost-snap": {} } },
-    { method: "wallet_invokeSnap", params: { snapId: "npm:@ghostcoin/ghost-snap", request: { method: "ghost_getAccount" } } },
+test("the module offers no wallet but the Ghost pop-up wallet: no MetaMask connector", () => {
+  assert.deepEqual(Object.keys(walletConnect).sort(), [
+    "USER_REJECTED",
+    "WalletRejected",
+    "WalletSignFailed",
+    "fieldsFromSnap",
+    "isWalletRejection",
+    "snapTransaction",
   ]);
-  // Disconnecting asks the provider nothing.
-  connector.disconnect();
-  assert.equal(provider.calls.length, 2);
-  await assert.rejects(connector.signTransaction(FIELDS), /connect the wallet first/);
-  assert.equal(provider.calls.length, 2, "nothing is asked to sign once disconnected");
+  assert.equal(USER_REJECTED, 4001);
+  assert.equal(isWalletRejection({ code: USER_REJECTED }), true);
+  assert.equal(isWalletRejection(new WalletRejected("the connection")), true);
+  assert.equal(isWalletRejection(new Error("no")), false);
 });
 
-test("signTransaction sends every field as 0x hex and reads the answer as bytes", async () => {
-  const answer = { sender: `0x${"11".repeat(20)}`, txHash: `0x${"22".repeat(32)}`, envelope: "0x52c0ffee" };
-  let seen = null;
-  const provider = fakeMetaMask({
-    account: () => ({ address: `0x${"11".repeat(20)}` }),
-    sign: (params) => {
-      seen = params;
-      return answer;
-    },
-  });
-  const connector = snapConnector(provider);
-  await connector.connect();
-  const signed = await connector.signTransaction(FIELDS);
+test("the transaction fields go to the wallet as 0x hex and read back the same", () => {
+  const seen = snapTransaction(FIELDS);
   assert.deepEqual(seen, {
     chainId: "0x76aae9",
     genesisHash: `0x${Array.from({ length: 32 }, (_, i) => i.toString(16).padStart(2, "0")).join("")}`,
@@ -126,57 +92,9 @@ test("signTransaction sends every field as 0x hex and reads the answer as bytes"
     value: "0xde0b6b3a7640000",
     data: "0x0002ab",
   });
-  assert.deepEqual(snapTransaction(FIELDS), seen);
-  assert.deepEqual(fieldsFromSnap(seen), FIELDS, "the Snap reads back the fields the page signed");
+  assert.deepEqual(fieldsFromSnap(seen), FIELDS, "the wallet reads back the fields the page signed");
   assert.equal(snapTransaction({ ...FIELDS, to: null }).to, null, "a contract creation has no to");
-  assert.deepEqual(signed, { sender: fromHex(answer.sender), txHash: fromHex(answer.txHash), envelope: fromHex(answer.envelope) });
-  assert.ok(signed.sender instanceof Uint8Array);
-  for (const call of provider.calls) assert.ok(SNAP_METHODS.has(call.method), call.method);
-  assert.deepEqual(provider.calls.at(-1).params.request.method, "ghost_signTransaction");
-});
-
-test("a rejection in the wallet is a clear error, at connect and at signing", async () => {
-  const provider = fakeMetaMask({ account: () => ({ address: `0x${"11".repeat(20)}` }), sign: () => assert.fail("not signed") });
-  provider.approve = false;
-  const connector = snapConnector(provider);
-  await assert.rejects(connector.connect(), (err) => err instanceof WalletRejected && /rejected in your wallet/.test(err.message));
-  provider.approve = true;
-  await connector.connect();
-  provider.approve = false;
-  await assert.rejects(connector.signTransaction(FIELDS), (err) => {
-    assert.ok(err instanceof WalletRejected);
-    assert.match(err.message, /^the transaction was rejected in your wallet; nothing was sent$/);
-    return true;
-  });
-});
-
-test("answers that are not what the Snap gives are refused", async () => {
-  // No Snap installed.
-  await assert.rejects(snapConnector(fakeMetaMask({ snapInstalled: false })).connect(), /did not install the Ghost Snap/);
-  // No address, or not 20 bytes.
-  for (const account of [{}, { address: "0x1234" }, { address: `0x${"zz".repeat(20)}` }, null]) {
-    await assert.rejects(snapConnector(fakeMetaMask({ account: () => account })).connect(), /without a Ghost account address/);
-  }
-  // A signed answer that is not 0x hex of the right lengths.
-  const good = { sender: `0x${"11".repeat(20)}`, txHash: `0x${"22".repeat(32)}`, envelope: "0x52" };
-  for (const bad of [null, { ...good, sender: "0x11" }, { ...good, txHash: "22".repeat(32) }, { ...good, envelope: "0x" }, { ...good, envelope: "0xz" }]) {
-    const connector = snapConnector(fakeMetaMask({ account: () => ({ address: `0x${"11".repeat(20)}` }), sign: () => bad }));
-    await connector.connect();
-    await assert.rejects(connector.signTransaction(FIELDS), /without a signed transaction/, JSON.stringify(bad));
-  }
-  // A wallet that cannot run Snaps.
-  const plain = { request: async () => Promise.reject(Object.assign(new Error("no such method"), { code: -32601 })) };
-  await assert.rejects(snapConnector(plain).connect(), /cannot run MetaMask Snaps/);
-});
-
-test("with no MetaMask, the connector says to install it and the page finds no provider", async () => {
-  const connector = snapConnector(null);
-  assert.equal(connector.available, false);
-  await assert.rejects(connector.connect(), /install MetaMask/);
-  assert.equal(injectedProvider({}), null);
-  assert.equal(injectedProvider({ ethereum: {} }), null, "a provider must have request()");
-  const provider = fakeMetaMask();
-  assert.equal(injectedProvider({ ethereum: provider }), provider);
+  assert.equal(fieldsFromSnap(snapTransaction({ ...FIELDS, to: null })).to, null);
 });
 
 // --- The flow with a connected wallet, against the node stand-in ---
@@ -204,22 +122,22 @@ async function toCheck(flow, amount = "1") {
 
 const sentRaw = (node) => node.requests.filter((r) => r.method === "eth_sendRawTransaction").length;
 
-test("Vanish through the Ghost Snap: the wallet approves, the page sends what it signed", async () => {
+test("Vanish through a wallet speaking 0x hex: the wallet approves, the page sends what it signed", async () => {
   const { node, flow, done } = await setUp();
   try {
-    const provider = fakeMetaMask({ account: snapAccount, sign: snapSign });
-    assert.equal(await flow.walletConnect(snapConnector(provider)), TEST_WALLET_ADDRESS);
+    const wallet = hexWallet();
+    assert.equal(await flow.walletConnect(wallet), TEST_WALLET_ADDRESS);
     assert.deepEqual(flow.state.wallet, {
-      id: SNAP_WALLET.id,
-      name: SNAP_WALLET.name,
+      id: wallet.id,
+      name: wallet.name,
       address: TEST_WALLET_ADDRESS,
       balance: 100n * GHOST,
     });
 
-    // The user turns the transaction down in MetaMask: nothing is sent, and
-    // the key and its check stay, to try again.
+    // The user turns the transaction down in the wallet: nothing is sent,
+    // and the key and its check stay, to try again.
     const answers = await toCheck(flow);
-    provider.approve = false;
+    wallet.approve = false;
     await assert.rejects(flow.vanishCheck(answers), /rejected in your wallet; nothing was sent/);
     assert.equal(sentRaw(node), 0, "no transaction reached the endpoint");
     assert.equal(node.accountTxs.length, 0);
@@ -228,7 +146,7 @@ test("Vanish through the Ghost Snap: the wallet approves, the page sends what it
     assert.match(flow.state.error, /rejected in your wallet/);
 
     // Approved: the commit goes out, from the connected account.
-    provider.approve = true;
+    wallet.approve = true;
     const sent = await flow.vanishCheck(answers);
     assert.equal(sent.ok, true);
     assert.equal(flow.state.vanish.stage, "done");
@@ -239,18 +157,21 @@ test("Vanish through the Ghost Snap: the wallet approves, the page sends what it
     assert.equal(tx.value, GHOST);
     assert.equal(tx.hash, sent.txHash);
     assert.equal(flow.state.wallet.balance, 99n * GHOST);
-    // MetaMask was asked to sign exactly that transaction, for this chain.
-    const signs = provider.calls.filter((c) => c.method === "wallet_invokeSnap" && c.params.request.method === "ghost_signTransaction");
+    // The wallet was asked to sign exactly that transaction, for this chain.
+    const signs = wallet.calls.filter((c) => c.method === "ghost_signTransaction");
     assert.equal(signs.length, 2, "asked once per attempt");
-    const params = signs[1].params.request.params;
+    const params = signs[1].params;
     assert.equal(params.chainId, `0x${node.chainId.toString(16)}`);
     assert.equal(params.genesisHash, toHex(node.blocks[0].hash));
     assert.equal(params.to, DEFAULT_COMMIT_ENTRY);
     assert.equal(params.value, "0xde0b6b3a7640000");
     assert.equal(params.nonce, "0x0");
     assert.equal(params.data.length, 2 + 2 * 206, "the 206 bytes of a version 2 commit");
-    // Only the Snap's two methods were ever asked of the provider.
-    for (const call of provider.calls) assert.ok(SNAP_METHODS.has(call.method), call.method);
+    // Only the wallet's two requests were ever asked of it.
+    assert.deepEqual(
+      wallet.calls.map((c) => c.method),
+      ["ghost_getAccount", "ghost_signTransaction", "ghost_signTransaction"],
+    );
     // The endpoint never saw a request of a wallet.
     for (const r of node.requests) assert.ok(!r.method.startsWith("wallet_"), r.method);
   } finally {
