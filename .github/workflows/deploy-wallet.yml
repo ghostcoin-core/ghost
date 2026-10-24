@@ -1,0 +1,87 @@
+name: Deploy wallet
+
+# Builds the pop-up wallet with wallet/build.mjs and deploys wallet/dist to
+# its own Vercel project as a prebuilt static site, served with exactly the
+# headers in wallet/headers.json. It runs after a merge to main that touches
+# the wallet or what it is built from (or by hand), never on a proposed
+# change, so a failed deploy cannot block a merge.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wallet/**"
+      - "webapp/wasm/**"
+      - "webapp/build.sh"
+      - "webapp/src/bytes.mjs"
+      - "webapp/src/wasm.mjs"
+      - ".github/workflows/deploy-wallet.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time; a newer run waits instead of cancelling one that is
+# halfway through uploading.
+concurrency:
+  group: deploy-wallet
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy-wallet
+    # GitHub-hosted, like the jobs in ci.yml: this repository is public.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # The toolchain webapp/build.sh names.
+      RUST_TOOLCHAIN: 1.99.1
+      # The Vercel CLI, pinned to an exact version.
+      VERCEL_CLI_VERSION: 65.1.0
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_WALLET_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      # The WebAssembly module, built exactly as the web app's deploy builds it.
+      - name: Build the WebAssembly module
+        run: webapp/build.sh
+      - name: Build the wallet
+        run: node wallet/build.mjs
+      # The Build Output API layout: the files build.mjs made, unchanged, as
+      # the static site, and wallet/headers.json as the headers of every path.
+      - name: Lay out the prebuilt site
+        run: |
+          rm -rf .vercel/output
+          mkdir -p .vercel/output/static
+          cp -R wallet/dist/. .vercel/output/static/
+          node -e '
+            const fs = require("node:fs");
+            const headers = JSON.parse(fs.readFileSync("wallet/headers.json", "utf8"));
+            const config = { version: 3, routes: [{ src: "/(.*)", headers, continue: true }, { handle: "filesystem" }] };
+            fs.writeFileSync(".vercel/output/config.json", JSON.stringify(config, null, 2) + "\n");
+          '
+          cat .vercel/output/config.json
+          node -e '
+            const { createHash } = require("node:crypto");
+            const fs = require("node:fs");
+            const { files } = JSON.parse(fs.readFileSync(".vercel/output/static/RELEASE.json", "utf8"));
+            for (const [path, hash] of Object.entries(files)) {
+              const got = createHash("sha256").update(fs.readFileSync(".vercel/output/static/" + path)).digest("hex");
+              if (got !== hash) throw new Error(path + ": " + got + " is not " + hash);
+            }
+            console.log("RELEASE.json matches", Object.keys(files).length, "files");
+          '
+      - name: Install the Vercel CLI
+        run: |
+          npm install --global --no-fund --no-audit "vercel@$VERCEL_CLI_VERSION"
+          vercel --version
+      - name: Deploy to production
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel deploy --prebuilt --prod --yes --token "$VERCEL_TOKEN"
