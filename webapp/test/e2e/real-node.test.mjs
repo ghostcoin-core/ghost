@@ -1,9 +1,10 @@
 // Vanish, a partial Summon and a Claim with the real prover against a real
 // release `geth` of ghost-node, not the stand-in: a one-node internal
 // network (chain 6777971) that mines its own blocks. The web app's flow
-// controller drives it exactly as the page does, with its built-in wallet:
-// the commit is an account transaction (type 0x52) signed in the worker
-// with the ML-DSA-44 key of the tests' seed, sent with
+// controller drives it exactly as the page does, with a connected wallet:
+// the commit is an account transaction (type 0x52) the tests' wallet
+// connector (support/env.mjs, standing in for the Ghost Snap) signs with the
+// ML-DSA-44 key of the tests' seed, which the flow sends with
 // eth_sendRawTransaction. That account is the miner's etherbase, so block
 // rewards fund it; no elliptic-curve key or keystore is used. The Phantom
 // Keys are 24 words and the save checks are answered with words. The test
@@ -32,7 +33,7 @@ import test from "node:test";
 import { concat, fromHex, toHex, toQuantity } from "../../src/bytes.mjs";
 import { ACCOUNT_EXTRA_GAS, DEFAULT_COMMIT_ENTRY, WaitError, createFlow } from "../../src/flow.mjs";
 import { startBlockPacer } from "../support/block-pacer.mjs";
-import { TEST_WALLET_ADDRESS, TEST_WALLET_WORDS, loadModule, nodeProver } from "../support/env.mjs";
+import { TEST_WALLET_ADDRESS, loadModule, nodeProver, testConnector, testSign } from "../support/env.mjs";
 
 const GETH = process.env.GHOST_NODE_GETH;
 const NETWORK_ID = 6_777_971n;
@@ -288,7 +289,7 @@ if (!GETH) {
     // A commit by someone else: a version 2 commit of a random F and salt
     // and a note no key opens. It puts a leaf after ours, which the
     // tree-state rule waits for. It is an account transaction from the
-    // funded account, signed here with the module directly rather than
+    // funded account, signed by the tests' wallet directly rather than
     // through the flow.
     async function strangerCommit() {
       const data = concat([Uint8Array.of(0x00, 0x02), randomBytes(32), randomBytes(SALT_BYTES), randomBytes(NOTE_BYTES)]);
@@ -297,9 +298,7 @@ if (!GETH) {
       const call = { from: node.miner, to: DEFAULT_COMMIT_ENTRY, value: toQuantity(value), data: toHex(data) };
       const tip = await rpc("eth_getBlockByNumber", ["latest", false]);
       const priority = BigInt(await rpc("eth_maxPriorityFeePerGas"));
-      const signed = ghost.walletSign({
-        words: TEST_WALLET_WORDS,
-        index: 0,
+      const signed = await testSign({
         chainId: NETWORK_ID,
         genesis: fromHex((await rpc("eth_getBlockByNumber", ["0x0", false])).hash, 32),
         nonce: BigInt(await rpc("eth_getTransactionCount", [node.miner, "pending"])),
@@ -309,7 +308,6 @@ if (!GETH) {
         to: fromHex(DEFAULT_COMMIT_ENTRY, 20),
         value,
         data,
-        seed: randomBytes(32),
       });
       const hash = toHex(signed.txHash);
       // The node answers an error once its pool has taken a type 0x52
@@ -405,8 +403,8 @@ if (!GETH) {
       // Test funds come only from block rewards, to the wallet's account.
       await waitFor("the wallet's funds", async () => (await balance(node.miner)) >= 2n * GHOST);
 
-      // --- The wallet: restored from its 24 words ---
-      assert.equal(await flow.walletRestore(TEST_WALLET_WORDS), TEST_WALLET_ADDRESS);
+      // --- The wallet: connected, as the page connects the Ghost Snap ---
+      assert.equal(await flow.walletConnect(testConnector()), TEST_WALLET_ADDRESS);
       assert.ok(flow.state.wallet.balance >= 2n * GHOST, "the wallet shows the account's balance");
 
       // --- Vanish: 1 GHOST into a new key of 24 words, its save check

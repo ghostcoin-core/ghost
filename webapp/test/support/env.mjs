@@ -10,8 +10,10 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 
+import { toHex } from "../../src/bytes.mjs";
 import { createProver } from "../../src/prover.mjs";
 import { loadGhost } from "../../src/wasm.mjs";
+import { createWorker } from "../../src/worker-core.mjs";
 
 export const webappDir = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -63,13 +65,95 @@ export function nodeProver(path = wasmPath) {
 
 // The tests' wallet: the seed of the bytes 0 to 31 as its 24 words, and its
 // account 0, whose address ghost-node's own code gives for the key that seed
-// derives (client/tests/accounts.rs).
-export const TEST_WALLET_WORDS =
+// derives (client/tests/accounts.rs). The page never holds a seed: this is
+// the one place that does, standing in for the wallet the user connects
+// (a MetaMask Snap that keeps the key in MetaMask, wallet-connect.mjs).
+const TEST_WALLET_WORDS =
   "abandon amount liar amount expire adjust cage candy arch gather drum bullet absurd math era live bid rhythm alien crouch range attend journey unaware";
+const TEST_ACCOUNT_INDEX = 0;
 export const TEST_WALLET_ADDRESS = "0x80992a5c983fc01cd9a0c16c4dfc47b9a750d022";
 
-// Funds the tests' wallet on the stand-in `node` and opens it in `flow`.
+// The worker's message interface (worker-core.mjs) run in this thread on
+// the default module, for the tests' wallet only: one per test process,
+// loaded at its first request.
+let walletWorker = null;
+function testWalletWorker() {
+  if (walletWorker) return walletWorker;
+  let deliver = () => {};
+  const onMessage = createWorker(
+    () => readFile(wasmPath),
+    (reply) => deliver(reply),
+  );
+  walletWorker = createProver({
+    post: (message) => onMessage(message),
+    listen: (handler) => {
+      deliver = handler;
+    },
+    terminate: () => {},
+  });
+  return walletWorker;
+}
+
+// The tests' account: its address and ML-DSA-44 public key, from the worker.
+export async function testAccount() {
+  const { address, publicKey } = await testWalletWorker().request("walletAccount", {
+    words: TEST_WALLET_WORDS,
+    index: TEST_ACCOUNT_INDEX,
+  });
+  return { address: toHex(address), publicKey };
+}
+
+// An account transaction (type 0x52) of `fields` (wallet-connect.mjs: chainId,
+// genesis, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value,
+// data) signed with the tests' account by the worker's walletSign:
+// { txHash, sender, envelope } as byte arrays.
+export function testSign(fields) {
+  const { chainId, genesis, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data } = fields;
+  return testWalletWorker().request("walletSign", {
+    words: TEST_WALLET_WORDS,
+    index: TEST_ACCOUNT_INDEX,
+    chainId,
+    genesis,
+    nonce,
+    maxPriorityFeePerGas,
+    maxFeePerGas,
+    gasLimit,
+    to,
+    value,
+    data,
+  });
+}
+
+// The tests' wallet as a connector of wallet-connect.mjs. `log` records each
+// call; `approve(fields)`, when given, runs before each signature and may
+// throw to stand for the user turning it down.
+export function testConnector({ log = [], approve = null } = {}) {
+  let connected = false;
+  return {
+    id: "test-wallet",
+    name: "Test wallet",
+    async connect() {
+      log.push("connect");
+      const { address } = await testAccount();
+      connected = true;
+      return { address };
+    },
+    async signTransaction(fields) {
+      log.push("signTransaction");
+      if (!connected) throw new Error("the test wallet is not connected");
+      if (approve) await approve(fields);
+      return testSign(fields);
+    },
+    disconnect() {
+      log.push("disconnect");
+      connected = false;
+    },
+  };
+}
+
+// Funds the tests' wallet on the stand-in `node` and connects it in `flow`.
+// Returns its address.
 export async function openTestWallet(flow, node, balance = 100n * 10n ** 18n) {
   node.fund(TEST_WALLET_ADDRESS, balance);
-  return flow.walletRestore(TEST_WALLET_WORDS);
+  return flow.walletConnect(testConnector());
 }

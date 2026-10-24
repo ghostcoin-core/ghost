@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { formatGhost, parseGhost } from "../src/chain.mjs";
+import { injectedProvider, snapConnector } from "../src/wallet-connect.mjs";
 
 // A typed key as the flow controller's normalKey gives it to the module: any
 // run of white space made one space.
@@ -148,9 +149,10 @@ const settle = async (n = 4) => {
 };
 
 // Starts app.mjs on a fresh stand-in page with a stand-in flow. The key holds
-// `amount`; `wallet` false starts with no wallet open; `refuse` makes the
+// `amount`; `wallet` false starts with no wallet connected; `refuse` makes the
 // reveal fail with that raw text before anything is sent.
-function startPage({ amount = 2n * GHOST, wallet = true, refuse = null } = {}) {
+// `ethereum` is the page's window.ethereum, absent by default.
+function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, ethereum = undefined } = {}) {
   const elements = new Map();
   const document = {
     getElementById(id) {
@@ -169,10 +171,11 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null } = {}) {
     addEventListener() {},
   };
   const window = new Element("window");
+  if (ethereum !== undefined) window.ethereum = ethereum;
   const $ = (id) => document.getElementById(id);
   const screens = () => ["form", "waiting", "done"].filter((s) => !$(`summon-${s}`).hidden);
   const steps = () => ["proof", "send", "confirm"].map((s) => $(`summon-step-${s}`).dataset.state || "-").join(" ");
-  const log = { opens: [], reveals: [], closes: 0, steps: [], bars: [], waitingAmount: [] };
+  const log = { opens: [], reveals: [], closes: 0, steps: [], bars: [], waitingAmount: [], connects: [], disconnects: 0 };
   let held = amount;
 
   function createFlow({ onChange }) {
@@ -180,7 +183,7 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null } = {}) {
       endpoint: "http://127.0.0.1:8545",
       commitEntry: "0x67686f7374000000000000000000000000000005",
       chainRefused: null,
-      wallet: wallet ? { stage: "open", words: null, groups: null, wrong: [], address: WALLET, balance: 5n * GHOST } : null,
+      wallet: wallet ? { id: "test-wallet", name: "Test wallet", address: WALLET, balance: 5n * GHOST } : null,
       busy: null,
       progress: null,
       error: null,
@@ -204,6 +207,19 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null } = {}) {
     };
     return {
       state,
+      // As the real flow: the connector's address, then its balance.
+      async walletConnect(connector) {
+        log.connects.push(connector.name);
+        const { address } = await connector.connect();
+        state.wallet = { id: connector.id, name: connector.name, address, balance: 5n * GHOST };
+        emit();
+        return address;
+      },
+      walletDisconnect() {
+        log.disconnects++;
+        state.wallet = null;
+        emit();
+      },
       async summonOpen(text) {
         log.opens.push(text);
         const key = normalKey(text);
@@ -271,7 +287,8 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null } = {}) {
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
   const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
-  new Function(...names, ...more, body)(
+  const wallets = ["injectedProvider", "snapConnector"];
+  new Function(...names, ...more, ...wallets, body)(
     document,
     window,
     { clipboard: { writeText: async () => {} } },
@@ -286,6 +303,8 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null } = {}) {
     "http://127.0.0.1:8545",
     () => ({}),
     async () => {},
+    injectedProvider,
+    snapConnector,
   );
   $("tab-summon").fire("click");
   return { $, log, screens, window };
@@ -369,7 +388,7 @@ test("the error sentences are fixed in app.mjs", () => {
   assert.doesNotMatch(fn("summonErrorText"), /return [^;]*(said|err\.message)/, "never the exception's text");
 });
 
-test("the reveal is paid to the open wallet's address, from one place", () => {
+test("the reveal is paid to the connected wallet's address, from one place", () => {
   assert.equal(source.split("flow.summonReveal(").length, 2, "one call of summonReveal");
   assert.match(call("flow.summonReveal("), /recipient: flow\.state\.wallet\.address \}/);
 });
@@ -397,7 +416,7 @@ test("paste a key, summon part of it to the wallet, see the rest, then summon th
   assert.equal(page.$("summon-error").textContent, "");
 
   await summon(page, "0.5");
-  assert.deepEqual(page.log.reveals, [{ amount: "0.5", recipient: WALLET }], "paid to the open wallet's address");
+  assert.deepEqual(page.log.reveals, [{ amount: "0.5", recipient: WALLET }], "paid to the connected wallet's address");
   // The steps tick off as the flow reaches them.
   assert.deepEqual(page.log.steps.slice(0, 5), [
     "now - -",
@@ -435,15 +454,74 @@ test("paste a key, summon part of it to the wallet, see the rest, then summon th
   assert.equal(page.$("summon-done-rest").textContent, "This key is now empty.");
 });
 
-test("with no wallet open the main button reads Open wallet and opens the wallet panel", async () => {
+test("with no wallet connected the main button reads Connect wallet and opens the wallet list", async () => {
   const page = startPage({ wallet: false });
   await paste(page, KEY);
-  assert.equal(page.$("summon-submit").textContent, "Open wallet");
+  assert.equal(page.$("summon-submit").textContent, "Connect wallet");
+  assert.equal(page.$("wallet-button-text").textContent, "Connect wallet");
   assert.equal(page.$("wallet-panel").hidden, true);
   page.$("summon-form").fire("submit");
   await settle();
   assert.equal(page.$("wallet-panel").hidden, false);
   assert.equal(page.log.reveals.length, 0, "nothing is sent");
+});
+
+test("Connect wallet lists MetaMask (Ghost Snap); connected, the button shows the short address", async () => {
+  // No MetaMask in this browser: the entry says to install it, and nothing
+  // is connected.
+  const bare = startPage({ wallet: false });
+  assert.equal(bare.$("wallet-button-text").textContent, "Connect wallet");
+  assert.equal(bare.$("wallet-title").textContent, "Connect a wallet");
+  assert.equal(bare.$("wallet-connect").hidden, false);
+  assert.equal(bare.$("wallet-open").hidden, true);
+  assert.match(bare.$("wallet-option-snap-note").textContent, /^Install MetaMask/);
+  bare.$("wallet-option-snap").fire("click");
+  await settle();
+  assert.equal(bare.$("wallet-error").textContent, "MetaMask is not installed in this browser. Install MetaMask, then reload this page.");
+  assert.deepEqual(bare.log.connects, []);
+
+  // MetaMask with the Ghost Snap: the Snap's two requests, nothing else.
+  const address = `0x3a${"0".repeat(34)}091c`;
+  const calls = [];
+  const ethereum = {
+    async request(args) {
+      calls.push(args.method === "wallet_invokeSnap" ? args.params.request.method : args.method);
+      if (args.method === "wallet_requestSnaps") return { [Object.keys(args.params)[0]]: { enabled: true } };
+      return { address, publicKey: "0x01" };
+    },
+  };
+  const page = startPage({ wallet: false, ethereum });
+  assert.equal(page.$("wallet-option-snap-note").textContent, "A quantum-safe Ghost account kept in MetaMask");
+  assert.equal(page.$("vanish-submit").textContent, "Connect wallet");
+  page.$("wallet-option-snap").fire("click");
+  await settle();
+  assert.deepEqual(page.log.connects, ["MetaMask (Ghost Snap)"]);
+  assert.deepEqual(calls, ["wallet_requestSnaps", "ghost_getAccount"]);
+  assert.equal(page.$("wallet-button-text").textContent, "0x3a…91c");
+  assert.equal(page.$("wallet-title").textContent, "Wallet");
+  assert.equal(page.$("wallet-connect").hidden, true);
+  assert.equal(page.$("wallet-open").hidden, false);
+  assert.equal(page.$("wallet-address").textContent, address);
+  assert.equal(page.$("wallet-balance").textContent, "5");
+  assert.equal(page.$("vanish-submit").textContent, "Vanish");
+  assert.equal(page.$("wallet-error").textContent, "");
+
+  page.$("wallet-disconnect").fire("click");
+  await settle();
+  assert.equal(page.log.disconnects, 1);
+  assert.equal(page.$("wallet-button-text").textContent, "Connect wallet");
+  assert.equal(page.$("wallet-open").hidden, true);
+  assert.equal(page.$("wallet-address").textContent, "");
+
+  // Turned down in MetaMask: a plain line, nothing connected.
+  const rejecting = startPage({
+    wallet: false,
+    ethereum: { request: async () => Promise.reject(Object.assign(new Error("User rejected the request."), { code: 4001 })) },
+  });
+  rejecting.$("wallet-option-snap").fire("click");
+  await settle();
+  assert.equal(rejecting.$("wallet-error").textContent, "You rejected the connection in your wallet.");
+  assert.equal(rejecting.$("wallet-button-text").textContent, "Connect wallet");
 });
 
 test("a key is checked when it holds 24 words or on leaving the box, with no error while typing", async () => {

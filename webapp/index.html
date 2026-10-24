@@ -34,34 +34,25 @@
     <div class="wallet-anchor">
       <button id="wallet-button" class="wallet-button" type="button" aria-expanded="false" aria-controls="wallet-panel">
         <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-wallet"></use></svg>
-        <span id="wallet-button-text">Open wallet</span>
+        <span id="wallet-button-text">Connect wallet</span>
       </button>
 
-      <section id="wallet-panel" class="popover" aria-labelledby="wallet-title" hidden>
-        <h2 id="wallet-title">Wallet</h2>
-        <div id="wallet-closed">
-          <p class="note">The app's own wallet, with a quantum-safe account key (ML-DSA-44). Its 24 words are the only backup of the account; the app keeps them in this page's memory while the wallet is open and never stores them.</p>
-          <button id="wallet-create" class="primary wide" type="button">Create a new wallet</button>
-          <form id="wallet-restore-form">
-            <label>Restore a wallet from its 24 words
-              <textarea id="wallet-restore-words" rows="3" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
-            </label>
-            <button class="wide" type="submit">Restore</button>
-          </form>
+      <section id="wallet-panel" class="popover" role="dialog" aria-labelledby="wallet-title" hidden>
+        <h2><span id="wallet-title">Connect a wallet</span></h2>
+        <div id="wallet-connect">
+          <ul class="wallet-list" aria-label="Wallets">
+            <li>
+              <button id="wallet-option-snap" class="wallet-option" type="button">
+                <svg class="icon" aria-hidden="true" focusable="false"><use href="#icon-wallet"></use></svg>
+                <span class="wallet-option-text">
+                  <span id="wallet-option-snap-name" class="wallet-option-name">MetaMask (Ghost Snap)</span>
+                  <span id="wallet-option-snap-note" class="wallet-option-note">A quantum-safe Ghost account kept in MetaMask</span>
+                </span>
+              </button>
+            </li>
+          </ul>
+          <p class="note">Ghost accounts are quantum-safe: their key is ML-DSA-44, and the network refuses any other. Only wallets that hold such a key are listed. Your wallet keeps the key and asks you to approve each Vanish; this page never sees a seed or a key.</p>
         </div>
-        <div id="wallet-words" class="key-panel" hidden>
-          <p>Your wallet's 24 words. Write them down in order and keep them safe: anyone who has them controls the account.</p>
-          <p id="wallet-words-text" class="secret blurred"></p>
-          <p class="row">
-            <button id="wallet-show" type="button">Show</button>
-            <button id="wallet-saved" class="primary" type="button">I have written them down</button>
-          </p>
-        </div>
-        <form id="wallet-check" class="check" hidden>
-          <p>Save check: type these words of your seed. The wallet opens only when all three match.</p>
-          <div id="wallet-check-words" class="groups"></div>
-          <button class="primary wide" type="submit">Open the wallet</button>
-        </form>
         <div id="wallet-open" hidden>
           <p class="field-label">Account address</p>
           <p><code id="wallet-address" class="address"></code></p>
@@ -69,9 +60,10 @@
           <p class="balance-big"><span id="wallet-balance"></span> GHOST</p>
           <p class="row">
             <button id="wallet-refresh" type="button">Refresh</button>
-            <button id="wallet-close" type="button">Close wallet</button>
+            <button id="wallet-disconnect" type="button">Disconnect</button>
           </p>
         </div>
+        <p id="wallet-error" class="error-line" role="alert"></p>
       </section>
     </div>
   </header>
@@ -98,7 +90,7 @@
               Balance: <span id="vanish-balance">—</span>
               <button id="vanish-max" class="link" type="button" disabled>Max</button>
             </p>
-            <button id="vanish-submit" class="primary wide big" type="submit">Open wallet</button>
+            <button id="vanish-submit" class="primary wide big" type="submit">Connect wallet</button>
             <p class="note">The commit's gas costs at most 0.01 GHOST; the app refuses to sign one that could cost more.</p>
           </form>
           <div id="vanish-key" class="screen" hidden>
@@ -246,9 +238,9 @@
       <h2 id="about-title">About</h2>
       <button class="link" type="button" data-close="about-panel">Close</button>
     </div>
-    <p><strong>Vanish</strong> commits GHOST from your wallet to a new Phantom Key of 24 words. The key is the only authority over the coin: write it down before anything is sent. Each coin's commit carries its own random salt, and the 24 words hold a 256-bit secret, so the key stays strong even against a quantum computer. A Phantom Key is not your wallet's words: keep the two apart. A Phantom Key's digits never open a wallet, and the wallet's words never open a coin.</p>
-    <p><strong>Summon</strong> opens a pasted Phantom Key, finds its coin and sends any amount of it to your open wallet. The rest, less the network fee, stays under the same key. A key whose check fails is refused before anything is derived from it; a wrong word is named by its position, never corrected.</p>
-    <p>No key or wallet seed is stored: not in the browser, not in a file, not on a server. Proofs are made in this browser in a background worker; there is no proving key to download. Every request goes to the endpoint set under Network, and none names your key or your coin.</p>
+    <p><strong>Vanish</strong> commits GHOST from your wallet to a new Phantom Key of 24 words. The key is the only authority over the coin: write it down before anything is sent. Each coin's commit carries its own random salt, and the 24 words hold a 256-bit secret, so the key stays strong even against a quantum computer. The commit comes from the wallet you connect, which holds your account's quantum-safe key (ML-DSA-44) and asks you to approve it; a Phantom Key is not your wallet's backup, and the two are kept apart.</p>
+    <p><strong>Summon</strong> opens a pasted Phantom Key, finds its coin and sends any amount of it to your connected wallet. The rest, less the network fee, stays under the same key. A key whose check fails is refused before anything is derived from it; a wrong word is named by its position, never corrected.</p>
+    <p>No key or wallet seed is stored: not in the browser, not in a file, not on a server. This page never sees your wallet's seed or account key, and it does not remember the connection: connect again after a reload. Proofs are made in this browser in a background worker; there is no proving key to download. Every request goes to the endpoint set under Network, and none names your key or your coin; your wallet is asked only for its account and to sign the commit.</p>
     <p>Amounts, timing and your network address can still link a reveal to its commit, and one block holding a transaction is neither final settlement nor privacy.</p>
   </section>
 </body>

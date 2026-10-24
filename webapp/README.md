@@ -1,8 +1,8 @@
 # Ghost web app
 
-A web app for committing and revealing GHOST with the link between the two hidden on chain (amounts, timing and network address can still give it away, and one block holding a transaction is neither final settlement nor privacy; see [privacy under attack](../docs/research/privacy-under-attack.md)): open its quantum-safe wallet, **Vanish**
+A web app for committing and revealing GHOST with the link between the two hidden on chain (amounts, timing and network address can still give it away, and one block holding a transaction is neither final settlement nor privacy; see [privacy under attack](../docs/research/privacy-under-attack.md)): connect a quantum-safe wallet, **Vanish**
 GHOST into a new Phantom Key, **Summon** any amount of a key's coin to the
-open wallet, and **Claim** a received key's coin to a new key. It is plain ES
+connected wallet, and **Claim** a received key's coin to a new key. It is plain ES
 modules with no framework and no npm dependencies, on top of the client
 library, which runs in a background worker as WebAssembly.
 
@@ -25,18 +25,28 @@ The design, the node methods it calls and its limits are in
 
 - It stores no key or secret: not in the browser, not in a file, not in a
   cookie, not on a server. A key exists only in the page's memory for the
-  step that needs it, and the wallet's 24 words only while the wallet is
-  open. The key image is drawn in the page and saved only when you press the
-  button. Copying a key or saving its image is a convenience, never the only
-  backup: a new key is sent only after you type three of its words back.
-- It uses no elliptic-curve key. The wallet's account key is ML-DSA-44,
-  derived from the wallet's seed, and every commit is a quantum-safe account
-  transaction signed in the background worker.
+  step that needs it. The key image is drawn in the page and saved only when
+  you press the button. Copying a key or saving its image is a convenience,
+  never the only backup: a new key is sent only after you type three of its
+  words back.
+- It never creates, restores or sees a wallet. You connect one with
+  **Connect wallet** (top right); the wallet keeps the account's key and
+  asks you to approve each Vanish. The connection is not remembered: after a
+  reload you connect again.
+- It uses no elliptic-curve key and offers no wallet that signs with one.
+  Ghost accounts are quantum-safe: their key is ML-DSA-44, and every commit
+  is a quantum-safe account transaction (type 0x52). The one wallet listed
+  is MetaMask with the Ghost Snap, which keeps the Ghost account key inside
+  MetaMask (the Snap is its own package). The page asks MetaMask only to
+  install the Snap (`wallet_requestSnaps`) and to run its two requests
+  (`wallet_invokeSnap` with `ghost_getAccount` and `ghost_signTransaction`).
 - It downloads no proving key. The prover needs none: the statement is
   built into the WebAssembly module, which proves in a background worker.
 - It talks to one thing only: the node endpoint you choose (JSON-RPC). No
-  request names your key, your seed, your commitment, its position or its
-  marker.
+  request names your key, your commitment, its position or its marker. The
+  connected wallet signs; the page then sends the signed transaction to the
+  endpoint, after checking it is from the connected account and that its
+  hash is its envelope's.
 - It takes no confirmation on the endpoint's word. The background worker
   keeps a header chain for the page and checks every header's difficulty
   and RandomX seal from the start this build pins for the network, keeping
@@ -123,21 +133,26 @@ does not start from a `file:` page), for example:
 python3 -m http.server --directory webapp/dist 8080
 ```
 
-and open `http://localhost:8080`. The page has the wallet button top right
-("Open wallet", then the wallet's short address once it is open: it holds
-the create and restore flows) and one card with two tabs, **Vanish** (an
-amount box, the open wallet's balance and Max, and the Vanish button) and
-**Summon** (a box to paste a key, then an amount box and the Summon button).
+and open `http://localhost:8080`. The page has the **Connect wallet** button
+top right and one card with two tabs, **Vanish** (an amount box, the
+connected wallet's balance and Max, and the Vanish button) and **Summon** (a
+box to paste a key, then an amount box and the Summon button). Connect
+wallet opens a list of wallets with one entry, **MetaMask (Ghost Snap)**;
+without MetaMask in the browser the entry says to install it. Once
+connected, the button shows the account's short address, and its popover
+the full address, the balance, Refresh and Disconnect. While no wallet is
+connected the main buttons read "Connect wallet" and open that list.
 Vanish then steps through three
 screens in the card: **Save your Phantom Key** (the 24 words in a numbered
 grid, Copy, Download and "I saved it"), **Check your key** (three of the
 words typed back; a wrong one sends nothing, and "Vanish *amount* GHOST"
-sends the commit with a thin waiting bar) and **Done** ("*amount* GHOST
+asks the connected wallet to approve the commit, then sends it with a thin
+waiting bar; turned down in the wallet, nothing is sent) and **Done** ("*amount* GHOST
 vanished"; Done drops the key). The key also leaves memory when you switch
 to Summon or close the page. Summon opens the pasted key once it holds 24
 words (or the digit form), or when you leave the box, shows what the key
-holds with Max, and pays only the open wallet's address ("Open wallet"
-with none open). While the reveal goes out the card shows three steps that
+holds with Max, and pays only the connected wallet's address ("Connect
+wallet" with none connected). While the reveal goes out the card shows three steps that
 tick off as the app reaches them (Making your proof, Sending to the network,
 Confirming), then **Done** ("*amount* GHOST summoned", what is still in the
 key, or "This key is now empty."). Done, a tab switch or closing the page
@@ -170,7 +185,14 @@ kept. `webapp/test/flow.test.mjs` drives the flow controller through Vanish (a
 wrong save check of three words that sends nothing, then a right one), a partial Summon and a
 Claim, with the real prover in a `worker_threads` worker speaking the browser
 worker's messages, against a scripted stand-in for the node's JSON-RPC that
-verifies every proof and records every request. Set `GHOST_WEBAPP_WASM` to
+verifies every proof and records every request. The tests connect the
+tests' wallet, a connector in `webapp/test/support/env.mjs` that signs with
+a fixed test seed in the worker's message interface: the only place a seed
+is held. `webapp/test/wallet-connect.test.mjs` drives the Ghost Snap
+connector against a stand-in MetaMask (the exact requests and their 0x hex
+fields, a rejection that sends nothing, answers that are refused) and the
+flow with a connected wallet (an answer from another account, or whose hash
+is not its envelope's, is never sent). Set `GHOST_WEBAPP_WASM` to
 test another build of the module, for example
 `webapp/dist/ghost_webapp_wasm.wasm`.
 
@@ -179,9 +201,10 @@ test another build of the module, for example
 flow (the wording, a wrong check word that sends nothing, the right words
 that send, and Done or a tab switch that drops the key).
 `webapp/test/summon-screens.test.mjs` does the same for Summon: the paste
-box and its plain errors, the amount checks, the reveal paid to the open
-wallet's address, the three steps, Done with the rest or an empty key, and
-Done or a tab switch that drops the key.
+box and its plain errors, the amount checks, the reveal paid to the
+connected wallet's address, the three steps, Done with the rest or an empty
+key, Done or a tab switch that drops the key, and the Connect wallet list
+with and without MetaMask.
 
 To run the same flow against a real node, build ghost-node's `geth` at the
 pinned commit and point the real-node test at it:
