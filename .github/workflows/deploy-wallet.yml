@@ -85,3 +85,40 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: vercel deploy --prebuilt --prod --yes --token "$VERCEL_TOKEN"
+      # The production URL now serves this commit: every file RELEASE.json
+      # names, byte for byte, with the headers of wallet/headers.json.
+      - name: Check the live wallet
+        env:
+          WALLET_URL: https://ghost-wallet-nine.vercel.app
+        run: |
+          node -e '
+            const { createHash } = require("node:crypto");
+            const fs = require("node:fs");
+            const base = process.env.WALLET_URL;
+            const headers = JSON.parse(fs.readFileSync("wallet/headers.json", "utf8"));
+            const { files } = JSON.parse(fs.readFileSync("wallet/dist/RELEASE.json", "utf8"));
+            const check = async () => {
+              for (const [path, hash] of Object.entries(files)) {
+                const res = await fetch(base + "/" + path, { cache: "no-store" });
+                if (!res.ok) throw new Error(path + ": HTTP " + res.status);
+                const got = createHash("sha256").update(Buffer.from(await res.arrayBuffer())).digest("hex");
+                if (got !== hash) throw new Error(path + ": served " + got + ", RELEASE.json has " + hash);
+                for (const [name, value] of Object.entries(headers)) {
+                  if (res.headers.get(name) !== value) throw new Error(path + ": " + name + " is " + res.headers.get(name));
+                }
+              }
+            };
+            (async () => {
+              for (let attempt = 1; ; attempt++) {
+                try {
+                  await check();
+                  console.log(base, "serves RELEASE.json:", Object.keys(files).length, "files, headers as wallet/headers.json");
+                  return;
+                } catch (err) {
+                  if (attempt === 5) throw err;
+                  console.log("attempt", attempt + ":", err.message, "- retrying in 15s");
+                  await new Promise((r) => setTimeout(r, 15000));
+                }
+              }
+            })().catch((err) => { console.error(err.message); process.exit(1); });
+          '
