@@ -6,6 +6,7 @@ import { formatGhost, parseGhost } from "./chain.mjs";
 import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, WALLET_APPROVAL, createFlow, normalKey, wrongWords } from "./flow.mjs";
 import { downloadKeyImage } from "./keyimage.mjs";
 import { browserProver } from "./prover.mjs";
+import { popupConnector } from "./popup-wallet.mjs";
 import { DEFAULT_ENDPOINT } from "./rpc.mjs";
 import { injectedProvider, snapConnector } from "./wallet-connect.mjs";
 
@@ -380,10 +381,13 @@ let walletError = null;
 
 const SNAP_NOTE = "A quantum-safe Ghost account kept in MetaMask";
 const NO_METAMASK = "Install MetaMask to use this wallet, then reload this page";
+const POPUP_BLOCKED =
+  "The wallet window was blocked. If this page is open inside another app, open it in your browser (Safari, Chrome or Firefox), then try again.";
 
 function walletErrorText(err, step) {
   const said = String((err && err.message) || "");
   if (/^wait until/.test(said)) return "Wait until the current step is done.";
+  if (err && err.name === "PopupBlocked") return POPUP_BLOCKED;
   if (step === "refresh") return "The balance could not be read. Check the node under Network.";
   if (/MetaMask is not installed/.test(said)) return "MetaMask is not installed in this browser. Install MetaMask, then reload this page.";
   if (/rejected in your wallet/.test(said)) return "You rejected the connection in your wallet.";
@@ -602,6 +606,12 @@ $("network-form").addEventListener(
     flow.setCommitEntry($("commit-entry").value);
     $("endpoint").value = flow.state.endpoint;
   }),
+);
+// The Ghost pop-up wallet, the default: its window opens from this click,
+// keeps the account key on the wallet's own origin and asks the user there.
+$("wallet-option-popup").addEventListener(
+  "click",
+  walletAct("connect", () => flow.walletConnect(popupConnector())),
 );
 // MetaMask with the Ghost Snap: MetaMask installs the Snap the first time
 // and the Snap gives the Ghost account. The provider is read at the click,

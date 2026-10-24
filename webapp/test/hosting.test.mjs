@@ -62,9 +62,10 @@ test("the Content-Security-Policy header is the page's policy plus frame-ancesto
 test("the other security headers are set", () => {
   assert.equal(header("Referrer-Policy"), "no-referrer");
   assert.equal(header("X-Content-Type-Options"), "nosniff");
-  assert.equal(header("Cross-Origin-Opener-Policy"), "same-origin");
-  // With the opener policy, cross-origin isolation, which the threaded
-  // prover's shared memory needs.
+  // Pop-ups keep their opener: the pop-up wallet on its own origin answers
+  // the page over postMessage, which a same-origin policy would cut.
+  assert.equal(header("Cross-Origin-Opener-Policy"), "same-origin-allow-popups");
+  // The embedder policy, for the threaded prover's shared memory.
   assert.equal(header("Cross-Origin-Embedder-Policy"), "require-corp");
   assert.equal(header("X-Frame-Options"), "DENY");
 });

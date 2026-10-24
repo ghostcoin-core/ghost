@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="dark">
+  <title>Ghost wallet</title>
+  <link rel="stylesheet" href="wallet/style.css">
+  <link rel="modulepreload" href="wallet/src/config.mjs">
+  <link rel="modulepreload" href="wallet/src/wallet.mjs">
+  <link rel="modulepreload" href="wallet/src/ghost-wasm.mjs">
+  <link rel="modulepreload" href="webapp/src/wasm.mjs">
+  <link rel="modulepreload" href="webapp/src/bytes.mjs">
+  <script type="module" src="wallet/src/main.mjs"></script>
+</head>
+<body>
+  <main>
+    <h1>Ghost wallet</h1>
+    <p id="error" class="error" role="alert"></p>
+
+    <section id="status-screen">
+      <p id="status" role="status">Loading…</p>
+    </section>
+
+    <section id="start-screen" hidden>
+      <p>This wallet keeps your Ghost account key in this browser, encrypted, and signs only what you approve here. The app never sees your words or your key.</p>
+      <button id="create" type="button">Create a new wallet</button>
+      <button id="restore" type="button">Restore from 24 words</button>
+    </section>
+
+    <section id="words-screen" hidden>
+      <h2>Write down your 24 words</h2>
+      <p>They are the only backup of this wallet. Anyone with them can spend from it. They are shown once.</p>
+      <ol id="words" class="words"></ol>
+      <button id="words-done" type="button">I wrote them down</button>
+    </section>
+
+    <section id="check-screen" hidden>
+      <h2>Check your backup</h2>
+      <p>Type these three words from what you wrote down.</p>
+      <label><span id="check-label-0"></span> <input id="check-0" type="text" spellcheck="false" autocomplete="off" autocapitalize="off"></label>
+      <label><span id="check-label-1"></span> <input id="check-1" type="text" spellcheck="false" autocomplete="off" autocapitalize="off"></label>
+      <label><span id="check-label-2"></span> <input id="check-2" type="text" spellcheck="false" autocomplete="off" autocapitalize="off"></label>
+      <button id="check-done" type="button">Check</button>
+    </section>
+
+    <section id="restore-screen" hidden>
+      <h2>Restore your wallet</h2>
+      <label>Your 24 words <textarea id="restore-words" rows="4" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
+      <button id="restore-done" type="button">Restore</button>
+    </section>
+
+    <section id="lock-screen" hidden>
+      <h2>Protect your wallet</h2>
+      <p>Your words are stored in this browser only encrypted, under a passkey or a password. You unlock them for each request.</p>
+      <button id="lock-passkey" type="button">Use a passkey</button>
+      <label>Password (12 characters or more) <input id="lock-password" type="password" autocomplete="new-password"></label>
+      <label>Password again <input id="lock-password-again" type="password" autocomplete="new-password"></label>
+      <button id="lock-done" type="button">Use this password</button>
+    </section>
+
+    <section id="approve-screen" hidden>
+      <h2 id="approve-title"></h2>
+      <p>Asked by <strong id="approve-origin"></strong></p>
+      <dl id="approve-details"></dl>
+      <label id="approve-password-label">Password <input id="approve-password" type="password" autocomplete="current-password"></label>
+      <button id="approve" type="button">Approve</button>
+      <button id="reject" type="button">Reject</button>
+    </section>
+  </main>
+</body>
+</html>

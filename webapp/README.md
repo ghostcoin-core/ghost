@@ -35,7 +35,13 @@ The design, the node methods it calls and its limits are in
   reload you connect again.
 - It uses no elliptic-curve key and offers no wallet that signs with one.
   Ghost accounts are quantum-safe: their key is ML-DSA-44, and every commit
-  is a quantum-safe account transaction (type 0x52). The one wallet listed
+  is a quantum-safe account transaction (type 0x52). The default wallet is
+  the Ghost pop-up wallet (`wallet/`, with its own README): a site on its
+  own origin that keeps the account key, opened in a pop-up and asked over
+  `postMessage` (`src/popup-wallet.mjs`). The page posts only to the
+  wallet's origin and reads replies only from that origin and the window it
+  opened; the wallet shows each request and asks you to approve it. The
+  page holds no seed, words or key for it either. The other wallet listed
   is MetaMask with the Ghost Snap, which keeps the Ghost account key inside
   MetaMask (the Snap is its own package). The page asks MetaMask only to
   install the Snap (`wallet_requestSnaps`) and to run its two requests
@@ -84,10 +90,13 @@ writes `webapp/dist/SHA256SUMS` with one line per file.
   not start, it loads the single-thread module. Both prove the same
   statements with the same configuration.
 
-The hosted site makes the page cross-origin isolated with
-`Cross-Origin-Opener-Policy: same-origin` and
-`Cross-Origin-Embedder-Policy: require-corp` (`vercel/config.json`). A plain
-static server without those headers gets the single-thread module.
+The hosted site serves the page with
+`Cross-Origin-Opener-Policy: same-origin-allow-popups` and
+`Cross-Origin-Embedder-Policy: require-corp` (`vercel/config.json`). The
+opener policy lets the pop-up wallet, on its own origin, keep its link to
+the page; `same-origin` would cut it. Browsers that grant cross-origin
+isolation only with `same-origin` give the page the single-thread module,
+as does a plain static server without those headers.
 
 ## Check a build
 
@@ -137,7 +146,10 @@ and open `http://localhost:8080`. The page has the **Connect wallet** button
 top right and one card with two tabs, **Vanish** (an amount box, the
 connected wallet's balance and Max, and the Vanish button) and **Summon** (a
 box to paste a key, then an amount box and the Summon button). Connect
-wallet opens a list of wallets with one entry, **MetaMask (Ghost Snap)**;
+wallet opens a list of two wallets: first, the default, **Ghost wallet**,
+which opens the pop-up wallet in its own window (when the browser blocks
+the pop-up, as in-app browsers do, the panel asks you to open the page in
+your browser); then the Ghost Snap's entry;
 without MetaMask in the browser the entry says to install it. Once
 connected, the button shows the account's short address, and its popover
 the full address, the balance, Refresh and Disconnect. While no wallet is
@@ -192,7 +204,11 @@ is held. `webapp/test/wallet-connect.test.mjs` drives the Ghost Snap
 connector against a stand-in MetaMask (the exact requests and their 0x hex
 fields, a rejection that sends nothing, answers that are refused) and the
 flow with a connected wallet (an answer from another account, or whose hash
-is not its envelope's, is never sent). Set `GHOST_WEBAPP_WASM` to
+is not its envelope's, is never sent). `webapp/test/popup-wallet.test.mjs` drives the pop-up
+wallet connector against the wallet's own logic through a stand-in for
+`window.open` and `postMessage` (replies from another origin or window
+ignored, Reject or a closed pop-up as 4001 with nothing signed, a blocked
+pop-up). Set `GHOST_WEBAPP_WASM` to
 test another build of the module, for example
 `webapp/dist/ghost_webapp_wasm.wasm`.
 
