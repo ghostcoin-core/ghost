@@ -153,7 +153,8 @@ const settle = async (n = 4) => {
 // `amount`; `wallet` false starts with no wallet connected; `refuse` makes the
 // reveal fail with that raw text before anything is sent.
 // `ethereum` is the page's window.ethereum, absent by default.
-function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, ethereum = undefined } = {}) {
+// `popup` stands for popupConnector (popup-wallet.mjs).
+function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, ethereum = undefined, popup = () => assert.fail("no pop-up wallet") } = {}) {
   const elements = new Map();
   const document = {
     getElementById(id) {
@@ -288,7 +289,7 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, ethereum
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
   const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "WALLET_APPROVAL", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
-  const wallets = ["injectedProvider", "snapConnector"];
+  const wallets = ["injectedProvider", "snapConnector", "popupConnector"];
   new Function(...names, ...more, ...wallets, body)(
     document,
     window,
@@ -307,6 +308,7 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, ethereum
     async () => {},
     injectedProvider,
     snapConnector,
+    popup,
   );
   $("tab-summon").fire("click");
   return { $, log, screens, window };
@@ -532,6 +534,42 @@ test("Connect wallet lists MetaMask (Ghost Snap); connected, the button shows th
   await settle();
   assert.equal(rejecting.$("wallet-error").textContent, "You rejected the connection in your wallet.");
   assert.equal(rejecting.$("wallet-button-text").textContent, "Connect wallet");
+});
+
+test("Connect wallet offers the Ghost pop-up wallet; a blocked pop-up asks to open the page in the browser", async () => {
+  const address = `0x5b${"0".repeat(34)}0a2e`;
+  const page = startPage({
+    wallet: false,
+    popup: () => ({ id: "ghost-popup-wallet", name: "Ghost wallet", connect: async () => ({ address }) }),
+  });
+  page.$("wallet-option-popup").fire("click");
+  await settle();
+  assert.deepEqual(page.log.connects, ["Ghost wallet"]);
+  assert.equal(page.$("wallet-button-text").textContent, "0x5b…a2e");
+  assert.equal(page.$("wallet-address").textContent, address);
+  assert.equal(page.$("wallet-error").textContent, "");
+
+  // An in-app browser that refuses the pop-up: a plain line, nothing connected.
+  const blocked = startPage({
+    wallet: false,
+    popup: () => ({
+      name: "Ghost wallet",
+      connect: async () => Promise.reject(Object.assign(new Error("the browser blocked the wallet window"), { name: "PopupBlocked" })),
+    }),
+  });
+  blocked.$("wallet-option-popup").fire("click");
+  await settle();
+  assert.match(blocked.$("wallet-error").textContent, /^The wallet window was blocked\. .*open it in your browser/);
+  assert.equal(blocked.$("wallet-button-text").textContent, "Connect wallet");
+
+  // Closed or turned down in the pop-up.
+  const rejecting = startPage({
+    wallet: false,
+    popup: () => ({ name: "Ghost wallet", connect: async () => Promise.reject(new Error("the connection was rejected in your wallet; nothing was sent")) }),
+  });
+  rejecting.$("wallet-option-popup").fire("click");
+  await settle();
+  assert.equal(rejecting.$("wallet-error").textContent, "You rejected the connection in your wallet.");
 });
 
 test("a key is checked when it holds 24 words or on leaving the box, with no error while typing", async () => {

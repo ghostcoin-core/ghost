@@ -1,0 +1,59 @@
+body {
+  margin: 0;
+  background: #0a0a12;
+  color: #ece9f5;
+  font: 16px/1.5 system-ui, sans-serif;
+}
+
+main {
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+label,
+button {
+  display: block;
+  width: 100%;
+  margin: 12px 0;
+  box-sizing: border-box;
+}
+
+input,
+textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 4px;
+  padding: 8px;
+  font: inherit;
+}
+
+button {
+  padding: 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+dd,
+code {
+  margin: 0 0 8px;
+  font-family: ui-monospace, monospace;
+  overflow-wrap: anywhere;
+}
+
+dt {
+  color: #a39fb8;
+}
+
+.words {
+  columns: 2;
+}
+
+.error {
+  color: #ff8080;
+}
+
+[hidden] {
+  display: none;
+}

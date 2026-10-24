@@ -47,7 +47,7 @@ threads_initial_memory=67108864
 threads_max_memory=4294967296
 # The page's own files, in the order they are copied.
 files=(index.html style.css)
-modules=(app bytes chain flow header keyimage prover rpc thread threads wasm worker worker-core)
+modules=(app bytes chain flow header keyimage popup-wallet prover rpc thread threads wallet-connect wasm worker worker-core)
 
 if ! rustup run "$toolchain" rustc --version >/dev/null 2>&1; then
   echo "Rust $toolchain is not installed. Install it with:" >&2

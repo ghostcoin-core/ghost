@@ -152,10 +152,16 @@ test("the Connect wallet button top right opens a dialog listing the quantum-saf
   assert.match(tag("wallet-panel"), /role="dialog"/);
   const panel = element("wallet-panel");
   assert.match(element("wallet-title"), />Connect a wallet</);
-  // One wallet listed: MetaMask with the Ghost Snap, as a button in a list.
+  // Two wallets listed, as buttons in a list: the Ghost pop-up wallet first,
+  // the default, then the Ghost Snap.
   const list = element("wallet-connect");
   const options = [...list.matchAll(/<button\b[^>]*class="wallet-option"[^>]*>/g)];
-  assert.equal(options.length, 1, "one wallet in the list");
+  assert.deepEqual(
+    options.map((m) => /id="([^"]+)"/.exec(m[0])[1]),
+    ["wallet-option-popup", "wallet-option-snap"],
+  );
+  assert.match(element("wallet-option-popup"), /<span id="wallet-option-popup-name"[^>]*>Ghost wallet<\/span>/);
+  assert.match(element("wallet-option-popup"), /its own window/);
   assert.match(element("wallet-option-snap"), /<span id="wallet-option-snap-name"[^>]*>MetaMask \(Ghost Snap\)<\/span>/);
   assert.match(list, /<ul class="wallet-list"/);
   assert.match(list, /quantum-safe/);
@@ -191,10 +197,12 @@ test("the page has no create or restore wallet flow and holds no seed", () => {
     assert.ok(!source.includes(op), `app.mjs names ${op}`);
   }
   assert.match(source, /flow\.walletConnect\(snapConnector\(provider\)\)/);
+  assert.match(source, /flow\.walletConnect\(popupConnector\(\)\)/);
   assert.match(source, /flow\.walletDisconnect\(\)/);
   // The connection is not remembered: no browser storage and no cookie.
   const stores = [["local", "Storage"].join(""), ["session", "Storage"].join(""), "document.cookie", "indexedDB"];
-  for (const text of [source, flow, readFileSync(new URL("../src/wallet-connect.mjs", import.meta.url), "utf8")]) {
+  const connectors = ["wallet-connect", "popup-wallet"].map((name) => readFileSync(new URL(`../src/${name}.mjs`, import.meta.url), "utf8"));
+  for (const text of [source, flow, ...connectors]) {
     for (const store of stores) assert.ok(!text.includes(store), store);
   }
 });
