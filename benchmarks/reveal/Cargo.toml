@@ -18,6 +18,23 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 ghost-proofs = { path = "../../proofs" }
 
+# For tests/recursion_proxy.rs: the pinned Plonky3 crates of proofs/Cargo.toml,
+# at the same revision, and its postcard and rand.
+[dev-dependencies]
+p3-baby-bear = { git = "https://github.com/Plonky3/Plonky3", rev = "f98331687e47106a64ab82a77e2e1d0d66c9161b" }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "f98331687e47106a64ab82a77e2e1d0d66c9161b" }
+p3-commit = { git = "https://github.com/Plonky3/Plonky3", rev = "f98331687e47106a64ab82a77e2e1d0d66c9161b" }
+p3-dft = { git = "https://github.com/Plonky3/Plonky3", rev = "f98331687e47106a64ab82a77e2e1d0d66c9161b" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "f98331687e47106a64ab82a77e2e1d0d66c9161b" }
+p3-fri = { git = "https://github.com/Plonky3/Plonky3", rev = "f98331687e47106a64ab82a77e2e1d0d66c9161b" }
+p3-keccak = { git = "https://github.com/Plonky3/Plonky3", rev = "f98331687e47106a64ab82a77e2e1d0d66c9161b" }
+p3-keccak-air = { git = "https://github.com/Plonky3/Plonky3", rev = "f98331687e47106a64ab82a77e2e1d0d66c9161b" }
+p3-merkle-tree = { git = "https://github.com/Plonky3/Plonky3", rev = "f98331687e47106a64ab82a77e2e1d0d66c9161b" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "f98331687e47106a64ab82a77e2e1d0d66c9161b" }
+p3-uni-stark = { git = "https://github.com/Plonky3/Plonky3", rev = "f98331687e47106a64ab82a77e2e1d0d66c9161b" }
+postcard = { version = "1.1.3", default-features = false, features = ["alloc"] }
+rand = { version = "0.10.1", default-features = false, features = ["std_rng"] }
+
 [profile.release]
 opt-level = 3
 codegen-units = 1
