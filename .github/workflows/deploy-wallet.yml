@@ -81,6 +81,9 @@ jobs:
         run: |
           npm install --global --no-fund --no-audit "vercel@$VERCEL_CLI_VERSION"
           vercel --version
+      # The wallet's own project-scoped token: the shared VERCEL_TOKEN is
+      # scoped to the web app's project only, and with it this deploy fails
+      # with "Project not found".
       - name: Deploy to production
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_WALLET_TOKEN }}
