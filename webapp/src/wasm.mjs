@@ -112,12 +112,10 @@ export function saltRecord(salt) {
   return record;
 }
 
-// The key formats ghost_check_key names by their code.
-const KEY_FORMATS = new Map([
-  [0x0c, "standard"],
-  [0x18, "long"],
-  [0x20, "words"],
-]);
+// The key formats ghost_check_key names by their code: only words. The codes
+// 0x0c and 0x18 of the old digit keys are refused like any unknown code.
+const KEY_FORMATS = new Map([[0x20, "words"]]);
+const WORDS_GROUPS = 21;
 
 export class Ghost {
   constructor(exports) {
@@ -160,12 +158,13 @@ export class Ghost {
   }
 
   // A typed key, words or digits, checked with its check before anything
-  // is derived: its format ("words", "standard" or "long") and the groups
-  // of its digit view (21, 12 or 24). A refusal names no word or digit.
+  // is derived: its format, always "words", and the groups of its digit
+  // view, 21. Digits of any other count, such as the 12 or 24 groups of the
+  // old digit keys, are refused. A refusal names no word or digit.
   checkKey(text) {
     const [code, groups] = this.call("ghost_check_key", encoder.encode(text));
     const format = KEY_FORMATS.get(code);
-    if (!format) throw new Error("the module returned an unknown key format");
+    if (!format || groups !== WORDS_GROUPS) throw new Error("the module returned an unknown key format");
     return { format, groups };
   }
 

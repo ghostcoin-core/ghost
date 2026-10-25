@@ -12,8 +12,9 @@ use ghost_proofs::{empty_leaf, tree_node, verify_coin_reveal, verify_salted_coin
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-/// The standard example key of spec 01, section 14. Example only.
-const DIGITS: &str = "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417";
+/// The example words key of spec 01, section 5, as its digit view. Example
+/// only.
+const DIGITS: &str = "0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812";
 const CHAIN_ID: u64 = 1234;
 const COMMITTED: u128 = 1_000_000_000;
 const PAID: u128 = 100_000_000;
@@ -120,7 +121,7 @@ impl Chain {
 #[test]
 fn restored_salted_coin_reveals_with_its_salt() {
     let mut rng = StdRng::seed_from_u64(0x5a17ed);
-    let other = PhantomKey::generate(KeyFormat::Standard, &mut rng);
+    let other = PhantomKey::generate(KeyFormat::Words, &mut rng);
     let mut chain = Chain::new();
     chain.salted_commit(&other, 5_000, &mut rng);
     let (position, salt) = chain.salted_commit(&key(), COMMITTED, &mut rng);

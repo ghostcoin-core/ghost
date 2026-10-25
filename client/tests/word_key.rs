@@ -1,14 +1,15 @@
 //! The words format of a Phantom Key (spec 01, sections 5 to 7): 24 words of
 //! the BIP-39 English list holding a 256-bit secret and an 8-bit check, the
-//! same key as 21 groups of digits, and the digit keys issued before it.
+//! same key as 21 groups of digits, and the refusal of the twelve- and
+//! twenty-four-group digit keys issued before it.
 //!
-//! The vectors of the words format live here, not in spec 01, section 14.
-//! The keys below are examples only, published here, and must never hold
-//! value.
+//! The words vectors live here, not in spec 01, section 14, whose digit keys
+//! are of the retired formats and kept there as fixed test data only. The
+//! keys below are examples only, published here, and must never hold value.
 
 use ghost_client::hash::{self, TAG_KEY_CHECK, TAG_SECRET};
 use ghost_client::wordlist::WORDLIST;
-use ghost_client::{check_groups, KeyError, KeyFormat, PhantomKey, Rule, Amount};
+use ghost_client::{check_groups, Amount, KeyError, KeyFormat, PhantomKey, Rule, Salt};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -192,13 +193,81 @@ fn words_and_digits_round_trip() {
         assert_eq!(words_of(&parse(&digits.replace(' ', "-"))), words);
         assert_eq!(words_of(&parse(&digits.replace(' ', ""))), words);
     }
+}
 
-    // The digit formats keep working when asked for, and have no words.
-    for format in [KeyFormat::Standard, KeyFormat::Long] {
-        let key = PhantomKey::generate(format, &mut rng);
-        assert_eq!(key.key_format(), format);
-        assert!(key.format_words().is_none());
-        assert_eq!(parse(&digits_of(&key)).key_bytes().as_bytes(), key.key_bytes().as_bytes());
+/// The twelve-group key of the old spec 01 examples, with its old check group.
+const OLD_STANDARD_KEY: &str = "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417";
+/// The twenty-four-group key of the old spec 01 examples, both check groups
+/// right under the old rules.
+const OLD_LONG_KEY: &str = "3141 5926 5358 9793 2384 6264 3383 2795 0288 4197 1693 6390 \
+    9937 5105 8209 7494 4592 3078 1640 6286 2089 9862 8034 8042";
+
+#[test]
+fn legacy_digit_formats_are_refused() {
+    // The keys the old formats issued, valid under their old checks, are
+    // refused by their length before any check or derivation.
+    assert_eq!(
+        PhantomKey::parse(OLD_STANDARD_KEY).err(),
+        Some(KeyError::WrongLength { digits: 48 })
+    );
+    assert_eq!(
+        PhantomKey::parse(OLD_LONG_KEY).err(),
+        Some(KeyError::WrongLength { digits: 96 })
+    );
+    assert_eq!(
+        PhantomKey::parse(&OLD_STANDARD_KEY.replace(' ', "-")).err(),
+        Some(KeyError::WrongLength { digits: 48 })
+    );
+    let message = PhantomKey::parse(OLD_STANDARD_KEY).err().unwrap().to_string();
+    assert_eq!(message, "a key shown as digits has 84 digits, not 48");
+
+    // Only 84 digits select a format, whatever the digits.
+    for count in 0..=120usize {
+        let expected = (count == 84).then_some(KeyFormat::Words);
+        assert_eq!(KeyFormat::from_digit_count(count), expected, "{count} digits");
+        if count == 84 {
+            continue;
+        }
+        for digit in ["0", "1", "7"] {
+            let text = digit.repeat(count);
+            assert_eq!(
+                PhantomKey::parse(&text).err(),
+                Some(KeyError::WrongLength { digits: count }),
+                "{count} digits"
+            );
+        }
+    }
+
+    // A valid digit view with a group dropped or added is refused too.
+    let view = WORDS_VECTORS[4].digits;
+    let groups: Vec<&str> = view.split(' ').collect();
+    let shorter = groups[1..].join(" ");
+    assert_eq!(PhantomKey::parse(&shorter).err(), Some(KeyError::WrongLength { digits: 80 }));
+    let longer = format!("{view} 0000");
+    assert_eq!(PhantomKey::parse(&longer).err(), Some(KeyError::WrongLength { digits: 88 }));
+
+    // The check of the old formats' 44 and 88 secret digits is not computed.
+    for count in [44usize, 88] {
+        assert_eq!(
+            check_groups(KeyFormat::Words, "1".repeat(count).as_bytes()),
+            Err(KeyError::WrongLength { digits: count })
+        );
+    }
+
+    // Every key generated, by default or by format, is a words key with
+    // words, 21 groups and 33 key bytes: there is no other format to ask for.
+    let mut rng = StdRng::seed_from_u64(20261025);
+    for round in 0..50 {
+        let key = if round % 2 == 0 {
+            PhantomKey::generate_default(&mut rng)
+        } else {
+            PhantomKey::generate(KeyFormat::Words, &mut rng)
+        };
+        assert_eq!(key.key_format(), KeyFormat::Words);
+        assert_eq!(key.key_format().code(), 0x20);
+        assert!(key.format_words().is_some());
+        assert_eq!(digits_of(&key).split(' ').count(), 21);
+        assert_eq!(key.key_bytes().as_bytes().len(), 33);
     }
 }
 
@@ -310,59 +379,143 @@ fn spec_vectors() -> Vec<Vector> {
     out
 }
 
+/// Whether a vector has this field.
+fn has(v: &Vector, field: &str) -> bool {
+    v.fields.iter().any(|(name, _)| name == field)
+}
+
 #[test]
-fn old_digit_keys_still_derive_the_same_values() {
+fn spec_vector_keys_are_refused() {
+    // The digit keys of section 14 are of the retired twelve- and
+    // twenty-four-group formats, kept there as fixed test data. The client
+    // refuses every one of them, valid or not under the old checks, by its
+    // length.
     let vectors = spec_vectors();
-    let mut checked = 0;
-    for v in vectors.iter().filter(|v| v.get("kind") == "derivation") {
-        let key = parse(v.get("key"));
-        let expected_format = match v.name.as_str() {
-            "derivation-standard" => KeyFormat::Standard,
-            "derivation-long" => KeyFormat::Long,
-            other => panic!("unknown derivation vector {other}"),
-        };
-        assert_eq!(key.key_format(), expected_format);
-        assert!(key.format_words().is_none());
-        assert_eq!(key.key_bytes().as_bytes(), decode_hex(v.get("key-bytes")).as_slice());
-        assert_eq!(hex(key.secret().as_bytes()), v.get("s"), "{}", v.name);
-        assert_eq!(hex(key.reveal_secret().as_bytes()), v.get("r"), "{}", v.name);
-        assert_eq!(hex(key.blinding(0).as_bytes()), v.get("b0"), "{}", v.name);
-        assert_eq!(hex(key.blinding(1).as_bytes()), v.get("b1"), "{}", v.name);
-        assert_eq!(hex(key.blinding(2).as_bytes()), v.get("b2"), "{}", v.name);
-        assert_eq!(hex(key.note_key().as_bytes()), v.get("note-key"), "{}", v.name);
-        assert_eq!(hex(key.data_key().as_bytes()), v.get("data-key"), "{}", v.name);
-        assert_eq!(digits_of(&key), v.get("key"));
-        checked += 1;
+    let mut keyed = 0;
+    for v in vectors.iter().filter(|v| has(v, "key")) {
+        let count = v.get("key").replace(' ', "").len();
+        assert!(count == 48 || count == 96, "{}: {count} digits", v.name);
+        assert_eq!(
+            PhantomKey::parse(v.get("key")).err(),
+            Some(KeyError::WrongLength { digits: count }),
+            "{}",
+            v.name
+        );
+        keyed += 1;
     }
-    assert_eq!(checked, 2, "spec 01 has a standard and a long derivation vector");
+    assert!(keyed >= 10, "spec 01 has {keyed} keyed vectors");
+    assert!(vectors.iter().any(|v| v.name == "derivation-standard"));
+    assert!(vectors.iter().any(|v| v.name == "derivation-long"));
+}
 
-    for v in vectors.iter().filter(|v| v.get("kind") == "coin-commitment") {
-        let key = parse(v.get("key"));
-        assert_eq!(key.key_format(), KeyFormat::Standard);
-        let amount = Amount::new(v.get("amount").parse().unwrap()).unwrap();
-        let commit = key
-            .coin_commit(v.get("index").parse().unwrap(), amount, Rule::EMPTY)
-            .unwrap();
-        assert_eq!(hex(commit.commitment.as_bytes()), v.get("commitment"), "{}", v.name);
-        assert_eq!(hex(commit.marker.as_bytes()), v.get("marker"), "{}", v.name);
-        checked += 1;
-    }
-    assert_eq!(checked, 4);
+/// A coin commitment under a words key: (digit view, number, amount, salt or
+/// none, fingerprint, commitment, marker). The values were recomputed
+/// independently by `scripts/check_commitment_vectors.py`.
+type CoinVector = (&'static str, u64, u128, Option<&'static str>, &'static str, &'static str, &'static str);
 
-    for v in vectors.iter().filter(|v| v.get("kind") == "checksum") {
-        let result = PhantomKey::parse(v.get("key"));
-        match v.get("valid") {
-            "yes" => {
-                let key = result.unwrap_or_else(|e| panic!("{}: {e}", v.name));
-                assert_eq!(format!("{:02x}", key.key_format().code()), v.get("format"));
+const COIN_VECTORS: [CoinVector; 6] = [
+    (
+        WORDS_VECTORS[4].digits,
+        0,
+        1_000_000_000_000_000_000,
+        None,
+        "adb657b17abd3d6a22f29a4d9fded4367c0c27f0b167fc5d9eccf33dfbc2ff6c",
+        "9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c",
+        "ed3aec8b2a68aa001654023dafa7bf3a187b9f3bb59940fd40389b20beda8a98",
+    ),
+    (
+        WORDS_VECTORS[4].digits,
+        1,
+        700_000_000_000_000_000,
+        None,
+        "d1f0a17727dfbee9609e21f3aeed5fc004d21fd4f48a00af8f954e91f606b620",
+        "5530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503",
+        "19fc0d871f7118ea3ecd015da559a01c7158a82dbd5160dd961680b122a3142e",
+    ),
+    (
+        WORDS_VECTORS[4].digits,
+        0,
+        1_000_000_000_000_000_000,
+        Some("00112233445566778899aabbccddeeff"),
+        "8b4163e74a80b77f5cb3ca11a10a4482299d86193290c0dbe126eed33fadcf13",
+        "1525d1f6caa2f9314988542a3dcb7ab5a76a9ba5dd3fef97a1ecf72ddeb516bc",
+        "d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78",
+    ),
+    (
+        WORDS_VECTORS[4].digits,
+        0,
+        1_000_000_000_000_000_000,
+        Some("f0e1d2c3b4a5968778695a4b3c2d1e0f"),
+        "f0d8df5bafcd237f6ce079cca85ee24f6d8c9f8d27c3c7da1d5a5d9b2f4dcee2",
+        "ad1dc91acf32d8300693a5ed9d0c70dfc1e52d1721df648a19be869f7cf5db1f",
+        "8a674db2fa27d946788e49f4bfa33d5b39fd1f738164fea4490b4266ab71e621",
+    ),
+    (
+        WORDS_VECTORS[4].digits,
+        1,
+        700_000_000_000_000_000,
+        Some("0123456789abcdeffedcba9876543210"),
+        "47cd0d41d685ed61766f9c8a2475e04c33b2d8c75b25647210f482ad8ce2c26a",
+        "a1f0774fc85bd02f9661ce63b14484abc808950848b3797a980c201a2946af72",
+        "f7476caa827fa1478d8f2a561e2638a7d4817793176eaced88798bf7d28fa806",
+    ),
+    (
+        WORDS_VECTORS[4].digits,
+        1,
+        700_000_000_000_000_000,
+        Some("89abcdef0123456776543210fedcba98"),
+        "da130c26dc4beba75cff9ac5a0fd290eafbea8c4d9956b1daac36cfb728ff8a6",
+        "44d90289fe50570b498537b5c4da8dabc46b7703dba96751da8eb16868a9af7e",
+        "e76d066c481bbbc4fa3a67b5aeb5fab6675156207982ca03d8098985befa22b7",
+    ),
+];
+
+#[test]
+fn words_key_commitment_vectors() {
+    for (digits, index, wei, salt, fingerprint, commitment, marker) in COIN_VECTORS {
+        let key = parse(digits);
+        assert_eq!(words_of(&key), WORDS_VECTORS[4].words);
+        let amount = Amount::new(wei).unwrap();
+        let commit = match salt {
+            None => key.coin_commit(index, amount, Rule::EMPTY).unwrap(),
+            Some(salt) => {
+                let salt = Salt::from_bytes(decode_hex(salt).try_into().unwrap());
+                key.coin_commit_with_salt(index, amount, Rule::EMPTY, salt).unwrap()
             }
-            _ => assert!(
-                matches!(result, Err(KeyError::ChecksumMismatch { .. })),
-                "{}",
-                v.name
-            ),
-        }
+        };
+        assert_eq!(hex(commit.fingerprint.as_bytes()), fingerprint, "{index} {salt:?}");
+        assert_eq!(hex(commit.commitment.as_bytes()), commitment, "{index} {salt:?}");
+        assert_eq!(hex(commit.marker.as_bytes()), marker, "{index} {salt:?}");
+        // The same key typed as words gives the same commitment.
+        let from_words = parse(WORDS_VECTORS[4].words);
+        let again = match commit.salt {
+            None => from_words.coin_commit(index, amount, Rule::EMPTY).unwrap(),
+            Some(salt) => from_words.coin_commit_with_salt(index, amount, Rule::EMPTY, salt).unwrap(),
+        };
+        assert_eq!(again, commit);
     }
+}
+
+#[test]
+fn words_key_checks() {
+    // The check group 21 of each words vector, and of keys one digit, two
+    // groups or one past 2^256 away from them.
+    for v in &WORDS_VECTORS {
+        let digits = v.digits.replace(' ', "");
+        let check = check_groups(KeyFormat::Words, digits[..80].as_bytes()).unwrap();
+        assert_eq!(format!("{:04}", check[0]), &digits[80..], "{}", v.digits);
+    }
+    let view = WORDS_VECTORS[4].digits;
+    for (bad, check) in [
+        (view.replacen("0722", "0723", 1), 4451),
+        (view.replacen("4496 0722", "0722 4496", 1), 4660),
+    ] {
+        let digits = bad.replace(' ', "");
+        assert_eq!(check_groups(KeyFormat::Words, digits[..80].as_bytes()).unwrap(), vec![check]);
+        assert_eq!(PhantomKey::parse(&bad).err(), Some(KeyError::ChecksumMismatch { group: 21 }));
+    }
+    let too_large = "0011 5792 0892 3731 6195 4235 7098 5008 6879 0785 3269 9846 6564 0564 0394 5758 4007 9131 2963 9936 0340";
+    assert_eq!(PhantomKey::parse(too_large).err(), Some(KeyError::SecretOutOfRange));
 }
 
 /// A fixed words key: its 256 secret bits in hex, words, digits and derived

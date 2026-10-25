@@ -1,8 +1,7 @@
 //! Every secret derived from the key (spec 01, section 7).
 //!
 //! ```text
-//! key_bytes = 0x20 || the 32 secret bytes        (words key)
-//! key_bytes = code || secret digits as ASCII     (digit key, 0x0C or 0x18)
+//! key_bytes = 0x20 || the 32 secret bytes
 //! s      = S("ghost/secret/v1",        key_bytes)
 //! r      = S("ghost/reveal-secret/v1", key_bytes)
 //! b_i    = S("ghost/blinding/v1",      key_bytes, i as 8 bytes)
@@ -17,8 +16,8 @@ use crate::hash::{self, TAG_BLINDING, TAG_DATA_KEY, TAG_NOTE_KEY, TAG_REVEAL_SEC
 use crate::key::PhantomKey;
 use crate::wipe::wipe;
 
-/// The longest key bytes: the format code and 88 secret digits.
-const MAX_KEY_BYTES: usize = 89;
+/// The key bytes: the format code and the 32 secret bytes.
+const KEY_BYTES: usize = 33;
 
 macro_rules! secret_32 {
     ($(#[$doc:meta])* $name:ident) => {
@@ -65,12 +64,10 @@ secret_32! {
     DataKey
 }
 
-/// The key bytes every derivation takes: the format code, then the 32 secret
-/// bytes of a words key, or the secret digits of a digit key as ASCII,
-/// without the checksum groups. 33 bytes for a words key, whether it was
-/// typed as words or as digits; 45 for a standard key, 89 for a long key.
+/// The key bytes every derivation takes: the format code `0x20`, then the 32
+/// secret bytes. 33 bytes, whether the key was typed as words or as digits.
 pub struct KeyBytes {
-    bytes: [u8; MAX_KEY_BYTES],
+    bytes: [u8; KEY_BYTES],
     len: usize,
 }
 
@@ -84,7 +81,7 @@ impl KeyBytes {
     /// The key bytes of a key whose checksum has been checked.
     pub fn of(key: &PhantomKey) -> Self {
         let mut out = Self {
-            bytes: [0; MAX_KEY_BYTES],
+            bytes: [0; KEY_BYTES],
             len: 0,
         };
         out.bytes[0] = key.key_format().code();

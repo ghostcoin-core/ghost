@@ -16,8 +16,8 @@
 //   receiptsRoot of the headers the page's chain holds, before the key is
 //   tried on a note;
 // - the background worker (prover.mjs), which holds the WebAssembly module
-//   and receives a key's words (or the digits of a key issued before the
-//   words) for the length of one request;
+//   and receives a key's words (or their 21 digit groups) for the length of
+//   one request;
 // - the connected wallet (wallet-connect.mjs), which holds the account's
 //   key and signs the commit's account transaction when the user approves
 //   it there.
@@ -27,8 +27,8 @@
 // commit is version 2 with a fresh per-coin salt in the clear beside `F`
 // (206 bytes); the node serves that salt beside the leaf, the app hands it
 // to restore, and the reveal and the claim pass the coin's salt to the
-// prover. Keys already issued as twelve groups of digits still restore,
-// reveal and claim.
+// prover. A key is only ever words or their 21 digit groups: the digit keys
+// of twelve or twenty-four groups are refused.
 //
 // The wallet is connected, not built in: a connector (wallet-connect.mjs)
 // whose wallet holds a quantum-safe account key (ML-DSA-44, spec 09,
@@ -2211,8 +2211,9 @@ export function createFlow({
     },
 
     // Summon: enter any valid key: its 24 words, in any case, separated by
-    // spaces or hyphens, or its digits (21 groups for a words key, or the 12
-    // or 24 groups of a key issued before the words). The worker checks the
+    // spaces or hyphens, or its digit view of 21 groups. Digits of any other
+    // count, the 12 or 24 groups of the old digit keys among them, are
+    // refused. The worker checks the
     // key's check before anything is derived; a key that fails is refused
     // with a message that names a position at most, never a word or digit.
     summonOpen(keyText) {

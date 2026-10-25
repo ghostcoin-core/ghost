@@ -3,6 +3,7 @@ fails when a vector, the tag table or the code behind a rule is damaged."""
 
 import hashlib
 import importlib.util
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,24 @@ SPEC = HERE.parent / "docs" / "spec" / "01-commitments-and-keys.md"
 _spec = importlib.util.spec_from_file_location("check_commitment_vectors", HERE / "check_commitment_vectors.py")
 checker = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(checker)
+
+
+WORD_KEY_TESTS = HERE.parent / "client" / "tests" / "word_key.rs"
+
+# The digit view of the words key of spec 01, section 5.
+WORDS_EXAMPLE = ("0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 "
+                 "7303 1997 5454 7598 3699 7944 0671 6812")
+
+
+def words_vectors():
+    """The WordsVector entries of client/tests/word_key.rs, as dicts."""
+    text = WORD_KEY_TESTS.read_text(encoding="utf-8")
+    body = text[text.index("const WORDS_VECTORS") :]
+    body = body[: body.index("];")]
+    vectors = []
+    for block in body.split("WordsVector {")[1:]:
+        vectors.append(dict(re.findall(r'(\w+): "([^"]*)"', block)))
+    return vectors
 
 
 def _flip_hex(value):
@@ -124,15 +143,64 @@ class CheckerTest(unittest.TestCase):
         self.assertEqual(fmt, checker.FORMAT_24)
         first = checker.compute_checks(checker.FORMAT_12, groups[:11])
         self.assertNotEqual(first[0], payload[11])
+        # The words code enters the check too: the same 80 digits under another
+        # code give another group.
+        fmt, groups, checks = checker.parse_key(WORDS_EXAMPLE)
+        self.assertEqual(fmt, checker.FORMAT_WORDS)
+        for code in (checker.FORMAT_12, checker.FORMAT_24, 0x21):
+            self.assertNotEqual(checker._check_group(code, 1, groups), checks[0])
+
+    def test_words_digit_view(self):
+        # The digit view of a words key: code 0x20, the 80 secret digits read
+        # as one decimal number into 32 bytes, and check group 21. Every words
+        # vector of the client is recomputed here from its digits alone.
+        vectors = words_vectors()
+        self.assertEqual(len(vectors), 5)
+        for v in vectors:
+            with self.subTest(digits=v["digits"]):
+                kb = checker.valid_key_bytes(v["digits"])
+                self.assertEqual(kb, b"\x20" + bytes.fromhex(v["bits"]))
+                self.assertEqual(checker.derive_secret(kb).hex(), v["s"])
+                self.assertEqual(checker.derive_reveal_secret(kb).hex(), v["r"])
+                self.assertEqual(checker.derive_blinding(kb, 0).hex(), v["b0"])
+                self.assertEqual(checker.derive_note_key(kb).hex(), v["note_key"])
+                self.assertEqual(checker.derive_data_key(kb).hex(), v["data_key"])
+        self.assertEqual(checker.valid_key_bytes(WORDS_EXAMPLE), b"\x20" + bytes(range(32)))
+
+    def test_words_digit_view_errors(self):
+        fmt, payload, checks = checker.parse_key(WORDS_EXAMPLE)
+        self.assertEqual(checks, checker.compute_checks(fmt, payload))
+        # One digit or two groups changed: the check group no longer matches.
+        for bad in (WORDS_EXAMPLE.replace("0722", "0723"),
+                    WORDS_EXAMPLE.replace("4496 0722", "0722 4496")):
+            with self.subTest(key=bad):
+                with self.assertRaises(ValueError):
+                    checker.valid_key_bytes(bad)
+        # 2^256 has a right check group but is no words key.
+        too_large = ("0011 5792 0892 3731 6195 4235 7098 5008 6879 0785 3269 9846 6564 "
+                     "0564 0394 5758 4007 9131 2963 9936")
+        fmt, payload, _ = checker.parse_key(too_large + " 0000")
+        self.assertFalse(checker.in_range(fmt, payload))
+        full = too_large + " " + checker.compute_checks(fmt, payload)[0]
+        with self.assertRaises(ValueError):
+            checker.valid_key_bytes(full)
+        # Other counts of digits are refused.
+        for bad in ("0000 " * 20, "0000 " * 22, WORDS_EXAMPLE + " 0000"):
+            with self.subTest(key=bad):
+                with self.assertRaises(ValueError):
+                    checker.parse_key(bad)
 
     def test_key_entry_rules(self):
         for bad in ("1111 2222", "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 041a",
-                    "١111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417"):
+                    "١111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417",
+                    WORDS_EXAMPLE[:-1] + "a"):
             with self.subTest(key=bad):
                 with self.assertRaises(ValueError):
                     checker.parse_key(bad)
         spaced = checker.parse_key("1111-2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417")
         self.assertEqual(spaced[0], checker.FORMAT_12)
+        self.assertEqual(checker.parse_key(WORDS_EXAMPLE.replace(" ", "-", 3)),
+                         checker.parse_key(WORDS_EXAMPLE))
 
     def test_same_blinding_every_time_is_caught(self):
         # The old design reused one remainder blinding; that must not pass.

@@ -11,9 +11,16 @@ import { loadModule } from "./support/env.mjs";
 
 const ghost = await loadModule();
 
-// Spec 01, vector coin-commit: a key of twelve digit groups, issued before
-// the words, and its version 1 coin.
-const VECTOR_KEY = "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417";
+// The vector coin-commit of client/tests/first_slice.rs: spec 01's vector of
+// that name under the example words key, as its digit view, instead of the
+// retired twelve-group key, and its version 1 coin.
+const VECTOR_KEY = "0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812";
+const VECTOR_F = "adb657b17abd3d6a22f29a4d9fded4367c0c27f0b167fc5d9eccf33dfbc2ff6c";
+const VECTOR_C = "9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c";
+const VECTOR_MARKER = "ed3aec8b2a68aa001654023dafa7bf3a187b9f3bb59940fd40389b20beda8a98";
+// The retired twelve-group key of spec 01's vectors, refused now.
+const OLD_KEY = "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417";
+// The two leaves of spec 05, section 11's tree vectors.
 const LEAF_A = "562d92a92bb8f2b3b772b55220a5ee26f189bedc0f4bfa513205df1545029458";
 const LEAF_B = "93312061656298f41cd5a9f116d070b38b0acf5f8d968c58e32170f70e7aed15";
 
@@ -80,15 +87,15 @@ test("the tree check accepts matching data and refuses a changed leaf or root", 
   assert.throws(() => ghost.treeCheck({ pageRoots: new Uint8Array(0), leaves: two, root }), /do not fill/);
 });
 
-test("a version 1 commit still matches spec 01, vector coin-commit", () => {
+test("a version 1 commit of a words key still matches its coin-commit vector", () => {
   const commit = ghost.commit({ version: 1, chainId: 7n, amount: 10n ** 18n, seed: new Uint8Array(32).fill(9), key: VECTOR_KEY });
-  assert.equal(toHex(commit.commitment), `0x${LEAF_A}`);
-  assert.equal(toHex(commit.marker), "0x671b869daf27c895e24a009e3d471e893e8e6ffe62f0309b4e5402c94c47ec85");
+  assert.equal(toHex(commit.commitment), `0x${VECTOR_C}`);
+  assert.equal(toHex(commit.marker), `0x${VECTOR_MARKER}`);
   assert.equal(commit.payload.length, ghost.constants().commitV1PayloadBytes);
   assert.equal(commit.payload.length, 190);
   assert.equal(toHex(commit.payload.slice(0, 2)), "0x0001");
-  assert.equal(toHex(commit.payload.slice(2, 34)), "0xb44338ab6f6dcb3d63772c457737afd38a841207725e1440d235c4f6be0c4d8b");
-  assert.equal(toHex(ghost.coinCommitment(commit.payload.slice(2, 34), 10n ** 18n, 1)), `0x${LEAF_A}`);
+  assert.equal(toHex(commit.payload.slice(2, 34)), `0x${VECTOR_F}`);
+  assert.equal(toHex(ghost.coinCommitment(commit.payload.slice(2, 34), 10n ** 18n, 1)), `0x${VECTOR_C}`);
   assert.throws(() => ghost.commit({ version: 3, chainId: 7n, amount: 1n, seed: new Uint8Array(32), key: VECTOR_KEY }), /unknown commit version/);
 });
 
@@ -129,10 +136,16 @@ test("keys: new keys are 24 words, typed keys are checked, errors hold no word o
   const key = ghost.newKey(crypto.getRandomValues(new Uint8Array(32)));
   assert.match(key, /^[a-z]+( [a-z]+){23}$/);
   assert.deepEqual(ghost.checkKey(key), { format: "words", groups: 21 });
-  assert.deepEqual(ghost.checkKey(VECTOR_KEY.replaceAll(" ", "-")), { format: "standard", groups: 12 });
+  assert.deepEqual(ghost.checkKey(VECTOR_KEY.replaceAll(" ", "-")), { format: "words", groups: 21 });
   const bad = VECTOR_KEY.slice(0, -1) + "8";
-  assert.throws(() => ghost.checkKey(bad), (err) => /group 12/.test(err.message) && !/\d{4}/.test(err.message));
-  assert.throws(() => ghost.checkKey("1234"), /48 or 96 digits/);
+  assert.throws(() => ghost.checkKey(bad), (err) => /group 21/.test(err.message) && !/\d{4}/.test(err.message));
+  assert.throws(() => ghost.checkKey("1234"), /has 84 digits, not 4/);
+  // The digit keys of twelve and twenty-four groups are refused, and nothing
+  // is derived from them.
+  assert.throws(() => ghost.checkKey(OLD_KEY), /has 84 digits, not 48/);
+  assert.throws(() => ghost.checkKey(`${OLD_KEY} ${OLD_KEY}`), /has 84 digits, not 96/);
+  assert.throws(() => ghost.keyDigits(OLD_KEY), /not a valid Phantom Key/);
+  assert.throws(() => ghost.commit({ chainId: 7n, amount: 1n, seed: new Uint8Array(32), key: OLD_KEY }), /not 48/);
   assert.notEqual(ghost.newKey(crypto.getRandomValues(new Uint8Array(32))), key);
   // The digit view of a words key: 21 groups, which open the same key.
   const digits = ghost.keyDigits(key);

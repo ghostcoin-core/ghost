@@ -15,7 +15,7 @@ use ghost_client::reveal::{ChainParams, CoinReveal, Proof, ProofError, TREE_DEPT
 use ghost_client::tree_state::SETTLE_DEPTH;
 use ghost_client::{
     choose_tree_state, decrypt_note, encrypt_note, full_reveal, partial_reveal,
-    restore_coins, Amount, Commitment, ContentFingerprint, Current, DiscardReason, HeaderRoot,
+    restore_coins, Amount, Commitment, Content, ContentFingerprint, Current, DiscardReason, HeaderRoot,
     KeyFormat, Marker, NoteContents, NoteError, OwnedCoin, PhantomKey, RevealError, RevealTerms,
     Rule, TreeLeaf, TreeStateChoice, DATA, NOTE_BYTES,
 };
@@ -25,8 +25,9 @@ use rand::{Rng, RngExt, SeedableRng};
 
 const SPEC: &str = include_str!("../../docs/spec/01-commitments-and-keys.md");
 
-/// The standard example key of spec 01, section 14. Example only.
-const DIGITS: &str = "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417";
+/// The example words key of spec 01, section 5, as its digit view. Example
+/// only.
+const DIGITS: &str = "0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812";
 /// The example chain identifier of spec 01, section 14.
 const CHAIN_ID: u64 = 1234;
 const COMMITTED: u128 = 1_000_000_000;
@@ -148,7 +149,7 @@ fn scenario() -> &'static Scenario {
         let mut rng = StdRng::seed_from_u64(0x5eed);
         let key = key();
         let others: Vec<PhantomKey> = (0..4)
-            .map(|_| PhantomKey::generate(KeyFormat::Standard, &mut rng))
+            .map(|_| PhantomKey::generate(KeyFormat::Words, &mut rng))
             .collect();
         let mut chain = Chain {
             leaves: Vec::new(),
@@ -284,7 +285,7 @@ fn claim_to_new_key() {
     let s = scenario();
     let key = key();
     let mut rng = StdRng::seed_from_u64(3);
-    let new_key = PhantomKey::generate(KeyFormat::Standard, &mut rng);
+    let new_key = PhantomKey::generate(KeyFormat::Words, &mut rng);
     let mut chain = s.chain.clone();
     let (coin, root) = chain.owned(3, s.amounts[3], s.positions[3]);
     let zk_randomness = zk(&mut rng);
@@ -588,7 +589,7 @@ fn early_reveal_needs_no_later_leaf() {
 fn wrong_note_key_rejected() {
     let mut rng = StdRng::seed_from_u64(7);
     let key = key();
-    let other = PhantomKey::generate(KeyFormat::Standard, &mut rng);
+    let other = PhantomKey::generate(KeyFormat::Words, &mut rng);
     let commit = key.coin_commit(2, amount(700), Rule::EMPTY).unwrap();
     let leaf = commit.commitment;
     let contents = NoteContents::coin(2, amount(700), Rule::EMPTY);
@@ -666,17 +667,35 @@ fn hex(text: &str) -> Vec<u8> {
 
 #[test]
 fn note_plaintext_matches_spec_vectors() {
-    let leaf = Commitment::from_bytes(hex(&spec_field("note-coin-remainder", "leaf")).try_into().unwrap());
+    // The plaintexts of spec 01, section 14 hold no key, so they are read from
+    // the spec. Its leaves are commitments of retired digit keys; the leaves
+    // here are the commitments of words keys, fixed values recomputed by
+    // scripts/check_commitment_vectors.py.
+    let leaf = key().coin_commit(1, amount(700_000_000_000_000_000), Rule::EMPTY).unwrap().commitment;
+    assert_eq!(
+        leaf.as_bytes().to_vec(),
+        hex("5530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503")
+    );
     let coin = NoteContents::coin(1, amount(700_000_000_000_000_000), Rule::EMPTY);
     assert_eq!(coin.to_plaintext().to_vec(), hex(&spec_field("note-coin-remainder", "plaintext")));
     assert_eq!(
         note_associated_data(CHAIN_ID, &leaf).to_vec(),
-        hex(&spec_field("note-coin-remainder", "associated-data"))
+        hex("00000000000004d25530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503")
     );
-    // The vector's leaf is the commitment of [coin-remainder].
-    assert_eq!(key().coin_commit(1, amount(700_000_000_000_000_000), Rule::EMPTY).unwrap().commitment, leaf);
 
-    let data_leaf = Commitment::from_bytes(hex(&spec_field("note-data-commit", "leaf")).try_into().unwrap());
+    // The data commitment of `legal winner thank ... various`.
+    let data_key = PhantomKey::parse(
+        "0005 7669 0013 0642 8065 9560 5300 0376 8759 3842 1040 3453 0406 4124 0510 2397 3211 7841 8613 4399 8027",
+    )
+    .unwrap();
+    let data_leaf = data_key
+        .data_commit(&Content::new(b"Ghost example data".to_vec()), Rule::EMPTY)
+        .unwrap()
+        .commitment;
+    assert_eq!(
+        data_leaf.as_bytes().to_vec(),
+        hex("5bc2c9ef3f27a49943b7885eb8babf9be3dda232a41894f3ca5a09b0129340c1")
+    );
     let data = NoteContents {
         type_tag: DATA,
         number: 0,
@@ -692,7 +711,7 @@ fn note_plaintext_matches_spec_vectors() {
     assert_eq!(plaintext.to_vec(), hex(&spec_field("note-data-commit", "plaintext")));
     assert_eq!(
         note_associated_data(CHAIN_ID, &data_leaf).to_vec(),
-        hex(&spec_field("note-data-commit", "associated-data"))
+        hex("00000000000004d25bc2c9ef3f27a49943b7885eb8babf9be3dda232a41894f3ca5a09b0129340c1")
     );
     assert!(NoteContents::from_plaintext(&plaintext).unwrap() == data);
 }

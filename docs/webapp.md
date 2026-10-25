@@ -19,9 +19,8 @@ sees a wallet's seed or key (see Wallet). It does three things.
   in any case and only whole; the connected wallet is asked to sign the
   commit only when all three match, and a wrong word sends nothing. Once the node has the
   commit, the app forgets the key and its digit view.
-- **Summon.** The user types any valid key: its 24 words, or its digits.
-  Keys issued before the words, twelve (or twenty-four) groups of digits,
-  still open, restore, reveal and claim. The app finds the key's coin on the
+- **Summon.** The user types any valid key: its 24 words, or its 21 groups
+  of digits. The app finds the key's coin on the
   chain and reveals any available amount to the payout address, by default a
   fresh address of the connected wallet that never vanished;
   the rest, minus the fee, stays under the same key as the next commitment.
@@ -225,10 +224,9 @@ BIP-39 English list. `ghost_new_key` returns the words separated by single
 spaces; `ghost_key_digits` writes the digit view, 21 groups of four digits,
 the last the check group. With the per-coin salt (see Wallet), so that one
 guess at a key checks one leaf rather than every leaf, such a key keeps
-about 128 bits of strength even against a quantum search. A key of twelve
-digit groups holds about 146 bits of secret and was made before the salt:
-its coins are version 1 and unsalted, and the app does not call it
-quantum-safe. Such keys still work; new keys are always words.
+about 128 bits of strength even against a quantum search. Words are the
+only key format: the app neither makes nor accepts the digit keys of twelve
+or twenty-four groups.
 
 A typed key is read only by the client library's `PhantomKey::parse`, in
 the worker:
@@ -238,9 +236,9 @@ the worker:
   of a pasted key, one space). A word cut short, run on or misspelled is
   refused and named by its position (`word 5 is not in the word list`),
   never corrected to a near word; 23 or 25 words is its own error.
-- **Digits**: 84 digits (the digit view of a words key), 48 (twelve groups)
-  or 96 (twenty-four groups), with spaces or hyphens between them.
-- **The check first.** The words' check, or the digit view's check groups,
+- **Digits**: 84 digits, the digit view of the words, with spaces or
+  hyphens between them. Any other count, 48 or 96 among them, is refused.
+- **The check first.** The words' check, or the digit view's check group,
   is verified before anything is derived from the key. A wrong word of the
   list, or two words swapped, fails it (`the words do not pass the check`).
 

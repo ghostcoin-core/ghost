@@ -14,8 +14,9 @@ use ghost_client::{
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-/// The standard example key of spec 01, section 14. Example only.
-const DIGITS: &str = "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417";
+/// The example words key of spec 01, section 5, as its digit view. Example
+/// only.
+const DIGITS: &str = "0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812";
 const CHAIN_ID: u64 = 1234;
 
 fn rlp_length(out: &mut Vec<u8>, len: usize, short: u8) {

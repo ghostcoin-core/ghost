@@ -1,5 +1,7 @@
-//! Phantom Keys, derivation and building a commit, checked against the test
-//! vectors of spec 01, section 14, read from the specification itself.
+//! Phantom Keys, derivation and building a commit, checked against fixed
+//! vectors of words keys written as their digit view. The digit keys of spec
+//! 01, section 14 are of the retired twelve- and twenty-four-group formats, so
+//! they are only checked to be refused.
 
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -12,7 +14,114 @@ use rand::rngs::StdRng;
 
 const SPEC: &str = include_str!("../../docs/spec/01-commitments-and-keys.md");
 
-/// One `[name]` block of section 14.
+/// The vectors of this file, in the block format of spec 01, section 14. The
+/// keys are the digit views of the words key of spec 01, section 5 (secret
+/// 00 01 .. 1f), of zero, of `legal winner thank ... various` (secret 7f..7f)
+/// and of `2^256 - 1`; the values were recomputed independently by
+/// `scripts/check_commitment_vectors.py`.
+const VECTORS: &str = "```text
+[checksum-words]
+kind = checksum
+key = 0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
+format = 20
+check = 6812
+valid = yes
+
+[checksum-words-zero]
+kind = checksum
+key = 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0700
+format = 20
+check = 0700
+valid = yes
+
+[checksum-words-data]
+kind = checksum
+key = 0005 7669 0013 0642 8065 9560 5300 0376 8759 3842 1040 3453 0406 4124 0510 2397 3211 7841 8613 4399 8027
+format = 20
+check = 8027
+valid = yes
+
+[checksum-words-largest]
+kind = checksum
+key = 0011 5792 0892 3731 6195 4235 7098 5008 6879 0785 3269 9846 6564 0564 0394 5758 4007 9131 2963 9935 6994
+format = 20
+check = 6994
+valid = yes
+
+[checksum-one-digit-wrong]
+kind = checksum
+key = 0000 0001 7807 3186 0627 7000 4496 0723 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
+format = 20
+check = 4451
+valid = no
+
+[checksum-groups-swapped]
+kind = checksum
+key = 0000 0001 7807 3186 0627 7000 0722 4496 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
+format = 20
+check = 4660
+valid = no
+
+[checksum-words-too-large]
+kind = checksum
+key = 0011 5792 0892 3731 6195 4235 7098 5008 6879 0785 3269 9846 6564 0564 0394 5758 4007 9131 2963 9936 0340
+format = 20
+check = 0340
+valid = no
+
+[derivation-words]
+kind = derivation
+key = 0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
+key-bytes = 20000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+s = 62cff2e8a7db58fd67f745c8b24b75280335b28b88106384c735da7888ded4d1
+r = 8fa3bd9e5bb56a3698801b1f016d08de1c883f178d1c3f6d544706d6cb4e1abe
+b0 = 209f9782c7e6b7f64a0b0e0e1deda56dfae96af10eebe33aee50d6c5aa1144ea
+b1 = 270868c5961cb6a126290431a569f33baa59cb5017d0dc6e2965e5cb63aacf8e
+b2 = c3fd9b712431920e9baf30949ef7400ad02609ffcbb2a274ea15691d089bab38
+note-key = 35136c4a7bdccb4b26159c15f86567a483ac58e1b2c40dca49a5d099272c4181
+data-key = 97f75e4a033cf853da070528681b5af557e75070c54c9cd599b2b879915351af
+
+[coin-commit]
+kind = coin-commitment
+version = 1
+key = 0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
+index = 0
+amount = 1000000000000000000
+rule = 0000000000000000000000000000000000000000000000000000000000000000
+type-tag = 0101
+fingerprint = adb657b17abd3d6a22f29a4d9fded4367c0c27f0b167fc5d9eccf33dfbc2ff6c
+commitment = 9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c
+marker = ed3aec8b2a68aa001654023dafa7bf3a187b9f3bb59940fd40389b20beda8a98
+
+[coin-remainder]
+kind = coin-commitment
+version = 1
+key = 0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
+index = 1
+amount = 700000000000000000
+rule = 0000000000000000000000000000000000000000000000000000000000000000
+type-tag = 0101
+fingerprint = d1f0a17727dfbee9609e21f3aeed5fc004d21fd4f48a00af8f954e91f606b620
+commitment = 5530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503
+marker = 19fc0d871f7118ea3ecd015da559a01c7158a82dbd5160dd961680b122a3142e
+
+[data-commit]
+kind = data-commitment
+version = 1
+key = 0005 7669 0013 0642 8065 9560 5300 0376 8759 3842 1040 3453 0406 4124 0510 2397 3211 7841 8613 4399 8027
+index = 0
+content-ascii = Ghost example data
+content-length = 18
+rule = 0000000000000000000000000000000000000000000000000000000000000000
+type-tag = 0102
+content-fingerprint = 7da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c
+fingerprint = b1e44e364ce85a0f886580a51de4af3c5678d39fa9b975a0827067cca7bc4090
+commitment = 5bc2c9ef3f27a49943b7885eb8babf9be3dda232a41894f3ca5a09b0129340c1
+marker = f10b00e4d411afc3a56a0c1d72f49f02b8ea370ffe2430fca37596e82ae38d61
+```
+";
+
+/// One `[name]` block.
 struct Vector {
     name: String,
     fields: Vec<(String, String)>,
@@ -38,11 +147,8 @@ impl Vector {
     }
 }
 
-/// Every vector in the `text` blocks of section 14.
-fn vectors() -> Vec<Vector> {
-    let (_, section) = SPEC
-        .split_once("## 14. Test vectors")
-        .expect("spec 01 has a test vector section");
+/// Every vector in the `text` blocks of `section`.
+fn parse_vectors(section: &str) -> Vec<Vector> {
     let mut out: Vec<Vector> = Vec::new();
     let mut in_vectors = false;
     let mut in_other_block = false;
@@ -80,11 +186,23 @@ fn vectors() -> Vec<Vector> {
     out
 }
 
+fn vectors() -> Vec<Vector> {
+    parse_vectors(VECTORS)
+}
+
+/// The vectors of spec 01, section 14.
+fn spec_vectors() -> Vec<Vector> {
+    let (_, section) = SPEC
+        .split_once("## 14. Test vectors")
+        .expect("spec 01 has a test vector section");
+    parse_vectors(section)
+}
+
 fn vector(name: &str) -> Vector {
     vectors()
         .into_iter()
         .find(|v| v.name == name)
-        .unwrap_or_else(|| panic!("spec 01 has no vector [{name}]"))
+        .unwrap_or_else(|| panic!("no vector [{name}]"))
 }
 
 fn decode_hex(text: &str) -> Vec<u8> {
@@ -95,27 +213,15 @@ fn decode_hex(text: &str) -> Vec<u8> {
         .collect()
 }
 
-fn format_from_code(code: &str) -> KeyFormat {
-    match code {
-        "0c" => KeyFormat::Standard,
-        "18" => KeyFormat::Long,
-        other => panic!("unknown format code {other}"),
-    }
-}
-
 /// The ASCII digits of typed text, separators removed.
 fn digits_of(text: &str) -> Vec<u8> {
     text.bytes().filter(u8::is_ascii_digit).collect()
 }
 
-/// The secret digits of all digits: groups 12 and 24 removed.
+/// The 80 secret digits of a digit view: group 21 removed.
 fn secret_digits_of(digits: &[u8]) -> Vec<u8> {
-    digits
-        .chunks(4)
-        .enumerate()
-        .filter(|(index, _)| index % 12 != 11)
-        .flat_map(|(_, group)| group.iter().copied())
-        .collect()
+    assert_eq!(digits.len(), 84);
+    digits[..80].to_vec()
 }
 
 /// A typed rendering of digits as space-separated groups.
@@ -131,47 +237,47 @@ fn parse(text: &str) -> PhantomKey {
     PhantomKey::parse(text).unwrap_or_else(|e| panic!("{text:?} does not parse: {e}"))
 }
 
-const SPEC_VALID_KEYS: [&str; 4] = [
-    "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417",
-    "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 4156",
-    "2718 2818 2845 9045 2353 6028 7471 3526 6249 7757 2470 4457",
-    "3141 5926 5358 9793 2384 6264 3383 2795 0288 4197 1693 6390 9937 5105 8209 7494 4592 3078 1640 6286 2089 9862 8034 8042",
+/// The valid keys of the checksum vectors above: the example key, zero, the
+/// second example key and `2^256 - 1`, each as its digit view.
+const VALID_KEYS: [&str; 4] = [
+    "0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812",
+    "0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0700",
+    "0005 7669 0013 0642 8065 9560 5300 0376 8759 3842 1040 3453 0406 4124 0510 2397 3211 7841 8613 4399 8027",
+    "0011 5792 0892 3731 6195 4235 7098 5008 6879 0785 3269 9846 6564 0564 0394 5758 4007 9131 2963 9935 6994",
 ];
 
 #[test]
 fn phantom_key_round_trip() {
     let mut rng = StdRng::seed_from_u64(1);
-    for format in [KeyFormat::Standard, KeyFormat::Long] {
-        for _ in 0..50 {
-            let key = PhantomKey::generate(format, &mut rng);
-            assert_eq!(key.key_format(), format);
-            let shown = key.format_groups();
-            let text = shown.as_str();
+    for _ in 0..100 {
+        let key = PhantomKey::generate(KeyFormat::Words, &mut rng);
+        assert_eq!(key.key_format(), KeyFormat::Words);
+        let shown = key.format_groups();
+        let text = shown.as_str();
 
-            let groups: Vec<&str> = text.split(' ').collect();
-            assert_eq!(groups.len(), format.groups(), "{text}");
-            assert!(
-                groups
-                    .iter()
-                    .all(|g| g.len() == 4 && g.bytes().all(|b| b.is_ascii_digit())),
-                "{text}"
-            );
+        let groups: Vec<&str> = text.split(' ').collect();
+        assert_eq!(groups.len(), 21, "{text}");
+        assert!(
+            groups
+                .iter()
+                .all(|g| g.len() == 4 && g.bytes().all(|b| b.is_ascii_digit())),
+            "{text}"
+        );
 
-            let parsed = parse(text);
-            assert_eq!(parsed.key_format(), format);
-            assert_eq!(parsed.format_groups().as_str(), text);
-            assert_eq!(parsed.key_bytes().as_bytes(), key.key_bytes().as_bytes());
-            assert_eq!(parsed.secret().as_bytes(), key.secret().as_bytes());
+        let parsed = parse(text);
+        assert_eq!(parsed.key_format(), KeyFormat::Words);
+        assert_eq!(parsed.format_groups().as_str(), text);
+        assert_eq!(parsed.key_bytes().as_bytes(), key.key_bytes().as_bytes());
+        assert_eq!(parsed.secret().as_bytes(), key.secret().as_bytes());
 
-            // The same digits typed with hyphens, no separators or extra
-            // spaces are the same key.
-            for typed in [
-                text.replace(' ', "-"),
-                text.replace(' ', ""),
-                format!("  {}  ", text.replace(' ', " - ")),
-            ] {
-                assert_eq!(parse(&typed).format_groups().as_str(), text);
-            }
+        // The same digits typed with hyphens, no separators or extra
+        // spaces are the same key.
+        for typed in [
+            text.replace(' ', "-"),
+            text.replace(' ', ""),
+            format!("  {}  ", text.replace(' ', " - ")),
+        ] {
+            assert_eq!(parse(&typed).format_groups().as_str(), text);
         }
     }
 }
@@ -179,9 +285,9 @@ fn phantom_key_round_trip() {
 #[test]
 fn checksum_rejects_one_digit_change() {
     // A four-digit checksum lets a single wrong secret digit through about one
-    // time in 10,000 (spec 01, section 13, question 1). For the spec's valid
-    // keys no single-digit change passes, so every one must be rejected.
-    for key in SPEC_VALID_KEYS {
+    // time in 10,000 (spec 01, section 13, question 1). For these valid keys
+    // no single-digit change passes, so every one must be rejected.
+    for key in VALID_KEYS {
         let digits = digits_of(key);
         assert!(PhantomKey::parse(key).is_ok(), "{key}");
         for position in 0..digits.len() {
@@ -205,53 +311,42 @@ fn checksum_rejects_one_digit_change() {
 }
 
 #[test]
-fn checksum_matches_spec_vectors() {
+fn checksum_matches_vectors() {
     let checksum_vectors: Vec<Vector> = vectors()
         .into_iter()
         .filter(|v| v.name.starts_with("checksum-"))
         .collect();
-    assert_eq!(checksum_vectors.len(), 8, "spec 01 has eight checksum vectors");
+    assert_eq!(checksum_vectors.len(), 7, "seven checksum vectors");
     for v in &checksum_vectors {
         assert_eq!(v.get("kind"), "checksum");
-        let format = format_from_code(v.get("format"));
+        assert_eq!(v.get("format"), "20", "{}", v.name);
+        let format = KeyFormat::Words;
         let digits = digits_of(v.get("key"));
         assert_eq!(digits.len(), format.digit_count(), "{}", v.name);
 
-        let expected: Vec<u16> = v
-            .get("check")
-            .split(' ')
-            .map(|g| g.parse().expect("a check group"))
-            .collect();
+        let expected: u16 = v.get("check").parse().expect("a check group");
         let computed = check_groups(format, &secret_digits_of(&digits)).unwrap();
-        assert_eq!(computed, expected, "{}", v.name);
+        assert_eq!(computed, vec![expected], "{}", v.name);
 
-        let written: Vec<u16> = digits
-            .chunks(4)
-            .skip(11)
-            .step_by(12)
-            .map(|g| std::str::from_utf8(g).unwrap().parse().unwrap())
-            .collect();
+        let written: u16 = std::str::from_utf8(&digits[80..]).unwrap().parse().unwrap();
         let result = PhantomKey::parse(v.get("key"));
         match v.get("valid") {
             "yes" => {
-                assert!(result.is_ok(), "{} should pass", v.name);
+                let key = result.unwrap_or_else(|e| panic!("{} should pass: {e}", v.name));
+                assert_eq!(key.key_format().code(), 0x20);
                 assert_eq!(written, expected, "{}", v.name);
             }
-            "no" => {
-                // The first checksum group that differs is the one named.
-                let index = written
-                    .iter()
-                    .zip(&expected)
-                    .position(|(w, e)| w != e)
-                    .expect("an invalid vector has a wrong check group");
+            "no" if written != expected => {
                 assert_eq!(
                     result.err(),
-                    Some(KeyError::ChecksumMismatch {
-                        group: 12 * (index + 1)
-                    }),
+                    Some(KeyError::ChecksumMismatch { group: 21 }),
                     "{}",
                     v.name
                 );
+            }
+            "no" => {
+                // Group 21 is right, so the secret is out of range.
+                assert_eq!(result.err(), Some(KeyError::SecretOutOfRange), "{}", v.name);
             }
             other => panic!("{}: valid = {other}", v.name),
         }
@@ -260,8 +355,9 @@ fn checksum_matches_spec_vectors() {
 
 #[test]
 fn key_parse_rejects_bad_characters_and_lengths() {
-    let valid = SPEC_VALID_KEYS[0];
+    let valid = VALID_KEYS[0];
     assert!(PhantomKey::parse(valid).is_ok());
+    let one = valid.find('1').unwrap();
 
     // Any character other than an ASCII digit, a space or a hyphen.
     for (bad, position) in [
@@ -271,14 +367,14 @@ fn key_parse_rejects_bad_characters_and_lengths() {
         (valid.replacen(' ', "/", 1), 4),
         (valid.replacen(' ', "\u{2013}", 1), 4),
         (valid.replacen(' ', "\u{a0}", 1), 4),
-        (format!("{valid}\n"), 59),
-        (valid.replacen('1', "l", 1), 0),
-        (valid.replacen('1', "a", 1), 0),
+        (format!("{valid}\n"), 104),
+        (valid.replacen('1', "l", 1), one),
+        (valid.replacen('1', "a", 1), one),
         // Non-ASCII digits: Arabic-Indic, fullwidth, superscript, Devanagari.
-        (valid.replacen('1', "\u{661}", 1), 0),
-        (valid.replacen('1', "\u{ff11}", 1), 0),
-        (valid.replacen('1', "\u{b9}", 1), 0),
-        (valid.replacen('1', "\u{967}", 1), 0),
+        (valid.replacen('1', "\u{661}", 1), one),
+        (valid.replacen('1', "\u{ff11}", 1), one),
+        (valid.replacen('1', "\u{b9}", 1), one),
+        (valid.replacen('1', "\u{967}", 1), one),
     ] {
         assert_eq!(
             PhantomKey::parse(&bad).err(),
@@ -287,9 +383,10 @@ fn key_parse_rejects_bad_characters_and_lengths() {
         );
     }
 
-    // Exactly 48 or 96 digits after separators are removed.
-    let digits = digits_of(SPEC_VALID_KEYS[3]);
-    for count in [0, 1, 44, 47, 49, 52, 60, 72, 88, 92, 95, 97, 100, 144, 200] {
+    // Exactly 84 digits after separators are removed: the 48 and 96 of the
+    // old digit keys are refused like any other count.
+    let digits = digits_of(VALID_KEYS[3]);
+    for count in [0, 1, 44, 47, 48, 49, 52, 60, 72, 80, 83, 85, 88, 92, 96, 100, 144, 200] {
         let typed: Vec<u8> = digits.iter().copied().cycle().take(count).collect();
         let text = groups_of(&typed);
         assert_eq!(
@@ -319,11 +416,12 @@ fn key_parse_rejects_bad_characters_and_lengths() {
     }
 }
 
-fn check_derivation(name: &str, format: KeyFormat) {
-    let v = vector(name);
+#[test]
+fn derivation_matches_vector_derivation_words() {
+    let v = vector("derivation-words");
     assert_eq!(v.get("kind"), "derivation");
     let key = parse(v.get("key"));
-    assert_eq!(key.key_format(), format);
+    assert_eq!(key.key_format(), KeyFormat::Words);
     assert_eq!(key.key_bytes().as_bytes(), v.hex("key-bytes").as_slice());
     assert_eq!(key.secret().as_bytes(), &v.hex32("s"));
     assert_eq!(key.reveal_secret().as_bytes(), &v.hex32("r"));
@@ -335,13 +433,26 @@ fn check_derivation(name: &str, format: KeyFormat) {
 }
 
 #[test]
-fn derivation_matches_spec_vector_derivation_standard() {
-    check_derivation("derivation-standard", KeyFormat::Standard);
-}
-
-#[test]
-fn derivation_matches_spec_vector_derivation_long() {
-    check_derivation("derivation-long", KeyFormat::Long);
+fn spec_vector_keys_of_the_retired_digit_formats_are_refused() {
+    // Section 14 of spec 01 keeps twelve- and twenty-four-group keys as fixed
+    // test data; the client refuses every one by its length, before any check.
+    let mut counts = HashSet::new();
+    for v in spec_vectors().iter().filter(|v| v.fields.iter().any(|(f, _)| f == "key")) {
+        let count = digits_of(v.get("key")).len();
+        assert!(count == 48 || count == 96, "{}: {count} digits", v.name);
+        counts.insert(count);
+        assert_eq!(
+            PhantomKey::parse(v.get("key")).err(),
+            Some(KeyError::WrongLength { digits: count }),
+            "{}",
+            v.name
+        );
+    }
+    assert_eq!(counts, HashSet::from([48, 96]));
+    // Every vector of this file is a words key.
+    for v in vectors().iter().filter(|v| v.fields.iter().any(|(f, _)| f == "key")) {
+        assert_eq!(digits_of(v.get("key")).len(), 84, "{}", v.name);
+    }
 }
 
 fn check_coin_commit(name: &str) {
@@ -358,16 +469,16 @@ fn check_coin_commit(name: &str) {
 }
 
 #[test]
-fn commit_matches_spec_vector_coin_commit() {
+fn commit_matches_vector_coin_commit() {
     check_coin_commit("coin-commit");
 }
 
 #[test]
-fn commit_matches_spec_vector_coin_remainder() {
+fn commit_matches_vector_coin_remainder() {
     check_coin_commit("coin-remainder");
 
     // The remainder differs from the first commitment in every public value.
-    let key = parse(SPEC_VALID_KEYS[0]);
+    let key = parse(VALID_KEYS[0]);
     let amount = Amount::new(700_000_000_000_000_000).unwrap();
     let first = key.coin_commit(0, amount, Rule::EMPTY).unwrap();
     let remainder = key.coin_commit(1, amount, Rule::EMPTY).unwrap();
@@ -377,7 +488,7 @@ fn commit_matches_spec_vector_coin_remainder() {
 }
 
 #[test]
-fn commit_matches_spec_vector_data_commit() {
+fn commit_matches_vector_data_commit() {
     let v = vector("data-commit");
     assert_eq!(v.get("kind"), "data-commitment");
     assert_eq!(v.get("index"), "0", "a data commitment uses b_0");
@@ -409,7 +520,7 @@ fn commit_rejects_amount_above_maximum_and_non_empty_rule() {
         Amount::new(ghost_client::V_MAX + 1),
         Err(ghost_client::CommitError::AmountTooLarge)
     );
-    let key = parse(SPEC_VALID_KEYS[0]);
+    let key = parse(VALID_KEYS[0]);
     let mut rule = [0u8; 32];
     rule[31] = 1;
     assert_eq!(
@@ -426,16 +537,15 @@ fn commit_rejects_amount_above_maximum_and_non_empty_rule() {
 #[test]
 fn generated_keys_differ() {
     let mut rng = StdRng::seed_from_u64(3);
-    for (format, count) in [(KeyFormat::Standard, 2000), (KeyFormat::Long, 500)] {
-        let mut seen = HashSet::new();
-        for _ in 0..count {
-            let key = PhantomKey::generate(format, &mut rng);
-            let text = key.format_groups().as_str().to_string();
-            assert!(PhantomKey::parse(&text).is_ok(), "{text}");
-            assert!(seen.insert(text), "a generated key repeated");
-        }
-        assert_eq!(seen.len(), count);
+    let count = 2000;
+    let mut seen = HashSet::new();
+    for _ in 0..count {
+        let key = PhantomKey::generate(KeyFormat::Words, &mut rng);
+        let text = key.format_groups().as_str().to_string();
+        assert!(PhantomKey::parse(&text).is_ok(), "{text}");
+        assert!(seen.insert(text), "a generated key repeated");
     }
+    assert_eq!(seen.len(), count);
 }
 
 /// A generator that returns the given bytes in order, then repeats them.
@@ -471,20 +581,29 @@ impl rand_core::TryRng for ScriptedBytes {
 impl rand_core::TryCryptoRng for ScriptedBytes {}
 
 #[test]
-fn generation_discards_bytes_of_250_or_more_and_reduces_modulo_10() {
-    // 250 to 255 are discarded; 249 gives 9, 13 gives 3, 0 gives 0.
+fn generation_takes_32_bytes_as_the_secret() {
+    // The bytes 00 to 1f are the secret of the example words key, and every
+    // byte value is used as it is, none discarded.
     let mut rng = ScriptedBytes {
-        bytes: vec![250, 255, 249, 13, 251, 0, 252, 253, 254, 120],
+        bytes: (0u8..32).collect(),
         next: 0,
     };
-    let key = PhantomKey::generate(KeyFormat::Standard, &mut rng);
+    let key = PhantomKey::generate(KeyFormat::Words, &mut rng);
+    assert_eq!(rng.next, 32);
+    assert_eq!(key.format_groups().as_str(), VALID_KEYS[0]);
+    let mut expected = vec![0x20];
+    expected.extend(0u8..32);
+    assert_eq!(key.key_bytes().as_bytes(), expected.as_slice());
+
+    let mut high = ScriptedBytes {
+        bytes: vec![0xff],
+        next: 0,
+    };
+    let key = PhantomKey::generate_default(&mut high);
+    assert_eq!(key.format_groups().as_str(), VALID_KEYS[3]);
     let digits = digits_of(key.format_groups().as_str());
-    let secret = secret_digits_of(&digits);
-    let pattern = b"9300";
-    let expected: Vec<u8> = pattern.iter().copied().cycle().take(44).collect();
-    assert_eq!(secret, expected);
     assert_eq!(
-        check_groups(KeyFormat::Standard, &secret).unwrap(),
-        vec![std::str::from_utf8(&digits[44..]).unwrap().parse::<u16>().unwrap()]
+        check_groups(KeyFormat::Words, &secret_digits_of(&digits)).unwrap(),
+        vec![std::str::from_utf8(&digits[80..]).unwrap().parse::<u16>().unwrap()]
     );
 }

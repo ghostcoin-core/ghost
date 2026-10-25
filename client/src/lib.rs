@@ -7,8 +7,8 @@
 //! - [`account`]: the wallet seed and its 24 words, the quantum-safe account
 //!   keys it derives, the account address and the signed account transaction
 //!   (spec 09, sections 5, 6 and 9).
-//! - [`key`]: generating, formatting and parsing a Phantom Key, as 24 words
-//!   (the default) or as digit groups, with its check (sections 5 and 6).
+//! - [`key`]: generating, formatting and parsing a Phantom Key, 24 words that
+//!   can also be shown as 21 digit groups, with its check (sections 5 and 6).
 //! - [`derive`]: every secret derived from the digits: the key bytes, `s`,
 //!   `r`, the blinding `b_i`, the note key and the data key (section 7).
 //! - [`commit`]: the content fingerprint, the fingerprint, the commitment and
