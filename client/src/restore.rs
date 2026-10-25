@@ -89,7 +89,9 @@ pub struct FoundCoin {
     pub rule: Rule,
     /// Its salt.
     pub salt: Salt,
-    /// The position of its leaf, read from the chain.
+    /// The index of the coin tree its leaf is in, the one the caller named.
+    pub tree_index: u32,
+    /// The position of its leaf in that tree, read from the chain.
     pub position: u32,
     /// The leaf `C`.
     pub commitment: Commitment,
@@ -139,22 +141,61 @@ pub struct Restored {
     pub discarded: Vec<DiscardedNote>,
 }
 
-/// Restores the key's coins from the coin tree's leaves with their notes, in
+/// The most leaves one coin tree holds: one per position a `u32` names.
+pub const MAX_TREE_LEAVES: u64 = 1 << 32;
+
+/// Why restore refused its input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestoreError {
+    /// More leaves than one coin tree holds: a position past the last one
+    /// cannot be named, so the input is refused whole rather than read in
+    /// part.
+    TooManyLeaves,
+}
+
+impl fmt::Display for RestoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooManyLeaves => f.write_str("more leaves than one coin tree holds"),
+        }
+    }
+}
+
+impl std::error::Error for RestoreError {}
+
+/// Restores the key's coins from one coin tree's leaves with their notes, in
 /// position order (the first is position 0), and the coin spent markers.
+/// `tree_index` is the index of that tree; each coin found carries it. More
+/// than [`MAX_TREE_LEAVES`] leaves is [`RestoreError::TooManyLeaves`].
 pub fn restore_coins(
     key: &PhantomKey,
     chain_id: u64,
+    tree_index: u32,
     leaves: &[TreeLeaf],
     spent: &[Marker],
-) -> Restored {
+) -> Result<Restored, RestoreError> {
+    restore_limited(key, chain_id, tree_index, leaves, spent, MAX_TREE_LEAVES)
+}
+
+/// [`restore_coins`] with the leaf limit as an argument, so a test can reach
+/// it with a slice it can build.
+fn restore_limited(
+    key: &PhantomKey,
+    chain_id: u64,
+    tree_index: u32,
+    leaves: &[TreeLeaf],
+    spent: &[Marker],
+    max_leaves: u64,
+) -> Result<Restored, RestoreError> {
+    if !u64::try_from(leaves.len()).is_ok_and(|count| count <= max_leaves) {
+        return Err(RestoreError::TooManyLeaves);
+    }
     let note_key = key.note_key();
     let spent: BTreeSet<[u8; 32]> = spent.iter().map(|marker| *marker.as_bytes()).collect();
     let mut found = Vec::new();
     let mut discarded = Vec::new();
     for (index, leaf) in leaves.iter().enumerate() {
-        let Ok(position) = u32::try_from(index) else {
-            break;
-        };
+        let position = u32::try_from(index).map_err(|_| RestoreError::TooManyLeaves)?;
         let contents = match decrypt_note(&note_key, chain_id, &leaf.commitment, &leaf.note) {
             Ok(contents) => contents,
             Err(NoteError::Unauthentic) => continue,
@@ -189,6 +230,7 @@ pub fn restore_coins(
                 amount: contents.amount,
                 rule: contents.rule,
                 salt: commit.salt,
+                tree_index,
                 position,
                 commitment: commit.commitment,
                 marker: commit.marker,
@@ -209,9 +251,90 @@ pub fn restore_coins(
         1 => Current::One(unspent.remove(0)),
         _ => Current::Several(unspent),
     };
-    Restored {
+    Ok(Restored {
         current,
         found,
         discarded,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::rngs::StdRng;
+    use rand::SeedableRng;
+
+    use super::*;
+    use crate::key::KeyFormat;
+    use crate::note::{encrypt_note, NoteContents};
+
+    const CHAIN_ID: u64 = 1234;
+
+    /// A leaf no key's note opens: passed over by every restore.
+    fn filler(byte: u8) -> TreeLeaf {
+        TreeLeaf {
+            commitment: Commitment::from_bytes([byte; 32]),
+            note: [byte; NOTE_BYTES],
+            salt: None,
+        }
+    }
+
+    /// A salted coin of `key`'s number 0, as a commit puts it in the tree.
+    fn coin_leaf(key: &PhantomKey, wei: u128, rng: &mut StdRng) -> TreeLeaf {
+        let amount = Amount::new(wei).unwrap();
+        let commit = key.salted_coin_commit(0, amount, Rule::EMPTY, rng).unwrap();
+        let contents = NoteContents::salted_coin(0, amount, Rule::EMPTY, commit.salt);
+        let note = encrypt_note(&key.note_key(), CHAIN_ID, &commit.commitment, &contents, rng);
+        TreeLeaf {
+            commitment: commit.commitment,
+            note,
+            salt: Some(commit.salt),
+        }
+    }
+
+    #[test]
+    fn leaf_overflow_is_an_error() {
+        let mut rng = StdRng::seed_from_u64(0x0f10);
+        let key = PhantomKey::generate(KeyFormat::Words, &mut rng);
+        let mut leaves = vec![coin_leaf(&key, 1_000, &mut rng), filler(1), filler(2), filler(3)];
+
+        // Up to the limit, the key's coin is found.
+        let within = restore_limited(&key, CHAIN_ID, 0, &leaves, &[], 4).unwrap();
+        assert_eq!(within.found.len(), 1);
+        assert!(matches!(within.current, Current::One(_)));
+
+        // One leaf past it, the whole input is refused: no coin comes back,
+        // not even the one before the limit.
+        leaves.push(filler(4));
+        let over = restore_limited(&key, CHAIN_ID, 0, &leaves, &[], 4);
+        assert_eq!(over.err(), Some(RestoreError::TooManyLeaves));
+
+        // The same leaves under the real limit restore.
+        assert_eq!(restore_coins(&key, CHAIN_ID, 0, &leaves, &[]).unwrap().found.len(), 1);
+        assert_eq!(MAX_TREE_LEAVES, 1 << 32);
+        assert_eq!(RestoreError::TooManyLeaves.to_string(), "more leaves than one coin tree holds");
+    }
+
+    #[test]
+    fn found_coin_carries_the_tree_index_it_was_given() {
+        let mut rng = StdRng::seed_from_u64(0x7ee);
+        let key = PhantomKey::generate(KeyFormat::Words, &mut rng);
+        let other = PhantomKey::generate(KeyFormat::Words, &mut rng);
+        let leaves = vec![
+            coin_leaf(&other, 5_000, &mut rng),
+            coin_leaf(&key, 1_000, &mut rng),
+            filler(9),
+        ];
+        let restored = restore_coins(&key, CHAIN_ID, 3, &leaves, &[]).unwrap();
+        let Current::One(found) = restored.current else {
+            panic!("the key's one coin");
+        };
+        assert_eq!((found.tree_index, found.position), (3, 1));
+        assert_eq!(restored.found.len(), 1);
+        assert_eq!(restored.found[0].tree_index, 3);
+
+        // The other key's coin in the same tree names the same tree, at its
+        // own position.
+        let theirs = restore_coins(&other, CHAIN_ID, 3, &leaves, &[]).unwrap();
+        assert_eq!((theirs.found[0].tree_index, theirs.found[0].position), (3, 0));
     }
 }

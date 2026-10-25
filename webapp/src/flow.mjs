@@ -1395,8 +1395,9 @@ export function createFlow({
         records: t.records,
         salts: t.salts,
         markers: spent,
+        treeIndex: t.treeIndex,
       });
-      for (const coin of restored.found) found.push({ ...coin, treeIndex: t.treeIndex });
+      found.push(...restored.found);
     }
     return { chain, trees, tree, rootHeaders, rootCounts, prefixRoots, settledAt, settledLeaves, fee, found, commitsByAmount };
   }
@@ -1977,7 +1978,7 @@ export function createFlow({
     if (current) {
       try {
         const plan = await planReveal(prover, scan, current);
-        s.cover = { height: plan.height, covers: plan.covers, total: scan.trees[current.treeIndex].count };
+        s.cover = { height: plan.height, covers: plan.covers, total: scan.trees[current.treeIndex ?? 0].count };
       } catch (err) {
         if (!(err instanceof WaitError)) throw err;
         s.wait = { message: err.message, from: err.from };

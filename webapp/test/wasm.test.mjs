@@ -204,6 +204,51 @@ test("restore finds the committed coin from its note and passes over others", ()
   assert.throws(() => ghost.restore({ chainId, key: VECTOR_KEY, records, salts: [null], markers: new Uint8Array(0) }), /one salt/);
 });
 
+test("restore reports the coin tree it was asked about and refuses nothing it could read", () => {
+  const chainId = 7n;
+  const commit = ghost.commit({ chainId, amount: 10n ** 18n, seed: random(32), key: VECTOR_KEY });
+  const salt = commit.payload.slice(34, 50);
+  const stranger = new Uint8Array(188).fill(3);
+  const records = new Uint8Array([...stranger, ...commit.commitment, ...commit.payload.slice(50)]);
+  const ask = (more) => ghost.restore({ chainId, key: VECTOR_KEY, records, salts: [null, salt], markers: new Uint8Array(0), ...more });
+  // Not named, the tree is tree 0.
+  let found = ask({});
+  assert.equal(found.length, 1);
+  assert.deepEqual([found[0].treeIndex, found[0].position], [0, 1]);
+  // Named, the coin reports that tree, at its position in it.
+  found = ask({ treeIndex: 2 });
+  assert.equal(found.length, 1);
+  assert.deepEqual([found[0].treeIndex, found[0].position], [2, 1]);
+  assert.equal(found[0].amount, 10n ** 18n);
+  assert.equal(toHex(found[0].salt), toHex(salt));
+  // The last index a u32 holds is read as itself.
+  assert.equal(ask({ treeIndex: 0xffffffff })[0].treeIndex, 0xffffffff);
+  // An index that is not a u32 is refused before the module is called.
+  for (const treeIndex of [-1, 2 ** 32, 1.5]) {
+    assert.throws(() => ask({ treeIndex }), /32-bit unsigned/);
+  }
+  // The module reads the tree index right after the chain id: its own
+  // output names the tree, between the amount and the position.
+  const input = concat([
+    u64(chainId),
+    u32(5),
+    text(VECTOR_KEY),
+    u32(2),
+    records,
+    u32(2),
+    new Uint8Array(17),
+    Uint8Array.of(1),
+    salt,
+    u32(0),
+  ]);
+  const out = ghost.call("ghost_restore", input);
+  const view = new DataView(out.buffer);
+  assert.equal(view.getUint32(0), 1, "one coin");
+  assert.equal(view.getUint32(4 + 8 + 32), 5, "its tree index");
+  assert.equal(view.getUint32(4 + 8 + 32 + 4), 1, "its position");
+  assert.equal(out.length, 4 + 8 + 32 + 4 + 4 + 32 + 32 + 1 + 17);
+});
+
 test("keys: new keys are 24 words, typed keys are checked, errors hold no word or digit", () => {
   const key = ghost.newKey(crypto.getRandomValues(new Uint8Array(32)));
   assert.match(key, /^[a-z]+( [a-z]+){23}$/);

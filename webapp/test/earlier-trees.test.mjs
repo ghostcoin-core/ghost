@@ -301,6 +301,45 @@ test("the flow follows a commit into a later tree, and finds a coin in either tr
   });
 });
 
+test("restore is asked with each tree's own index", async () => {
+  await withNode({ treeLeaves: TREE_LEAVES }, async (node) => {
+    const prover = nodeProver();
+    // Every restore request and what the worker answered, as asked.
+    const restores = [];
+    const watched = {
+      async request(op, args, onProgress) {
+        const reply = await prover.request(op, args, onProgress);
+        if (op === "restore") restores.push({ treeIndex: args.treeIndex, found: reply.found });
+        return reply;
+      },
+    };
+    try {
+      const flow = createFlow({ prover: watched, endpoint: node.url, networks: node.networks(), pollMs: 5, sleep: async () => node.mine(), treeLeaves: TREE_LEAVES });
+      await openTestWallet(flow, node);
+      // Tree 0 filled by strangers; the key's commit is tree 1's first leaf.
+      node.foreignCommits(3);
+      const key = await flow.vanishStart("1");
+      const sent = await flow.vanishCheck(flow.vanishSaved().map((p) => key.split(" ")[p - 1]));
+      assert.equal(sent.ok, true);
+      assert.equal(node.leaves.length, TREE_LEAVES + 1);
+
+      restores.length = 0;
+      const s = await flow.summonOpen(key);
+      // One restore per tree, each naming its own tree.
+      assert.deepEqual(restores.map((r) => r.treeIndex), [0, 1]);
+      // Tree 0 holds none of the key's coins; tree 1's restore reports its
+      // coin in tree 1, as the module found it.
+      assert.deepEqual(restores[0].found, []);
+      assert.deepEqual(restores[1].found.map((c) => [c.treeIndex, c.position]), [[1, 0]]);
+      assert.equal(s.status, "unclaimed");
+      assert.deepEqual([s.current.treeIndex, s.current.position], [1, 0]);
+      assert.deepEqual(s.coins.map((c) => [c.treeIndex, c.position]), [[1, 0]]);
+    } finally {
+      prover.terminate();
+    }
+  });
+});
+
 // Two leaves per tree: leaf i is 32 bytes of i + 1, its note 156 bytes of
 // i + 50 and, beside a commit's leaf, its salt 16 bytes of i + 100; leaf 2
 // is a reveal's remainder, with no salt beside it. A record is what a

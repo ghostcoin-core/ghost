@@ -184,14 +184,17 @@ export class Ghost {
   // `records`: leaves with their notes (188 bytes each) from position 0;
   // `salts`: the salt read beside each leaf (16 bytes, or null), one per
   // leaf, all null when not given; `markers`: spent markers (32 bytes each).
-  // Each coin found carries its salt; one found without a salt (null) is
-  // refused by `prove`.
-  restore({ chainId, key, records, salts = null, markers }) {
+  // `treeIndex`: the coin tree the leaves are of. Each coin found carries
+  // that tree index and its salt; one found without a salt (null) is refused
+  // by `prove`. More leaves than one tree holds is refused by the module.
+  restore({ chainId, key, records, salts = null, markers, treeIndex = 0 }) {
     const count = records.length / LEAF_RECORD_BYTES;
     if (salts !== null && salts.length !== count) throw new Error("one salt (or null) is expected per leaf");
+    if (!Number.isInteger(treeIndex) || treeIndex < 0 || treeIndex > 0xffffffff) throw new Error("a tree index is a 32-bit unsigned integer");
     const saltRecords = concat(Array.from({ length: count }, (_, i) => saltRecord(salts?.[i] ?? null)));
     const input = new Input()
       .u64(chainId)
+      .u32(treeIndex)
       .text(key)
       .records(records, LEAF_RECORD_BYTES)
       .records(saltRecords, SALT_RECORD_BYTES)
@@ -203,6 +206,7 @@ export class Ghost {
       found.push({
         number: out.u64(),
         amount: fromWord(out.take(32)),
+        treeIndex: out.u32(),
         position: out.u32(),
         commitment: out.take(32),
         marker: out.take(32),

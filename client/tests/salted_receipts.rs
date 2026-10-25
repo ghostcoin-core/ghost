@@ -145,7 +145,7 @@ fn salted_commit_log_carries_the_salt() {
     assert_eq!(check_leaves(&blocks, 0, 0, &run), Ok(()));
 
     // Restore reads the checked run and finds the salted coin.
-    let Current::One(found) = restore_coins(&key, CHAIN_ID, &run, &[]).current else {
+    let Current::One(found) = restore_coins(&key, CHAIN_ID, 0, &run, &[]).unwrap().current else {
         panic!("the salted commit restores");
     };
     assert_eq!((found.position, found.salt), (1, salt));
