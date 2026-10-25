@@ -144,8 +144,49 @@ class CheckerTest(unittest.TestCase):
         text = self.damaged("Total: 415 bytes after the tag; 444 bytes with the tag; 4 Keccak",
                             "Total: 415 bytes after the tag; 444 bytes with the tag; 3 Keccak")
         self.assert_gap(text, "says 3 permutations, recomputed 4")
-        text = self.damaged("Total: 207 bytes after the tag", "Total: 208 bytes after the tag")
-        self.assert_gap(text, "total says 208 bytes, fields sum to 207")
+        text = self.damaged("Total: 239 bytes after the tag", "Total: 240 bytes after the tag")
+        self.assert_gap(text, "total says 240 bytes, fields sum to 239")
+
+    def test_data_statements_bind_the_content_fingerprint(self):
+        for heading, row, tag in (
+                ("### Data reveal binding", "| 207 | 32 | `cf` |", "ghost/data-reveal-binding/v1"),
+                ("### Hold binding", "| 175 | 32 | `cf` |", "ghost/hold-binding/v1")):
+            with self.subTest(binding=tag):
+                start = self.text.index(heading)
+                at = self.text.index(row, start)
+                end = self.text.index("\n", at) + 1
+                text = self.text[:at] + self.text[end:]
+                self.assert_gap(text, f"binding {tag}: does not bind ['cf']")
+
+    def test_content_fingerprint_is_a_public_input_of_s2_and_s3(self):
+        for heading, row, n in (
+                ("## 5. Statement S2", "| `cf` | 32 | Transaction |", "S2"),
+                ("## 6. Statement S3", "| `cf` | 32 | Verifier, the content", "S3")):
+            with self.subTest(statement=n):
+                start = self.text.index(heading)
+                at = self.text.index(row, start)
+                end = self.text.index("\n", at) + 1
+                text = self.text[:at] + self.text[end:]
+                self.assert_gap(text, f"statement {n}: public inputs not in")
+                errors = self.errors(text)
+                self.assertTrue(any("bound but not listed: ['cf']" in e for e in errors), errors)
+
+    def test_content_fingerprint_not_private_in_s2(self):
+        start = self.text.index("## 5. Statement S2")
+        at = self.text.index("| `position` | 4 | Position of `C` in the data tree |", start)
+        text = self.text[:at] + "| `cf` | 32 | Content fingerprint |\n" + self.text[at:]
+        self.assert_gap(text, "statement S2: ['cf'] are both public and private")
+
+    def test_content_fingerprint_width(self):
+        start = self.text.index("### Hold binding")
+        at = self.text.index("| 175 | 32 | `cf` |", start)
+        text = self.text[:at] + "| 175 | 16 | `cf` |" + self.text[at + len("| 175 | 32 | `cf` |"):]
+        self.assert_gap(text, "binding ghost/hold-binding/v1: 'cf' is 16 bytes, expected 32")
+
+    def test_coin_reveal_does_not_bind_the_content_fingerprint(self):
+        row = "| 259 | 156 | `remainder_note` | The remainder's encrypted note |\n"
+        text = self.damaged(row, row + "| 415 | 32 | `cf` | Content fingerprint |\n")
+        self.assert_gap(text, "binding ghost/coin-reveal-binding/v1: binds 'cf'")
 
     def test_unknown_tag(self):
         text = self.damaged("`ghost/hold-binding/v1`.", "`ghost/hold-binding/v1`. See `ghost/made-up/v1`.")

@@ -29,9 +29,11 @@
 //! wrapped in an elliptic-curve proof. Inside the proofs the only hash is
 //! Keccak-256 with the original padding, the hash of spec 01.
 //!
-//! **What stays private.** No public input is `s`, `r`, `b`, a salt, `cf`,
-//! `v`, `v'`, a position or a path. The types that hold them implement neither `Debug`
-//! nor `Display` nor any serialization, so they cannot leave by accident.
+//! **What stays private.** No public input is `s`, `r`, `b`, a salt, `v`,
+//! `v'`, a position or a path. The types that hold them implement neither `Debug`
+//! nor `Display` nor any serialization, so they cannot leave by accident. The
+//! content fingerprint `cf` is public in S2 and S3 by design: it is what
+//! revealed bytes are checked against.
 //!
 //! **Chain constants** (`chain_id`, `version`, `domain`) are parameters of
 //! the verifier, [`ChainParams`], never constants of this crate. Every
@@ -129,6 +131,9 @@ pub enum ProofError {
     /// An opening whose commitment format is not the one the type tag names:
     /// a version 1 opening for `DATA_V2`, or a salted one for `DATA`.
     WrongFormat,
+    /// A proof of holding asked for a content fingerprint that is not the
+    /// opened commitment's.
+    WrongContentFingerprint,
     /// A proof of holding for `COIN` (spec 02, section 13, item 3).
     HoldCoinUnsettled,
     /// Every proof of holding, until the spent-marker set and its header root
@@ -187,6 +192,9 @@ impl fmt::Display for ProofError {
             Self::UnknownType => f.write_str("unknown type tag"),
             Self::UnknownPurpose => f.write_str("unknown purpose code"),
             Self::WrongFormat => f.write_str("the opening is not of the format the type tag names"),
+            Self::WrongContentFingerprint => {
+                f.write_str("the content fingerprint is not the one of the commitment opened")
+            }
             Self::HoldCoinUnsettled => f.write_str("proof of holding for coins is not settled"),
             Self::HoldUnsettled => f.write_str("proof of holding is not settled: no spent-marker set"),
             Self::DataFeeUnsettled => f.write_str("the fee of a data reveal is not settled"),

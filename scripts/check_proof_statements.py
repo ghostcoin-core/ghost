@@ -12,7 +12,9 @@ Python standard library only. It checks that:
      layout plus the digest itself, at the same widths;
   4. every binding layout is contiguous, sums to its stated total, gives the
      right size with its tag and the right number of Keccak permutations, and
-     holds every field its statement must bind;
+     holds every field its statement must bind: the data reveal and hold
+     bindings bind the 32-byte content fingerprint `cf`, the coin reveal
+     binding does not;
   5. every hash tag the document names is in the tag table of spec 01, and the
      four salted fingerprint and marker tags are named;
   6. the properties are numbered PS-1 upwards without gaps or repeats, each
@@ -52,9 +54,13 @@ CHAIN_FIELDS = ("chain_id", "version", "domain", "statement", "statement_version
 BINDINGS = {
     "ghost/coin-reveal-binding/v1": CHAIN_FIELDS + (
         "marker", "remainder", "remainder_note", "recipient", "out", "fee", "rule"),
-    "ghost/data-reveal-binding/v1": CHAIN_FIELDS + ("marker", "party", "fee", "rule"),
-    "ghost/hold-binding/v1": CHAIN_FIELDS + ("marker_set_root", "verifier", "challenge"),
+    "ghost/data-reveal-binding/v1": CHAIN_FIELDS + ("marker", "party", "fee", "rule", "cf"),
+    "ghost/hold-binding/v1": CHAIN_FIELDS + ("marker_set_root", "verifier", "challenge", "cf"),
 }
+# The content fingerprint: public in the data statements, so revealed bytes
+# can be checked against it, and never bound by the coin reveal, where it is
+# the constant zero.
+CONTENT_FINGERPRINT = "cf"
 DIGEST = "binding"
 # Secrets every statement must take privately and never publicly. The salt of
 # a version 2 commitment is public on the commit, which is exactly why a
@@ -256,6 +262,12 @@ class Checker:
             missing = [f for f in required if f not in fields]
             if missing:
                 self.fail(f"binding {tag}: does not bind {missing}")
+            if CONTENT_FINGERPRINT in fields and CONTENT_FINGERPRINT not in required:
+                self.fail(f"binding {tag}: binds '{CONTENT_FINGERPRINT}', which only the "
+                          f"data statements make public")
+            if CONTENT_FINGERPRINT in fields and fields[CONTENT_FINGERPRINT] != 32:
+                self.fail(f"binding {tag}: '{CONTENT_FINGERPRINT}' is "
+                          f"{fields[CONTENT_FINGERPRINT]} bytes, expected 32")
             self.layouts[tag] = fields
             totals = [TOTAL_RE.match(line) for line in body if line.startswith("Total:")]
             totals = [m for m in totals if m]

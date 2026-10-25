@@ -24,14 +24,14 @@ section 13.
 | Commitment format | The outline's one format with a type tag, the same as the coin's in [spec 03](03-coin-rules.md), without the amount | Outline |
 | Data type | One type, `DATA` at the current version | **Proposed** (question 6) |
 | Data and money | A data commitment goes only into the data tree, carries no amount, burns nothing, mints nothing, and is rejected at the coin reveal's type check | Outline; spec 03, section 3 and CR-4 |
-| Content fingerprint | A tagged hash over the plaintext bytes and their length, kept inside the commitment and never published | **Proposed** |
+| Content fingerprint | A tagged hash over the plaintext bytes and their length, inside the commitment; the commit never publishes it, a data reveal publishes it and a proof of holding names it, each bound to it inside the proof, so anyone holding the bytes can check them | **Proposed**; question 8 |
 | Where the data lives | Off the chain, wherever the user chooses; the chain never stores, checks or promises availability of it | Outline ("Data storage") |
 | Encryption | Client-side, standard authenticated encryption under a data key derived from the digits with its own hash tag | Outline (second milestone 1); construction **Proposed** |
 | What the chain holds | The commitment and the fixed-length encrypted note, nothing that unlocks the data | Outline |
 | Storage location | Not in the commitment and not in the note | **Proposed** (question 5) |
-| Proof of holding | Bound to the verifier, the chain, the data type and a verifier-chosen challenge; publishes no marker; repeatable | Outline ("Core protocol" 5 and 10) |
+| Proof of holding | Bound to the verifier, the chain, the data type, a verifier-chosen challenge and the content fingerprint; publishes no marker; repeatable | Outline ("Core protocol" 5 and 10); content fingerprint question 8 |
 | Not-yet-revealed evidence | The proof of holding shows, inside the proof, that the commitment's marker is not in the spent-marker set under a root in a block header | **Proposed** (threat model, section 6 item 2; question 2) |
-| One-time reveal | Publishes one marker and a node-computed binding digest; publishes no data, key, fingerprint or commitment; mints nothing | Outline; contents **Proposed** |
+| One-time reveal | Publishes one marker, the content fingerprint and a node-computed binding digest; publishes no data, key, `F_d` or commitment; mints nothing | Outline; contents **Proposed**; content fingerprint question 8 |
 | Remainder on a data reveal | None | **Proposed** (question 3) |
 | Fee of a data reveal | Not settled; every data reveal is rejected at the fee check until it is | **Proposed** (fail closed, question 1) |
 | Revocation | A one-time reveal by the holder with the revoke purpose; afterwards every proof of holding that opens the revoked commitment against marker status that includes the revocation fails | Outline (second milestone 6); purpose tag **Proposed** (question 4) |
@@ -123,9 +123,12 @@ over the plaintext bytes and their length in bytes. It is a tagged hash with
 its own tag; whether it is the in-proof hash or a standard hash, and the exact
 layout, are for the proof-statement specification. The ciphertext, the file
 name, the size class, the host and the time of upload are not inputs, so the
-same bytes give the same `cf` wherever they are stored. `cf` sits inside `F_d`
-and is never published: not by the commit, not by a reveal, not by a proof of
-holding.
+same bytes give the same `cf` wherever they are stored. `cf` sits inside `F_d`,
+and the commit never publishes it. A data reveal publishes it and a proof of
+holding names it as a public input, each bound to it inside the proof
+(sections 5 and 6; question 8), so anyone holding bytes can compute their
+`cf` and check them against the reveal or the proof. It names the content,
+not the commitment: every commitment of the same bytes has the same `cf`.
 
 **What each party learns.**
 
@@ -223,16 +226,18 @@ must establish; the constraints are for the proof-statement specification.
 
 **Public inputs.** The data-tree root, the data spent-marker-set root, the
 verifier's identity, the chain identifier, the protocol version, the `DATA`
-type tag, the hold purpose tag, the challenge, and a binding digest over all of
-them. The verifier computes the binding digest itself and never takes one from
-the prover.
+type tag, the hold purpose tag, the challenge, the content fingerprint `cf` the
+verifier asks about, and a binding digest over all of them. The verifier
+computes the binding digest itself and never takes one from the prover.
 
 **What the proof establishes.**
 
-1. **Membership.** The prover knows `s`, `r`, `b`, the salt, `cf` and `rule`
-   such that `C`, built as in section 3 with type `DATA`, is a leaf under the
-   public data-tree root. The salt is a private input, never a public one: the
-   commit published it, so showing it again would name the commitment.
+1. **Membership.** The prover knows `s`, `r`, `b`, the salt and `rule` such
+   that `C`, built as in section 3 with type `DATA` and the public `cf`, is a
+   leaf under the public data-tree root. The salt is a private input, never a
+   public one: the commit published it, so showing it again would name the
+   commitment. `cf` is public: the commitment's own content fingerprint must
+   equal it, so the proof holds only for the content it was made for.
 2. **Not used up (Proposed).** The marker derived from that same `C`'s secret
    parts, inside the proof, is not in the data spent-marker set under the
    public spent-marker-set root. Membership and non-membership are about one
@@ -241,19 +246,21 @@ the prover.
    exactly the commitment it opens, and a proof for commitment A says nothing
    about commitment B.
 3. **Binding.** The verifier's identity, this chain's identifier and version,
-   the `DATA` type tag, the hold purpose and the challenge enter the proof
-   through the binding digest, so a proof made for one verifier, chain,
-   purpose or challenge fails for any other.
+   the `DATA` type tag, the hold purpose, the challenge and the content
+   fingerprint enter the proof through the binding digest, so a proof made for
+   one verifier, chain, purpose, challenge or content fingerprint fails for any
+   other.
 4. **Fresh answer.** The challenge is chosen by the verifier, not by the
    prover, and the proof answers it; a proof cannot be made before the
    challenge exists.
 
 **What it does not do.** It publishes no marker, writes no state and does not
 use the commitment up, so it can repeat any number of times. It reveals neither
-`C` nor its position nor `cf`. Two proofs of holding of the same commitment
-share no value except the public tree state, the chain constants and anything
-the verifier chose (**Proposed**), so verifiers cannot tell from the proofs
-that they concern one commitment.
+`C` nor its position. Two proofs of holding of the same commitment share no
+value except the public tree state, the chain constants, the content
+fingerprint and anything the verifier chose (**Proposed**), so verifiers can
+tell from the proofs only that they concern the same content, which any
+commitment of those bytes shares, not that they concern one commitment.
 
 **Verifier checks (Proposed order).** The verifier stops at the first failure.
 
@@ -273,7 +280,8 @@ that they concern one commitment.
    commitment in a full tree can still be checked against current revocation
    status (review 01, N2). A root seen only on a discarded branch is rejected
    (outline, "Core protocol" 9).
-6. The verifier computes the binding digest and checks the proof against it.
+6. The verifier computes the binding digest, with the `cf` of the content it
+   asks about, and checks the proof against it.
 
 **Header-only verifiers.** The outline puts tree states in every header ("Core
 protocol" 6) but does not say the marker set's root is there. **Proposed:** the
@@ -284,12 +292,12 @@ spent-marker-set root it cannot take from a header it trusts; a bare answer
 from a node or endpoint is never enough (question 2).
 
 **What it claims.** A proof of holding says "the prover held an unrevealed
-`DATA` commitment, unrevealed as of the spent-marker-set state used, on the
-chain the verifier trusts", and nothing more. It does not say which commitment
-or which content: anyone can make a data commitment of their own and prove
-holding of it, and the content fingerprint is a field the committer chooses,
-which no proof checks against content in version 1. So in version 1 a proof of
-holding is not a capability for a particular resource; binding it to a
+`DATA` commitment to the content of fingerprint `cf`, unrevealed as of the
+spent-marker-set state used, on the chain the verifier trusts, answering this
+verifier's challenge", and nothing more. It does not say which commitment:
+anyone who knows the content can make a data commitment of their own with its
+`cf` and prove holding of it. So in version 1 a proof of holding is not a
+capability for a particular resource; binding it to a
 resource that the prover cannot make for itself belongs to the later layers of
 granting access and delegation (outline, "Core protocol" 12; threat model,
 section 6, item 11; review 01, F5 and N1). It does not say the data was never
@@ -304,13 +312,16 @@ readiness"). The contents below are **Proposed** where the outline is silent.
 
 **What it publishes.** One marker, the purpose tag (reveal or revoke), the
 data-tree root, the verifier or recipient field, the fee, the `DATA` type tag,
-and the binding digest over the chain identifier, protocol version, transaction
-type and version, purpose, verifier or recipient field, root, marker and fee.
-The verifier or recipient field names who the ticket is for and may be zero
-for none; nothing is credited to it.
+the content fingerprint `cf` of the commitment, and the binding digest over
+the chain identifier, protocol version, transaction type and version, purpose,
+verifier or recipient field, root, marker, fee and `cf`. The verifier or
+recipient field names who the ticket is for and may be zero for none; nothing
+is credited to it. The proof shows that `cf` is the commitment's own, so
+anyone holding the revealed bytes computes their `cf` (section 3) and compares
+it: equal bytes match the commitment, other bytes do not (question 8).
 
-**What it never publishes.** No data, no data key or part of one, no content
-fingerprint, no commitment `C`, no position and no `F_d`. It mints nothing,
+**What it never publishes.** No data, no data key or part of one, no
+commitment `C`, no position and no `F_d`. It mints nothing,
 burns no committed value and creates no remainder: a data commitment holds no
 value to carry (question 3).
 
@@ -344,9 +355,10 @@ value to carry (question 3).
     that the prover knows `r` and the other secret parts of a leaf `C` built as
     in section 3 with type `DATA` under the public root, that the public marker
     is derived from that `C`'s secret parts and salt with the data marker tag
-    of its version (so one commitment has one marker), that the salt stays a
-    private input, that the rule is the empty rule, and that the
-    binding digest is the one in the public inputs.
+    of its version (so one commitment has one marker), that the public `cf` is
+    the content fingerprint inside that `C`, that the salt stays a private
+    input, that the rule is the empty rule, and that the binding digest is the
+    one in the public inputs.
 11. **Apply, all or nothing.** In one state change: add the marker to the data
     spent-marker set, settle the fee as question 1 decides, and write the
     receipt (marker, purpose, verifier or recipient field; the marker is what
@@ -438,10 +450,11 @@ The linkage test for data (outline, second milestone 5; core requirement 3)
 pulls the raw commit transaction, every proof of holding and the reveal or
 revocation of one data commitment and asserts that no value appears in more
 than one of them, apart from a whitelisted shared tree state, the chain
-constants (chain identifier, version, type and purpose tags) and the values
-each verifier chose (its identity and challenge). The commit
-publishes `C`, `F_d` and the note; a reveal publishes the marker and the
-binding digest; a proof of holding publishes neither. A wallet proves against a
+constants (chain identifier, version, type and purpose tags), the content
+fingerprint `cf` the reveal and the proofs of holding carry by design, and the
+values each verifier chose (its identity and challenge). The commit
+publishes `C`, `F_d` and the note, and never `cf`; a reveal publishes the
+marker, `cf` and the binding digest; a proof of holding publishes no marker. A wallet proves against a
 recent, widely shared tree state, never the one its own commit created
 (outline, "Core protocol" 10). The test must fail against a deliberately linked
 design, for example one whose reveal publishes `C`.
@@ -545,8 +558,8 @@ in which question 1 is settled.
 - **CR-D15. Linkage.** The test of section 9 passes over commit, two proofs of
   holding and a revocation, and fails against a deliberately linked design
   whose reveal publishes `C` or whose proofs of holding share a value other
-  than the shared tree state, the chain constants and the verifiers' own
-  choices.
+  than the shared tree state, the chain constants, the content fingerprint and
+  the verifiers' own choices.
 - **CR-D16. Chain and purpose binding.** A proof of holding from a chain with
   another identifier or version is rejected at verifier check 2. A data reveal
   made with the reveal purpose and submitted as a revocation, or the other way
@@ -557,6 +570,13 @@ in which question 1 is settled.
   holding on the new canonical chain is accepted.
 - **CR-D18. Fee fails closed.** Until question 1 is settled, a data reveal
   that passes every other check is rejected at section 6, step 6.
+- **CR-D19. Content fingerprint binding.** For a version 1 and a version 2
+  commitment: a valid data reveal whose `cf` is replaced with the fingerprint
+  of other bytes fails at section 6, step 10, and a proof of holding made for
+  one `cf` is rejected at verifier check 6 when the verifier asks about
+  another; a prover that opens the commitment but claims another `cf` makes no
+  proof that verifies. The revealed bytes recompute the reveal's `cf`, and
+  other bytes do not (spec 02, PS-26).
 
 Each requirement must fail if the check it names is removed; a test that still
 passes with the check deleted does not count.
@@ -598,7 +618,12 @@ Each has a default that rejects or adds nothing until the founder decides.
    state it names.
 8. **Proof that shown bytes match.** Should a viewer be able to check that
    shown bytes match a commitment's `cf` without receiving the digits?
-   Default: no such proof in the first version.
+   Answered: yes. A data reveal and a proof of holding carry `cf` as a public
+   input, bound by their binding digests, and the proof shows it is the
+   commitment's own (sections 5 and 6; spec 02, sections 5 and 6). A viewer
+   computes `cf` from the shown bytes and compares. The fingerprint is public
+   by design; it names the content, which any commitment of the same bytes
+   shares, and not the commitment.
 9. **Rules on data.** Are rules on data in the first version? Default: none;
    any non-empty rule is rejected at section 6, step 10.
 

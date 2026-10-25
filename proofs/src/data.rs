@@ -6,6 +6,12 @@
 //! included, so a reveal cannot pass as a revocation or the other way round.
 //! It mints nothing and has no amounts.
 //!
+//! The content fingerprint `cf` of the commitment (spec 01, section 3) is a
+//! public field: the fingerprint hash reads it from the public values, so the
+//! commitment's own `cf` must equal it and a reveal claiming another `cf`
+//! fails. Anyone holding the revealed bytes computes
+//! `K(content-fingerprint, length, content)` and compares it with `cf`.
+//!
 //! There is one statement per commitment format (spec 01, section 10), with
 //! the same public fields and binding layout. The binding's `type` field is
 //! the format's type tag, so a proof of one format never verifies as the
@@ -29,7 +35,7 @@
 //! only in version 2, with the `v2` fingerprint and marker tags:
 //!
 //! ```text
-//! F_d     K(data-fingerprint, s, r, b, salt, DATA, cf, rule)  2 blocks
+//! F_d     K(data-fingerprint, s, r, b, salt, DATA, cf, rule)  2 blocks, cf public
 //! C       K(data-commitment, DATA, F_d)                       1
 //! N0..N31 K(data-tree-node, level, left, right)               32, N31 = root
 //! M       K(data-marker, r, b, salt)                          1, = marker
@@ -190,6 +196,9 @@ pub struct DataReveal {
     pub party: [u8; 32],
     pub fee: [u8; 32],
     pub rule: [u8; 32],
+    /// The content fingerprint of the commitment revealed (spec 01, section
+    /// 3), which the revealed bytes are checked against.
+    pub cf: [u8; 32],
 }
 
 fn fields(format: DataFormat, params: &ChainParams, tx: &DataReveal) -> Vec<u8> {
@@ -199,6 +208,7 @@ fn fields(format: DataFormat, params: &ChainParams, tx: &DataReveal) -> Vec<u8> 
         .put("party", &tx.party)
         .put("fee", &tx.fee)
         .put("rule", &tx.rule)
+        .put("cf", &tx.cf)
         .finish()
 }
 
@@ -319,12 +329,14 @@ pub(crate) enum RuleSource {
 }
 
 /// Open a data commitment of a format and climb to the root: `F_d`, `C`, 32
-/// nodes. The last node's digest must equal the public bytes at `root`.
+/// nodes. `F_d` reads the content fingerprint from the public bytes at `cf`,
+/// and the last node's digest must equal the public bytes at `root`.
 pub(crate) fn push_data_opening(
     sb: &mut ScheduleBuilder,
     format: DataFormat,
     w: Option<&DataSecrets<'_>>,
     rule: RuleSource,
+    cf: usize,
     root: usize,
 ) {
     if let Some(w) = w {
@@ -338,7 +350,7 @@ pub(crate) fn push_data_opening(
     if format.salt_len() > 0 {
         fingerprint = fingerprint.carried(SALT, format.salt_len());
     }
-    let fingerprint = fingerprint.constant(&type_tag).free(32, w.map(|w| &w.cf[..]));
+    let fingerprint = fingerprint.constant(&type_tag).public(cf, 32);
     let fingerprint = match rule {
         RuleSource::Public(offset) => fingerprint.public(offset, 32),
         RuleSource::Private => fingerprint.free(32, w.map(|w| &w.rule.expect("a private rule")[..])),
@@ -375,7 +387,7 @@ fn schedule_with(format: DataFormat, w: Option<&DataSecrets<'_>>) -> (Schedule, 
     let fields_len = binding.fields_len();
     let type_tag = format.type_tag();
     let mut sb = ScheduleBuilder::new();
-    push_data_opening(&mut sb, format, w, RuleSource::Public(off("rule")), off("root"));
+    push_data_opening(&mut sb, format, w, RuleSource::Public(off("rule")), off("cf"), off("root"));
     sb.push(data_marker_hash(format).output(off("marker")));
     sb.push(
         HashBuilder::new(TAG_DATA_REVEAL_BINDING)
@@ -450,6 +462,7 @@ fn prove(
         party: request.party,
         fee: request.fee,
         rule: request.rule,
+        cf: *w.cf,
     };
     let (_, free, dirs) = schedule_with(format, Some(w));
     let assignment = Assignment {

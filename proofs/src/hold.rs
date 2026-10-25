@@ -3,11 +3,14 @@
 //!
 //! The proof opens one data commitment under the public data-tree `root`,
 //! computes its marker privately, and computes the hold binding digest over
-//! the chain, the tree state, the spent-marker-set root, the verifier and the
-//! verifier's challenge. It publishes no marker and no value tied to the
-//! commitment. What it shows is only that the prover holds *some* commitment
-//! of the type under that tree state (spec 02, section 6, "What S3 shows"): it
-//! names no particular commitment or content, so it is no capability for a
+//! the chain, the tree state, the spent-marker-set root, the verifier, the
+//! verifier's challenge and the content fingerprint `cf`. It publishes no
+//! marker and no value tied to the commitment beyond `cf`, which names the
+//! content and not the commitment. The fingerprint hash reads `cf` from the
+//! public values, so the proof holds only for the content fingerprint it was
+//! made with. What it shows is that the prover holds *some* commitment of the
+//! type to that content under that tree state (spec 02, section 6, "What S3
+//! shows"): it names no particular commitment, so it is no capability for a
 //! particular resource.
 //!
 //! **Not implemented: constraint 4, the absence of the marker from the
@@ -37,7 +40,7 @@
 //! `v2` fingerprint and marker tags:
 //!
 //! ```text
-//! F_d     K(data-fingerprint, s, r, b, salt, DATA, cf, rule)  2 blocks, rule private
+//! F_d     K(data-fingerprint, s, r, b, salt, DATA, cf, rule)  2 blocks, cf public, rule private
 //! C       K(data-commitment, DATA, F_d)                       1
 //! N0..N31 K(data-tree-node, level, left, right)               32, N31 = root
 //! M       K(data-marker, r, b, salt)                          1, private
@@ -70,6 +73,8 @@ pub struct HoldContext {
     pub verifier: [u8; 32],
     /// The verifier's fresh challenge, issued once.
     pub challenge: [u8; 32],
+    /// The content fingerprint the verifier asks about (spec 01, section 3).
+    pub cf: [u8; 32],
 }
 
 impl HoldContext {
@@ -105,6 +110,7 @@ fn fields(params: &ChainParams, ctx: &HoldContext) -> Vec<u8> {
         .put("marker_set_root", &ctx.marker_set_root)
         .put("verifier", &ctx.verifier)
         .put("challenge", &ctx.challenge)
+        .put("cf", &ctx.cf)
         .finish()
 }
 
@@ -192,7 +198,7 @@ fn schedule_with(format: DataFormat, w: Option<&DataSecrets<'_>>) -> (Schedule, 
     let fields_len = binding.fields_len();
     let type_tag = format.type_tag();
     let mut sb = ScheduleBuilder::new();
-    push_data_opening(&mut sb, format, w, RuleSource::Private, off("root"));
+    push_data_opening(&mut sb, format, w, RuleSource::Private, off("cf"), off("root"));
     // Constraint 3: the marker of the opened commitment, kept private. With
     // constraint 4 not implemented, nothing reads it yet.
     sb.push(data_marker_hash(format));
@@ -259,6 +265,9 @@ fn prove(
     if w.format() != ctx.format()? {
         return Err(ProofError::WrongFormat);
     }
+    if *w.cf != ctx.cf {
+        return Err(ProofError::WrongContentFingerprint);
+    }
     let rule = w.rule.expect("a private rule");
     if merkle_root(Tree::Data, &w.commitment(rule), w.position, w.path) != ctx.root {
         return Err(ProofError::NotInTree);
@@ -267,8 +276,9 @@ fn prove(
 }
 
 /// Prove holding of a version 1 commitment, for tests only. Rejects what
-/// [`HoldContext::check`] rejects, a context of another type than `DATA`,
-/// and a commitment that is not the leaf at `position` under `root`.
+/// [`HoldContext::check`] rejects, a context of another type than `DATA`, a
+/// context whose `cf` is not the opening's, and a commitment that is not the
+/// leaf at `position` under `root`.
 #[cfg(feature = "unsettled-points-test")]
 pub fn prove_hold(
     params: &ChainParams,

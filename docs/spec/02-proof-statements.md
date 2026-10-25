@@ -33,6 +33,7 @@ It chooses nothing inside the proof system beyond what the statements need.
 | Statements | Three: S1 one-time reveal of a coin, S2 one-time reveal of data (reveal or revoke), S3 proof of holding (data, and coins once settled) | Outline ("Core protocol" 5); spec 04 |
 | What a reveal publishes | A one-time marker computed from the reveal secret and blinding, never the commitment, its fingerprint or its position | Outline (core requirement 3); spec 01, section 3 |
 | What a proof of holding publishes | Nothing tied to the commitment: no marker, no commitment, no position | Spec 04, section 5 |
+| Content fingerprint | A public input of S2 and S3, bound by their binding digests: the proof opens the commitment only with the `cf` the verifier holds, so anyone with the revealed bytes checks them against a data reveal, and a proof of holding names the content it is about. Never an input of S1, where it is the constant zero | Spec 04, question 8; front desk decision |
 | Salt | The 16-byte salt of a version 2 commitment is a private witness of every statement, never a public input; the remainder's fresh salt is private too. No public field changes | Spec 01, section 3; front desk decision |
 | Binding | One binding digest per statement, computed by the node or verifier from its own values, never taken from the prover | Outline ("Core protocol" 10); base client plan 7.3; spec 03, section 7, step 6 |
 | Binding layouts | Fixed-width fields in a fixed order under the three binding tags of spec 01 | **Proposed** (section 7) |
@@ -98,7 +99,9 @@ binding digest. These parts are the same in all three statements.
    data leaf never opens as a coin or the other way round, and its version byte
    selects the tags: a version 1 leaf never opens as version 2 or the other way
    round. For `COIN`, `cf` is the constant 32 zero bytes (spec 01, section 3),
-   not an input.
+   not an input. For `DATA`, `cf` is the public input of S2 and S3 (sections 5
+   and 6): the fingerprint is computed from the public `cf`, so the commitment
+   opens only with the content fingerprint the node or verifier holds.
 2. **Membership.** Starting from `C` at the private `position`, hashing with
    the private `path` level by level with the tree-node tag of the statement's
    type (`ghost/coin-tree-node/v1` or `ghost/data-tree-node/v1`, level byte 0 to
@@ -115,12 +118,14 @@ binding digest. These parts are the same in all three statements.
    public inputs the node or verifier holds. The node or verifier computes
    `binding` itself from its own values and the transaction's fields, and never
    takes it from the prover.
-5. **No secret leaves.** `s`, `r`, `b`, `salt`, `cf`, `v`, `v'`, `position`,
+5. **No secret leaves.** `s`, `r`, `b`, `salt`, `v`, `v'`, `position`,
    `path`, the remainder secrets and salt, the digits, `k_note` and `k_data`
-   are never public inputs. No statement takes the digits, `k_note` or
-   `k_data` at all: they are derived off the proof with SHA3-256 (spec 01,
-   section 7). The proof system's zero-knowledge mode is on (outline,
-   "Cryptography").
+   are never public inputs. The content fingerprint `cf` is not a secret: it
+   is public in S2 and S3 by design, because it is what revealed bytes are
+   checked against, and it names the content, not the commitment. No
+   statement takes the digits, `k_note` or `k_data` at all: they are derived
+   off the proof with SHA3-256 (spec 01, section 7). The proof system's
+   zero-knowledge mode is on (outline, "Cryptography").
 6. **The salt is a private witness.** The salt is not secret: the commit
    published it with `F` (spec 01, section 3). That is exactly why no
    statement makes it public: a reveal or proof of holding that carried it
@@ -234,10 +239,12 @@ creates no remainder and carries no amount out. Its binding tag is
 | `party` | 32 | Transaction | The verifier or recipient the ticket is for, or zero for none (spec 04, section 6). Chosen by the user; nothing is credited to it |
 | `fee` | 32 | Node | Not settled; every data reveal is rejected at spec 04, section 6, step 6 until it is |
 | `rule` | 32 | Transaction, must be the empty rule | The same in every data reveal of version 1 |
+| `cf` | 32 | Transaction | The content fingerprint `K("ghost/content-fingerprint/v1", length, content)` of spec 01, section 3. The commit never published it: `F_d` hides it behind `s`, `r` and `b`. It names the content, which the reveal shows to `party` anyway, and any other commitment of the same content has the same `cf`. Anyone holding the revealed bytes computes it and compares (spec 04, question 8) |
 | `binding` | 32 | Node, section 7 | A hash of the values above |
 
-The data reveal never publishes `C`, `F_d`, `cf`, the position, the salt, the
-data, the data key or any part of it (spec 04, section 6).
+The data reveal never publishes `C`, `F_d`, the position, the salt, the data,
+the data key or any part of it (spec 04, section 6). It publishes the content
+fingerprint `cf` and nothing computed from the data beyond it.
 
 **Private inputs.**
 
@@ -247,7 +254,6 @@ data, the data key or any part of it (spec 04, section 6).
 | `r` | 32 | Reveal secret of the data commitment |
 | `b` | 32 | Blinding of the data commitment (`b_0`, spec 01, section 8) |
 | `salt` | 16 | Salt of the data commitment, as the commit published it; none for a version 1 commitment |
-| `cf` | 32 | Content fingerprint |
 | `position` | 4 | Position of `C` in the data tree |
 | `path` | 1024 | The 32 sibling hashes from `C` to `root` |
 
@@ -257,7 +263,8 @@ data, the data key or any part of it (spec 04, section 6).
    a version 2 commitment, or
    `F_d = K("ghost/data-fingerprint/v1", s, r, b, DATA, cf, rule)` for a
    version 1 commitment, and `C = K("ghost/data-commitment/v1", DATA, F_d)`,
-   with `DATA` the public `type`.
+   with `DATA` the public `type` and `cf` the public `cf`: the commitment's own
+   content fingerprint must equal it, so a reveal carrying another `cf` fails.
 2. `C` is the leaf at `position` under `root` in the data tree.
 3. `marker = K("ghost/data-marker/v2", r, b, salt)` for a version 2
    commitment, or `K("ghost/data-marker/v1", r, b)` for a version 1 one, with
@@ -300,11 +307,14 @@ place in the header are fixed (section 13).
 | `marker_set_root` | 32 | Verifier, from a header it accepts as current | The root of the spent-marker set of `type`, a chain-wide value |
 | `verifier` | 32 | Verifier | The verifier's own identity; it names the verifier, not the commitment |
 | `challenge` | 32 | Verifier, fresh and random | Chosen by the verifier, at least 256 bits from a secure random source (spec 04, question 7) |
+| `cf` | 32 | Verifier, the content it asks about | The content fingerprint of spec 01, section 3 (32 zero bytes for `COIN`). The commit never published it, and every commitment of the same content has the same `cf`, so it names the content, not the commitment |
 | `binding` | 32 | Verifier, section 7 | A hash of the values above |
 
 Two proofs of holding of the same commitment share no public value except the
-tree state, the chain constants and what the verifiers chose. Neither shares a
-value with the commit or with a later reveal: the marker stays private.
+tree state, the chain constants, the content fingerprint and what the
+verifiers chose. Neither shares a value with the commit: the marker stays
+private. A later reveal of the commitment shares only `cf` with them, the
+fingerprint of the content it shows anyway.
 
 **Private inputs.**
 
@@ -314,7 +324,6 @@ value with the commit or with a later reveal: the marker stays private.
 | `r` | 32 | Reveal secret of the commitment |
 | `b` | 32 | Blinding of the commitment |
 | `salt` | 16 | Salt of the commitment; none for a version 1 commitment |
-| `cf` | 32 | Content fingerprint (`DATA`); 32 zero bytes for `COIN` |
 | `v` | 32 | Amount (`COIN` only); no amount is claimed or published |
 | `rule` | 32 | Rule of the commitment |
 | `position` | 4 | Position of `C` in the tree of `type` |
@@ -324,7 +333,9 @@ value with the commit or with a later reveal: the marker stays private.
 
 **Constraints.**
 
-1. `C` is opened as in section 3, item 1, with the public `type`.
+1. `C` is opened as in section 3, item 1, with the public `type` and the
+   public `cf`: the commitment's own content fingerprint must equal it, so a
+   proof made for one `cf` fails for another.
 2. `C` is the leaf at `position` under `root` in the tree of `type`.
 3. `marker` is computed from the `r`, `b` and salt of constraint 1 with the
    marker tag of `type` and its version (section 3, item 3).
@@ -335,11 +346,12 @@ value with the commit or with a later reveal: the marker stays private.
 5. `binding` is the hold binding of section 7 over the public inputs.
 
 **What S3 shows (review 01, F5 and N1).** S3 shows that the prover holds *some*
-unspent commitment of the type under the tree state used. It names no
-particular commitment and no particular content: anyone can make a data
-commitment of their own, with any content fingerprint they like, and prove
-holding of it. So in version 1 a proof of holding is not a capability for a
-particular resource (threat model C36 and section 6, item 11). A statement that
+unspent commitment of the type to the content of the public `cf`, under the
+tree state used, answering the verifier's challenge. It names the content but
+no particular commitment: anyone who knows the content can make a data
+commitment of their own with that content fingerprint and prove holding of
+it. So in version 1 a proof of holding is not a capability for a particular
+resource (threat model C36 and section 6, item 11). A statement that
 ties the hidden opening to a resource the prover cannot create for itself is
 part of the later layers (outline, "Core protocol" 12) and needs its own
 review.
@@ -360,8 +372,9 @@ A proof is bound to its purpose so that a captured proof cannot be replayed or
 redirected (outline, "Core protocol" 10). Each statement has one binding digest
 under its own tag from [spec 01](01-commitments-and-keys.md), section 4, over
 fixed-width fields in a fixed order, so no field can shift into another. The
-proof of holding is bound to the verifier, the chain and a verifier-chosen
-challenge; the one-time reveal is bound to its destination, amount and fee, and
+proof of holding is bound to the verifier, the chain, a verifier-chosen
+challenge and the content fingerprint; the data reveal to its content
+fingerprint; the one-time reveal is bound to its destination, amount and fee, and
 to everything else the node executes.
 
 The rule is the same for all three: **the node or verifier computes the digest
@@ -430,8 +443,9 @@ Total: 415 bytes after the tag; 444 bytes with the tag; 4 Keccak permutations.
 | 111 | 32 | `party` | Verifier or recipient, or zero |
 | 143 | 32 | `fee` | Amount word |
 | 175 | 32 | `rule` | Empty rule |
+| 207 | 32 | `cf` | Content fingerprint of the commitment revealed |
 
-Total: 207 bytes after the tag; 236 bytes with the tag; 2 Keccak permutations.
+Total: 239 bytes after the tag; 268 bytes with the tag; 2 Keccak permutations.
 
 ### Hold binding
 
@@ -450,8 +464,9 @@ Total: 207 bytes after the tag; 236 bytes with the tag; 2 Keccak permutations.
 | 79 | 32 | `marker_set_root` | Spent-marker-set root of `type` |
 | 111 | 32 | `verifier` | Verifier identity |
 | 143 | 32 | `challenge` | Verifier's challenge |
+| 175 | 32 | `cf` | Content fingerprint the verifier asks about |
 
-Total: 175 bytes after the tag; 197 bytes with the tag; 2 Keccak permutations.
+Total: 207 bytes after the tag; 229 bytes with the tag; 2 Keccak permutations.
 
 **Cost.** The digests add 4, 2 and 2 permutations to proofs that already spend
 about 40 (spec 01, section 4, "Cost"), within the measured margin of the
@@ -795,8 +810,8 @@ removed does not count ([spec 03](03-coin-rules.md), section 10).
   reveal publishes the commit's 16-byte salt.
 - **PS-2. Proofs of holding share nothing.** Two proofs of holding of one
   commitment, and a proof of holding and the later reveal of it, share no public
-  value apart from the tree state, the chain constants and the verifiers'
-  choices. Check: the linkage test of spec 04, section 9, over a commit, two
+  value apart from the tree state, the chain constants, the content
+  fingerprint and the verifiers' choices. Check: the linkage test of spec 04, section 9, over a commit, two
   proofs of holding and a revocation.
 - **PS-3. One commitment, one marker.** The published marker is computed inside
   the proof from the `r`, `b` and salt that open the leaf. Check: a prover run
@@ -878,8 +893,9 @@ removed does not count ([spec 03](03-coin-rules.md), section 10).
   empty rule in S1 and S2. Check: spec 03, section 7, step 11; spec 04,
   question 9.
 - **PS-22. No secret is public.** No public input of any statement is `s`,
-  `r`, `b`, the salt, `cf`, `v`, `v'`, a position, a path, the digits, `k_note`
-  or `k_data`, and the proof system's zero-knowledge mode is on. Check: the public
+  `r`, `b`, the salt, `v`, `v'`, a position, a path, the digits, `k_note` or
+  `k_data`, and the proof system's zero-knowledge mode is on. The content
+  fingerprint is public in S2 and S3 by design (PS-26). Check: the public
   and private tables of each statement share no name (checked by the script
   of section 16), and the shipped configuration test confirms the mode.
 - **PS-23. Purposes do not substitute.** A proof made for one statement or
@@ -902,6 +918,17 @@ removed does not count ([spec 03](03-coin-rules.md), section 10).
   leaf opened with a salt, or a version 2 leaf opened without one, fails; the
   public and private tables of every statement list the salt as private only
   (checked by the script of section 16).
+- **PS-26. Data statements are bound to the content fingerprint.** In S2 and
+  S3, for both commitment format versions, `cf` is a public input and a field
+  of the binding digest, and the fingerprint inside the proof is computed from
+  it, so a data reveal or a proof of holding verifies only for the content
+  fingerprint it was made with. Anyone holding revealed bytes computes
+  `K("ghost/content-fingerprint/v1", length, content)` and compares it with the
+  reveal's `cf`. Check: an honest data reveal and an honest proof of holding,
+  version 1 and version 2, fail with another `cf`; a prover that opens the
+  commitment but claims another `cf` makes no proof that verifies; the S2 and
+  S3 public tables and binding layouts list `cf` (checked by the script of
+  section 16).
 
 ## 12. Adversarial vectors
 
@@ -971,6 +998,12 @@ threat model C16 and C22 is here.
   version is rejected at the type check before the proof, and a reveal that
   carries any field beyond its layout is rejected at the shape check (PS-1,
   PS-3, PS-25).
+- **AV-14. Content substitution.** A relay replaces the `cf` of a valid data
+  reveal with the fingerprint of other bytes, so the party is shown bytes the
+  commitment never held; a prover answers a verifier asking about one content
+  with a commitment to another; a proof of holding made for one `cf` is shown
+  for another. Expected: the proof fails in every case, for version 1 and
+  version 2 commitments (PS-26).
 
 ## 13. Not settled: fail closed
 
@@ -1019,7 +1052,8 @@ difference is listed here for the founder's review.
    binds all four (section 7).
 2. **Fields of the data reveal binding.** [Spec 04](04-data-commitments.md),
    section 6 lists the data reveal's binding fields without the domain tag, the
-   type tag and the rule. This document adds them.
+   type tag and the rule. This document adds them. Both documents bind the
+   content fingerprint `cf`.
 3. **Width of the verifier or recipient field.** Spec 04, section 6 leaves the
    width open. This document uses 32 bytes for data (`party`) and the 20-byte
    address of spec 03 for the coin `recipient`.
@@ -1037,7 +1071,7 @@ difference is listed here for the founder's review.
    holding for `DATA` only. This document writes one statement for both types
    and rejects `COIN` until settled.
 7. **Spec 01 tag table.** The three binding rows of spec 01, section 4 leave
-   their inputs to this document. Their sizes are 444, 236 and 197 bytes with
+   their inputs to this document. Their sizes are 444, 268 and 229 bytes with
    the tag, at 4, 2 and 2 permutations (section 7); spec 01's table can take
    these when it is next revised.
 8. **One private shape.** The outline gives every private transaction an
@@ -1097,7 +1131,9 @@ private inputs, with a reason for every public input and no name in both
 tables, and that every statement takes `s`, `r`, `b`, the salt, the position
 and the path as private inputs and none of them as public ones; that the
 document names the four salted fingerprint and marker tags; that every binding layout is contiguous, sums to its stated total and
-holds the fields its statement must bind; that every binding tag is in the tag
+holds the fields its statement must bind, the data reveal and hold bindings
+the 32-byte content fingerprint `cf` and the coin reveal binding not; that
+every binding tag is in the tag
 table of [spec 01](01-commitments-and-keys.md); that the properties are
 numbered PS-1 upwards without gaps and each names its check; that every named
 adversarial vector has an entry citing existing properties; and that the
