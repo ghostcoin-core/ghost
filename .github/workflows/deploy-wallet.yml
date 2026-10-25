@@ -83,7 +83,7 @@ jobs:
           vercel --version
       - name: Deploy to production
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_WALLET_TOKEN }}
         run: vercel deploy --prebuilt --prod --yes --token "$VERCEL_TOKEN"
       # The production URL now serves this commit: every file RELEASE.json
       # names, byte for byte, with the headers of wallet/headers.json.
