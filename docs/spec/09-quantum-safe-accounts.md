@@ -38,6 +38,8 @@ It writes no code. The node, proof, wallet and transport build tickets do.
 | Security target | At least NIST Category 1 for every component, counted as in section 3, classically and against a quantum attacker | Founder decision, 2026-10-20; counting rules **Proposed** |
 | Account scheme at launch | ML-DSA-44 (FIPS 204), pure mode, scheme ID `0x0001` | Founder decision; ID **Proposed** |
 | Second scheme | SLH-DSA-SHAKE-128s (FIPS 205), pure mode, scheme ID `0x0002`, accepted from genesis | Founder decision (defined by scheme ID); acceptance from genesis **Proposed** (question 2) |
+| Rescue-key account | Scheme ID `0x0003`: ML-DSA-44 plus an SLH-DSA-SHAKE-128s rescue key, both bound by the address; a rescue transaction signed with SLH-DSA under scheme ID `0x0004` moves it even if ML-DSA is forgeable; the wallet default for new accounts | Front desk decision, 2026-10-25 (section 5.1) |
+| ML-DSA sunset | Consensus parameter `ML_RESCUE_HEIGHT`, none at genesis, set only by a scheduled upgrade; from it scheme `0x0003` transactions are refused and `0x0004` stays valid | Front desk decision, 2026-10-25 (section 5.3); notice period question 7 |
 | Refused schemes | Every unknown or reserved scheme ID; every stateful or one-time signature scheme; every elliptic-curve scheme | Founder decision |
 | Account transaction | New EIP-2718 type `0x52` carrying scheme ID, public key and signature; canonical RLP | Founder decision; type byte front desk decision (question 6) |
 | Sender | First 20 bytes of a domain-separated hash of (scheme ID, public key); no key registry | Founder decision; tag **Proposed** |
@@ -84,6 +86,8 @@ transaction is invalid and changes no state. In addition:
 | `GAS_PER_MS` | 10,000 | Spec 07, section 4: 30,000,000 gas mapped onto a 3,000 ms verification budget per block |
 | `VERIFY_GAS[0x0001]` | Set by measurement | Gas for one ML-DSA-44 verification (section 8.2) |
 | `VERIFY_GAS[0x0002]` | Set by measurement | Gas for one SLH-DSA-SHAKE-128s verification (section 8.2) |
+| `VERIFY_GAS[0x0003]`, `VERIFY_GAS[0x0004]` | `VERIFY_GAS[0x0001]` and `VERIFY_GAS[0x0002]` | The same verification as the plain scheme, not measured again (section 5.2) |
+| `ML_RESCUE_HEIGHT` | None at genesis | First block height at which scheme `0x0003` transactions are refused; set only by a scheduled upgrade (section 5.3) |
 | `SIGVERIFY_PRECOMPILE` | `0x0000000000000000000000000000000000000051` | The signature-verify precompile (**Proposed**, section 7) |
 | `TX_MAX_BYTES` | The base client's per-transaction pool cap (128 KiB in go-ethereum's pool) | Largest account transaction the pool admits (section 8.3) |
 | `MSG_MAX_BYTES` | 10 MiB (10,485,760 bytes) | The base client's cap on one `eth` protocol message |
@@ -133,7 +137,7 @@ its author's (section 7). Web certificates are outside the chain (section 10.5).
 
 | Component | Today | Classical | Quantum | Against the target | What changes |
 |---|---|---|---|---|---|
-| Account signatures | ECDSA over secp256k1 (base client) | 128 bits | Broken (Shor) | Below | ML-DSA-44 (Category 2, resting on the conjectured hardness of module lattices) and SLH-DSA-SHAKE-128s (Category 1, resting on hash-function properties only); the scheme is fixed when the account is created and ML-DSA-44 accounts have no rescue path (section 5); every secp256k1 type refused (sections 5 and 6) |
+| Account signatures | ECDSA over secp256k1 (base client) | 128 bits | Broken (Shor) | Below | ML-DSA-44 (Category 2, resting on the conjectured hardness of module lattices) and SLH-DSA-SHAKE-128s (Category 1, resting on hash-function properties only); the scheme is fixed when the account is created; a rescue-key account (`0x0003`) can still move under SLH-DSA if ML-DSA falls, a plain ML-DSA-44 account (`0x0001`) cannot (section 5.1); every secp256k1 type refused (sections 5 and 6) |
 | Reveal STARK: queries and grinding | Rate 1/4, 57 queries, 16 grinding bits (decision 0003) | 128 conjectured, 72 proven | About 65 conjectured, about 36 proven (section 4.1) | Conjectured at the floor with no margin; proven below | Raised by the rule of section 4.1; proven security over the whole bundled proof is a hard requirement before mainnet (section 4.1), not met today |
 | Reveal STARK: hash output | Keccak-256 digests in the Merkle commitments and the Fiat–Shamir transcript | 128 bits collision | About 85 bits collision; the quantum Fiat–Shamir hash term holds to about 2^85 queries | Meets | Nothing |
 | Reveal STARK: challenge field | Degree-5 extension of BabyBear, about 2^155 elements | Each field term near or below 2^-128 by a rough count | Half of that | At the floor; the build ticket computes it | Section 4.1 |
@@ -321,8 +325,10 @@ negotiated or read from the signature itself.
 | Scheme ID | Scheme | Mode | Public key | Signature | NIST category | Security assumption | Status |
 |---|---|---|---|---|---|---|---|
 | `0x0000` | Reserved | | | | | | Refused |
-| `0x0001` | ML-DSA-44 (FIPS 204) | Pure ML-DSA (FIPS 204, algorithms 2 and 3), not HashML-DSA | 1,312 bytes | 2,420 bytes | 2 | The conjectured hardness of module lattices (Module-LWE and Module-SIS); no proof reduces it to a hash | Accepted from genesis; the wallet default |
+| `0x0001` | ML-DSA-44 (FIPS 204) | Pure ML-DSA (FIPS 204, algorithms 2 and 3), not HashML-DSA | 1,312 bytes | 2,420 bytes | 2 | The conjectured hardness of module lattices (Module-LWE and Module-SIS); no proof reduces it to a hash | Accepted from genesis; no rescue path |
 | `0x0002` | SLH-DSA-SHAKE-128s (FIPS 205) | Pure SLH-DSA (FIPS 205, algorithms 22 and 24), not HashSLH-DSA | 32 bytes | 7,856 bytes | 1 | Hash-function properties only (of SHAKE256) | Accepted from genesis (**Proposed**, question 2) |
+| `0x0003` | ML-DSA-44 with an SLH-DSA-SHAKE-128s rescue key; signed with ML-DSA-44 | As `0x0001` | 1,344 bytes: the ML-DSA-44 key, then the SLH-DSA key (section 5.1) | 2,420 bytes | 2 | As `0x0001` for the ML-DSA path; the account's funds also rest on `0x0004`, hash-function properties only | Accepted from genesis; refused from `ML_RESCUE_HEIGHT` (section 5.3); the wallet default |
+| `0x0004` | The rescue transaction of a `0x0003` account; signed with SLH-DSA-SHAKE-128s | As `0x0002` | 1,344 bytes, as `0x0003` | 7,856 bytes | 1 | Hash-function properties only (of SHAKE256) | Accepted from genesis, never sunset (section 5.2); not an account kind of its own |
 | Every other value | Unassigned | | | | | | Refused |
 
 The NIST category says how much work the best known attack takes; the security
@@ -353,11 +359,12 @@ properties of the hash function, the assumption the rest of Ghost already makes.
   times the signature bytes and a higher verification charge. The choice
   cannot be made later for an existing account: the address is
   `K(tag, scheme, pk)[:20]`, so moving funds out of an ML-DSA-44 account takes
-  a transaction signed by its ML-DSA-44 key. ML-DSA-44 accounts have no rescue
-  path: if ML-DSA is forgeable, an attacker can sign for them, and can forge
-  the same move the owner would make and race it. A real rescue path (an
-  address that also commits to an SLH-DSA key at creation) is not part of this
-  specification. The client and wallet sign with ML-DSA-44 only today. The
+  a transaction signed by its ML-DSA-44 key. An account that should survive a
+  break of ML-DSA is made with a rescue key from the start: scheme `0x0003`,
+  whose address also binds an SLH-DSA key (section 5.1). A plain `0x0001`
+  account has no such key and keeps needing ML-DSA. The client and wallet sign
+  with ML-DSA-44 only today; deriving rescue-key accounts is the wallet build
+  ticket's. The
   small variant (`128s`) is chosen over the fast one (`128f`, 17,088-byte
   signatures) because chain bytes cost more than signing time.
 - **Refused for good.** Stateful hash-based schemes (XMSS, LMS) and one-time
@@ -372,6 +379,164 @@ properties of the hash function, the assumption the rest of Ghost already makes.
   scheme that holds funds unless the same or an earlier upgrade lets those
   accounts move to another scheme, the rule spec 01, section 10 states for
   commitments.
+
+### 5.1 Accounts with a rescue key
+
+A **rescue-key account** (front desk decision, 2026-10-25) is an ML-DSA-44
+account whose address also commits, when it is created, to an
+SLH-DSA-SHAKE-128s key. It is spent day to day with ML-DSA-44 under scheme
+`0x0003`, and it can always be moved with SLH-DSA under scheme `0x0004`, the
+rescue transaction of section 5.2. A rescue move signed by the SLH-DSA key is
+valid even if ML-DSA is forgeable.
+
+**Public key.** Both scheme IDs carry the same 1,344-byte `public_key`:
+
+```text
+public_key = mldsa_pk (1,312 bytes, the FIPS 204 encoding)
+          || slhdsa_pk (32 bytes, the FIPS 205 encoding, PK.seed || PK.root)
+```
+
+A `0x0003` signature is checked against `mldsa_pk` and a `0x0004` signature
+against `slhdsa_pk`. The other half is carried but not used by that
+verification; both halves are inside the signed message (section 6), so
+neither can be swapped.
+
+**Address.** The existing rule of section 6, with the scheme ID `0x0003`:
+
+```text
+address = first 20 bytes of K("ghost/account-address/v1", 0x0003, public_key)
+```
+
+It binds both keys with no new hash and no key registry. The ID `0x0004`
+never enters an address: a rescue transaction's sender is derived with
+`0x0003` (section 5.2), so both IDs name one account, with one nonce and one
+balance. The same ML-DSA-44 key used as a plain `0x0001` account has a
+different address, so an existing `0x0001` account gets a rescue key only by
+moving its funds to a new `0x0003` account. The SLH-DSA key is not hashed
+again inside the public key: at 32 bytes it is already hash-sized, and a
+hash would only add a second preimage step.
+
+**Why two IDs.** One ID that accepted either an ML-DSA-44 or an SLH-DSA
+signature would have to pick the verification by the signature's length, and
+a node never guesses a scheme from a length (section 5, rules). With two IDs
+the transaction states which key signed it, the lengths follow from the ID,
+and the ID is inside the signed message (section 6), so a signature made for
+one ID cannot be presented under the other.
+
+**The wallet default.** New accounts the wallet creates are `0x0003`. The cost
+against a plain `0x0001` account is 32 more public-key bytes in every ML-DSA
+transaction, 512 gas at `SIG_BYTE_GAS` (section 8.1), and, only when the
+account is rescued, a transaction carrying the 1,344-byte key and a
+7,856-byte signature. Plain `0x0001` accounts stay valid but have no rescue
+and keep needing ML-DSA, so their holders move to a `0x0003` account or to
+`0x0002` before a break (section 5.3). A holder who wants hash-only security
+on every transaction, not only on the rescue, still chooses `0x0002`.
+
+### 5.2 The rescue transaction
+
+**Format.** A rescue transaction is the account transaction of section 6, type
+`0x52` with the same twelve fields, with:
+
+- `scheme = 0x0004`;
+- `public_key` the 1,344-byte key of section 5.1, the same bytes the account's
+  `0x0003` transactions carry;
+- `signature` an SLH-DSA-SHAKE-128s signature (pure mode, 7,856 bytes) by
+  `slhdsa_pk`'s secret key.
+
+It can do anything an account transaction can do: a transfer, a contract call,
+a contract creation, a commit. There is no rescue-only destination, no delay
+and no extra state.
+
+**Sighash.** Unchanged from section 6: `unsigned` carries `scheme = 0x0004`
+and the whole 1,344-byte `public_key`, and the signature is
+`SLH-DSA.Sign(slhdsa_sk, message = sighash, context = "ghost/tx/v1")`.
+
+**Sender.** `first 20 bytes of K("ghost/account-address/v1", 0x0003,
+public_key)`, the same account as the `0x0003` transactions with that key,
+sharing their nonce and balance.
+
+**Order of checks** for the new IDs, in the steps of section 6:
+
+- **Step 3.** `0x0003` is accepted at a height below `ML_RESCUE_HEIGHT`, at
+  every height while it is not set, and refused at or above it. `0x0004` is
+  accepted at every height. Both have a 1,344-byte `public_key`; the signature
+  is 2,420 bytes for `0x0003` and 7,856 bytes for `0x0004`.
+- **Step 5.** The sender is derived with the scheme ID `0x0003` for both IDs.
+- **Step 6.** For `0x0003`, ML-DSA-44 verification against the first 1,312
+  bytes of `public_key`; for `0x0004`, SLH-DSA-SHAKE-128s verification against
+  the last 32 bytes. Both over `sighash` with the context `ghost/tx/v1`.
+
+**Gas.** The intrinsic gas rows are in section 8.1. The verification charge is
+reused, not measured again: `VERIFY_GAS[0x0003] = VERIFY_GAS[0x0001]` and
+`VERIFY_GAS[0x0004] = VERIFY_GAS[0x0002]`, because each runs the same
+verification over a key of the same length; the extra key bytes are paid by
+`SIG_BYTE_GAS`. Until the plain scheme's constant is set, its counterpart is
+rejected with it (section 13).
+
+**The precompile does not accept them.** The precompile of section 7 fails on
+`0x0003` and `0x0004` as on any scheme it does not know: they name a kind of
+account transaction, not a signature over a contract's message. A contract
+that checks a rescue-key account's signature over its own message calls the
+precompile with `0x0001` and the first 1,312 bytes of the key, or `0x0002`
+and the last 32, and computes the address with `0x0003` over the whole key.
+
+**Pool and admission.** For cost, the pool and the admission rules of section
+8.3 treat `0x0004` like `0x0002` and `0x0003` like `0x0001`: a rescue
+verification counts as an SLH-DSA verification in the worker pool, the queue
+and the per-peer and RPC budgets. A rescue transaction is about 9.2 KB, well
+under `TX_MAX_BYTES`. The base client's replacement rule applies by sender and
+nonce whatever the ID, so a `0x0004` transaction can replace a `0x0003` one at
+the same nonce and, before the sunset, the other way round (section 5.3). A
+`0x0003` transaction that reaches a node when the next block's height is at or
+above `ML_RESCUE_HEIGHT` is dropped at step 3 without verifying and is not
+penalised, like a transaction of a scheme not yet accepted; pending `0x0003`
+transactions are dropped from the pool at that point, and their senders send
+the move again as `0x0004`.
+
+### 5.3 Races and front-running
+
+**The sunset.** `ML_RESCUE_HEIGHT` is a consensus parameter with no value at
+genesis. It is set only by a scheduled upgrade (outline, "Upgrades and
+incidents") that names the height and a notice period, stated by the upgrade
+and at least the upgrade notice of the outline (question 7). From that height
+on, scheme `0x0003` transactions are rejected in the pool and a block at or
+above it holding one is invalid; `0x0004` stays valid at every height. This
+meets the rule of section 5 that no upgrade disables a scheme holding funds
+unless those accounts can move: a rescue-key account always can, by `0x0004`.
+The sunset does not touch `0x0001` or `0x0002`.
+
+**The race, stated honestly.** Once an attacker can forge ML-DSA-44, nothing a
+single account does wins a race against a sweep on the ML path: the attacker
+signs a transfer of everything for any account whose ML-DSA path is still
+accepted, a plain `0x0001` account or a `0x0003` account before the sunset.
+An owner's rescue transaction is visible in the pool, and before the sunset it
+can be raced by a forged `0x0003` transaction at the same nonce with a higher
+fee. What stops the race is the sunset, which removes the forgeable path for
+every rescue-key account at one height. A per-account lock, delay or
+commit-reveal does not: each is itself a transaction an attacker can race
+(and forge on the ML path), each adds state and a new attack surface, and none
+helps an account whose holder is idle. The sunset asks nothing of the holder:
+an idle `0x0003` account is safe from the sunset height on.
+
+**Each rule and the attack it stops.**
+
+| Rule | Attack it stops | Check |
+|---|---|---|
+| `0x0003` refused at or above `ML_RESCUE_HEIGHT` in the pool and in blocks | A forged ML-DSA sweep of a rescue-key account after the sunset | Section 6, step 3; QS-16 |
+| A block at or above `ML_RESCUE_HEIGHT` holding a `0x0003` transaction is invalid | A `0x0003` transaction included at or after the sunset height by a miner who takes the forger's fee | Section 6, step 3; QS-16 |
+| The scheme ID is inside `sighash`, each ID has exact lengths, and the address hashes the ID | Replay of a signature across schemes: an ML-DSA signature presented as `0x0004` or the other way round, a `0x0001` signature presented as `0x0003` (another message and another address), a rescue signature presented as `0x0002` | Section 6, steps 3, 5 and 6; QS-4, QS-14 |
+| `chain_id` and the genesis hash are inside `sighash`; the nonce is checked | Replay on another chain, on a copy that keeps the chain identifier, or again on the same chain. On a fork that shares the genesis and the account's history a signature can only make the same move it makes here, never another | Section 6, steps 4, 5 and 6; QS-3 |
+| The SLH-DSA signature binds every field, and after the sunset only `0x0004` can be valid for the account | Redirect or fee-bump of a visible rescue transaction by an observer: a changed destination, amount, calldata or fee fails verification, and a replacement at the same nonce needs the SLH-DSA key | Section 6, step 6; QS-3, QS-13 |
+| The two halves are separate outputs of one SHAKE256 call over the seed (section 9) | Key leakage across halves: a forged or recovered ML-DSA secret key, and every ML-DSA signature, tells nothing about the SLH-DSA secret key | Section 9; QS-13 |
+| The sender is derived with `0x0003` for both IDs | A rescue that lands on another account, or a second account with its own nonce that splits the race | Section 6, step 5; QS-15 |
+
+**The limit.** The design does not protect against a sudden, unannounced
+break of ML-DSA. Between the break and the sunset height the ML path stays
+open, and the race above is lost for every account still on it. That is
+covered by the founder's rule that provable security is required before
+mainnet (section 4.1) and by the choice of `0x0002` for high-value holders,
+whose accounts never had an ML path. The notice period trades the holders'
+time to learn of the sunset against the attacker's window (question 7).
 
 ## 6. The account transaction
 
@@ -427,10 +592,13 @@ another: the scheme ID is inside the signed message and fixes the lengths.
 **Sender.**
 
 ```text
-sender = first 20 bytes of K("ghost/account-address/v1", scheme, public_key)
+account_scheme = 0x0003 if scheme = 0x0004, otherwise scheme
+sender = first 20 bytes of K("ghost/account-address/v1", account_scheme, public_key)
 ```
 
-A domain-separated hash of the scheme ID and the public key, 20 bytes. The tag
+A domain-separated hash of the scheme ID and the public key, 20 bytes. A
+rescue transaction (`0x0004`) and an ML-DSA transaction (`0x0003`) with the
+same 1,344-byte key therefore have the same sender (section 5.2). The tag
 is used for nothing else, so no other hash in Ghost (a commitment, a CREATE or
 CREATE2 address, which hash without it) can be passed off as an account
 address. There is **no key registry**: every transaction carries its public
@@ -455,13 +623,19 @@ the pool and in a block, and stops at the first failure:
    stay. Every other type byte except `0x52` is rejected.
 2. The envelope is at most `TX_MAX_BYTES` and decodes canonically.
 3. `scheme` is a scheme accepted at this height, and `public_key` and
-   `signature` have its lengths.
+   `signature` have its lengths. `0x0003` is accepted only below
+   `ML_RESCUE_HEIGHT` (at every height while it is not set); `0x0004` at every
+   height; both have a 1,344-byte `public_key` and a signature of 2,420 and
+   7,856 bytes respectively.
 4. `chain_id` is this chain's.
-5. The sender is derived; it has no code (EIP-3607); the nonce, the balance
+5. The sender is derived, with `account_scheme` (`0x0003` for both `0x0003`
+   and `0x0004`); it has no code (EIP-3607); the nonce, the balance
    against `gas_limit * max_fee_per_gas + value`, and the intrinsic gas against
    `gas_limit` are checked as the base client checks them.
 6. The signature verifies under the scheme, over `sighash`, with the context
-   `ghost/tx/v1`. This is last because it is the most expensive check.
+   `ghost/tx/v1`: for `0x0003` as ML-DSA-44 against the first 1,312 bytes of
+   `public_key`, for `0x0004` as SLH-DSA-SHAKE-128s against the last 32 bytes.
+   This is last because it is the most expensive check.
 
 A block holding a transaction that fails any step is invalid. The node's
 sender recovery (ecrecover over `v`, `r`, `s`) is replaced by step 5's
@@ -514,7 +688,8 @@ message being every remaining byte.
 - **Output.** 32 bytes: `1` if the signature verifies over `message` with
   context `ctx`, `0` if it does not.
 - **Failure** (the call fails and uses all its gas): an unknown, reserved or
-  not yet accepted scheme ID; input shorter than its fixed parts; a context
+  not yet accepted scheme ID, and the account transaction IDs `0x0003` and
+  `0x0004` (section 5.2); input shorter than its fixed parts; a context
   that begins with `ghost/tx/`.
 - **Gas.** `VERIFY_GAS[scheme] + SIGVERIFY_WORD_GAS * ceil(len(message) / 32)`,
   charged before verifying, whether or not the signature verifies. Both
@@ -554,6 +729,8 @@ because the chain stores every byte.
 |---|---|---|---|
 | `0x0001` ML-DSA-44 | 2 + 1,312 + 2,420 = 3,734 | 59,744 | 80,744 + `VERIFY_GAS[0x0001]` |
 | `0x0002` SLH-DSA-SHAKE-128s | 2 + 32 + 7,856 = 7,890 | 126,240 | 147,240 + `VERIFY_GAS[0x0002]` |
+| `0x0003` ML-DSA-44 with a rescue key | 2 + 1,344 + 2,420 = 3,766 | 60,256 | 81,256 + `VERIFY_GAS[0x0001]` |
+| `0x0004` rescue transaction (SLH-DSA-SHAKE-128s) | 2 + 1,344 + 7,856 = 9,202 | 147,232 | 168,232 + `VERIFY_GAS[0x0002]` |
 
 At the default gas limit of 30,000,000 (spec 05, question 1) a block holds at
 most 371 ML-DSA-44 transfers, about 1.4 MB, instead of about 1,428 Ethereum
@@ -667,6 +844,18 @@ key_seed(scheme, i) = X("ghost/wallet-account/v1", n, seed, scheme, i as 4 bytes
 - SLH-DSA-SHAKE-128s (`0x0002`): `n = 48`, split into `SK.seed`, `SK.prf` and
   `PK.seed` of 16 bytes each, and the key pair is `slh_keygen_internal`
   (FIPS 205, algorithm 18).
+- Rescue-key account (`0x0003`, section 5.1): `n = 80`, one SHAKE256 output
+  under the same tag with the scheme ID `0x0003`. The first 32 bytes are the
+  ML-DSA-44 `key_seed` (FIPS 204, algorithm 6), giving `mldsa_pk`; the next 48
+  are `SK.seed`, `SK.prf` and `PK.seed` of 16 bytes each (FIPS 205,
+  algorithm 18), giving `slhdsa_pk`. The public key is `mldsa_pk ||
+  slhdsa_pk`. No key is derived under `0x0004`: it signs with the SLH-DSA half
+  of the `0x0003` key.
+
+The SLH-DSA half is a hash output of the seed, not of the ML-DSA key, so a
+forged signature or a recovered ML-DSA secret key (its 32-byte seed included)
+tells an attacker nothing about the SLH-DSA secret key: getting from the
+first 32 output bytes to the next 48 means inverting SHAKE256.
 
 Every index is hardened by construction: there is no public derivation (no
 extended public key), because hash-based derivation has none. A watch-only
@@ -836,7 +1025,7 @@ passes with the check it names removed does not count (spec 03, section 10).
 - **QS-1. Legacy types are refused.** Transactions of types `0x00` to `0x04`
   with valid secp256k1 signatures are rejected by the pool, and a block holding
   one is invalid, from genesis.
-- **QS-2. Unknown schemes are refused.** Scheme IDs `0x0000`, `0x0003` and
+- **QS-2. Unknown schemes are refused.** Scheme IDs `0x0000`, `0x0005` and
   `0xffff` are rejected in a transaction and fail in the precompile.
 - **QS-3. The signature binds every field.** Changing any one of the type,
   chain identifier, genesis hash, nonce, both fee limits, gas limit,
@@ -864,6 +1053,26 @@ passes with the check it names removed does not count (spec 03, section 10).
   X25519 or the ML-KEM shared secret changes the session keys.
 - **QS-12. The proof meets the rule.** The prover's security gate refuses a
   configuration that breaks section 4.1's rule.
+- **QS-13. Rescue works with ML-DSA forged.** With an ML-DSA-44 verifier
+  replaced by one that accepts every signature (a stand-in for a break), a
+  `0x0004` transaction still verifies only under the account's SLH-DSA key:
+  one signed by another SLH-DSA key, or with any field changed, is rejected
+  at section 6, step 6; and a key derived as in section 9 from a known
+  ML-DSA seed gives no way to compute its SLH-DSA half.
+- **QS-14. No cross-scheme signature.** A valid `0x0003` signature presented
+  under `0x0004`, a valid `0x0004` signature under `0x0003` or `0x0002`, and a
+  valid `0x0001` signature under `0x0003` are rejected, by the lengths at
+  section 6, step 3 or by verification over the scheme-bound `sighash` at
+  step 6.
+- **QS-15. Same sender for `0x0003` and `0x0004`.** Transactions of both IDs
+  with one public key have the same sender, nonce and balance (section 6,
+  step 5), and that sender differs from the `0x0001` sender of its ML-DSA
+  half alone.
+- **QS-16. `0x0003` is refused from the sunset height.** With
+  `ML_RESCUE_HEIGHT` set to `h`, a `0x0003` transaction is admitted to the
+  pool and valid in a block below `h`, rejected by the pool and makes a block
+  invalid at `h` and above, while a `0x0004` transaction from the same account
+  stays valid at every height (section 6, step 3).
 
 ## 13. Not settled: fail closed
 
@@ -881,6 +1090,9 @@ passes with the check it names removed does not count (spec 03, section 10).
    rule, the chain is not launched. Until the whole bundled proof meets
    section 4.1's hard requirement on proven security, mainnet is not
    launched.
+5. **The ML-DSA sunset.** Until `ML_RESCUE_HEIGHT` is set by an upgrade, no
+   sunset applies: `0x0003` transactions are accepted at every height. A node
+   never infers a sunset height on its own, for example from news of a break.
 
 ## 14. Questions for the founder
 
@@ -909,3 +1121,11 @@ Each has a default that this document already applies.
    settled by the front desk: `0x52`, because the native coin and data
    reveals already hold `0x50` and `0x51` (section 6, step 1). A precompile
    address is not a transaction type, so the precompile keeps its address.
+   Scheme IDs `0x0003` and `0x0004` are settled by the front desk
+   (2026-10-25, section 5.1).
+7. **Sunset notice period.** How long before `ML_RESCUE_HEIGHT` must the
+   upgrade that sets it be published? Default: stated by that upgrade, and at
+   least the upgrade notice of the outline. The outline states its notice for
+   the launch (announced at least 30 days ahead, the final software frozen and
+   published at least two weeks ahead); until it states a separate notice for
+   upgrades, the sunset takes that one as its floor.
