@@ -15,8 +15,10 @@ Python standard library only. It checks that:
      holds every field its statement must bind: the data reveal and hold
      bindings bind the 32-byte content fingerprint `cf`, the coin reveal
      binding does not;
-  5. every hash tag the document names is in the tag table of spec 01, and the
-     four salted fingerprint and marker tags are named;
+  5. every hash tag the document names is in the tag table of spec 01 (so the
+     removed unsalted fingerprint and marker tags, such as
+     `ghost/coin-marker/v1`, are gaps), and the four salted fingerprint and
+     marker tags are named;
   6. the properties are numbered PS-1 upwards without gaps or repeats, each
      names its check, and every PS-n cited anywhere exists;
   7. every named adversarial vector has exactly one entry, the entries are

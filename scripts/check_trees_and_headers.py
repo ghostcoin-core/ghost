@@ -65,7 +65,7 @@ TH_SECTIONS = ("Trees and rollover", "Historical roots", "Markers", "Reorganisat
 # Words each section must use, so that its subject is covered.
 SECTION_WORDS = {
     "Historical roots": ("canonical", "discarded branch", "age limit", "before its including block"),
-    "Markers": ("ghost/coin-marker/v1", "ghost/data-marker/v1", "state root", "pool admission"),
+    "Markers": ("ghost/coin-marker/v2", "ghost/data-marker/v2","state root", "pool admission"),
     "Reorganisation": ("frontier", "tree index", "marker", "pool", "no longer canonical",
                        "depth limit"),
     "Wallet tree data": ("whole", "page-root list", "witness"),

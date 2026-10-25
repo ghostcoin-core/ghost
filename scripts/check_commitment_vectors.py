@@ -10,7 +10,9 @@ retired twelve- and twenty-four-group digit keys among them, is refused. It
 also checks that the tag table lists exactly the tags used here,
 with the right input sizes, that the same secret under two salts gives
 unrelated fingerprints, commitments and markers, and that every note vector
-has a type tag of its note version and is the note of a commitment vector.
+has a version 2 type tag and is the note of a commitment vector. Commitment
+format version 2, the salted format, is the only one: a vector of another
+kind or a type tag of another version is refused.
 
 Only the standard library is used. Keccak-256 (original padding) is written
 out below, because hashlib.sha3_256 applies the FIPS 202 padding and gives
@@ -134,16 +136,12 @@ TAG_REVEAL_SECRET = "ghost/reveal-secret/v1"
 TAG_BLINDING = "ghost/blinding/v1"
 TAG_NOTE_KEY = "ghost/note-key/v1"
 TAG_DATA_KEY = "ghost/data-key/v1"
-TAG_COIN_FINGERPRINT = "ghost/coin-fingerprint/v1"
 TAG_COIN_FINGERPRINT_V2 = "ghost/coin-fingerprint/v2"
 TAG_COIN_COMMITMENT = "ghost/coin-commitment/v1"
-TAG_DATA_FINGERPRINT = "ghost/data-fingerprint/v1"
 TAG_DATA_FINGERPRINT_V2 = "ghost/data-fingerprint/v2"
 TAG_DATA_COMMITMENT = "ghost/data-commitment/v1"
 TAG_CONTENT_FINGERPRINT = "ghost/content-fingerprint/v1"
-TAG_COIN_MARKER = "ghost/coin-marker/v1"
 TAG_COIN_MARKER_V2 = "ghost/coin-marker/v2"
-TAG_DATA_MARKER = "ghost/data-marker/v1"
 TAG_DATA_MARKER_V2 = "ghost/data-marker/v2"
 TAG_COIN_TREE_NODE = "ghost/coin-tree-node/v1"
 TAG_DATA_TREE_NODE = "ghost/data-tree-node/v1"
@@ -159,16 +157,12 @@ ALL_TAGS = {
     TAG_BLINDING,
     TAG_NOTE_KEY,
     TAG_DATA_KEY,
-    TAG_COIN_FINGERPRINT,
     TAG_COIN_FINGERPRINT_V2,
     TAG_COIN_COMMITMENT,
-    TAG_DATA_FINGERPRINT,
     TAG_DATA_FINGERPRINT_V2,
     TAG_DATA_COMMITMENT,
     TAG_CONTENT_FINGERPRINT,
-    TAG_COIN_MARKER,
     TAG_COIN_MARKER_V2,
-    TAG_DATA_MARKER,
     TAG_DATA_MARKER_V2,
     TAG_COIN_TREE_NODE,
     TAG_DATA_TREE_NODE,
@@ -185,21 +179,15 @@ WORDS_GROUPS = 21
 WORDS_SECRET_GROUPS = 20
 SECRET_LIMIT = 1 << 256
 
-# Commitment format versions (section 10). Version 1 has no salt and stays
-# valid for leaves already on a chain; a wallet makes only version 2.
-VERSION_1 = 0x01
+# Commitment format version (section 10): version 2, the salted format, is the
+# only one. Any other version byte is rejected, never guessed.
 VERSION_2 = 0x02
 TYPE_CODES = {"COIN": 0x01, "DATA": 0x02}
-TYPE_TAGS = {"COIN": bytes([VERSION_1, 0x01]), "DATA": bytes([VERSION_1, 0x02])}
 SALT_LENGTH = 16
 
 # Per version: (fingerprint tag, marker tag) of each type. The commitment tags
-# do not change, because their input layout does not.
+# keep their v1 suffix, because their input layout did not change.
 VERSION_TAGS = {
-    VERSION_1: {
-        "COIN": (TAG_COIN_FINGERPRINT, TAG_COIN_MARKER),
-        "DATA": (TAG_DATA_FINGERPRINT, TAG_DATA_MARKER),
-    },
     VERSION_2: {
         "COIN": (TAG_COIN_FINGERPRINT_V2, TAG_COIN_MARKER_V2),
         "DATA": (TAG_DATA_FINGERPRINT_V2, TAG_DATA_MARKER_V2),
@@ -210,15 +198,11 @@ COMMITMENT_TAGS = {"COIN": TAG_COIN_COMMITMENT, "DATA": TAG_DATA_COMMITMENT}
 # Inputs after the tag of each fixed-layout Keccak-256 tag, in bytes, for the
 # input-size columns of the tag table.
 TAG_LAYOUTS = {
-    TAG_COIN_FINGERPRINT: (32, 32, 32, 2, 32, 32),
     TAG_COIN_FINGERPRINT_V2: (32, 32, 32, SALT_LENGTH, 2, 32, 32),
     TAG_COIN_COMMITMENT: (2, 32, 32),
-    TAG_DATA_FINGERPRINT: (32, 32, 32, 2, 32, 32),
     TAG_DATA_FINGERPRINT_V2: (32, 32, 32, SALT_LENGTH, 2, 32, 32),
     TAG_DATA_COMMITMENT: (2, 32),
-    TAG_COIN_MARKER: (32, 32),
     TAG_COIN_MARKER_V2: (32, 32, SALT_LENGTH),
-    TAG_DATA_MARKER: (32, 32),
     TAG_DATA_MARKER_V2: (32, 32, SALT_LENGTH),
     TAG_COIN_TREE_NODE: (1, 32, 32),
     TAG_DATA_TREE_NODE: (1, 32, 32),
@@ -226,7 +210,6 @@ TAG_LAYOUTS = {
 }
 KECCAK_RATE = 136
 
-NOTE_VERSION = 0x01
 NOTE_VERSION_2 = 0x02
 SCHEME_ID = 0x01
 NOTE_PLAINTEXT_LENGTH = 128
@@ -333,47 +316,43 @@ def read_type_tag(tag):
     raise ValueError(f"unknown type tag {tag.hex()}")
 
 
-def _salt_parts(version, salt):
-    """The salt as hash input: absent in version 1, 16 bytes in version 2."""
-    if version == VERSION_1:
-        if salt is not None:
-            raise ValueError("a version 1 commitment has no salt")
-        return ()
-    if version == VERSION_2:
-        if salt is None or len(salt) != SALT_LENGTH:
-            raise ValueError(f"a version 2 commitment needs a {SALT_LENGTH}-byte salt")
-        return (salt,)
-    raise ValueError(f"unknown commitment format version {version}")
+def _salt(version, salt):
+    """The 16-byte salt of a version 2 commitment; any other version is rejected."""
+    if version != VERSION_2:
+        raise ValueError(f"unknown commitment format version {version}")
+    if salt is None or len(salt) != SALT_LENGTH:
+        raise ValueError(f"a version 2 commitment needs a {SALT_LENGTH}-byte salt")
+    return salt
 
 
 def _fingerprint(type_name, s, r, b, cf, rule, salt, version):
     tag = VERSION_TAGS.get(version, {}).get(type_name, (None,))[0]
-    parts = _salt_parts(version, salt)
-    return keccak_tagged(tag, s, r, b, *parts, type_tag(type_name, version), cf, rule)
+    salt = _salt(version, salt)
+    return keccak_tagged(tag, s, r, b, salt, type_tag(type_name, version), cf, rule)
 
 
-def coin_fingerprint(s, r, b, rule, salt=None, version=VERSION_1):
+def coin_fingerprint(s, r, b, rule, salt=None, version=VERSION_2):
     return _fingerprint("COIN", s, r, b, ZERO32, rule, salt, version)
 
 
-def coin_commitment(fingerprint, amount, version=VERSION_1):
+def coin_commitment(fingerprint, amount, version=VERSION_2):
     if not 0 <= amount <= V_MAX:
         raise ValueError("amount out of range")
     return keccak_tagged(TAG_COIN_COMMITMENT, type_tag("COIN", version), fingerprint,
                          amount.to_bytes(32, "big"))
 
 
-def data_fingerprint(s, r, b, cf, rule, salt=None, version=VERSION_1):
+def data_fingerprint(s, r, b, cf, rule, salt=None, version=VERSION_2):
     return _fingerprint("DATA", s, r, b, cf, rule, salt, version)
 
 
-def data_commitment(fingerprint, version=VERSION_1):
+def data_commitment(fingerprint, version=VERSION_2):
     return keccak_tagged(TAG_DATA_COMMITMENT, type_tag("DATA", version), fingerprint)
 
 
-def marker(type_name, r, b, salt=None, version=VERSION_1):
-    parts = _salt_parts(version, salt)
-    return keccak_tagged(VERSION_TAGS[version][type_name][1], r, b, *parts)
+def marker(type_name, r, b, salt=None, version=VERSION_2):
+    salt = _salt(version, salt)
+    return keccak_tagged(VERSION_TAGS[version][type_name][1], r, b, salt)
 
 
 def tree_node(tag, level, left, right):
@@ -382,16 +361,15 @@ def tree_node(tag, level, left, right):
 
 # Per note version (section 9): the commitment format version its type tag must
 # have and the width of its amount. Version 2 carries the 16-byte salt after the
-# rule; version 1 has none. Any other note version is rejected.
+# rule. Any other note version is rejected.
 NOTE_LAYOUTS = {
-    NOTE_VERSION: {"tag_version": VERSION_1, "amount_bytes": 32},
     NOTE_VERSION_2: {"tag_version": VERSION_2, "amount_bytes": 12},
 }
 
 
 def note_plaintext(type_name, index, amount, cf, length, rule, salt=None,
-                   note_version=NOTE_VERSION):
-    """The 128-byte plaintext of note version 1 (no salt) or 2 (with salt)."""
+                   note_version=NOTE_VERSION_2):
+    """The 128-byte plaintext of note version 2, with the salt."""
     layout = NOTE_LAYOUTS.get(note_version)
     if layout is None:
         raise ValueError(f"unknown note version {note_version}")
@@ -405,7 +383,7 @@ def note_plaintext(type_name, index, amount, cf, length, rule, salt=None,
         + cf
         + length.to_bytes(8, "big")
         + rule
-        + b"".join(_salt_parts(layout["tag_version"], salt))
+        + _salt(layout["tag_version"], salt)
     )
     return out + bytes(NOTE_PLAINTEXT_LENGTH - len(out))
 
@@ -521,12 +499,9 @@ def check_derivation(ch, v):
     ch.expect(v, "data-key", derive_data_key(kb).hex())
 
 
-# Each commitment vector kind is one type at one format version, so a reader
-# that knows only version 1 can take every coin-commitment and data-commitment
-# vector without meeting a salt.
+# Each commitment vector kind is one type at format version 2. The unsalted
+# kinds coin-commitment and data-commitment are gone and refused as unknown.
 COMMITMENT_KINDS = {
-    "coin-commitment": ("coin-commitment", "1"),
-    "data-commitment": ("data-commitment", "1"),
     "salted-coin-commitment": ("coin-commitment", "2"),
     "salted-data-commitment": ("data-commitment", "2"),
 }
@@ -538,8 +513,7 @@ def _version_and_salt(v):
     if v["version"] != expected:
         raise ValueError(f"kind {v['kind']} is version {expected}, not {v['version']}")
     version = int(v["version"])
-    salt = _hex_field(v, "salt") if "salt" in v else None
-    _salt_parts(version, salt)
+    salt = _salt(version, _hex_field(v, "salt") if "salt" in v else None)
     return version, salt
 
 
@@ -586,10 +560,9 @@ def check_tree_node(ch, v):
     ch.expect(v, "node", node.hex())
 
 
-# Each note vector kind is one note version, as each commitment vector kind is
-# one format version: a note vector is always version 1 with a version 1 type
-# tag, so a reader that knows only version 1 never meets a salt.
-NOTE_KINDS = {"note": NOTE_VERSION, "salted-note": NOTE_VERSION_2}
+# Each note vector kind is one note version: a salted-note vector is note
+# version 2 with a version 2 type tag. The unsalted kind note is refused.
+NOTE_KINDS = {"salted-note": NOTE_VERSION_2}
 
 
 def _note_version_and_type(v):
@@ -632,13 +605,10 @@ CHECKS = {
     "keccak256": check_keccak,
     "checksum": check_checksum,
     "derivation": check_derivation,
-    "coin-commitment": check_coin_commitment,
-    "data-commitment": check_data_commitment,
     "salted-coin-commitment": check_coin_commitment,
     "salted-data-commitment": check_data_commitment,
     "empty-leaf": check_empty_leaf,
     "tree-node": check_tree_node,
-    "note": check_note,
     "salted-note": check_note,
 }
 
@@ -666,13 +636,12 @@ def check_coverage(vectors):
                 if COMMITMENT_KINDS.get(v.get("kind")) == (family, version)
                 and v.get("version") == version]
 
-    for version in ("1", "2"):
-        coin_indexes = {v.get("index") for v in of("coin-commitment", version)}
-        if not {"0", "1"} <= coin_indexes:
-            errors.append(f"version {version} coin commitment vectors must cover index 0 "
-                          f"and a remainder at index 1")
-        if not of("data-commitment", version):
-            errors.append(f"no version {version} data commitment vector")
+    coin_indexes = {v.get("index") for v in of("coin-commitment", "2")}
+    if not {"0", "1"} <= coin_indexes:
+        errors.append("version 2 coin commitment vectors must cover index 0 "
+                      "and a remainder at index 1")
+    if not of("data-commitment", "2"):
+        errors.append("no version 2 data commitment vector")
     names = [v["name"] for v in vectors]
     for name in sorted({n for n in names if names.count(n) > 1}):
         errors.append(f"vector name [{name}] used more than once")
@@ -720,11 +689,10 @@ MIN_BITS_APART = 64
 def check_salt_pairs(vectors):
     """The same secret under two salts must give unrelated values.
 
-    Groups the version 2 commitment vectors by everything except the salt (type,
-    key, index, amount or content, rule). Each kind must have a group with at
-    least two salts, and within a group every salt, fingerprint, commitment and
-    marker must differ from every other, and from the version 1 vector of the
-    same secret, by at least MIN_BITS_APART bits."""
+    Groups the commitment vectors by everything except the salt (type, key,
+    index, amount or content, rule). Each kind must have a group with at least
+    two salts, and within a group every salt, fingerprint, commitment and
+    marker must differ from every other by at least MIN_BITS_APART bits."""
     errors = []
     groups = {}
     for v in vectors:
