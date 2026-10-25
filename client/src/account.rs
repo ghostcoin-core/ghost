@@ -19,8 +19,10 @@
 //!
 //! A wallet seed and a Phantom Key never derive each other (spec 09,
 //! section 9): the seed is 32 random bytes shown as 24 words, and the only
-//! tag it is hashed under is `ghost/wallet-account/v1`. Words are refused in
-//! a Phantom Key field and digits in a seed field.
+//! tag it is hashed under is `ghost/wallet-account/v1`. Both are 24 words of
+//! the same list, so neither is ever accepted as the other: a generated seed
+//! is drawn again until its words fail the Phantom Key check, and words that
+//! pass the Phantom Key check, or digits, are refused in a seed field.
 //!
 //! # Secrets
 //!
@@ -37,6 +39,7 @@ use rand_core::CryptoRng;
 use sha2::{Digest, Sha256};
 
 use crate::hash::{k, x};
+use crate::key_words;
 use crate::wipe::wipe;
 use crate::wordlist::{WORD_COUNT, WORDLIST};
 
@@ -99,6 +102,9 @@ pub enum SeedError {
     UnknownWord(usize),
     /// The words are in the list but their checksum does not match.
     Checksum,
+    /// The words pass the Phantom Key check: they are a Phantom Key, which
+    /// goes in the key field and never opens a wallet.
+    PhantomKey,
 }
 
 impl fmt::Display for SeedError {
@@ -111,6 +117,10 @@ impl fmt::Display for SeedError {
             Self::WordCount(n) => write!(f, "a wallet seed is {SEED_WORDS} words, not {n}"),
             Self::UnknownWord(i) => write!(f, "word {i} is not in the word list"),
             Self::Checksum => write!(f, "the words' checksum does not match: a word is wrong or out of order"),
+            Self::PhantomKey => write!(
+                f,
+                "these words are a Phantom Key, not a wallet seed; a Phantom Key never opens a wallet"
+            ),
         }
     }
 }
@@ -121,11 +131,17 @@ impl core::error::Error for SeedError {}
 pub struct WalletSeed([u8; SEED_BYTES]);
 
 impl WalletSeed {
-    /// A new seed from the caller's secure generator.
+    /// A new seed from the caller's secure generator. A seed whose words
+    /// would also pass the Phantom Key check (about 1 draw in 256) is drawn
+    /// again, so a seed typed into a key field always fails there.
     pub fn generate<R: CryptoRng + ?Sized>(rng: &mut R) -> Self {
         let mut bytes = [0u8; SEED_BYTES];
-        rng.fill_bytes(&mut bytes);
-        Self(bytes)
+        loop {
+            rng.fill_bytes(&mut bytes);
+            if !passes_key_check(&bytes, checksum(&bytes)) {
+                return Self(bytes);
+            }
+        }
     }
 
     /// The seed of these bytes. The caller should wipe its copy.
@@ -158,10 +174,18 @@ impl WalletSeed {
 
     /// The seed of 24 words. Words are separated by any whitespace and
     /// compared in lower case; each must be in the list and the checksum must
-    /// match. Digits are refused outright.
+    /// match. Digits are refused outright, and so are words that pass the
+    /// Phantom Key check, read the way a key field reads them or the way this
+    /// reads a seed.
     pub fn from_words(text: &str) -> Result<Self, SeedError> {
         if text.chars().any(|c| c.is_ascii_digit()) {
             return Err(SeedError::Digits);
+        }
+        let mut key_secret = [0u8; key_words::SECRET_BYTES];
+        let is_key = key_words::parse_words(text, &mut key_secret).is_ok();
+        wipe(&mut key_secret);
+        if is_key {
+            return Err(SeedError::PhantomKey);
         }
         let count = text.split_whitespace().count();
         if count != SEED_WORDS {
@@ -187,8 +211,13 @@ impl WalletSeed {
         wipe_string(&mut lower);
         let mut seed = [0u8; SEED_BYTES];
         seed.copy_from_slice(&bits[..SEED_BYTES]);
+        let is_key = passes_key_check(&seed, bits[SEED_BYTES]);
         let ok = checksum(&seed) == bits[SEED_BYTES];
         wipe(&mut bits);
+        if is_key {
+            wipe(&mut seed);
+            return Err(SeedError::PhantomKey);
+        }
         if !ok {
             wipe(&mut seed);
             return Err(SeedError::Checksum);
@@ -226,6 +255,13 @@ pub fn account_key_seed(seed: &[u8; SEED_BYTES], scheme: u16, index: u32) -> [u8
 
 fn checksum(seed: &[u8; SEED_BYTES]) -> u8 {
     Sha256::digest(seed)[0]
+}
+
+/// Whether 32 bytes followed by this last byte, read as 24 words, pass the
+/// Phantom Key words check (spec 01, section 6). Seed words and key words lay
+/// out their bits the same way, so this is the key field's own check.
+fn passes_key_check(bytes: &[u8; SEED_BYTES], last: u8) -> bool {
+    key_words::check_byte(bytes) == last
 }
 
 /// The 11-bit word index at word position `i` of `bits`.

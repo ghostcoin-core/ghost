@@ -18,6 +18,7 @@ use ghost_client::account::{
     SEED_WORDS, SIGNATURE_BYTES, SeedError, WalletSeed, account_address, account_key_seed, verify_envelope,
 };
 use ghost_client::hash::keccak256;
+use ghost_client::{KeyError, PhantomKey};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
@@ -80,6 +81,50 @@ fn words_are_read_leniently_but_checked_strictly() {
     let (a, b) = (1, (2..SEED_WORDS).find(|&j| list[j] != list[1]).unwrap());
     swapped.swap(a, b);
     assert_eq!(WalletSeed::from_words(&swapped.join(" ")).err(), Some(SeedError::Checksum));
+}
+
+#[test]
+fn phantom_key_words_are_refused_as_a_wallet_seed() {
+    let mut rng = StdRng::seed_from_u64(0x5eed);
+    for _ in 0..2_000 {
+        let key = PhantomKey::generate_default(&mut rng);
+        let words = key.format_words().unwrap();
+        let text = words.as_str();
+        // As shown, as a key field reads it (hyphens), and as only a seed
+        // field reads it (tabs and newlines).
+        assert_eq!(WalletSeed::from_words(text).err(), Some(SeedError::PhantomKey));
+        assert_eq!(WalletSeed::from_words(&text.replace(' ', "-")).err(), Some(SeedError::PhantomKey));
+        let loose = format!("\n{}\n", text.to_uppercase().replace(' ', "\t"));
+        assert!(PhantomKey::parse(&loose).is_err());
+        assert_eq!(WalletSeed::from_words(&loose).err(), Some(SeedError::PhantomKey));
+    }
+
+    // About 1 seed in 256 has words that pass both checks; those words are
+    // refused as a seed too, so they can only ever be a Phantom Key.
+    let both = (0u32..)
+        .map(|n| {
+            let mut bytes = COUNTING;
+            bytes[..4].copy_from_slice(&n.to_be_bytes());
+            WalletSeed::from_bytes(bytes)
+        })
+        .find(|seed| PhantomKey::parse(seed.to_words().as_str()).is_ok())
+        .unwrap();
+    assert_eq!(WalletSeed::from_words(both.to_words().as_str()).err(), Some(SeedError::PhantomKey));
+    assert!(SeedError::PhantomKey.to_string().starts_with("these words are a Phantom Key"));
+}
+
+#[test]
+fn generated_seeds_never_pass_as_a_phantom_key() {
+    // A seed whose words also passed the key check would turn up about 16
+    // times in 4,000 draws if generation did not draw again.
+    let mut rng = StdRng::seed_from_u64(0x9e57);
+    for _ in 0..4_000 {
+        let seed = WalletSeed::generate(&mut rng);
+        let words = seed.to_words();
+        assert_eq!(PhantomKey::parse(words.as_str()).err(), Some(KeyError::WordCheckMismatch));
+        assert_eq!(PhantomKey::parse(&words.as_str().replace(' ', "-")).err(), Some(KeyError::WordCheckMismatch));
+        assert_eq!(WalletSeed::from_words(words.as_str()).unwrap().as_bytes(), seed.as_bytes());
+    }
 }
 
 #[test]
