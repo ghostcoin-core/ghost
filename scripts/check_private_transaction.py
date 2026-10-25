@@ -15,9 +15,13 @@ Python standard library only. It checks that:
   4. the binding table maps every field of the coin reveal binding of spec 02
      to a payload field or to the node, and every payload field except the
      proof is bound;
-  5. every worked example's arithmetic is right: the window fee, the
-     worst-case base-fee growth inside a window, a lapsed fee, each boundary
-     case and the two competing reveals;
+  5. every worked example's arithmetic is right: the window fee and its cover
+     limit, the window-length table, the base-fee growth inside a window under
+     full blocks and under private-reveal load with the cover rule's verdict
+     and tip for each block, the lapses (current window, previous window, no
+     match, cover rule failed), each boundary case and the two competing
+     reveals; and section 5 has the subsections "The cover rule" and "Fee of
+     the previous window";
   6. the properties are numbered PT-1 upwards without gaps or repeats, each
      names its check, and every PT-n cited anywhere exists;
   7. the conflicts section names spec 02, spec 03 and spec 04.
@@ -57,15 +61,20 @@ BINDING_ALIAS = {"remainder_note": "note"}
 
 PARAMETERS = ("TYPE_BYTE", "TX_VERSION", "PROOF_BYTES", "NOTE_BYTES", "PAYLOAD_BYTES",
               "ENVELOPE_BYTES", "BYTE_GAS", "BASE_TX_GAS", "VERIFY_GAS", "G_PRIV", "FEE_WINDOW",
-              "TIP_DIVISOR", "MIN_GAS_LIMIT", "POOL_MAX_COUNT", "POOL_MAX_BYTES")
+              "FEE_STEPS", "TIP_DIVISOR", "MIN_GAS_LIMIT", "POOL_MAX_COUNT", "POOL_MAX_BYTES")
 
 V_MAX = 2**96 - 1
 # The proof field of version 1 for every reveal kind (section 3, "Proof
 # field"); a change of width is a new version, never an edit of this one.
 PROOF_FIELD_BYTES = 1_310_720
-# The base client's smallest gas limit; the ceiling step's 1/20000 term is
+# The base client's smallest gas limit; the growth step's 1/20000 term is
 # 1 / (8 * MIN_GAS_LIMIT / 2).
 MIN_GAS_LIMIT = 5000
+# The block time of spec 06, for the "Open for" column.
+BLOCK_SECONDS = 30
+
+# The subsections section 5 must have.
+REQUIRED_SUBSECTIONS = ("### The cover rule", "### Fee of the previous window")
 
 REQUIRED_EXAMPLES = {
     "full-reveal": "reveal",
@@ -152,16 +161,54 @@ def ceil_div(a, b):
     return -(-a // b)
 
 
-def ceiling_step(u):
-    """One block of the most the base fee can grow (section 4)."""
+def growth_step(u):
+    """One block of the most the base fee can grow (section 5)."""
     return u + u // 8 + u // 20000 + 1
 
 
-def window_price(b_ref, window):
+def growth_bound(b_ref, steps):
+    """U_steps: the most the base fee can be `steps` blocks after b_ref."""
     u = b_ref
-    for _ in range(window - 1):
-        u = ceiling_step(u)
+    for _ in range(steps):
+        u = growth_step(u)
     return u
+
+
+def window_price(b_ref, fee_steps):
+    """price_w = U_FEE_STEPS(b_ref) (section 4)."""
+    return growth_bound(b_ref, fee_steps)
+
+
+def window_fee(price, g_priv, tip_divisor):
+    """(base_part, tip, fee) of a window with this price (section 4)."""
+    base = g_priv * price
+    tip = ceil_div(base, tip_divisor)
+    return base, tip, base + tip
+
+
+def cover_split(fee, price, base_fee, g_priv):
+    """The cover rule (section 5): (burn, tip) for a block with this base fee,
+    or None when the tip would be negative and the reveal is rejected."""
+    burn = g_priv * max(price, base_fee)
+    if burn > fee:
+        return None
+    return burn, fee - burn
+
+
+def cover_limit(fee, g_priv):
+    """The largest base fee for which the cover rule holds."""
+    return fee // g_priv
+
+
+def matched_fee(proved, current, previous):
+    """Which window's fee a proved fee matches: the current window first, the
+    previous one only when the current does not match and a previous window
+    exists (section 5, "Fee of the previous window")."""
+    if proved == current:
+        return "current"
+    if previous is not None and proved == previous:
+        return "previous"
+    return "none"
 
 
 RATIO_BASE = 10**9
@@ -199,6 +246,7 @@ class Checker:
         self.params = {}
         self.payload = {}
         self.windows = {}
+        self.lapse_outcomes = {}
 
     def fail(self, message):
         self.errors.append(message)
@@ -261,7 +309,7 @@ class Checker:
             self.fail(f"PROOF_BYTES is {p['PROOF_BYTES']}, version 1 fixes {PROOF_FIELD_BYTES}; "
                       f"a change of width is a new version")
         if p["MIN_GAS_LIMIT"] != MIN_GAS_LIMIT:
-            self.fail(f"MIN_GAS_LIMIT is {p['MIN_GAS_LIMIT']}; the ceiling step of section 5 "
+            self.fail(f"MIN_GAS_LIMIT is {p['MIN_GAS_LIMIT']}; the growth step of section 5 "
                       f"assumes {MIN_GAS_LIMIT}")
         widths = [p["PROOF_BYTES"] if w is None else w for _, w in PAYLOAD]
         derived = {
@@ -275,6 +323,8 @@ class Checker:
                 self.fail(f"parameter {name} is {p[name]}, recomputed {value}")
         if p["FEE_WINDOW"] < 1:
             self.fail("FEE_WINDOW must be at least one block")
+        if not 0 <= p["FEE_STEPS"] < p["FEE_WINDOW"]:
+            self.fail(f"FEE_STEPS is {p['FEE_STEPS']}; it must be at least 0 and below FEE_WINDOW")
         if p["TIP_DIVISOR"] < 1:
             self.fail("TIP_DIVISOR must be at least 1")
 
@@ -387,64 +437,103 @@ class Checker:
             kinds[kind](name, fields)
         if not any(f.get("kind") == "window" for f in blocks.values()):
             self.fail("no window fee example (kind = window)")
-        if not any(f.get("kind") == "growth" for f in blocks.values()):
-            self.fail("no worst-case growth example (kind = growth)")
-        if not any(f.get("kind") == "lapse" for f in blocks.values()):
-            self.fail("no lapsed fee example (kind = lapse)")
+        growths = [f for f in blocks.values() if f.get("kind") == "growth"]
+        if not any(f.get("gas_used") == f.get("gas_limit") for f in growths):
+            self.fail("no worst-case growth example with every block full (kind = growth)")
+        if not any(to_int(f.get("gas_used", "")) == self.params.get("G_PRIV") for f in growths):
+            self.fail("no growth example under private-reveal load (gas_used = G_PRIV)")
+        lapses = [self.lapse_outcomes.get(n) for n, f in blocks.items() if f.get("kind") == "lapse"]
+        for outcome, what in ((("previous", True), "a valid fee of the previous window"),
+                              (("none", False), "a fee of neither window"),
+                              (("cover", False), "a matched fee that fails the cover rule")):
+            if outcome not in lapses:
+                self.fail(f"no lapse example of {what} (kind = lapse)")
         self.check_window_lengths()
+        self.check_subsections()
         boundary = self.section("Boundary cases") or []
         in_boundary = vector_blocks(boundary)
         for name, kind in REQUIRED_EXAMPLES.items():
             if in_boundary.get(name, {}).get("kind") != kind:
                 self.fail(f"boundary case example {name} (kind = {kind}) is missing")
 
+    def check_subsections(self):
+        lines = self.section("Fee is current") or []
+        for heading in REQUIRED_SUBSECTIONS:
+            if heading not in lines:
+                self.fail(f"section 5 has no subsection '{heading}'")
+
+    def params_ready(self):
+        return all(p in self.params for p in PARAMETERS)
+
     def check_window_lengths(self):
         lines = self.section("Fee is current")
-        if lines is None:
+        if lines is None or not self.params_ready():
             return
+        columns = {"Window length", "Price over b_ref", "Blocks valid at any load", "Open for"}
         table = table_after(lines, "**Window length.**")
-        if table is None or not {"Window (blocks)", "Ceiling over b_ref"} <= set(table[0]):
-            self.fail("no 'Window (blocks)'/'Ceiling over b_ref' table after '**Window length.**'")
+        if table is None or not columns <= set(table[0]):
+            self.fail(f"no table with columns {sorted(columns)} after '**Window length.**'")
             return
+        p = self.params
+        price = window_price(RATIO_BASE, p["FEE_STEPS"])
+        limit = cover_limit(window_fee(price, p["G_PRIV"], p["TIP_DIVISOR"])[2], p["G_PRIV"])
         lengths = []
         for row in table[1]:
-            window = to_int(row["Window (blocks)"])
+            window = to_int(row["Window length"])
             if window is None or window < 1:
-                self.fail(f"window length '{row['Window (blocks)']}' is not a positive integer")
+                self.fail(f"window length '{row['Window length']}' is not a positive integer")
                 continue
             lengths.append(window)
-            want = ratio_text(window_price(RATIO_BASE, window), RATIO_BASE)
-            if row["Ceiling over b_ref"] != want:
-                self.fail(f"window length {window}: ceiling is {row['Ceiling over b_ref']}, "
+            want = ratio_text(price, RATIO_BASE)
+            if row["Price over b_ref"] != want:
+                self.fail(f"window length {window}: price is {row['Price over b_ref']}, "
                           f"recomputed {want}")
-        if self.params.get("FEE_WINDOW") not in lengths:
+            # Block j of the window can have a base fee up to U_j; it is valid
+            # at any load when U_j is within the cover limit.
+            any_load = sum(1 for j in range(window) if growth_bound(RATIO_BASE, j) <= limit)
+            if to_int(row["Blocks valid at any load"]) != any_load:
+                self.fail(f"window length {window}: {row['Blocks valid at any load']} blocks "
+                          f"valid at any load, recomputed {any_load}")
+            open_for = f"{window * BLOCK_SECONDS} s"
+            if not row["Open for"].startswith(open_for):
+                self.fail(f"window length {window}: open for '{row['Open for']}', "
+                          f"recomputed {open_for}")
+        if p["FEE_WINDOW"] not in lengths:
             self.fail("the window length table has no row for FEE_WINDOW")
 
     def check_window(self, name, fields):
         b_ref, g_priv = self.integer(name, fields, "b_ref"), self.integer(name, fields, "g_priv")
         price, base = self.integer(name, fields, "price"), self.integer(name, fields, "base_part")
         tip, fee = self.integer(name, fields, "tip"), self.integer(name, fields, "fee")
-        if None in (b_ref, g_priv, price, base, tip, fee) or any(p not in self.params
-                                                                 for p in PARAMETERS):
+        limit = self.integer(name, fields, "cover_limit")
+        if None in (b_ref, g_priv, price, base, tip, fee, limit) or not self.params_ready():
             return
         if g_priv != self.params.get("G_PRIV"):
             self.fail(f"example {name}: g_priv is {g_priv}, G_PRIV is {self.params.get('G_PRIV')}")
-        want_price = window_price(b_ref, self.params["FEE_WINDOW"])
-        want_base = g_priv * want_price
-        want_tip = ceil_div(want_base, self.params["TIP_DIVISOR"])
+        want_price = window_price(b_ref, self.params["FEE_STEPS"])
+        want_base, want_tip, want_fee = window_fee(want_price, g_priv, self.params["TIP_DIVISOR"])
+        want_limit = cover_limit(want_fee, g_priv)
         for key, got, want in (("price", price, want_price), ("base_part", base, want_base),
-                               ("tip", tip, want_tip), ("fee", fee, want_base + want_tip)):
+                               ("tip", tip, want_tip), ("fee", fee, want_fee),
+                               ("cover_limit", limit, want_limit)):
             if got != want:
                 self.fail(f"example {name}: {key} is {got}, recomputed {want}")
         if fee > V_MAX:
             self.fail(f"example {name}: fee {fee} is above V_MAX")
         # The other examples are checked against the recomputed values, so a
-        # wrong ceiling shows up in them too.
+        # wrong price shows up in them too.
         self.windows[name] = {"price": want_price, "base_part": want_base, "tip": want_tip,
-                              "fee": want_base + want_tip, "b_ref": b_ref}
+                              "fee": want_fee, "b_ref": b_ref}
+
+    def window_of_fee(self, fee):
+        return next((w for w in self.windows.values() if w["fee"] == fee), None)
+
+    def tip_text(self, split):
+        return "-" if split is None else str(split[1])
 
     def check_growth(self, name, fields):
         gas_limit = self.integer(name, fields, "gas_limit")
+        gas_used = self.integer(name, fields, "gas_used")
         window = self.windows.get(fields.get("window"))
         if window is None:
             self.fail(f"example {name}: names no window example")
@@ -453,31 +542,62 @@ class Checker:
             fees = [int(x.replace(",", "")) for x in fields.get("base_fees", "").split()]
         except ValueError:
             fees = []
-        if gas_limit is None or len(fees) != self.params.get("FEE_WINDOW"):
-            self.fail(f"example {name}: needs gas_limit and one base fee per block of the window")
+        valid = fields.get("valid", "").split()
+        tips = fields.get("tips", "").split()
+        width = self.params.get("FEE_WINDOW")
+        if None in (gas_limit, gas_used) or not len(fees) == len(valid) == len(tips) == width:
+            self.fail(f"example {name}: needs gas_limit, gas_used, and one base fee, valid flag "
+                      f"and tip per block of the window")
             return
+        if not 0 <= gas_used <= gas_limit:
+            self.fail(f"example {name}: gas_used {gas_used} is outside 0 to gas_limit")
         if fees[0] != window["b_ref"]:
             self.fail(f"example {name}: the first base fee is {fees[0]}, b_ref is {window['b_ref']}")
         for j in range(1, len(fees)):
-            want = next_base_fee(fees[j - 1], gas_limit, gas_limit)
+            want = next_base_fee(fees[j - 1], gas_limit, gas_used)
             if fees[j] != want:
                 self.fail(f"example {name}: base fee {j} is {fees[j]}, recomputed {want}")
-        for j, fee in enumerate(fees):
-            if self.params.get("G_PRIV", 0) * fee > window["base_part"]:
-                self.fail(f"example {name}: block {j} charges more than the window's base part")
+        g_priv = self.params.get("G_PRIV", 0)
+        for j, base_fee in enumerate(fees):
+            split = cover_split(window["fee"], window["price"], base_fee, g_priv)
+            want_valid = "no" if split is None else "yes"
+            if valid[j] != want_valid:
+                self.fail(f"example {name}: block {j} valid = {valid[j]}, recomputed {want_valid}")
+            if tips[j] != self.tip_text(split):
+                self.fail(f"example {name}: block {j} tip is {tips[j]}, "
+                          f"recomputed {self.tip_text(split)}")
+            if split is not None and (split[0] < g_priv * base_fee or split[1] > window["tip"]):
+                self.fail(f"example {name}: block {j} burns less than G_PRIV times its base fee "
+                          f"or tips more than the window's tip")
 
     def check_lapse(self, name, fields):
         proved = self.integer(name, fields, "fee_proved")
-        in_force = self.integer(name, fields, "fee_in_force")
+        current = self.integer(name, fields, "fee_current")
+        base_fee = self.integer(name, fields, "base_fee")
         valid = self.flag(name, fields)
-        if None in (proved, in_force, valid):
+        previous_text = fields.get("fee_previous", "")
+        previous = None if previous_text == "none" else self.integer(name, fields, "fee_previous")
+        if None in (proved, current, base_fee, valid) or (previous is None and
+                                                          previous_text != "none"):
             return
-        if valid != (proved == in_force):
-            self.fail(f"example {name}: valid = {fields['valid']}, but the fees "
-                      f"{'are' if proved == in_force else 'are not'} equal")
-        for key, value in (("fee_proved", proved), ("fee_in_force", in_force)):
-            if not any(w["fee"] == value for w in self.windows.values()):
+        for key, value in (("fee_proved", proved), ("fee_current", current),
+                           ("fee_previous", previous)):
+            if value is not None and self.window_of_fee(value) is None:
                 self.fail(f"example {name}: {key} {value} is no window example's fee")
+        matched = matched_fee(proved, current, previous)
+        if fields.get("matched") != matched:
+            self.fail(f"example {name}: matched = {fields.get('matched')}, recomputed {matched}")
+        split = None
+        window = self.window_of_fee(proved)
+        if matched != "none" and window is not None:
+            split = cover_split(proved, window["price"], base_fee, self.params.get("G_PRIV", 0))
+        ok = split is not None
+        if valid != ok:
+            self.fail(f"example {name}: valid = {fields['valid']}, recomputed "
+                      f"{'yes' if ok else 'no'}")
+        if fields.get("tip") != self.tip_text(split):
+            self.fail(f"example {name}: tip is {fields.get('tip')}, recomputed {self.tip_text(split)}")
+        self.lapse_outcomes[name] = (matched, ok) if matched == "none" or ok else ("cover", False)
 
     def reveal_values(self, name, fields, suffix=""):
         keys = ("out" + suffix, "remainder" + suffix)
@@ -488,18 +608,22 @@ class Checker:
         out, rem = self.reveal_values(name, fields)
         burned, tip = self.integer(name, fields, "burned"), self.integer(name, fields, "tip")
         minted, valid = self.integer(name, fields, "minted"), self.flag(name, fields)
+        base_fee = self.integer(name, fields, "base_fee")
         window = self.windows.get(fields.get("window"))
         if window is None:
             self.fail(f"example {name}: names no window example")
-        if None in (v, fee, out, rem, burned, tip, minted, valid):
+        if None in (v, fee, out, rem, burned, tip, minted, valid, base_fee):
             return
-        ok = conserves(v, out, rem, fee)
+        split = None
+        if window is not None:
+            split = cover_split(fee, window["price"], base_fee, self.params.get("G_PRIV", 0))
+        ok = conserves(v, out, rem, fee) and split is not None
         if valid != ok:
             self.fail(f"example {name}: valid = {fields['valid']}, recomputed "
                       f"{'yes' if ok else 'no'}")
         if window is not None and fee != window["fee"]:
             self.fail(f"example {name}: fee {fee} is not the window fee {window['fee']}")
-        want = (window["base_part"], window["tip"], out) if ok and window else (0, 0, 0)
+        want = (split[0], split[1], out) if ok else (0, 0, 0)
         for key, got, expect in zip(("burned", "tip", "minted"), (burned, tip, minted), want):
             if got != expect:
                 self.fail(f"example {name}: {key} is {got}, recomputed {expect}")

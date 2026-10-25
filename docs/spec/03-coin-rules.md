@@ -113,9 +113,10 @@ Nothing else writes to the coin tree. In particular:
 - **Mint on reveal.** A valid reveal creates `out` new public GHOST and credits
   it to the recipient bound in the proof. It is created from nothing, not
   transferred from a holding account. The fee leaves the commitment too: its
-  base-fee part is burned (decision 0001) and its fixed private tip is paid to
-  the block finder (outline, "Transactions and fees"). This document sets no fee
-  formula.
+  base-fee part is burned (decision 0001) and the rest, the private tip, is
+  paid to the block finder (outline, "Transactions and fees"). This document
+  sets no fee formula; [spec 07](07-private-transaction.md), sections 4 and 5,
+  fixes it and the split.
 - **No custodian, no reserve.** No contract or account holds committed value,
   and no balance anywhere can be drawn on to pay a reveal.
 - **Only the chain's reveal rule mints.** The node's reveal rule (section 7) is
@@ -313,8 +314,9 @@ chain, and step 13 is the only step that writes.
 12. **Tree room.** The coin tree has room for the remainder (as commit step 8).
 13. **Apply, all or nothing** (base client plan 7.3, atomicity). In one state
     change: add the marker to the spent set; credit `out` to the recipient by
-    the chain's mint (section 4); burn the base-fee part of the fee and pay the
-    tip to the block finder; append the remainder commitment and its note to
+    the chain's mint (section 4); burn the base-fee part of the fee (at least
+    the private transaction's gas times the block's base fee, spec 07,
+    section 5) and pay the rest of the fee, the tip, to the block finder; append the remainder commitment and its note to
     the coin tree; update the running totals of section 9; write the receipt
     (marker, remainder commitment with its tree index and position, its note
     bytes, recipient, `out`; spec 05, section 8, item 5). If any part

@@ -164,48 +164,159 @@ class CheckerTest(unittest.TestCase):
 
     # Worked examples
 
+    def test_parameter_fee_steps_missing(self):
+        text = self.damaged("| `FEE_STEPS` | 1 |", "| `STEPS` | 1 |")
+        self.assert_gap(text, "parameter table lacks ['FEE_STEPS']")
+
+    def test_fee_steps_below_window(self):
+        self.assert_gap(self.damaged("| `FEE_STEPS` | 1 |", "| `FEE_STEPS` | 4 |"),
+                        "FEE_STEPS is 4; it must be at least 0 and below FEE_WINDOW")
+
     def test_window_fee_wrong(self):
-        text = self.damaged_after("[window-genesis]", "tip = 3003306891179819", "tip = 3003306891179818")
-        self.assert_gap(text, "example window-genesis: tip is 3003306891179818")
-        text = self.damaged_after("[window-genesis]", "price = 1424017979", "price = 1424017978")
-        self.assert_gap(text, "example window-genesis: price is 1424017978")
+        text = self.damaged_after("[window-genesis]", "tip = 2372772303969038", "tip = 2372772303969037")
+        self.assert_gap(text, "example window-genesis: tip is 2372772303969037")
+        text = self.damaged_after("[window-genesis]", "price = 1125050001", "price = 1125050000")
+        self.assert_gap(text, "example window-genesis: price is 1125050000")
+        text = self.damaged_after("[window-next]", "fee = 28710544875705410", "fee = 28710544875705411")
+        self.assert_gap(text, "example window-next: fee is 28710544875705411")
+        text = self.damaged_after("[window-genesis]", "cover_limit = 1237555001",
+                                  "cover_limit = 1237555002")
+        self.assert_gap(text, "example window-genesis: cover_limit is 1237555002")
+
+    def test_window_fee_matches_the_decision(self):
+        # The figures of the front desk decision at b_ref = 1 gwei.
+        price = checker.window_price(10**9, 1)
+        self.assertEqual(price, 1_125_050_001)
+        self.assertEqual(checker.window_fee(price, 21_090_372, 10),
+                         (23_727_723_039_690_372, 2_372_772_303_969_038, 26_100_495_343_659_410))
 
     def test_window_fee_tracks_parameters(self):
-        text = self.damaged("| `FEE_WINDOW` | 4 |", "| `FEE_WINDOW` | 5 |")
-        self.assert_gap(text, "example window-genesis: price is 1424017979")
+        text = self.damaged("| `FEE_STEPS` | 1 |", "| `FEE_STEPS` | 2 |")
+        self.assert_gap(text, "example window-genesis: price is 1125050001, recomputed 1265737504")
+        text = self.damaged("| `FEE_STEPS` | 1 |", "| `FEE_STEPS` | 0 |")
+        self.assert_gap(text, "example window-genesis: price is 1125050001, recomputed 1000000000")
         text = self.damaged("| `TIP_DIVISOR` | 10 |", "| `TIP_DIVISOR` | 20 |")
         self.assert_gap(text, "example window-genesis: tip is")
+        text = self.damaged("| `FEE_WINDOW` | 4 |", "| `FEE_WINDOW` | 5 |")
+        self.assert_gap(text, "one base fee, valid flag and tip per block of the window")
 
     def test_window_length_table(self):
-        text = self.damaged("| 4 | 1.424 |", "| 4 | 1.425 |")
-        self.assert_gap(text, "window length 4: ceiling is 1.425")
-        text = self.damaged("| 4 | 1.424 |", "| 3 | 1.266 |")
+        text = self.damaged("| 4 | 1.125 | 2 |", "| 4 | 1.424 | 2 |")
+        self.assert_gap(text, "window length 4: price is 1.424, recomputed 1.125")
+        text = self.damaged("| 4 | 1.125 | 2 |", "| 4 | 1.125 | 4 |")
+        self.assert_gap(text, "window length 4: 4 blocks valid at any load, recomputed 2")
+        text = self.damaged("| 1 | 1.125 | 1 |", "| 1 | 1.125 | 2 |")
+        self.assert_gap(text, "window length 1: 2 blocks valid at any load, recomputed 1")
+        text = self.damaged("| 4 | 1.125 | 2 | 120 s", "| 4 | 1.125 | 2 | 240 s")
+        self.assert_gap(text, "window length 4: open for '240 s")
+        text = self.damaged("| 4 | 1.125 | 2 | 120 s", "| 3 | 1.125 | 2 | 90 s")
         self.assert_gap(text, "no row for FEE_WINDOW")
+        text = self.damaged("| Window length | Price over b_ref |", "| Window | Price over b_ref |")
+        self.assert_gap(text, "no table with columns")
+
+    def test_window_length_tracks_fee_steps(self):
+        # Two steps of headroom make block 2 valid at any load too.
+        text = self.damaged("| `FEE_STEPS` | 1 |", "| `FEE_STEPS` | 2 |")
+        self.assert_gap(text, "window length 4: 2 blocks valid at any load, recomputed 3")
+
+    def test_subsections_required(self):
+        for heading in checker.REQUIRED_SUBSECTIONS:
+            with self.subTest(heading=heading):
+                self.assert_gap(self.damaged(heading + "\n", "### Elsewhere\n"),
+                                f"no subsection '{heading}'")
+
+    def growth_line(self, name, key):
+        start = self.text.index(f"[{name}]")
+        line_start = self.text.index(f"{key} = ", start)
+        line_end = self.text.index("\n", line_start)
+        return line_start, line_end, self.text[line_start:line_end].split(" = ")[1].split()
+
+    def with_growth_item(self, name, key, j, value):
+        line_start, line_end, items = self.growth_line(name, key)
+        items[j] = value
+        return self.text[:line_start] + f"{key} = " + " ".join(items) + self.text[line_end:]
 
     def test_growth_wrong(self):
-        start = self.text.index("[growth-genesis-full-blocks]")
-        line_start = self.text.index("base_fees = ", start)
-        line_end = self.text.index("\n", line_start)
-        fees = self.text[line_start:line_end].split(" = ")[1].split()
-        fees[2] = str(int(fees[2]) + 1)
-        text = self.text[:line_start] + "base_fees = " + " ".join(fees) + self.text[line_end:]
+        _, _, fees = self.growth_line("growth-genesis-full-blocks", "base_fees")
+        text = self.with_growth_item("growth-genesis-full-blocks", "base_fees", 2, str(int(fees[2]) + 1))
         self.assert_gap(text, "example growth-genesis-full-blocks: base fee 2 is")
+        _, _, fees = self.growth_line("growth-genesis-private-load", "base_fees")
+        text = self.with_growth_item("growth-genesis-private-load", "base_fees", 3, str(int(fees[3]) - 1))
+        self.assert_gap(text, "example growth-genesis-private-load: base fee 3 is")
 
-    def test_growth_above_ceiling_fails(self):
-        # A ceiling with only Ethereum's 1/8 step is below an odd gas limit's growth.
-        original = checker.ceiling_step
-        checker.ceiling_step = lambda u: u + u // 8
+    def test_growth_cover_verdict_wrong(self):
+        text = self.with_growth_item("growth-genesis-full-blocks", "valid", 2, "yes")
+        self.assert_gap(text, "example growth-genesis-full-blocks: block 2 valid = yes, recomputed no")
+        text = self.with_growth_item("growth-genesis-private-load", "valid", 3, "no")
+        self.assert_gap(text, "example growth-genesis-private-load: block 3 valid = no, recomputed yes")
+
+    def test_growth_tip_wrong(self):
+        # Above the price the tip falls; below it, it is the nominal tip.
+        text = self.with_growth_item("growth-genesis-private-load", "tips", 3, "2372772303969038")
+        self.assert_gap(text, "example growth-genesis-private-load: block 3 tip is 2372772303969038, "
+                              "recomputed 1633182225038030")
+        text = self.with_growth_item("growth-genesis-full-blocks", "tips", 3, "0")
+        self.assert_gap(text, "example growth-genesis-full-blocks: block 3 tip is 0, recomputed -")
+
+    def test_growth_examples_required(self):
+        text = self.damaged_after("[growth-genesis-full-blocks]", "gas_used = 30000001",
+                                  "gas_used = 30000000")
+        self.assert_gap(text, "no worst-case growth example with every block full")
+        text = self.damaged_after("[growth-genesis-private-load]", "kind = growth", "kind = window")
+        self.assert_gap(text, "no growth example under private-reveal load")
+
+    def test_growth_without_burn_floor_fails(self):
+        # Burning only the window's base part, without the cover rule, burns
+        # less than G_PRIV times the base fee above the price.
+        original = checker.cover_split
+        checker.cover_split = lambda fee, price, base_fee, g_priv: (g_priv * price, fee - g_priv * price)
         try:
             errors = checker.check_text(self.text)
         finally:
-            checker.ceiling_step = original
-        self.assertTrue(any("charges more than the window's base part" in e for e in errors), errors)
+            checker.cover_split = original
+        self.assertTrue(any("burns less than G_PRIV times its base fee" in e for e in errors), errors)
 
     def test_lapse_wrong(self):
-        text = self.damaged_after("[lapse-window-change]", "valid = no", "valid = yes")
-        self.assert_gap(text, "example lapse-window-change: valid = yes")
+        text = self.damaged_after("[lapse-two-windows]", "valid = no", "valid = yes")
+        self.assert_gap(text, "example lapse-two-windows: valid = yes, recomputed no")
         text = self.damaged_after("[lapse-fee-unchanged]", "valid = yes", "valid = no")
-        self.assert_gap(text, "example lapse-fee-unchanged: valid = no")
+        self.assert_gap(text, "example lapse-fee-unchanged: valid = no, recomputed yes")
+        text = self.damaged_after("[lapse-cover-fails]", "valid = no", "valid = yes")
+        self.assert_gap(text, "example lapse-cover-fails: valid = yes, recomputed no")
+        text = self.damaged_after("[lapse-previous-window]", "tip = 1846567543659410", "tip = 2372772303969038")
+        self.assert_gap(text, "example lapse-previous-window: tip is 2372772303969038")
+
+    def test_lapse_matched_window(self):
+        # The current window is read first; the previous one only when it does not match.
+        text = self.damaged_after("[lapse-fee-unchanged]", "matched = current", "matched = previous")
+        self.assert_gap(text, "example lapse-fee-unchanged: matched = previous, recomputed current")
+        text = self.damaged_after("[lapse-two-windows]", "matched = none", "matched = previous")
+        self.assert_gap(text, "example lapse-two-windows: matched = previous, recomputed none")
+
+    def test_lapse_no_window_before_the_first(self):
+        text = self.damaged_after("[lapse-previous-window]", "fee_previous = 26100495343659410",
+                                  "fee_previous = none")
+        errors = checker.check_text(text)
+        self.assertTrue(any("lapse-previous-window: matched = previous, recomputed none" in e
+                            for e in errors), errors)
+        self.assertTrue(any("lapse-previous-window: valid = yes, recomputed no" in e
+                            for e in errors), errors)
+
+    def test_lapse_fee_must_be_a_window_fee(self):
+        text = self.damaged_after("[lapse-two-windows]", "fee_current = 28710544875705410",
+                                  "fee_current = 28710544875705411")
+        self.assert_gap(text, "example lapse-two-windows: fee_current 28710544875705411 is no window")
+
+    def test_each_lapse_outcome_is_required(self):
+        for name, what in (("lapse-previous-window", "a valid fee of the previous window"),
+                           ("lapse-two-windows", "a fee of neither window"),
+                           ("lapse-cover-fails", "a matched fee that fails the cover rule")):
+            with self.subTest(name=name):
+                start = self.text.index(f"[{name}]")
+                end = self.text.index("tip = ", start)
+                end = self.text.index("\n", end) + 1
+                text = self.text[:start] + self.text[end:]
+                self.assert_gap(text, f"no lapse example of {what}")
 
     def test_each_boundary_case_is_required(self):
         for name in checker.REQUIRED_EXAMPLES:
@@ -214,45 +325,59 @@ class CheckerTest(unittest.TestCase):
                 self.assert_gap(text, f"boundary case example {name}")
 
     def test_full_reveal_wrong(self):
-        text = self.damaged_after("[full-reveal]", "out = 966963624197021993", "out = 966963624197021994")
+        text = self.damaged_after("[full-reveal]", "out = 973899504656340590", "out = 973899504656340591")
         errors = checker.check_text(text)
         self.assertTrue(any("example full-reveal: valid = yes, recomputed no" in e for e in errors), errors)
 
     def test_full_reveal_minted_wrong(self):
-        text = self.damaged_after("[full-reveal]", "minted = 966963624197021993", "minted = 1")
+        text = self.damaged_after("[full-reveal]", "minted = 973899504656340590", "minted = 1")
         self.assert_gap(text, "example full-reveal: minted is 1")
 
     def test_zero_amount_claim_shape(self):
-        text = self.damaged_after("[zero-amount-claim]", "out = 0\nremainder = 966963624197021993",
-                                  "out = 966963624197021993\nremainder = 0")
+        text = self.damaged_after("[zero-amount-claim]", "out = 0\nremainder = 973899504656340590",
+                                  "out = 973899504656340590\nremainder = 0")
         errors = checker.check_text(text)
         self.assertTrue(any("zero-amount-claim: the amounts do not have the shape" in e
                             for e in errors), errors)
 
     def test_whole_balance_burn_wrong(self):
-        text = self.damaged_after("[fee-uses-whole-balance]", "burned = 30033068911798188",
-                                  "burned = 33036375802978007")
-        self.assert_gap(text, "example fee-uses-whole-balance: burned is 33036375802978007")
+        text = self.damaged_after("[fee-uses-whole-balance]", "burned = 23727723039690372",
+                                  "burned = 26100495343659410")
+        self.assert_gap(text, "example fee-uses-whole-balance: burned is 26100495343659410")
+
+    def test_boundary_burn_follows_the_base_fee(self):
+        # Above the price the burn is G_PRIV times the block's base fee and the
+        # tip falls; above the cover limit the reveal is rejected.
+        text = self.damaged_after("[full-reveal]", "base_fee = 1000000000", "base_fee = 1200000000")
+        errors = checker.check_text(text)
+        self.assertTrue(any("example full-reveal: burned is 23727723039690372, recomputed "
+                            "25308446400000000" in e for e in errors), errors)
+        self.assertTrue(any("example full-reveal: tip is 2372772303969038, recomputed "
+                            "792048943659410" in e for e in errors), errors)
+        text = self.damaged_after("[full-reveal]", "base_fee = 1000000000", "base_fee = 1237555002")
+        self.assert_gap(text, "example full-reveal: valid = yes, recomputed no")
+        text = self.damaged_after("[full-reveal]", "base_fee = 1000000000\n", "")
+        self.assert_gap(text, "example full-reveal: 'base_fee' is missing")
 
     def test_fee_above_balance_marked_valid(self):
         text = self.damaged_after("[fee-above-balance]", "valid = no", "valid = yes")
         self.assert_gap(text, "example fee-above-balance: valid = yes, recomputed no")
 
     def test_boundary_fee_not_window_fee(self):
-        text = self.damaged_after("[zero-amount-claim]", "fee = 33036375802978007",
-                                  "fee = 33036375802978006")
-        self.assert_gap(text, "example zero-amount-claim: fee 33036375802978006 is not the window fee")
+        text = self.damaged_after("[zero-amount-claim]", "fee = 26100495343659410",
+                                  "fee = 26100495343659409")
+        self.assert_gap(text, "example zero-amount-claim: fee 26100495343659409 is not the window fee")
 
     def test_competing_reveals_wrong(self):
         text = self.damaged_after("[competing-reveals]", "rejected = b", "rejected = a")
         self.assert_gap(text, "the first reveal must be included")
         text = self.damaged_after("[competing-reveals]", "marker_b = m", "marker_b = n")
         self.assert_gap(text, "must carry the same marker")
-        text = self.damaged_after("[competing-reveals]", "total_out_change = 533036375802978007",
+        text = self.damaged_after("[competing-reveals]", "total_out_change = 526100495343659410",
                                   "total_out_change = 500000000000000000")
         self.assert_gap(text, "total_out_change is 500000000000000000")
-        text = self.damaged_after("[competing-reveals]", "remainder_b = 666963624197021993",
-                                  "remainder_b = 666963624197021994")
+        text = self.damaged_after("[competing-reveals]", "remainder_b = 673899504656340590",
+                                  "remainder_b = 673899504656340591")
         self.assert_gap(text, "reveal b does not conserve value")
 
     def test_unknown_example_kind(self):
@@ -287,14 +412,63 @@ class CheckerTest(unittest.TestCase):
 
     # The arithmetic itself
 
-    def test_ceiling_bounds_the_base_client_rule(self):
+    def test_growth_step_bounds_the_base_client_rule(self):
         rng = random.Random(7)
         for _ in range(3000):
             gas_limit = rng.randint(checker.MIN_GAS_LIMIT, 60_000_000)
             base_fee = rng.choice((1, 7, 8, 9, rng.randint(1, 10**15)))
             gas_used = rng.choice((gas_limit, rng.randint(0, gas_limit)))
             nxt = checker.next_base_fee(base_fee, gas_limit, gas_used)
-            self.assertLessEqual(nxt, checker.ceiling_step(base_fee), (base_fee, gas_limit, gas_used))
+            self.assertLessEqual(nxt, checker.growth_step(base_fee), (base_fee, gas_limit, gas_used))
+
+    def test_cover_rule_guarantee_randomised(self):
+        # PT-7: over random gas limits, loads and starting base fees, for the
+        # current window's fee and the previous window's, every reveal the
+        # cover rule accepts burns at least G_PRIV times the block's base fee,
+        # tips no more than the nominal tip, and splits the fee exactly; blocks
+        # 0 and 1 of the window always accept the window's fee.
+        rng = random.Random(11)
+        g_priv = 21_090_372
+        for _ in range(500):
+            gas_limit = rng.randint(checker.MIN_GAS_LIMIT, 60_000_000)
+            b_ref = rng.choice((1, 7, 10**9, rng.randint(1, 10**12)))
+            price = checker.window_price(b_ref, 1)
+            base, tip, fee = checker.window_fee(price, g_priv, 10)
+            base_fee = b_ref
+            for j in range(8):  # the window and the one after it
+                split = checker.cover_split(fee, price, base_fee, g_priv)
+                if j < 2:
+                    self.assertIsNotNone(split, (b_ref, gas_limit, j))
+                    self.assertEqual(split, (base, tip))
+                if split is None:
+                    self.assertGreater(g_priv * base_fee, fee)
+                else:
+                    burn, paid = split
+                    self.assertGreaterEqual(burn, g_priv * base_fee)
+                    self.assertGreaterEqual(burn, base)
+                    self.assertTrue(0 <= paid <= tip)
+                    self.assertEqual(burn + paid, fee)
+                    if base_fee <= price:
+                        self.assertEqual(paid, tip)
+                gas_used = rng.choice((gas_limit, rng.randint(0, gas_limit)))
+                base_fee = checker.next_base_fee(base_fee, gas_limit, gas_used)
+
+    def test_cover_limit_is_the_boundary(self):
+        g_priv = 21_090_372
+        price = checker.window_price(10**9, 1)
+        fee = checker.window_fee(price, g_priv, 10)[2]
+        limit = checker.cover_limit(fee, g_priv)
+        self.assertEqual(limit, 1_237_555_001)
+        self.assertEqual(checker.cover_split(fee, price, limit, g_priv),
+                         (g_priv * limit, fee - g_priv * limit))
+        self.assertIsNone(checker.cover_split(fee, price, limit + 1, g_priv))
+
+    def test_matched_fee(self):
+        self.assertEqual(checker.matched_fee(5, 5, 5), "current")
+        self.assertEqual(checker.matched_fee(5, 6, 5), "previous")
+        self.assertEqual(checker.matched_fee(5, 6, 7), "none")
+        self.assertEqual(checker.matched_fee(5, 6, None), "none")
+        self.assertEqual(checker.matched_fee(5, 5, None), "current")
 
     def test_next_base_fee_matches_eip_1559(self):
         self.assertEqual(checker.next_base_fee(10**9, 30_000_000, 15_000_000), 10**9)
