@@ -1785,18 +1785,23 @@ export function createFlow({
   // Has the connected wallet sign an account transaction (type 0x52) from
   // its account, then sends it: the nonce, fee and gas from the endpoint,
   // the genesis hash from this build's entry for the network (the signature
-  // binds the chain), the base fee from the tip the page's header chain
-  // adopted. The wallet asks the user to approve it. Its answer is sent only
-  // if it is from the connected account and its hash is the envelope's.
-  // Returns the transaction hash.
-  async function sendFromWallet({ chainId, to, value, data }) {
+  // binds the chain), the base fee from the endpoint's header of block `at`,
+  // its tip when the send began. That header is not checked against the
+  // page's header chain: sending needs none of it, a wrong base fee can
+  // only cost at most what the caps below allow or leave the commit
+  // unmined, and whether a block holds the commit is checked afterwards
+  // through the verified header chain. The wallet asks the user to approve
+  // it. Its answer is sent only if it is from the connected account and its
+  // hash is the envelope's. Returns the transaction hash.
+  async function sendFromWallet({ chainId, to, value, data, at }) {
     if (!connector || !state.wallet) throw new Error("connect a wallet first");
     const signer = connector;
     const from = state.wallet.address;
-    const hc = await chainFor(chainId);
-    const genesis = fromHex(hc.network.genesisHash, 32);
+    const network = networkOf(networks, chainId);
+    if (!network) throw new ChainRefused(noPinMessage(chainId));
+    const genesis = fromHex(network.genesisHash, 32);
     const nonce = quantity(await rpc.call("eth_getTransactionCount", [from, "pending"]));
-    const tip = await syncTip(hc);
+    const { header: tip } = await fetchHeader(at);
     // The endpoint's priority fee, at most PRIORITY_FEE_CAP.
     const asked = quantity(await rpc.call("eth_maxPriorityFeePerGas"));
     const priority = asked < PRIORITY_FEE_CAP ? asked : PRIORITY_FEE_CAP;
@@ -2093,14 +2098,24 @@ export function createFlow({
         if (!connector) throw new Error("connect a wallet first");
         const chainId = quantity(await rpc.call("eth_chainId"));
         progress("building the commit");
-        const sentAfter = await blockNumber();
+        // The endpoint's tip as it says, unchecked: no header is checked
+        // before the send, so the first Vanish of a session does not wait
+        // for the whole header chain. It is only the floor below which a
+        // receipt is refused as old; the commit is confirmed afterwards
+        // through the verified header chain (waitSettled), so an endpoint
+        // that lies here cannot make the page take a commit that chain does
+        // not hold. Only when the page has already refused this endpoint's
+        // chain is it checked again first: nothing is sent onto a chain
+        // known to fail until it passes.
+        if (state.chainRefused) await syncTip();
+        const sentAfter = Number(quantity(await rpc.call("eth_blockNumber")));
         // Version 2: the worker draws the coin's salt from its secure random
         // source and the payload carries it beside F (206 bytes).
         const commit = await prover.request("commit", { chainId, amount: v.amount, key: v.key });
         if (commit.payload.length !== COMMIT_DATA_BYTES || commit.payload[0] !== 0 || commit.payload[1] !== 2) {
           throw new Error(`the commit is not ${COMMIT_DATA_BYTES} bytes of version 2; nothing was sent`);
         }
-        const txHash = await sendFromWallet({ chainId, to: state.commitEntry, value: v.amount, data: commit.payload });
+        const txHash = await sendFromWallet({ chainId, to: state.commitEntry, value: v.amount, data: commit.payload, at: sentAfter });
         // The user has the key; the app no longer needs it. The node took
         // the commit: the page shows it Sent at once.
         dropKey(v);
