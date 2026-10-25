@@ -443,11 +443,11 @@ fn restore_ignores_notes_for_other_keys() {
 }
 
 #[test]
-fn tree_state_choice_is_the_newest_settled_root_at_or_above_the_wallets_block() {
+fn tree_state_choice_never_picks_wallets_own_commit_block() {
     let root = |byte: u8| [byte; 32];
     let leaf_block = HeaderRoot { height: 100, root: root(0xaa) };
     // Heights 101 and 102 carry the leaf block's root: no coin leaf was added
-    // in between. 64 and 96 are before the leaf and do not hold it.
+    // in between. 64 and 96 are before the leaf.
     let candidates = [
         HeaderRoot { height: 64, root: root(1) },
         HeaderRoot { height: 96, root: root(2) },
@@ -459,31 +459,23 @@ fn tree_state_choice_is_the_newest_settled_root_at_or_above_the_wallets_block() 
     ];
     let pick = |tip: u64| choose_tree_state(&candidates, tip, &leaf_block, None);
 
-    // The leaf's block is not yet 2 deep: wait, never a root from before it.
-    assert_eq!(pick(1), TreeStateChoice::Wait);
+    // Only the leaf block's root is settled: wait.
     assert_eq!(pick(100), TreeStateChoice::Wait);
-    assert_eq!(pick(101), TreeStateChoice::Wait);
-    // From tip 102 the leaf's own block counts, and each later settled
-    // header after it, even one that carries the same root.
-    assert_eq!(pick(102), TreeStateChoice::Settled(candidates[2]));
-    assert_eq!(pick(103), TreeStateChoice::Settled(candidates[3]));
-    assert_eq!(pick(104), TreeStateChoice::Settled(candidates[4]));
+    assert_eq!(pick(104), TreeStateChoice::Wait);
     // 103 is settled at tip 105; 150 is not until tip 152.
     assert_eq!(pick(105), TreeStateChoice::Settled(candidates[5]));
     assert_eq!(pick(151), TreeStateChoice::Settled(candidates[5]));
     assert_eq!(pick(152), TreeStateChoice::Settled(candidates[6]));
+    assert_eq!(pick(1), TreeStateChoice::Wait);
 
-    // With nobody committing after the wallet, its own block's root is used
-    // once settled: no other wallet has to commit first.
-    assert_eq!(choose_tree_state(&candidates[..3], 1_000, &leaf_block, None), TreeStateChoice::Settled(candidates[2]));
-    assert_eq!(choose_tree_state(&[leaf_block], 102, &leaf_block, None), TreeStateChoice::Settled(leaf_block));
-    // Only roots before the leaf: none of them holds it, so wait.
-    assert_eq!(choose_tree_state(&candidates[..2], 1_000, &leaf_block, None), TreeStateChoice::Wait);
+    // A later height that carries the leaf's root is never used, however deep.
+    assert_eq!(choose_tree_state(&candidates[..5], 1_000, &leaf_block, None), TreeStateChoice::Wait);
 
-    // Over many chains, the choice is always a settled root at or above the
-    // leaf's block, and always the newest one; whatever the roots hold.
-    let eligible =
-        |h: &HeaderRoot, leaf: &HeaderRoot, tip: u64| h.height >= leaf.height && h.height + SETTLE_DEPTH <= tip;
+    // Over many chains, the choice is never the leaf block's root, always a
+    // settled later root, and always the newest one.
+    let eligible = |h: &HeaderRoot, leaf: &HeaderRoot, tip: u64| {
+        h.height > leaf.height && h.height + SETTLE_DEPTH <= tip && h.root != leaf.root
+    };
     let mut rng = StdRng::seed_from_u64(6);
     for _ in 0..2_000 {
         let h_leaf = rng.random_range(0..400u64);
@@ -499,6 +491,7 @@ fn tree_state_choice_is_the_newest_settled_root_at_or_above_the_wallets_block() 
         let tip = rng.random_range(0..520u64);
         match choose_tree_state(&headers, tip, &leaf, None) {
             TreeStateChoice::Settled(chosen) => {
+                assert_ne!(chosen.root, leaf.root);
                 assert!(eligible(&chosen, &leaf, tip));
                 assert!(!headers.iter().any(|h| h.height > chosen.height && eligible(h, &leaf, tip)));
             }
@@ -529,7 +522,7 @@ fn chain_roots(tip: u64, count: impl Fn(u64) -> u8) -> Vec<HeaderRoot> {
 }
 
 #[test]
-fn early_reveal_two_blocks_after_its_own_commit() {
+fn early_reveal_two_blocks_after_a_later_commit() {
     assert_eq!(SETTLE_DEPTH, 2);
     // The wallet's coin is leaf 2, added at block 50; a stranger commits
     // leaf 3 at block 51.
@@ -543,44 +536,47 @@ fn early_reveal_two_blocks_after_its_own_commit() {
         }
     };
     let leaf_block = HeaderRoot { height: 50, root: [3; 32] };
-    // Block 50 is not settled until tip 52.
-    for tip in 48..52 {
+    // Block 51 is not settled until tip 53.
+    for tip in 50..53 {
         let headers = chain_roots(tip, count);
         assert_eq!(choose_tree_state(&headers, tip, &leaf_block, None), TreeStateChoice::Wait, "tip {tip}");
     }
-    // At tip 52 the coin can be revealed against its own block's root, two
-    // blocks after its commit; at tip 53 against block 51's.
-    assert_eq!(choose_tree_state(&chain_roots(52, count), 52, &leaf_block, None), TreeStateChoice::Settled(leaf_block));
+    // At tip 53 the coin can be revealed against block 51's root, two blocks
+    // after the later commit: no epoch block, no 12-block depth.
+    let headers = chain_roots(53, count);
     assert_eq!(
-        choose_tree_state(&chain_roots(53, count), 53, &leaf_block, None),
+        choose_tree_state(&headers, 53, &leaf_block, None),
         TreeStateChoice::Settled(HeaderRoot { height: 51, root: [4; 32] })
     );
     // Later, always the newest settled root.
+    let headers = chain_roots(80, count);
     assert_eq!(
-        choose_tree_state(&chain_roots(80, count), 80, &leaf_block, None),
+        choose_tree_state(&headers, 80, &leaf_block, None),
         TreeStateChoice::Settled(HeaderRoot { height: 78, root: [4; 32] })
     );
 }
 
 #[test]
-fn early_reveal_needs_no_later_leaf() {
+fn early_reveal_waits_without_a_later_leaf_and_never_picks_its_own_block_root() {
     // The wallet's coin is the last leaf, added at block 50 after an earlier
     // leaf of the same block; nobody commits after it.
     let count = |n: u64| -> u8 { if n >= 50 { 3 } else { 1 } };
     let leaf_block = HeaderRoot { height: 50, root: [3; 32] };
-    for tip in [50, 51] {
+    for tip in [50, 52, 53, 100, 1_000] {
         let headers = chain_roots(tip, count);
         assert_eq!(choose_tree_state(&headers, tip, &leaf_block, None), TreeStateChoice::Wait, "tip {tip}");
     }
-    // Once block 50 is 2 deep, the newest settled header is chosen, though
-    // it carries the leaf block's root: no other commit is waited for.
-    for tip in [52, 53, 100, 1_000] {
-        let headers = chain_roots(tip, count);
-        assert_eq!(
-            choose_tree_state(&headers, tip, &leaf_block, None),
-            TreeStateChoice::Settled(HeaderRoot { height: tip - SETTLE_DEPTH, root: leaf_block.root }),
-            "tip {tip}"
-        );
+    // The leaf block itself, offered as a candidate, is never taken either.
+    assert_eq!(choose_tree_state(&[leaf_block], 1_000, &leaf_block, None), TreeStateChoice::Wait);
+    // A stranger's commit at block 200 opens it two blocks later.
+    let later = |n: u64| -> u8 { if n >= 200 { 4 } else { count(n) } };
+    assert_eq!(choose_tree_state(&chain_roots(201, later), 201, &leaf_block, None), TreeStateChoice::Wait);
+    match choose_tree_state(&chain_roots(202, later), 202, &leaf_block, None) {
+        TreeStateChoice::Settled(chosen) => {
+            assert_eq!(chosen.height, 200);
+            assert_ne!(chosen.root, leaf_block.root);
+        }
+        other => panic!("expected a settled root, got {other:?}"),
     }
 }
 

@@ -1,10 +1,9 @@
 // Summon of a coin older than the headers a scan reads (blocks S - 32 to
 // the tip, S the settled block 2 below the tip) on a quiet chain: a coin is
-// committed, maybe followed by a second commitment more than 32 blocks
-// before S, and no commitment comes after. S is at or above the coin's
-// block, so S is picked and its reveal goes through, whether or not a leaf
-// follows the coin. (The file keeps its name from the epoch rule this
-// replaced.)
+// committed, a second commitment follows it more than 32 blocks before S,
+// and no commitment comes after. S's tree holds a leaf after that coin, so S
+// is picked and its reveal goes through. A coin no leaf follows is still
+// refused. (The file keeps its name from the epoch rule this replaced.)
 //
 // First, leafBlock is checked against a copy of choose_tree_state from
 // client/src/tree_state.rs, with nothing built. Next, two Summon tests run
@@ -15,16 +14,16 @@ import { existsSync } from "node:fs";
 import test from "node:test";
 
 import { toHex } from "../src/bytes.mjs";
-import { DEFAULT_COMMIT_ENTRY, createFlow, leafBlock } from "../src/flow.mjs";
+import { DEFAULT_COMMIT_ENTRY, WaitError, createFlow, leafBlock } from "../src/flow.mjs";
 import { loadModule, nodeProver, openTestWallet, wasmPath } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
 
 const BUILT = existsSync(wasmPath) ? false : `no WebAssembly module built at ${wasmPath}`;
 
-// choose_tree_state for one candidate (tree_state.rs): a block 2 deep, at
-// or above a leaf's block, whatever its root.
-function chosen({ tip, leafHeight, height }) {
-  return height <= tip - 2 && height >= leafHeight;
+// choose_tree_state for one candidate (tree_state.rs): a block 2 deep, above
+// a leaf's block, whose root differs from that block's root.
+function chosen({ tip, leafHeight, leafRoot, height, root }) {
+  return height <= tip - 2 && height > leafHeight && toHex(root) !== toHex(leafRoot);
 }
 
 // A scan at settled block `settled` whose tree holds `count(n)` leaves at
@@ -58,25 +57,20 @@ test("a leaf older than S - 32, followed by a leaf before S - 32 and none in S -
   assert.equal(ask(scan, 64, 0), true, "so can leaf 0");
 });
 
-test("a leaf older than S - 32 that is last in S's tree can be revealed", () => {
+test("a leaf older than S - 32 that is last in S's tree is refused", () => {
   const scan = scanOf(64, (n) => (n >= 5 ? 3 : 2));
-  const leaf = leafBlock(scan, 2);
-  assert.equal(toHex(leaf.root), toHex(scan.rootHeaders.at(-1).coinTreeRoot), "S carries the leaf's own tree");
-  assert.equal(ask(scan, 64, 2), true);
-  assert.equal(ask(scan, 64, 1), true);
+  assert.equal(ask(scan, 64, 2), false);
+  assert.equal(ask(scan, 64, 1), true, "leaf 1 is followed by leaf 2");
 });
 
-test("a leaf in S - 32 to S keeps its first header, and its block counts once 2 deep", () => {
+test("a leaf in S - 32 to S keeps its first header's root", () => {
   const scan = scanOf(64, (n) => (n >= 50 ? 4 : n >= 40 ? 3 : 2));
   const leaf = leafBlock(scan, 2);
   assert.equal(leaf.height, 40);
   assert.equal(toHex(leaf.root), toHex(scan.rootHeaders[8].coinTreeRoot));
   assert.equal(ask(scan, 64, 2), true);
-  assert.equal(ask(scan, 64, 3), true, "leaf 3, last and added at block 50, too");
+  assert.equal(ask(scan, 64, 3), false, "leaf 3, last and added at block 50, is refused");
   assert.equal(leafBlock(scan, 4), null, "leaf 4 is past S's tree");
-  // A leaf whose block is above S is not yet 2 deep.
-  assert.equal(chosen({ tip: 66, leafHeight: 65, height: 64 }), false);
-  assert.equal(chosen({ tip: 66, leafHeight: 64, height: 64 }), true);
 });
 
 const GHOST = 10n ** 18n;
@@ -160,7 +154,7 @@ test("a coin followed by a commit more than 32 blocks before S can be summoned o
   }
 });
 
-test("a coin older than block S - 32 that no leaf follows is summoned too", { timeout: 600_000, skip: BUILT }, async () => {
+test("a coin older than block S - 32 that no leaf follows is still refused", { timeout: 600_000, skip: BUILT }, async () => {
   const { node, flow, done } = await setUp();
   try {
     node.foreignCommits(2);
@@ -171,13 +165,13 @@ test("a coin older than block S - 32 that no leaf follows is summoned too", { ti
 
     const opened = await flow.summonOpen(key);
     assert.equal(opened.status, "unclaimed");
-    assert.equal(opened.wait, null, "no other commit is waited for");
-    assert.deepEqual(opened.cover, { height: SETTLED, covers: position + 1, total: node.leaves.length });
-    await flow.summonReveal({ amount: "0.5", recipient: RECIPIENT });
-    assert.equal(node.reveals.length, 1);
-    const own = node.leaves[position].block;
-    assert.equal(toHex(node.reveals[0].root), toHex(node.blocks[own].coinTreeRoot), "the tree that ends with the coin's block");
-    assert.equal(node.balances.get(RECIPIENT), GHOST / 2n);
+    assert.equal(opened.cover, null);
+    assert.equal(opened.wait.alone, true, "the app warns that nobody committed since");
+    await assert.rejects(
+      flow.summonReveal({ amount: "0.5", recipient: RECIPIENT }),
+      (err) => err instanceof WaitError && err.alone && /^nobody has committed a coin since this one/.test(err.message),
+    );
+    assert.equal(node.reveals.length, 0);
   } finally {
     await done();
   }
