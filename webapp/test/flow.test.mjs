@@ -30,7 +30,7 @@ import { COMMIT_ESTIMATE_GAS, PRIORITY_FEE, startFakeNode } from "./support/fake
 
 const GHOST = 10n ** 18n;
 // Spec 07, vector window-genesis: the fee at a base fee of 1 gwei.
-const SPEC_FEE = 33_036_375_802_978_007n;
+const SPEC_FEE = 26_100_495_343_659_410n;
 const RECIPIENT = "0x2222222222222222222222222222222222222222";
 const ENDPOINT_METHODS = new Set([
   "eth_chainId",
@@ -648,6 +648,67 @@ test("a coin nobody committed after is summoned once its own block is 2 deep", a
     assert.equal(toHex(node.reveals[0].root), toHex(node.blocks[block].coinTreeRoot), "the root of the coin's own block");
     assert.ok(reveal.block > block + 2);
     assert.equal(node.balances.get(RECIPIENT), GHOST / 4n);
+  } finally {
+    await done();
+  }
+});
+
+// A Summon proves only when at least two blocks of the next block's window
+// are left and that block's base fee is within the window fee's cover limit;
+// otherwise it waits, a block at a time, for the next window's fee.
+test("the reveal waits for the next fee window", async () => {
+  const GWEI = 10n ** 9n;
+  let node = null;
+  // The node's tip at each reveal send.
+  const sentAt = [];
+  const fetch = async (url, init) => {
+    if (isRevealSend(JSON.parse(init.body))) sentAt.push(node.tip());
+    return globalThis.fetch(url, init);
+  };
+  const set = await setUp({ fetch });
+  ({ node } = set);
+  const { flow, hooks, done } = set;
+  // The node's tip at each proof.
+  const provedAt = [];
+  hooks.prove = (args) => {
+    provedAt.push(node.tip());
+    return args;
+  };
+  try {
+    const first = await vanish(flow, "1");
+    const second = await vanish(flow, "1");
+    node.foreignCommits(1);
+
+    // Tip 78: the next block, 79, is the last of the window that starts at
+    // block 76, so nothing is proved or sent until block 79 is the tip and
+    // the next block starts window 20.
+    node.mineTo(78);
+    assert.equal((await flow.summonOpen(first)).status, "unclaimed");
+    await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
+    assert.deepEqual(provedAt, [79], "proved once, for the window that starts at block 80");
+    assert.deepEqual(sentAt, [79]);
+    assert.equal(node.reveals.length, 1);
+    assert.equal(node.reveals[0].fee, node.fee(80));
+    assert.equal(node.reveals[0].fee, SPEC_FEE);
+
+    // Tip 85 in the window that starts at block 84 (b_ref 1 gwei), two of
+    // its blocks left, but block 85 was mined at 2 gwei: the next block's
+    // base fee is past the window fee's cover limit of 1,237,555,001 wei.
+    // The app waits for block 88, the next window's start, and proves for its
+    // fee, priced from 2 gwei.
+    node.mineTo(84);
+    node.setBaseFee(2n * GWEI);
+    node.mine();
+    assert.equal(node.tip(), 85);
+    assert.equal((await flow.summonOpen(second)).status, "unclaimed");
+    provedAt.length = 0;
+    sentAt.length = 0;
+    await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
+    assert.deepEqual(provedAt, [87], "proved once, for the window that starts at block 88");
+    assert.deepEqual(sentAt, [87]);
+    assert.equal(node.reveals.length, 2);
+    assert.equal(node.reveals[1].fee, node.fee(88));
+    assert.ok(node.reveals[1].fee > SPEC_FEE, "the fee of the next window, priced from 2 gwei");
   } finally {
     await done();
   }

@@ -7,6 +7,8 @@
 export const G_PRIV = 21_090_372n;
 // Blocks for which one fee is in force.
 export const FEE_WINDOW = 4;
+// Growth steps of headroom in the window price (spec 07, sections 4 and 5).
+export const FEE_STEPS = 1;
 // The tip is the base-fee part divided by this, rounded up.
 export const TIP_DIVISOR = 10n;
 // A root a reveal proves against is at least this many blocks below the tip
@@ -23,11 +25,19 @@ const ONE = 10n ** BigInt(DECIMALS);
 // The largest amount, 2^96 - 1 wei.
 export const V_MAX = (1n << 96n) - 1n;
 
-// U_(W-1), the ceiling started from the base fee of the window's first block.
+// U_FEE_STEPS, the base fee of the window's first block plus FEE_STEPS
+// worst-case growth steps.
 export function windowPrice(bRef) {
   let u = BigInt(bRef);
-  for (let j = 0; j < FEE_WINDOW - 1; j += 1) u = u + u / 8n + u / 20000n + 1n;
+  for (let j = 0; j < FEE_STEPS; j += 1) u = u + u / 8n + u / 20000n + 1n;
   return u;
+}
+
+// The largest base fee of an including block for which a reveal with this
+// fee passes the cover rule (spec 07, section 5): G_PRIV times that base fee
+// is at most the fee.
+export function coverLimit(fee) {
+  return BigInt(fee) / G_PRIV;
 }
 
 // The fee of every private transaction in a window with this price.
@@ -58,11 +68,35 @@ export function windowStart(height) {
 // The fee a reveal must carry to be included in block `tip + 1`. The base
 // fee of the window's first block is read from its header, or computed from
 // the tip's header when that block is the next one.
+//
+// The result also says whether to `wait` for the next window's fee instead
+// of proving for this one: when the next block's base fee is already above
+// the fee's cover limit, or fewer than two blocks of the window are left
+// (`remaining` counts the next block), a proof made now is likely to lapse
+// before a block takes it.
 export async function feeForNextBlock(tipHeader, headerAt) {
   const next = tipHeader.number + 1;
   const start = windowStart(next);
   const bRef = start === next ? nextBaseFee(tipHeader) : (await headerAt(start)).baseFee;
-  return { window: start / FEE_WINDOW, ...feeForPrice(windowPrice(bRef)) };
+  const fee = feeForPrice(windowPrice(bRef));
+  const limit = coverLimit(fee.fee);
+  const remaining = start + FEE_WINDOW - next;
+  const wait = remaining < 2 || nextBaseFee(tipHeader) > limit;
+  return { window: start / FEE_WINDOW, ...fee, coverLimit: limit, remaining, wait };
+}
+
+// Whether a reveal carrying `fee` is still accepted in block `tip + 1`
+// (spec 07, section 5, "Fee of the previous window"): it is the fee of that
+// block's window or of the window before it (none before window 0), and the
+// block's base fee is within the fee's cover limit.
+export async function feeStillAccepted(fee, tipHeader, headerAt) {
+  const f = BigInt(fee);
+  if (nextBaseFee(tipHeader) > coverLimit(f)) return false;
+  const current = await feeForNextBlock(tipHeader, headerAt);
+  if (current.fee === f) return true;
+  if (current.window === 0) return false;
+  const start = current.window * FEE_WINDOW;
+  return feeForPrice(windowPrice((await headerAt(start - FEE_WINDOW)).baseFee)).fee === f;
 }
 
 // The height of the newest settled block for this tip, the one whose root a
