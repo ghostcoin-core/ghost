@@ -3,9 +3,10 @@
 //! same key as 21 groups of digits, and the refusal of the twelve- and
 //! twenty-four-group digit keys issued before it.
 //!
-//! The words vectors live here, not in spec 01, section 14, whose digit keys
-//! are of the retired formats and kept there as fixed test data only. The
-//! keys below are examples only, published here, and must never hold value.
+//! The vectors that relate words to digits live here; the vectors of spec 01,
+//! section 14 are all words keys written as their digit view, and are checked
+//! against these. The keys below are examples only, published here, and must
+//! never hold value.
 
 use ghost_client::hash::{self, TAG_KEY_CHECK, TAG_SECRET};
 use ghost_client::wordlist::WORDLIST;
@@ -385,27 +386,63 @@ fn has(v: &Vector, field: &str) -> bool {
 }
 
 #[test]
-fn spec_vector_keys_are_refused() {
-    // The digit keys of section 14 are of the retired twelve- and
-    // twenty-four-group formats, kept there as fixed test data. The client
-    // refuses every one of them, valid or not under the old checks, by its
-    // length.
+fn spec_vector_keys_are_words_keys() {
+    // Every key of section 14 is the digit view of a words key: 21 groups,
+    // format code 0x20. Each one that the vector calls valid parses, and its
+    // words give the same key bytes; no vector of the retired twelve- and
+    // twenty-four-group digit keys is left.
     let vectors = spec_vectors();
     let mut keyed = 0;
     for v in vectors.iter().filter(|v| has(v, "key")) {
-        let count = v.get("key").replace(' ', "").len();
-        assert!(count == 48 || count == 96, "{}: {count} digits", v.name);
-        assert_eq!(
-            PhantomKey::parse(v.get("key")).err(),
-            Some(KeyError::WrongLength { digits: count }),
-            "{}",
-            v.name
-        );
+        let text = v.get("key");
+        assert_eq!(text.split(' ').count(), 21, "{}", v.name);
+        assert_eq!(text.replace(' ', "").len(), 84, "{}", v.name);
         keyed += 1;
+        if has(v, "valid") && v.get("valid") == "no" {
+            assert!(PhantomKey::parse(text).is_err(), "{}", v.name);
+            continue;
+        }
+        let key = parse(text);
+        assert_eq!(key.key_format(), KeyFormat::Words, "{}", v.name);
+        assert_eq!(key.key_bytes().as_bytes()[0], 0x20, "{}", v.name);
+        let words = words_of(&key);
+        assert_eq!(parse(&words).key_bytes().as_bytes(), key.key_bytes().as_bytes(), "{}", v.name);
+        if has(v, "format") {
+            assert_eq!(v.get("format"), "20", "{}", v.name);
+        }
     }
-    assert!(keyed >= 10, "spec 01 has {keyed} keyed vectors");
-    assert!(vectors.iter().any(|v| v.name == "derivation-standard"));
-    assert!(vectors.iter().any(|v| v.name == "derivation-long"));
+    assert!(keyed >= 15, "spec 01 has {keyed} keyed vectors");
+    for retired in ["derivation-standard", "derivation-long", "checksum-standard", "checksum-long"] {
+        assert!(
+            !vectors.iter().any(|v| v.name.starts_with(retired)),
+            "spec 01 still has [{retired}]"
+        );
+    }
+
+    // The derivation vector is the example key of section 5.
+    let d = vectors.iter().find(|v| v.name == "derivation-words").expect("[derivation-words]");
+    let key = parse(d.get("key"));
+    assert_eq!(words_of(&key), WORDS_VECTORS[4].words);
+    assert_eq!(hex(key.key_bytes().as_bytes()), d.get("key-bytes"));
+    assert_eq!(hex(key.secret().as_bytes()), d.get("s"));
+    assert_eq!(hex(key.reveal_secret().as_bytes()), d.get("r"));
+    assert_eq!(hex(key.blinding(2).as_bytes()), d.get("b2"));
+    assert_eq!(hex(key.note_key().as_bytes()), d.get("note-key"));
+    assert_eq!(hex(key.data_key().as_bytes()), d.get("data-key"));
+
+    // The commitment vectors of section 14 are those below, from the same key.
+    for (_, index, wei, salt, fingerprint, commitment, marker) in COIN_VECTORS {
+        let found = vectors.iter().any(|v| {
+            has(v, "commitment")
+                && v.get("commitment") == commitment
+                && v.get("fingerprint") == fingerprint
+                && v.get("marker") == marker
+                && v.get("index") == index.to_string()
+                && v.get("amount") == wei.to_string()
+                && salt.map_or(!has(v, "salt"), |s| has(v, "salt") && v.get("salt") == s)
+        });
+        assert!(found, "no spec 01 vector for commitment {commitment}");
+    }
 }
 
 /// A coin commitment under a words key: (digit view, number, amount, salt or

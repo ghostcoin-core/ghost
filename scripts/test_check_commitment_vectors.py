@@ -87,12 +87,12 @@ class CheckerTest(unittest.TestCase):
 
     def test_every_changed_value_is_caught(self):
         cases = [
-            ("derivation-standard", "key-bytes"),
-            ("derivation-standard", "s"),
-            ("derivation-standard", "r"),
-            ("derivation-standard", "b1"),
-            ("derivation-long", "note-key"),
-            ("derivation-long", "data-key"),
+            ("derivation-words", "key-bytes"),
+            ("derivation-words", "s"),
+            ("derivation-words", "r"),
+            ("derivation-words", "b1"),
+            ("derivation-words", "note-key"),
+            ("derivation-words", "data-key"),
             ("coin-commit", "fingerprint"),
             ("coin-commit", "commitment"),
             ("coin-remainder", "marker"),
@@ -127,28 +127,75 @@ class CheckerTest(unittest.TestCase):
 
     def test_checksum_errors_are_caught(self):
         # A wrong check group in a key that the document calls valid.
-        key = self.field("checksum-standard", "key")
-        errors = self.run_on(self.replace_field("checksum-standard", "key", key[:-1] + "8"))
-        self.assertTrue(any("[checksum-standard] valid" in e for e in errors))
+        key = self.field("checksum-words", "key")
+        self.assertEqual(key, WORDS_EXAMPLE)
+        errors = self.run_on(self.replace_field("checksum-words", "key", key[:-1] + "3"))
+        self.assertTrue(any("[checksum-words] valid" in e for e in errors))
         # A wrong documented check value.
-        errors = self.run_on(self.replace_field("checksum-long", "check", "6390 8043"))
-        self.assertTrue(any("[checksum-long] check" in e for e in errors))
+        errors = self.run_on(self.replace_field("checksum-words", "check", "6813"))
+        self.assertTrue(any("[checksum-words] check" in e for e in errors))
         # A key that fails its checksum cannot be used for derivation.
-        errors = self.run_on(self.replace_field("derivation-standard", "key", key[:-1] + "8"))
-        self.assertTrue(any("[derivation-standard] cannot be checked" in e for e in errors))
+        errors = self.run_on(self.replace_field("derivation-words", "key", key[:-1] + "3"))
+        self.assertTrue(any("[derivation-words] cannot be checked" in e for e in errors))
+        # A secret of 2^256 or more is refused even with a right check group.
+        errors = self.run_on(self.replace_field("checksum-words-too-large", "valid", "yes"))
+        self.assertTrue(any("[checksum-words-too-large] valid" in e for e in errors))
 
     def test_checksum_depends_on_format(self):
-        payload = self.field("checksum-long", "key").split()
-        fmt, groups, _ = checker.parse_key(" ".join(payload))
-        self.assertEqual(fmt, checker.FORMAT_24)
-        first = checker.compute_checks(checker.FORMAT_12, groups[:11])
-        self.assertNotEqual(first[0], payload[11])
-        # The words code enters the check too: the same 80 digits under another
-        # code give another group.
+        # The words code enters the check: the same 80 digits under the codes of
+        # the retired digit keys, or any other code, give another group, and
+        # the checker computes no check for another code at all.
         fmt, groups, checks = checker.parse_key(WORDS_EXAMPLE)
         self.assertEqual(fmt, checker.FORMAT_WORDS)
-        for code in (checker.FORMAT_12, checker.FORMAT_24, 0x21):
-            self.assertNotEqual(checker._check_group(code, 1, groups), checks[0])
+        digits = "".join(groups).encode("ascii")
+        for code in (0x0C, 0x18, 0x21):
+            h = checker.sha3_tagged(checker.TAG_KEY_CHECK, bytes([code, 0x01]), digits)
+            self.assertNotEqual(f"{int.from_bytes(h, 'big') % 10000:04d}", checks[0])
+            with self.assertRaises(ValueError):
+                checker.compute_checks(code, groups)
+            with self.assertRaises(ValueError):
+                checker.key_bytes(code, groups)
+
+    def test_legacy_digit_keys_are_refused(self):
+        # The twelve- and twenty-four-group digit keys are no longer read: not
+        # in a vector, and not by the key reader.
+        for key in ("1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417",
+                    "3141 5926 5358 9793 2384 6264 3383 2795 0288 4197 1693 6390 "
+                    "9937 5105 8209 7494 4592 3078 1640 6286 2089 9862 8034 8042"):
+            with self.subTest(key=key):
+                with self.assertRaises(ValueError):
+                    checker.parse_key(key)
+                with self.assertRaises(ValueError):
+                    checker.valid_key_bytes(key)
+                text = self.replace_field("coin-commit", "key", key)
+                errors = self.run_on(text)
+                self.assertTrue(any("[coin-commit] cannot be checked" in e for e in errors),
+                                errors)
+        # Every key in the document is a words key of 21 groups.
+        keys = [v["key"] for v in checker.parse_vectors(checker.section(self.text, "Test vectors"))
+                if "key" in v]
+        self.assertGreaterEqual(len(keys), 10)
+        for key in keys:
+            self.assertEqual(len(key.split()), checker.WORDS_GROUPS, key)
+        self.assertNotIn("derivation-standard", self.text)
+        self.assertNotIn("checksum-long", self.text)
+
+    def test_checksum_coverage(self):
+        # Without a valid or an invalid words checksum vector, or without the
+        # out-of-range one, the document is incomplete.
+        for name, gap in (("checksum-words-too-large",
+                           "no checksum vector of an out-of-range secret"),):
+            with self.subTest(vector=name):
+                text = self.replace_field(name, "kind", "other")
+                self.assertTrue(any(gap in e for e in self.run_on(text)))
+        text = self.text
+        for name in ("checksum-one-digit-wrong", "checksum-groups-swapped",
+                     "checksum-words-too-large"):
+            start = text.index(f"[{name}]\n")
+            line_start = text.index("\nvalid = ", start) + 1
+            text = text[:line_start] + "valid = yes" + text[text.index("\n", line_start):]
+        self.assertTrue(any("no checksum vector with format 20 and valid = no" in e
+                            for e in self.run_on(text)))
 
     def test_words_digit_view(self):
         # The digit view of a words key: code 0x20, the 80 secret digits read
@@ -191,14 +238,11 @@ class CheckerTest(unittest.TestCase):
                     checker.parse_key(bad)
 
     def test_key_entry_rules(self):
-        for bad in ("1111 2222", "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 041a",
-                    "١111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417",
+        for bad in ("1111 2222", "0000 " * 12, "0000 " * 24, "١" + WORDS_EXAMPLE[1:],
                     WORDS_EXAMPLE[:-1] + "a"):
             with self.subTest(key=bad):
                 with self.assertRaises(ValueError):
                     checker.parse_key(bad)
-        spaced = checker.parse_key("1111-2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417")
-        self.assertEqual(spaced[0], checker.FORMAT_12)
         self.assertEqual(checker.parse_key(WORDS_EXAMPLE.replace(" ", "-", 3)),
                          checker.parse_key(WORDS_EXAMPLE))
 
@@ -207,11 +251,11 @@ class CheckerTest(unittest.TestCase):
         original = checker.derive_blinding
         with mock.patch.object(checker, "derive_blinding", lambda kb, i: original(kb, 0)):
             errors = checker.run(SPEC)[0]
-        self.assertTrue(any("[derivation-standard] b1" in e for e in errors))
+        self.assertTrue(any("[derivation-words] b1" in e for e in errors))
         self.assertTrue(any("[coin-remainder] marker" in e for e in errors))
 
     def test_blindings_and_secrets_are_distinct(self):
-        kb = checker.valid_key_bytes(self.field("derivation-standard", "key"))
+        kb = checker.valid_key_bytes(self.field("derivation-words", "key"))
         values = [checker.derive_blinding(kb, i) for i in range(50)]
         values += [checker.derive_secret(kb), checker.derive_reveal_secret(kb),
                    checker.derive_note_key(kb), checker.derive_data_key(kb)]

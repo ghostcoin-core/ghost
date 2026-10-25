@@ -1,7 +1,5 @@
-//! Phantom Keys, derivation and building a commit, checked against fixed
-//! vectors of words keys written as their digit view. The digit keys of spec
-//! 01, section 14 are of the retired twelve- and twenty-four-group formats, so
-//! they are only checked to be refused.
+//! Phantom Keys, derivation and building a commit, checked against the
+//! vectors of spec 01, section 14: words keys written as their digit view.
 
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -13,113 +11,6 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 
 const SPEC: &str = include_str!("../../docs/spec/01-commitments-and-keys.md");
-
-/// The vectors of this file, in the block format of spec 01, section 14. The
-/// keys are the digit views of the words key of spec 01, section 5 (secret
-/// 00 01 .. 1f), of zero, of `legal winner thank ... various` (secret 7f..7f)
-/// and of `2^256 - 1`; the values were recomputed independently by
-/// `scripts/check_commitment_vectors.py`.
-const VECTORS: &str = "```text
-[checksum-words]
-kind = checksum
-key = 0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
-format = 20
-check = 6812
-valid = yes
-
-[checksum-words-zero]
-kind = checksum
-key = 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0000 0700
-format = 20
-check = 0700
-valid = yes
-
-[checksum-words-data]
-kind = checksum
-key = 0005 7669 0013 0642 8065 9560 5300 0376 8759 3842 1040 3453 0406 4124 0510 2397 3211 7841 8613 4399 8027
-format = 20
-check = 8027
-valid = yes
-
-[checksum-words-largest]
-kind = checksum
-key = 0011 5792 0892 3731 6195 4235 7098 5008 6879 0785 3269 9846 6564 0564 0394 5758 4007 9131 2963 9935 6994
-format = 20
-check = 6994
-valid = yes
-
-[checksum-one-digit-wrong]
-kind = checksum
-key = 0000 0001 7807 3186 0627 7000 4496 0723 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
-format = 20
-check = 4451
-valid = no
-
-[checksum-groups-swapped]
-kind = checksum
-key = 0000 0001 7807 3186 0627 7000 0722 4496 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
-format = 20
-check = 4660
-valid = no
-
-[checksum-words-too-large]
-kind = checksum
-key = 0011 5792 0892 3731 6195 4235 7098 5008 6879 0785 3269 9846 6564 0564 0394 5758 4007 9131 2963 9936 0340
-format = 20
-check = 0340
-valid = no
-
-[derivation-words]
-kind = derivation
-key = 0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
-key-bytes = 20000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
-s = 62cff2e8a7db58fd67f745c8b24b75280335b28b88106384c735da7888ded4d1
-r = 8fa3bd9e5bb56a3698801b1f016d08de1c883f178d1c3f6d544706d6cb4e1abe
-b0 = 209f9782c7e6b7f64a0b0e0e1deda56dfae96af10eebe33aee50d6c5aa1144ea
-b1 = 270868c5961cb6a126290431a569f33baa59cb5017d0dc6e2965e5cb63aacf8e
-b2 = c3fd9b712431920e9baf30949ef7400ad02609ffcbb2a274ea15691d089bab38
-note-key = 35136c4a7bdccb4b26159c15f86567a483ac58e1b2c40dca49a5d099272c4181
-data-key = 97f75e4a033cf853da070528681b5af557e75070c54c9cd599b2b879915351af
-
-[coin-commit]
-kind = coin-commitment
-version = 1
-key = 0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
-index = 0
-amount = 1000000000000000000
-rule = 0000000000000000000000000000000000000000000000000000000000000000
-type-tag = 0101
-fingerprint = adb657b17abd3d6a22f29a4d9fded4367c0c27f0b167fc5d9eccf33dfbc2ff6c
-commitment = 9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c
-marker = ed3aec8b2a68aa001654023dafa7bf3a187b9f3bb59940fd40389b20beda8a98
-
-[coin-remainder]
-kind = coin-commitment
-version = 1
-key = 0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
-index = 1
-amount = 700000000000000000
-rule = 0000000000000000000000000000000000000000000000000000000000000000
-type-tag = 0101
-fingerprint = d1f0a17727dfbee9609e21f3aeed5fc004d21fd4f48a00af8f954e91f606b620
-commitment = 5530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503
-marker = 19fc0d871f7118ea3ecd015da559a01c7158a82dbd5160dd961680b122a3142e
-
-[data-commit]
-kind = data-commitment
-version = 1
-key = 0005 7669 0013 0642 8065 9560 5300 0376 8759 3842 1040 3453 0406 4124 0510 2397 3211 7841 8613 4399 8027
-index = 0
-content-ascii = Ghost example data
-content-length = 18
-rule = 0000000000000000000000000000000000000000000000000000000000000000
-type-tag = 0102
-content-fingerprint = 7da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c
-fingerprint = b1e44e364ce85a0f886580a51de4af3c5678d39fa9b975a0827067cca7bc4090
-commitment = 5bc2c9ef3f27a49943b7885eb8babf9be3dda232a41894f3ca5a09b0129340c1
-marker = f10b00e4d411afc3a56a0c1d72f49f02b8ea370ffe2430fca37596e82ae38d61
-```
-";
 
 /// One `[name]` block.
 struct Vector {
@@ -186,12 +77,8 @@ fn parse_vectors(section: &str) -> Vec<Vector> {
     out
 }
 
-fn vectors() -> Vec<Vector> {
-    parse_vectors(VECTORS)
-}
-
 /// The vectors of spec 01, section 14.
-fn spec_vectors() -> Vec<Vector> {
+fn vectors() -> Vec<Vector> {
     let (_, section) = SPEC
         .split_once("## 14. Test vectors")
         .expect("spec 01 has a test vector section");
@@ -237,7 +124,7 @@ fn parse(text: &str) -> PhantomKey {
     PhantomKey::parse(text).unwrap_or_else(|e| panic!("{text:?} does not parse: {e}"))
 }
 
-/// The valid keys of the checksum vectors above: the example key, zero, the
+/// The valid keys of the checksum vectors of spec 01: the example key, zero, the
 /// second example key and `2^256 - 1`, each as its digit view.
 const VALID_KEYS: [&str; 4] = [
     "0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812",
@@ -433,25 +320,19 @@ fn derivation_matches_vector_derivation_words() {
 }
 
 #[test]
-fn spec_vector_keys_of_the_retired_digit_formats_are_refused() {
-    // Section 14 of spec 01 keeps twelve- and twenty-four-group keys as fixed
-    // test data; the client refuses every one by its length, before any check.
-    let mut counts = HashSet::new();
-    for v in spec_vectors().iter().filter(|v| v.fields.iter().any(|(f, _)| f == "key")) {
-        let count = digits_of(v.get("key")).len();
-        assert!(count == 48 || count == 96, "{}: {count} digits", v.name);
-        counts.insert(count);
-        assert_eq!(
-            PhantomKey::parse(v.get("key")).err(),
-            Some(KeyError::WrongLength { digits: count }),
-            "{}",
-            v.name
-        );
-    }
-    assert_eq!(counts, HashSet::from([48, 96]));
-    // Every vector of this file is a words key.
+fn spec_vector_keys_are_all_words_keys() {
+    // Every key of spec 01, section 14 is the 84-digit view of a words key;
+    // none is of the retired twelve- or twenty-four-group digit formats.
+    let mut keys = HashSet::new();
     for v in vectors().iter().filter(|v| v.fields.iter().any(|(f, _)| f == "key")) {
         assert_eq!(digits_of(v.get("key")).len(), 84, "{}", v.name);
+        keys.insert(v.get("key").to_string());
+    }
+    for key in VALID_KEYS {
+        assert!(keys.contains(key), "{key} is not a spec 01 vector key");
+    }
+    for name in ["derivation-standard", "derivation-long", "checksum-standard", "checksum-long"] {
+        assert!(!vectors().iter().any(|v| v.name == name), "[{name}] is still in spec 01");
     }
 }
 

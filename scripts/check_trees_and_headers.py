@@ -12,7 +12,8 @@ check_commitment_vectors.py. It checks that:
      fee required, then exactly the two tree roots; that no forbidden field and
      no marker-set root is in it; and that every genesis field is listed once
      with its source and agrees with the genesis vector;
-  5. every tree, page and rollover vector is right;
+  5. every tree, page and rollover vector is right, and the tree vectors over
+     spec 01's commitments hold exactly those of its words-key vectors;
   6. every header vector re-encodes byte for byte with this script's own RLP
      code, every negative vector is re-derived and rejected for the stated
      reason, and the header vectors equal the output of the separately written
@@ -44,6 +45,16 @@ _spec = importlib.util.spec_from_file_location("_check_commitment_vectors",
 _ccv = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_ccv)
 keccak256 = _ccv.keccak256
+
+# Tree vectors whose leaves are the commitments of spec 01 vectors, in order.
+# Those vectors use the words key, the only Phantom Key format, shown as its
+# 21 digit groups.
+SPEC_01_LEAVES = {
+    "coin-tree-two-leaves": ("coin-commit", "coin-remainder"),
+    "coin-page-two-leaves": ("coin-commit", "coin-remainder"),
+    "data-tree-one-leaf": ("data-commit",),
+}
+WORDS_KEY_GROUPS = 21
 
 REQUIRED_SECTIONS = ("Trees and rollover", "Historical roots", "Markers", "Reorganisation",
                      "Wallet tree data", "History availability", "Header encoding",
@@ -427,6 +438,7 @@ class Checker:
         self.check_header_table()
         self.check_genesis_table_shape()
         self.check_tree_vectors()
+        self.check_spec01_leaves()
         self.check_append_vectors()
         self.check_header_vectors()
         self.check_encoder()
@@ -739,6 +751,29 @@ class Checker:
                     self.fail(f"no {kind} vector for the {tree} tree")
         if not any(k == "page" for k, _ in kinds):
             self.fail("no page vector")
+
+    def check_spec01_leaves(self):
+        """The tree vectors over spec 01's commitments hold exactly those
+        commitments, in order, and spec 01 makes them with words keys."""
+        try:
+            spec01 = {v["name"]: v for v in
+                      _ccv.parse_vectors(_ccv.section(self.spec01, "Test vectors"))}
+        except ValueError:
+            self.fail("no test vectors found in spec 01")
+            return
+        blocks = self.blocks()
+        for name, sources in SPEC_01_LEAVES.items():
+            if name not in blocks:
+                self.fail(f"no vector {name}")
+                continue
+            leaves = dict(blocks[name]).get("leaves", "").split()
+            if leaves != [spec01.get(s, {}).get("commitment") for s in sources]:
+                self.fail(f"vector {name}: leaves are not the commitments of spec 01's "
+                          f"{', '.join(sources)}")
+        for source in sorted({s for sources in SPEC_01_LEAVES.values() for s in sources}):
+            digits = re.sub(r"[ -]", "", spec01.get(source, {}).get("key", ""))
+            if len(digits) != 4 * WORDS_KEY_GROUPS:
+                self.fail(f"spec 01 vector {source} is not made with a words key")
 
     def check_page(self, name, v, tag, leaves, z):
         page_leaves = self.params.get("PAGE_LEAVES", 0)
