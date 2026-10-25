@@ -177,6 +177,10 @@ function startPage({ refuse = null } = {}) {
     const emit = () => onChange(state);
     return {
       state,
+      // The smallest Vanish: well under every amount these tests send.
+      async minVanish() {
+        return 10n ** 15n;
+      },
       async vanishStart(amountText) {
         const amount = parseGhost(amountText);
         state.vanish = { stage: "shown", key: KEY, view: "words", digits: null, amount, groups: null, wrong: [] };

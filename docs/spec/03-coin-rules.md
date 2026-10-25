@@ -27,7 +27,7 @@ settled, the check rejects (fails closed) and the point is listed in section 11.
 | Amount binding | The user submits a fingerprint of the commitment's secret parts and pays the value; the node computes the final commitment from the fingerprint, the burned amount and the type tag | Base client plan 7.3 |
 | Hash construction for the binding | Two tagged hashes: the wallet's fingerprint, then the node's commitment over type tag, fingerprint and amount | **Proposed** (section 5) |
 | Amount range | Every amount is an integer number of wei from 0 to 2^96 - 1; a commit amount is at least 1 wei | **Proposed** |
-| Minimum commit amount above 1 wei, cooldown, second commitment | None | **Proposed** (question for the founder) |
+| Minimum commit amount above 1 wei, cooldown, second commitment | None. The protocol sets no minimum; wallets refuse a Vanish under `MIN_VANISH_FEES` times the Summon fee ([spec 07](07-private-transaction.md), section 5, "The smallest Vanish") | **Proposed** (question for the founder) |
 | Order of checks | Cheap and stateless checks first, then state lookups, then the proof, then one atomic state change | **Proposed** order, outline rules |
 | Data type on the coin path | Rejected at the first type check, before any lookup or proof verification | Outline; position **Proposed** |
 | Conservation | `v = out + v' + fee` proven on every reveal | Outline |
@@ -262,9 +262,12 @@ chain, and step 13 is the only step that writes.
    never reaches the mint.
 4. **Chain, version and domain.** The chain identifier, protocol version and
    domain tag are this chain's current values.
-5. **Fee.** The fee equals the chain's formula for this block (base fee plus
-   the fixed private tip). The user does not choose it (outline,
-   "Transactions and fees").
+5. **Fee.** The fee equals the chain's formula (base fee part plus the fixed
+   private tip) for the including block's window or for the window before
+   it, and the cover rule holds for the including block: its base fee times
+   the private transaction's gas is at most the fee
+   ([spec 07](07-private-transaction.md), sections 4 and 5). The user does
+   not choose it (outline, "Transactions and fees").
 6. **Binding digest.** The node computes the binding digest itself, over the
    fields and in the order of [spec 02](02-proof-statements.md), sections 4
    and 7:

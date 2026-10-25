@@ -20,8 +20,10 @@ Python standard library only. It checks that:
      full blocks and under private-reveal load with the cover rule's verdict
      and tip for each block, the lapses (current window, previous window, no
      match, cover rule failed), each boundary case and the two competing
-     reveals; and section 5 has the subsections "The cover rule" and "Fee of
-     the previous window";
+     reveals; section 5 has the subsections "The cover rule", "Fee of the
+     previous window" and "The smallest Vanish", states `MIN_VANISH_FEES = N`
+     with N at least 2, and its worked smallest Vanish is N times the fee of
+     `window-genesis`;
   6. the properties are numbered PT-1 upwards without gaps or repeats, each
      names its check, and every PT-n cited anywhere exists;
   7. the conflicts section names spec 02, spec 03 and spec 04.
@@ -74,7 +76,13 @@ MIN_GAS_LIMIT = 5000
 BLOCK_SECONDS = 30
 
 # The subsections section 5 must have.
-REQUIRED_SUBSECTIONS = ("### The cover rule", "### Fee of the previous window")
+REQUIRED_SUBSECTIONS = ("### The cover rule", "### Fee of the previous window",
+                        "### The smallest Vanish")
+
+# The wallet's smallest Vanish, in Summon fees (section 5, "The smallest
+# Vanish"), and its worked number.
+MIN_VANISH_RE = re.compile(r"^MIN_VANISH_FEES = (\S+)$")
+SMALLEST_VANISH_RE = re.compile(r"the smallest Vanish is ([\d,]+) wei")
 
 REQUIRED_EXAMPLES = {
     "full-reveal": "reveal",
@@ -257,6 +265,7 @@ class Checker:
         self.check_payload()
         self.check_binding()
         self.check_examples()
+        self.check_smallest_vanish()
         self.check_properties()
         self.check_conflicts()
         return self.errors
@@ -461,6 +470,44 @@ class Checker:
         for heading in REQUIRED_SUBSECTIONS:
             if heading not in lines:
                 self.fail(f"section 5 has no subsection '{heading}'")
+
+    def check_smallest_vanish(self):
+        """Section 5 states MIN_VANISH_FEES = N on its own line, N an integer
+        of at least 2, and the subsection's worked number is N times the fee
+        of window-genesis."""
+        lines = self.section("Fee is current") or []
+        found = [MIN_VANISH_RE.match(line.strip()) for line in lines]
+        found = [m.group(1) for m in found if m]
+        if len(found) != 1:
+            self.fail("section 5 needs one line 'MIN_VANISH_FEES = N'")
+            return
+        try:
+            multiple = int(found[0])
+        except ValueError:
+            self.fail(f"MIN_VANISH_FEES is '{found[0]}', not an integer")
+            return
+        if multiple < 2:
+            self.fail(f"MIN_VANISH_FEES is {multiple}; it must be at least 2, so a coin "
+                      f"can still pay a fee that has risen")
+            return
+        start = next((i for i, line in enumerate(lines) if line == "### The smallest Vanish"), None)
+        if start is None:
+            return
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("### ")),
+                   len(lines))
+        body = " ".join(lines[start + 1:end])
+        worked = SMALLEST_VANISH_RE.findall(body)
+        window = self.windows.get("window-genesis")
+        if len(worked) != 1:
+            self.fail("the smallest Vanish subsection needs one worked number "
+                      "'the smallest Vanish is N wei' for MIN_VANISH_FEES")
+            return
+        if window is None:
+            return
+        got, want = int(worked[0].replace(",", "")), multiple * window["fee"]
+        if got != want:
+            self.fail(f"the smallest Vanish is {got} wei, recomputed MIN_VANISH_FEES * fee of "
+                      f"window-genesis = {want}")
 
     def params_ready(self):
         return all(p in self.params for p in PARAMETERS)

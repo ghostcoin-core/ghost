@@ -19,6 +19,7 @@ import "./block-pacer.test.mjs";
 import "./page-layout.test.mjs";
 import "./midnight-violet.test.mjs";
 import "./vanish-screens.test.mjs";
+import "./vanish-minimum.test.mjs";
 import "./summon-screens.test.mjs";
 import "./summon-confirm.test.mjs";
 import "./summon-auto-wait.test.mjs";

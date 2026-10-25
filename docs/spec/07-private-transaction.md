@@ -684,6 +684,38 @@ out a window change; it prefers to be included early in the window, where the
 fee is valid at any load. These are wallet choices; the node checks only
 equality with one of the two fees and the cover rule.
 
+### The smallest Vanish
+
+The protocol takes a Vanish of any amount from 1 wei (spec 03, section 6,
+step 6). A
+coin below the Summon fee can never be summoned: a reveal needs
+`v = out + remainder + fee` with every term at least 0, so a coin with
+`v < fee` has no valid proof (`fee-above-balance`, section 7). The fee also
+moves with the base fee, so a coin just above today's fee can fall below a
+later window's fee and be stranded. A wallet therefore refuses a Vanish
+below a safe multiple of the fee:
+
+```text
+MIN_VANISH_FEES = 4
+smallest Vanish = MIN_VANISH_FEES * fee
+```
+
+`fee` is the Summon fee for the next block, from the tip's header alone: the
+fee of a window whose `b_ref` is the next block's base fee (section 4). Four
+fees leave room for the base fee to rise 12.5% a block, the most it can rise
+in full blocks, for about 12 blocks (1.125^12 is about 4.1) before the coin
+can no longer pay. The same figure is the level below which a wallet warns
+that a partial Summon's remainder, `v - out - fee`, would be too small to
+Summon again; a full Summon, with no remainder, is not warned of.
+
+This is a wallet rule only. It is not a consensus or pool rule, nodes do not
+check it, and it is not a parameter of section 2: a coin below it that a block
+holds is valid.
+
+At `b_ref` 1000000000 (`window-genesis`, section 4) the fee is
+26100495343659410 wei, so the smallest Vanish is 104401981374637640 wei, about
+0.1044 GHOST.
+
 ## 6. Transaction pool
 
 A private transaction has no sender account, so the base client's per-account
@@ -999,8 +1031,9 @@ difference is listed here for the founder's review.
    `version` `0x0001` mean the coin reveal, so step 3 becomes part of
    decoding.
 4. **The fee is not the block's base fee.** Spec 03, section 7, step 5 says the
-   fee is "base fee plus the fixed private tip" for the block. Here the fee is
-   per window (section 4), and the base-fee part burned in a block is
+   fee is "base fee part plus the fixed private tip" for the including block's
+   window or the window before it, under the cover rule, and points here. Here
+   the fee is per window (section 4), and the base-fee part burned in a block is
    `G_PRIV * max(price, beta)` for the block's base fee `beta`, at least
    `G_PRIV` times the block's base fee (section 5, "The cover rule"); the tip
    is the rest of the fee, so it is fixed only while `beta` is at most the

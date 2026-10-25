@@ -45,10 +45,12 @@
 import { concat, fromHex, quantity, toHex, toQuantity } from "./bytes.mjs";
 import {
   CONFIRMATIONS,
+  MIN_VANISH_FEES,
   SETTLE_DEPTH,
   feeForNextBlock,
   feeStillAccepted,
   formatGhost,
+  minVanishFor,
   nextBaseFee,
   parseAddress,
   parseGhost,
@@ -966,8 +968,10 @@ export function createFlow({
   // Block `number` as the endpoint returns it: its fields, its 18-field RLP
   // (spec 05, section 10) and the hash it claims. Nothing here is trusted
   // yet: the worker's chain checks the hash, the difficulty and the seal.
+  // `number` "latest" is the endpoint's tip, whatever its number.
   async function fetchHeader(number) {
-    const raw = await rpc.call("eth_getBlockByNumber", [toQuantity(number), false]);
+    const latest = number === "latest";
+    const raw = await rpc.call("eth_getBlockByNumber", [latest ? "latest" : toQuantity(number), false]);
     if (!raw) throw new Error(`the endpoint has no block ${number}`);
     const { values, rlp } = readHeader(raw);
     const header = {
@@ -980,7 +984,7 @@ export function createFlow({
       coinTreeRoot: values.coinTreeRoot,
       timestamp: values.timestamp,
     };
-    if (header.number !== number) throw new Error(`the endpoint returned block ${header.number} for ${number}`);
+    if (!latest && header.number !== number) throw new Error(`the endpoint returned block ${header.number} for ${number}`);
     return { header, rlp };
   }
 
@@ -1941,6 +1945,7 @@ export function createFlow({
           wait: null,
           tip: null,
           fee: null,
+          smallestCoin: null,
           available: 0n,
         });
         emit();
@@ -1955,6 +1960,9 @@ export function createFlow({
       ? { number: current.number, amount: current.amount, treeIndex: current.treeIndex, position: current.position }
       : null;
     s.fee = fee;
+    // A coin below this could not be summoned again for long at this fee:
+    // the level of the page's warning for a partial Summon's remainder.
+    s.smallestCoin = MIN_VANISH_FEES * fee;
     s.available = current && current.amount > fee ? current.amount - fee : 0n;
     s.tip = scan.chain.tip.number;
     // How many commits in the receipts the page checked are of the coin's
@@ -2158,6 +2166,15 @@ export function createFlow({
         };
         return key;
       });
+    },
+
+    // The smallest Vanish the page sends now (chain.mjs, minVanishFor), from
+    // the endpoint's tip header as the commit send reads it: one header,
+    // unchecked, and no header chain. A wrong base fee there only moves
+    // this advice; nothing is sent on it.
+    async minVanish() {
+      const { header } = await fetchHeader("latest");
+      return minVanishFor(header);
     },
 
     // Vanish: the new key shown as its words or as its digit view.

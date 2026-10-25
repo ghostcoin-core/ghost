@@ -19,6 +19,12 @@ export const SETTLE_DEPTH = 2;
 // no block on top is waited for. Spent markers are read at the same depth,
 // the tip itself, so a key shows claimed once a block holds its spend.
 export const CONFIRMATIONS = 1;
+// The smallest Vanish the app sends, in Summon fees (spec 07, section 5,
+// "The smallest Vanish"): a wallet rule, the protocol takes 1 wei. A coin
+// below the fee has no valid proof, and the base fee can rise before the
+// coin is summoned; four fees leave about 12 blocks of 12.5 percent rises.
+// It is also the level under which a partial Summon's remainder is warned of.
+export const MIN_VANISH_FEES = 4n;
 // Base units in one GHOST.
 export const DECIMALS = 18;
 const ONE = 10n ** BigInt(DECIMALS);
@@ -45,6 +51,13 @@ export function feeForPrice(price) {
   const basePart = G_PRIV * BigInt(price);
   const tip = (basePart + TIP_DIVISOR - 1n) / TIP_DIVISOR;
   return { basePart, tip, fee: basePart + tip };
+}
+
+// The smallest Vanish for the next block after `tipHeader` ({ baseFee,
+// gasUsed, gasLimit }): MIN_VANISH_FEES times the fee of a window whose
+// first block is that next block.
+export function minVanishFor(tipHeader) {
+  return MIN_VANISH_FEES * feeForPrice(windowPrice(nextBaseFee(tipHeader))).fee;
 }
 
 // The base fee of a child of `parent` ({ baseFee, gasUsed, gasLimit }).

@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { formatGhost, parseAddress, parseGhost } from "../src/chain.mjs";
+import { MIN_VANISH_FEES, formatGhost, parseAddress, parseGhost } from "../src/chain.mjs";
 import { WALLET_APPROVAL } from "../src/flow.mjs";
 
 // A typed key as the flow controller's normalKey gives it to the module: any
@@ -206,6 +206,8 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, popup = 
       s.status = "unclaimed";
       s.current = { number: 1n, amount: held, treeIndex: 0, position: 3 };
       s.fee = FEE;
+      // As the flow: MIN_VANISH_FEES network fees.
+      s.smallestCoin = MIN_VANISH_FEES * FEE;
       s.available = held > FEE ? held - FEE : 0n;
       s.wait = null;
     };
@@ -637,6 +639,40 @@ test("an amount that does not parse or is more than the key holds is flagged, no
   );
   assert.equal(page.log.reveals.length, 0, "nothing is sent");
   assert.deepEqual(page.screens(), ["form"]);
+});
+
+test("a partial Summon warns when the remainder is below the minimum", async () => {
+  const SMALL_REST =
+    "What stays in this key is too small to Summon again: its network fee could cost all of it. Summon a little less, or Max.";
+  const page = startPage();
+  await paste(page, KEY);
+  const typed = (amount) => {
+    page.$("summon-amount").value = amount;
+    page.$("summon-amount").fire("input");
+    return page.$("summon-amount-warning").textContent;
+  };
+  // 2 GHOST in the key, a fee of 0.0001: 1.9997 leaves 0.0002, two fees,
+  // under the four of MIN_VANISH_FEES.
+  assert.equal(typed("1.9997"), SMALL_REST);
+  // One wei under four fees still warns; four fees exactly do not.
+  assert.equal(typed(formatGhost(2n * GHOST - FEE - MIN_VANISH_FEES * FEE + 1n)), SMALL_REST);
+  assert.equal(typed("1.9995"), "");
+  // A large remainder, and a full Summon (Max: nothing remains), show none.
+  assert.equal(typed("1"), "");
+  page.$("summon-max").fire("click");
+  assert.equal(page.$("summon-amount").value, "1.9999");
+  assert.equal(page.$("summon-amount-warning").textContent, "");
+
+  // The confirm screen shows it among its warnings, and it never blocks.
+  page.$("summon-amount").value = "1.9997";
+  page.$("summon-form").fire("submit");
+  await settle();
+  assert.deepEqual(page.screens(), ["confirm"]);
+  assert.equal(page.$("summon-confirm-warning").textContent, SMALL_REST);
+  page.$("summon-confirm-button").fire("click");
+  await settle(8);
+  assert.deepEqual(page.log.reveals, [{ amount: "1.9997", recipient: FRESH }]);
+  assert.deepEqual(page.screens(), ["done"]);
 });
 
 test("a failed summon is one fixed plain line, never the exception's text", async () => {

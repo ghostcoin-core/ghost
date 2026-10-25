@@ -225,6 +225,33 @@ class CheckerTest(unittest.TestCase):
                 self.assert_gap(self.damaged(heading + "\n", "### Elsewhere\n"),
                                 f"no subsection '{heading}'")
 
+    def test_smallest_vanish_subsection_required(self):
+        self.assertIn("### The smallest Vanish", checker.REQUIRED_SUBSECTIONS)
+        self.assert_gap(self.damaged("### The smallest Vanish\n", "### Elsewhere\n"),
+                        "no subsection '### The smallest Vanish'")
+        # Moved out of section 5, it is missing there too.
+        text = self.damaged("### The smallest Vanish\n", "## 6. Smallest Vanish\n")
+        self.assert_gap(text, "no subsection '### The smallest Vanish'")
+
+    def test_smallest_vanish_multiple_wrong(self):
+        for line in ("MIN_VANISH_FEES = 1\n", "MIN_VANISH_FEES = 0\n", "MIN_VANISH_FEES = four\n", ""):
+            with self.subTest(line=line):
+                self.assert_gap(self.damaged("MIN_VANISH_FEES = 4\n", line), "MIN_VANISH_FEES")
+        # A worked number that is not MIN_VANISH_FEES times the fee of
+        # window-genesis, one fee more or the number of another multiple.
+        for number in ("130502476718297050", "104401981374637641"):
+            with self.subTest(number=number):
+                text = self.damaged("the smallest Vanish is 104401981374637640 wei",
+                                    f"the smallest Vanish is {number} wei")
+                self.assert_gap(text, "recomputed MIN_VANISH_FEES * fee of window-genesis")
+        # A changed multiple with the worked number left as it was.
+        text = self.damaged("MIN_VANISH_FEES = 4\n", "MIN_VANISH_FEES = 5\n")
+        self.assert_gap(text, "recomputed MIN_VANISH_FEES * fee of window-genesis = 130502476718297050")
+        # No worked number at all.
+        text = self.damaged("the smallest Vanish is 104401981374637640 wei", "the smallest Vanish is about")
+        self.assert_gap(text, "worked number 'the smallest Vanish is N wei' for MIN_VANISH_FEES")
+        self.assertEqual(4 * 26_100_495_343_659_410, 104_401_981_374_637_640)
+
     def growth_line(self, name, key):
         start = self.text.index(f"[{name}]")
         line_start = self.text.index(f"{key} = ", start)
