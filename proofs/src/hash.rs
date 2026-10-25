@@ -1,6 +1,6 @@
 //! Keccak-256 with the original padding, the tags of spec 01, section 4, and
-//! the commitment, marker and tree hashes built from them: version 1 without a
-//! salt, and the salted version 2 (the `_v2` functions) of spec 01, section 3.
+//! the commitment, marker and tree hashes built from them: the salted format
+//! version 2 (the `_v2` functions) of spec 01, section 3, the only one.
 //!
 //! `K(tag, x1, x2, ...)` is Keccak-256 over `tagbytes(tag) || x1 || x2 || ...`,
 //! where `tagbytes` is one length byte followed by the tag's ASCII bytes. It is
@@ -17,11 +17,6 @@ pub const RATE_BYTES: usize = 136;
 /// Depth of both trees: 2^32 leaves, 32 sibling hashes per path.
 pub const TREE_DEPTH: usize = 32;
 
-/// Type tag of a coin commitment (format version 1, type 1).
-pub const COIN: [u8; 2] = [0x01, 0x01];
-/// Type tag of a data commitment (format version 1, type 2).
-pub const DATA: [u8; 2] = [0x01, 0x02];
-
 /// Type tag of a salted coin commitment (format version 2, type 1).
 pub const COIN_V2: [u8; 2] = [0x02, 0x01];
 /// Type tag of a salted data commitment (format version 2, type 2).
@@ -33,12 +28,8 @@ pub const SALT_BYTES: usize = 16;
 /// The empty rule, the only rule version 1 accepts.
 pub const EMPTY_RULE: [u8; 32] = [0; 32];
 
-pub const TAG_COIN_FINGERPRINT: &str = "ghost/coin-fingerprint/v1";
 pub const TAG_COIN_COMMITMENT: &str = "ghost/coin-commitment/v1";
-pub const TAG_DATA_FINGERPRINT: &str = "ghost/data-fingerprint/v1";
 pub const TAG_DATA_COMMITMENT: &str = "ghost/data-commitment/v1";
-pub const TAG_COIN_MARKER: &str = "ghost/coin-marker/v1";
-pub const TAG_DATA_MARKER: &str = "ghost/data-marker/v1";
 pub const TAG_COIN_FINGERPRINT_V2: &str = "ghost/coin-fingerprint/v2";
 pub const TAG_DATA_FINGERPRINT_V2: &str = "ghost/data-fingerprint/v2";
 pub const TAG_COIN_MARKER_V2: &str = "ghost/coin-marker/v2";
@@ -218,42 +209,6 @@ pub fn tagged(tag: &str, parts: &[&[u8]]) -> [u8; 32] {
     keccak256(&msg)
 }
 
-/// `F = K("ghost/coin-fingerprint/v1", s, r, b, COIN, 0^32, rule)`.
-pub fn coin_fingerprint(s: &[u8; 32], r: &[u8; 32], b: &[u8; 32], rule: &[u8; 32]) -> [u8; 32] {
-    tagged(TAG_COIN_FINGERPRINT, &[s, r, b, &COIN, &[0u8; 32], rule])
-}
-
-/// `C = K("ghost/coin-commitment/v1", COIN, F, v)`, `v` an amount word.
-pub fn coin_commitment(fingerprint: &[u8; 32], v: &[u8; 32]) -> [u8; 32] {
-    tagged(TAG_COIN_COMMITMENT, &[&COIN, fingerprint, v])
-}
-
-/// `F_d = K("ghost/data-fingerprint/v1", s, r, b, DATA, cf, rule)`.
-pub fn data_fingerprint(
-    s: &[u8; 32],
-    r: &[u8; 32],
-    b: &[u8; 32],
-    cf: &[u8; 32],
-    rule: &[u8; 32],
-) -> [u8; 32] {
-    tagged(TAG_DATA_FINGERPRINT, &[s, r, b, &DATA, cf, rule])
-}
-
-/// `C = K("ghost/data-commitment/v1", DATA, F_d)`.
-pub fn data_commitment(fingerprint: &[u8; 32]) -> [u8; 32] {
-    tagged(TAG_DATA_COMMITMENT, &[&DATA, fingerprint])
-}
-
-/// `m = K("ghost/coin-marker/v1", r, b)`.
-pub fn coin_marker(r: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
-    tagged(TAG_COIN_MARKER, &[r, b])
-}
-
-/// `m = K("ghost/data-marker/v1", r, b)`.
-pub fn data_marker(r: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
-    tagged(TAG_DATA_MARKER, &[r, b])
-}
-
 /// `F = K("ghost/coin-fingerprint/v2", s, r, b, salt, COIN_V2, 0^32, rule)`.
 pub fn coin_fingerprint_v2(
     s: &[u8; 32],
@@ -353,10 +308,8 @@ mod tests {
 
     #[test]
     fn tag_lengths_give_the_spec_input_sizes() {
-        assert_eq!(tag_bytes(TAG_COIN_FINGERPRINT).len() + 32 * 5 + 2, 188);
         assert_eq!(tag_bytes(TAG_COIN_COMMITMENT).len() + 2 + 64, 91);
         assert_eq!(tag_bytes(TAG_DATA_COMMITMENT).len() + 2 + 32, 59);
-        assert_eq!(tag_bytes(TAG_COIN_MARKER).len() + 64, 85);
         assert_eq!(tag_bytes(TAG_COIN_TREE_NODE).len() + 1 + 64, 89);
         assert_eq!(tag_bytes(TAG_EMPTY_LEAF).len(), 20);
         assert_eq!(tag_bytes(TAG_COIN_FINGERPRINT_V2).len() + 32 * 5 + SALT_BYTES + 2, 204);

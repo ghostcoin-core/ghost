@@ -782,8 +782,9 @@ vectors here are its output, copied unchanged.
 
 ### Tree vectors
 
-The leaves are the commitments of spec 01's vectors `coin-commit`,
-`coin-remainder` and `data-commit`, made with its words example keys. The two
+The leaves are the salted (format version 2) commitments of spec 01's
+vectors `coin-commit-salted`, `coin-remainder-salted` and
+`data-commit-salted`, made with its words example keys. The two
 `header-example` trees hold fixed example leaves instead: their roots are the
 tree roots that the header vectors below carry, as written by the separate
 encoder, so those header vectors stay unchanged. Their leaves are opaque
@@ -804,23 +805,23 @@ root = 3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03
 [coin-tree-two-leaves]
 kind = tree-root
 tree = coin
-leaves = 9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c 5530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503
-root = 0b9353db9e2525edae04a2cba333219af97ad85754cee67e7305bcea5a4601a4
+leaves = 1525d1f6caa2f9314988542a3dcb7ab5a76a9ba5dd3fef97a1ecf72ddeb516bc a1f0774fc85bd02f9661ce63b14484abc808950848b3797a980c201a2946af72
+root = f2a8cb20f27775cb0888dfe39577a9fab8a2630f2b8406b07e281e142f317a16
 
 [data-tree-one-leaf]
 kind = tree-root
 tree = data
-leaves = 5bc2c9ef3f27a49943b7885eb8babf9be3dda232a41894f3ca5a09b0129340c1
-root = d754c9e4e70031e9902edfaa8065469577da43c8c0300cc342e169531ba2a6f7
+leaves = 523c415b17bb5c6b2270b71193a2737273d1be5aa519cd253155323aaad97e3f
+root = caa746ecf6160767cdf1cdffb8c1aa5628cce4e6037cac1b90e5978ae65cc5e8
 
 [coin-page-two-leaves]
 kind = page
 tree = coin
 page = 0
-leaves = 9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c 5530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503
-page-root = 69e1fa584cbca9202819f71a5c6f1f508a10b9c6719241f1f83a0c5aad52ed0e
+leaves = 1525d1f6caa2f9314988542a3dcb7ab5a76a9ba5dd3fef97a1ecf72ddeb516bc a1f0774fc85bd02f9661ce63b14484abc808950848b3797a980c201a2946af72
+page-root = 800197aa295fe821dd1e103f68f100b61067fb81370d0611a09b33e78aff2f93
 empty-page-root = b50ae40977b91a1a10c7965cd40294eac6f63cbc40b5e57b9d4aa215956142d4
-root = 0b9353db9e2525edae04a2cba333219af97ad85754cee67e7305bcea5a4601a4
+root = f2a8cb20f27775cb0888dfe39577a9fab8a2630f2b8406b07e281e142f317a16
 
 [coin-tree-header-example]
 kind = tree-root

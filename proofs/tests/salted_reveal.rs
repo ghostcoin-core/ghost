@@ -4,8 +4,7 @@
 //! The salt is a private witness: a proof made with the commitment's salt
 //! verifies, one made with another salt does not, and neither the public
 //! fields, the binding digest nor the proof bytes hold a salt. A version 1
-//! commitment still opens under its own statement, and a proof of one format
-//! never verifies as the other.
+//! commitment, made without a salt, does not open at all.
 //!
 //! Every negative test starts from the honest proof, asserted to verify, and
 //! changes one thing. Proving runs one test at a time to bound memory.
@@ -93,6 +92,19 @@ fn salted_coin() -> (SaltedCoinOpening, SaltedCoinRemainder, RevealRequest) {
     (opening, remainder, request)
 }
 
+/// The version 1 type tag of a coin, which no statement of this crate knows.
+const COIN_V1: [u8; 2] = [1, 1];
+
+/// A version 1 coin commitment of spec 01, made without a salt, computed here
+/// from its tags since the crate no longer has the functions.
+fn version_1_coin_commitment(opening: &SaltedCoinOpening) -> [u8; 32] {
+    let f = tagged(
+        "ghost/coin-fingerprint/v1",
+        &[&opening.s, &opening.r, &opening.b, &COIN_V1, &[0; 32], &EMPTY_RULE],
+    );
+    tagged("ghost/coin-commitment/v1", &[&COIN_V1, &f, &opening.v])
+}
+
 /// The honest salted reveal, made once and asserted to verify.
 fn honest() -> &'static (CoinReveal, Proof) {
     static HONEST: OnceLock<(CoinReveal, Proof)> = OnceLock::new();
@@ -128,12 +140,10 @@ fn a_salted_reveal_verifies_with_the_salt() {
     assert_eq!(tx.root, request.root);
     // The marker and the remainder are the salted ones of spec 01.
     assert_eq!(tx.marker, coin_marker_v2(&opening.r, &opening.b, &opening.salt));
-    assert_ne!(tx.marker, coin_marker(&opening.r, &opening.b));
+    assert_ne!(tx.marker, tagged("ghost/coin-marker/v1", &[&opening.r, &opening.b]));
     let f = coin_fingerprint_v2(&remainder.s, &remainder.r, &remainder.b, &remainder.salt, &EMPTY_RULE);
     assert_eq!(tx.remainder, coin_commitment_v2(&f, &remainder.v));
     assert!(proof.as_bytes().len() <= PROOF_FIELD_BYTES);
-    // The binding holds the version 2 type tag, not version 1's.
-    assert_ne!(salted_coin_reveal_binding(&params(), tx), coin_reveal_binding(&params(), tx));
 }
 
 #[test]
@@ -220,44 +230,43 @@ fn the_public_values_and_the_proof_hold_no_salt() {
     assert!(holds(&[&[0u8; 5][..], &INPUT_SALT, &[1; 3]].concat(), &INPUT_SALT));
 }
 
-/// A proof of one format never verifies as the other, and a version 1
-/// commitment still opens under its own statement.
+/// A version 1 coin commitment, made without a salt, sits in the coin tree.
+/// The salted prover refuses to open it with any salt, and a lying prover's
+/// proof of a reveal under that root, with the version 1 marker, does not
+/// verify.
 #[test]
-fn the_formats_do_not_mix() {
+fn a_version_1_leaf_does_not_open() {
     let _one = one_at_a_time();
-    let (tx, proof) = honest();
-    assert_eq!(verify_coin_reveal(&params(), tx, proof), Err(ProofError::Rejected));
-
-    let (salted, salted_remainder, _) = salted_coin();
-    let opening = CoinOpening {
-        s: salted.s,
-        r: salted.r,
-        b: salted.b,
-        v: salted.v,
-        position: salted.position,
-        path: salted.path,
-    };
-    let remainder = CoinRemainder {
-        s: salted_remainder.s,
-        r: salted_remainder.r,
-        b: salted_remainder.b,
-        v: salted_remainder.v,
-    };
-    let leaf = coin_commitment(&coin_fingerprint(&opening.s, &opening.r, &opening.b, &EMPTY_RULE), &opening.v);
+    let (opening, remainder, honest_request) = salted_coin();
+    let leaf = version_1_coin_commitment(&opening);
+    let salted_f = coin_fingerprint_v2(&opening.s, &opening.r, &opening.b, &opening.salt, &EMPTY_RULE);
+    assert_ne!(leaf, coin_commitment_v2(&salted_f, &opening.v));
     let request = RevealRequest {
         root: merkle_root(Tree::Coin, &leaf, opening.position, &opening.path),
-        ..salted_coin().2
+        ..honest_request
     };
-    let (v1_tx, v1_proof) = prove_coin_reveal(&params(), &opening, &remainder, &request, zk(5)).expect("version 1");
-    assert_eq!(verify_coin_reveal(&params(), &v1_tx, &v1_proof), Ok(()));
-    assert_eq!(verify_salted_coin_reveal(&params(), &v1_tx, &v1_proof), Err(ProofError::Rejected));
-    // The salted prover does not open the version 1 leaf with any salt.
-    let refused = prove_salted_coin_reveal(&params(), &salted, &salted_remainder, &request, zk(6));
-    assert_eq!(refused.err(), Some(ProofError::NotInTree));
+    for salt in [opening.salt, [0; SALT_BYTES]] {
+        let attempt = SaltedCoinOpening { salt, ..opening };
+        let refused = prove_salted_coin_reveal(&params(), &attempt, &remainder, &request, zk(5));
+        assert_eq!(refused.err(), Some(ProofError::NotInTree), "salt {salt:?}");
+    }
+
+    let f = coin_fingerprint_v2(&remainder.s, &remainder.r, &remainder.b, &remainder.salt, &EMPTY_RULE);
+    let claimed = CoinReveal {
+        root: request.root,
+        marker: tagged("ghost/coin-marker/v1", &[&opening.r, &opening.b]),
+        remainder: coin_commitment_v2(&f, &remainder.v),
+        remainder_note: request.remainder_note,
+        recipient: request.recipient,
+        out: request.out,
+        fee: request.fee,
+        rule: request.rule,
+    };
+    lying_proof_fails(&claimed, || prove_salted_coin_reveal_claiming(&params(), &opening, &remainder, &claimed, zk(6)));
 }
 
-/// The salted statement is the widest: 16 carried salt columns over the
-/// version 1 reveal, inside the budget, with the same height.
+/// The salted statement is the widest: the 3,808 columns of a reveal without
+/// a salt and 16 carried salt columns, inside the budget.
 #[test]
 fn the_salt_costs_sixteen_columns_within_the_budget() {
     let config = shipped_configuration().expect("the shipped configuration builds");
@@ -269,10 +278,9 @@ fn the_salt_costs_sixteen_columns_within_the_budget() {
             .unwrap_or_else(|| panic!("{statement:?} is not in the report"))
             .1
     };
-    let (v1, v2) = (trace(Statement::CoinReveal), trace(Statement::SaltedCoinReveal));
-    assert_eq!(v2.trace_width, v1.trace_width + SALT_BYTES);
-    assert_eq!(v1.trace_height, v2.trace_height);
-    assert_eq!((v1.trace_width, v2.trace_width), (3808, 3824));
+    let v2 = trace(Statement::SaltedCoinReveal);
+    assert_eq!(v2.trace_width, 3808 + SALT_BYTES);
+    assert_eq!(v2.trace_width, 3824);
     assert!(v2.trace_width <= MAX_TRACE_WIDTH && v2.trace_height <= MAX_TRACE_HEIGHT);
     assert!(proof_length_bound(v2.trace_height, v2.trace_width) <= PROOF_FIELD_BYTES);
     assert!(v2.conjectured_bits_half_grinding >= TARGET_CONJECTURED_BITS, "{v2:?}");

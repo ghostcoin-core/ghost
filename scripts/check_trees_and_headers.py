@@ -46,13 +46,13 @@ _ccv = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_ccv)
 keccak256 = _ccv.keccak256
 
-# Tree vectors whose leaves are the commitments of spec 01 vectors, in order.
-# Those vectors use the words key, the only Phantom Key format, shown as its
-# 21 digit groups.
+# Tree vectors whose leaves are the commitments of spec 01's salted (format
+# version 2) vectors, in order. Those vectors use the words key, the only
+# Phantom Key format, shown as its 21 digit groups.
 SPEC_01_LEAVES = {
-    "coin-tree-two-leaves": ("coin-commit", "coin-remainder"),
-    "coin-page-two-leaves": ("coin-commit", "coin-remainder"),
-    "data-tree-one-leaf": ("data-commit",),
+    "coin-tree-two-leaves": ("coin-commit-salted", "coin-remainder-salted"),
+    "coin-page-two-leaves": ("coin-commit-salted", "coin-remainder-salted"),
+    "data-tree-one-leaf": ("data-commit-salted",),
 }
 WORDS_KEY_GROUPS = 21
 

@@ -22,22 +22,18 @@
 //! [`verify_hold`] rejects every proof of holding with
 //! [`ProofError::HoldUnsettled`].
 //!
-//! **Not settled: holding of coins** (item 3). A context with `COIN` is
+//! **Not settled: holding of coins** (item 3). A context with `COIN_V2` is
 //! rejected by [`HoldContext::check`], by [`hold_binding`] and by the test-only
 //! prover and verifier.
 //!
-//! There is one statement per data commitment format (spec 01, section 10),
-//! with the same public fields and binding layout, chosen by the context's
-//! type: `DATA` for a version 1 commitment ([`HoldOpening`]), `DATA_V2` for
-//! a salted one ([`SaltedHoldOpening`]), whose salt is a private witness.
+//! The statement opens a salted (version 2) data commitment
+//! ([`SaltedHoldOpening`]), whose salt is a private witness; the context's
+//! type must be `DATA_V2`. It is built and checked only by functions compiled
+//! under the `unsettled-points-test` feature, for tests. It settles nothing,
+//! and the public verifier rejects regardless of the feature.
 //!
-//! The statements are built and checked only by functions compiled under the
-//! `unsettled-points-test` feature, for tests. They settle nothing, and the
-//! public verifier rejects regardless of the feature.
-//!
-//! The hashes, in trace order (38 permutations in both formats). `DATA` is
-//! the context's type tag, and `salt` is present only in version 2, with the
-//! `v2` fingerprint and marker tags:
+//! The hashes, in trace order (38 permutations). `DATA` is the type tag
+//! `0x02 0x02`, with the `v2` fingerprint and marker tags:
 //!
 //! ```text
 //! F_d     K(data-fingerprint, s, r, b, salt, DATA, cf, rule)  2 blocks, cf public, rule private
@@ -52,17 +48,16 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::binding::{Binding, ChainParams, FieldWriter, PURPOSE_HOLD, STATEMENT_HOLD, STATEMENT_VERSION_1, digest};
-use crate::data::{DataFormat, DataSecrets, RuleSource, data_marker_hash, push_data_opening};
-use crate::hash::{COIN, DATA, DATA_V2, SALT_BYTES, TAG_HOLD_BINDING, TREE_DEPTH};
+use crate::data::{CARRIED, DataSecrets, RuleSource, data_marker_hash, push_data_opening};
+use crate::hash::{COIN_V2, DATA_V2, SALT_BYTES, TAG_HOLD_BINDING, TREE_DEPTH};
 use crate::schedule::{HashBuilder, Schedule, ScheduleBuilder};
-use crate::stark::Statement;
 use crate::{Proof, ProofError};
 
 /// What a verifier chose for one proof of holding, and the type proven.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HoldContext {
-    /// The commitment type: `DATA`, or `DATA_V2` for a salted data commitment
-    /// (`COIN` is not settled).
+    /// The commitment type: `DATA_V2`, a salted data commitment (`COIN_V2`
+    /// is not settled).
     pub type_tag: [u8; 2],
     /// The shared epoch root of the tree of the type, from a trusted header.
     pub root: [u8; 32],
@@ -78,29 +73,15 @@ pub struct HoldContext {
 }
 
 impl HoldContext {
-    /// Fail closed on the type: an unknown type is rejected, and so is `COIN`
-    /// until holding of coins is settled.
+    /// Fail closed on the type: `DATA_V2` is accepted, `COIN_V2` is rejected
+    /// until holding of coins is settled, and every other type, the version
+    /// 1 tags `0x01 0x01` and `0x01 0x02` included, is unknown.
     pub fn check(&self) -> Result<(), ProofError> {
         match self.type_tag {
-            DATA | DATA_V2 => Ok(()),
-            COIN => Err(ProofError::HoldCoinUnsettled),
+            DATA_V2 => Ok(()),
+            COIN_V2 => Err(ProofError::HoldCoinUnsettled),
             _ => Err(ProofError::UnknownType),
         }
-    }
-
-    /// The data commitment format the type names, after [`Self::check`].
-    #[cfg_attr(not(feature = "unsettled-points-test"), allow(dead_code))]
-    fn format(&self) -> Result<DataFormat, ProofError> {
-        self.check()?;
-        DataFormat::of(self.type_tag).ok_or(ProofError::UnknownType)
-    }
-}
-
-#[cfg_attr(not(feature = "unsettled-points-test"), allow(dead_code))]
-const fn statement(format: DataFormat) -> Statement {
-    match format {
-        DataFormat::V1 => Statement::Hold,
-        DataFormat::V2 => Statement::SaltedHold,
     }
 }
 
@@ -129,19 +110,6 @@ fn public_values(params: &ChainParams, ctx: &HoldContext) -> Result<Vec<u8>, Pro
     Ok(public)
 }
 
-/// The version 1 data commitment whose holding is proven, made without a
-/// salt. Secrets: no `Debug`, no serialization.
-pub struct HoldOpening {
-    pub s: [u8; 32],
-    pub r: [u8; 32],
-    pub b: [u8; 32],
-    pub cf: [u8; 32],
-    /// The commitment's rule, a private input of S3.
-    pub rule: [u8; 32],
-    pub position: u32,
-    pub path: [[u8; 32]; TREE_DEPTH],
-}
-
 /// The salted (version 2) data commitment whose holding is proven. Secrets:
 /// no `Debug`, no serialization.
 pub struct SaltedHoldOpening {
@@ -158,22 +126,6 @@ pub struct SaltedHoldOpening {
     pub path: [[u8; 32]; TREE_DEPTH],
 }
 
-impl HoldOpening {
-    #[cfg_attr(not(feature = "unsettled-points-test"), allow(dead_code))]
-    fn secrets(&self) -> DataSecrets<'_> {
-        DataSecrets {
-            s: &self.s,
-            r: &self.r,
-            b: &self.b,
-            salt: None,
-            cf: &self.cf,
-            rule: Some(&self.rule),
-            position: self.position,
-            path: &self.path,
-        }
-    }
-}
-
 impl SaltedHoldOpening {
     #[cfg_attr(not(feature = "unsettled-points-test"), allow(dead_code))]
     fn secrets(&self) -> DataSecrets<'_> {
@@ -181,7 +133,7 @@ impl SaltedHoldOpening {
             s: &self.s,
             r: &self.r,
             b: &self.b,
-            salt: Some(&self.salt),
+            salt: &self.salt,
             cf: &self.cf,
             rule: Some(&self.rule),
             position: self.position,
@@ -190,32 +142,30 @@ impl SaltedHoldOpening {
     }
 }
 
-/// The schedule of S3 for a data format and, with a witness of that format,
-/// the free bytes and direction bits.
-fn schedule_with(format: DataFormat, w: Option<&DataSecrets<'_>>) -> (Schedule, Vec<Vec<u8>>, Vec<bool>) {
+/// The schedule of S3 and, with a witness, the free bytes and direction bits.
+fn schedule_with(w: Option<&DataSecrets<'_>>) -> (Schedule, Vec<Vec<u8>>, Vec<bool>) {
     let binding = Binding::Hold;
     let off = |name: &str| binding.offset(name);
     let fields_len = binding.fields_len();
-    let type_tag = format.type_tag();
     let mut sb = ScheduleBuilder::new();
-    push_data_opening(&mut sb, format, w, RuleSource::Private, off("cf"), off("root"));
+    push_data_opening(&mut sb, w, RuleSource::Private, off("cf"), off("root"));
     // Constraint 3: the marker of the opened commitment, kept private. With
     // constraint 4 not implemented, nothing reads it yet.
-    sb.push(data_marker_hash(format));
+    sb.push(data_marker_hash());
     sb.push(HashBuilder::new(TAG_HOLD_BINDING).public(0, fields_len).output(fields_len));
     let consts = vec![
         (off("statement"), STATEMENT_HOLD),
         (off("statement_version"), STATEMENT_VERSION_1),
-        (off("type"), type_tag[0]),
-        (off("type") + 1, type_tag[1]),
+        (off("type"), DATA_V2[0]),
+        (off("type") + 1, DATA_V2[1]),
         (off("purpose"), PURPOSE_HOLD),
     ];
-    sb.finish(fields_len + 32, format.carried(), None, consts)
+    sb.finish(fields_len + 32, CARRIED, None, consts)
 }
 
-/// The schedule of S3 for a data format, without any witness.
-pub(crate) fn schedule(format: DataFormat) -> Schedule {
-    schedule_with(format, None).0
+/// The schedule of S3, without any witness.
+pub(crate) fn schedule() -> Schedule {
+    schedule_with(None).0
 }
 
 /// The shipped verifier of a proof of holding. The spent-marker-set
@@ -227,8 +177,7 @@ pub fn verify_hold(params: &ChainParams, ctx: &HoldContext, proof: &Proof) -> Re
 }
 
 /// The proof for whatever the witness and the context give, without the
-/// tree check. Refuses only a context [`HoldContext::check`] rejects and a
-/// witness whose format is not the context's type.
+/// tree check. Refuses only a context [`HoldContext::check`] rejects.
 #[cfg(feature = "unsettled-points-test")]
 fn prove_unchecked(
     params: &ChainParams,
@@ -239,61 +188,22 @@ fn prove_unchecked(
     use crate::schedule::Assignment;
 
     let public = public_values(params, ctx)?;
-    let format = ctx.format()?;
-    if w.format() != format {
-        return Err(ProofError::WrongFormat);
-    }
-    let (_, free, dirs) = schedule_with(format, Some(w));
+    let (_, free, dirs) = schedule_with(Some(w));
     let assignment = Assignment {
         public,
         carried: w.carried_values(),
         free,
         dirs,
     };
-    crate::stark::prove(statement(format), &assignment, zk_randomness).map(Proof)
-}
-
-#[cfg(feature = "unsettled-points-test")]
-fn prove(
-    params: &ChainParams,
-    w: &DataSecrets<'_>,
-    ctx: &HoldContext,
-    zk_randomness: [u8; 32],
-) -> Result<Proof, ProofError> {
-    use crate::hash::{Tree, merkle_root};
-
-    if w.format() != ctx.format()? {
-        return Err(ProofError::WrongFormat);
-    }
-    if *w.cf != ctx.cf {
-        return Err(ProofError::WrongContentFingerprint);
-    }
-    let rule = w.rule.expect("a private rule");
-    if merkle_root(Tree::Data, &w.commitment(rule), w.position, w.path) != ctx.root {
-        return Err(ProofError::NotInTree);
-    }
-    prove_unchecked(params, w, ctx, zk_randomness)
-}
-
-/// Prove holding of a version 1 commitment, for tests only. Rejects what
-/// [`HoldContext::check`] rejects, a context of another type than `DATA`, a
-/// context whose `cf` is not the opening's, and a commitment that is not the
-/// leaf at `position` under `root`.
-#[cfg(feature = "unsettled-points-test")]
-pub fn prove_hold(
-    params: &ChainParams,
-    opening: &HoldOpening,
-    ctx: &HoldContext,
-    zk_randomness: [u8; 32],
-) -> Result<Proof, ProofError> {
-    prove(params, &opening.secrets(), ctx, zk_randomness)
+    crate::stark::prove(crate::stark::Statement::SaltedHold, &assignment, zk_randomness).map(Proof)
 }
 
 /// Prove holding of a salted (version 2) commitment, for tests only. The
 /// context's type must be `DATA_V2`. The salt is a private witness: neither
-/// the public values nor the proof hold it. Refuses what [`prove_hold`]
-/// refuses; a wrong salt makes another commitment, which is not the leaf
-/// under `root`.
+/// the public values nor the proof hold it. Rejects what
+/// [`HoldContext::check`] rejects, a context whose `cf` is not the opening's,
+/// and a commitment that is not the leaf at `position` under `root`; a wrong
+/// salt makes another commitment, which is not the leaf under `root`.
 #[cfg(feature = "unsettled-points-test")]
 pub fn prove_salted_hold(
     params: &ChainParams,
@@ -301,7 +211,18 @@ pub fn prove_salted_hold(
     ctx: &HoldContext,
     zk_randomness: [u8; 32],
 ) -> Result<Proof, ProofError> {
-    prove(params, &opening.secrets(), ctx, zk_randomness)
+    use crate::hash::{Tree, merkle_root};
+
+    let w = opening.secrets();
+    ctx.check()?;
+    if *w.cf != ctx.cf {
+        return Err(ProofError::WrongContentFingerprint);
+    }
+    let rule = w.rule.expect("a private rule");
+    if merkle_root(Tree::Data, &w.commitment(rule), w.position, w.path) != ctx.root {
+        return Err(ProofError::NotInTree);
+    }
+    prove_unchecked(params, &w, ctx, zk_randomness)
 }
 
 /// A salted proof of holding for `ctx`, whatever the opening says, without
@@ -319,12 +240,11 @@ pub fn prove_salted_hold_claiming(
 }
 
 /// Verify the statement S3 as written, without the absence check, for tests
-/// only: the version 1 statement for `DATA`, the salted one for `DATA_V2`.
-/// Rejects what [`HoldContext::check`] rejects.
+/// only. Rejects what [`HoldContext::check`] rejects.
 #[cfg(feature = "unsettled-points-test")]
 pub fn verify_hold_unsettled(params: &ChainParams, ctx: &HoldContext, proof: &Proof) -> Result<(), ProofError> {
     let public = public_values(params, ctx)?;
-    crate::stark::verify(statement(ctx.format()?), &public, proof.as_bytes())
+    crate::stark::verify(crate::stark::Statement::SaltedHold, &public, proof.as_bytes())
 }
 
 /// [`verify_hold_unsettled`] with the challenge redeemed from the verifier's

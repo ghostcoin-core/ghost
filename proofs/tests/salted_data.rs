@@ -5,8 +5,7 @@
 //! The salt is a private witness: a proof made with the commitment's salt
 //! verifies, one made with another salt does not, and neither the public
 //! fields, the binding digest nor the proof bytes hold the salt. A version 1
-//! data commitment still opens under its own statements, and a proof of one
-//! format never verifies as the other.
+//! data commitment, made without a salt, neither opens nor can be held.
 //!
 //! The S2 and S3 provers exist only under the `unsettled-points-test`
 //! feature. Every negative test starts from the honest proof, asserted to
@@ -122,6 +121,23 @@ fn hold_context(root: [u8; 32]) -> HoldContext {
     }
 }
 
+/// The version 1 type tag of data, which no statement of this crate knows.
+const DATA_V1: [u8; 2] = [1, 2];
+
+/// A version 1 data commitment of spec 01, made without a salt, computed here
+/// from its tags since the crate no longer has the functions.
+fn version_1_data_commitment(o: &SaltedDataOpening) -> [u8; 32] {
+    let f = tagged("ghost/data-fingerprint/v1", &[&o.s, &o.r, &o.b, &DATA_V1, &o.cf, &EMPTY_RULE]);
+    tagged("ghost/data-commitment/v1", &[&DATA_V1, &f])
+}
+
+/// The root of a data tree holding the version 1 commitment of the salted
+/// opening's secrets at its position.
+fn version_1_root() -> [u8; 32] {
+    let o = salted_data();
+    merkle_root(Tree::Data, &version_1_data_commitment(&o), o.position, &o.path)
+}
+
 fn changed_salt(at: usize) -> [u8; SALT_BYTES] {
     let mut salt = SALT;
     salt[at] ^= 1;
@@ -188,13 +204,10 @@ fn a_salted_data_reveal_verifies_with_the_salt() {
     assert_eq!(tx.root, salted_root());
     // The marker is the salted one of spec 01, under the v2 tag.
     assert_eq!(tx.marker, data_marker_v2(&o.r, &o.b, &o.salt));
-    assert_ne!(tx.marker, data_marker(&o.r, &o.b));
+    assert_ne!(tx.marker, tagged("ghost/data-marker/v1", &[&o.r, &o.b]));
     assert!(proof.as_bytes().len() <= PROOF_FIELD_BYTES);
-    // The binding holds the version 2 type tag, not version 1's.
-    assert_ne!(salted_data_reveal_binding(&params(), tx), data_reveal_binding(&params(), tx));
-    // The shipped verifiers still reject every data reveal.
+    // The shipped verifier still rejects every data reveal.
     assert_eq!(verify_salted_data_reveal(&params(), tx, proof), Err(ProofError::DataFeeUnsettled));
-    assert_eq!(verify_data_reveal(&params(), tx, proof), Err(ProofError::DataFeeUnsettled));
 
     // A revocation of the same commitment verifies too, and not as a reveal.
     let (revoke, revoke_proof) =
@@ -270,37 +283,36 @@ fn the_data_reveal_public_values_and_proof_hold_no_salt() {
     assert!(holds(&[&[7u8; 3][..], &as_elements].concat(), &SALT));
 }
 
-/// A salted data reveal never verifies as version 1, nor a version 1 one as
-/// salted, and a version 1 data commitment still opens under its own
-/// statement and v1 tags.
+/// A version 1 data commitment, made without a salt, sits in the data tree.
+/// The salted S2 prover refuses to open it with any salt, and a lying
+/// prover's reveal under that root, with the version 1 marker, does not
+/// verify.
 #[test]
-fn the_data_reveal_formats_do_not_mix() {
+fn a_version_1_data_leaf_does_not_open() {
     let _one = one_at_a_time();
-    let (tx, proof) = honest_reveal();
-    assert_eq!(verify_data_reveal_unsettled(&params(), tx, proof), Err(ProofError::Rejected));
-
     let o = salted_data();
-    let v1 = DataOpening {
-        s: o.s,
-        r: o.r,
-        b: o.b,
+    let v1_root = version_1_root();
+    assert_ne!(v1_root, salted_root());
+    for salt in [SALT, [0; SALT_BYTES]] {
+        let attempt = with_salt(&o, salt);
+        let refused = prove_salted_data_reveal(&params(), &attempt, &request(DataPurpose::Reveal, v1_root), zk(6));
+        assert_eq!(refused.err(), Some(ProofError::NotInTree), "salt {salt:?}");
+    }
+
+    let req = request(DataPurpose::Reveal, v1_root);
+    let claimed = DataReveal {
+        purpose: req.purpose,
+        root: v1_root,
+        marker: tagged("ghost/data-marker/v1", &[&o.r, &o.b]),
+        party: req.party,
+        fee: req.fee,
+        rule: req.rule,
         cf: o.cf,
-        position: o.position,
-        path: o.path,
     };
-    let leaf = data_commitment(&data_fingerprint(&v1.s, &v1.r, &v1.b, &v1.cf, &EMPTY_RULE));
-    let v1_root = merkle_root(Tree::Data, &leaf, v1.position, &v1.path);
-    let (v1_tx, v1_proof) =
-        prove_data_reveal(&params(), &v1, &request(DataPurpose::Reveal, v1_root), zk(6)).expect("version 1");
-    assert_eq!(v1_tx.marker, data_marker(&v1.r, &v1.b));
-    assert_eq!(verify_data_reveal_unsettled(&params(), &v1_tx, &v1_proof), Ok(()));
-    assert_eq!(verify_salted_data_reveal_unsettled(&params(), &v1_tx, &v1_proof), Err(ProofError::Rejected));
-    // The salted prover does not open the version 1 leaf, and the version 1
-    // prover does not open the salted one.
-    let refused = prove_salted_data_reveal(&params(), &o, &request(DataPurpose::Reveal, v1_root), zk(7));
-    assert_eq!(refused.err(), Some(ProofError::NotInTree));
-    let refused = prove_data_reveal(&params(), &v1, &request(DataPurpose::Reveal, salted_root()), zk(8));
-    assert_eq!(refused.err(), Some(ProofError::NotInTree));
+    lying_proof_fails(
+        || prove_salted_data_reveal_claiming(&params(), &o, &claimed, zk(7)),
+        |proof| verify_salted_data_reveal_unsettled(&params(), &claimed, proof),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -314,11 +326,27 @@ fn a_salted_proof_of_holding_verifies_with_the_salt() {
     assert_eq!(ctx.check(), Ok(()));
     assert!(proof.as_bytes().len() <= PROOF_FIELD_BYTES);
     // The binding holds the version 2 type tag.
-    let v1_ctx = HoldContext {
-        type_tag: DATA,
-        ..ctx.clone()
-    };
-    assert_ne!(hold_binding(&params(), &ctx), hold_binding(&params(), &v1_ctx));
+    let binding = hold_binding(&params(), &ctx).expect("a known type");
+    let mut fields = vec![0u8; Binding::Hold.fields_len()];
+    for f in HOLD_LAYOUT {
+        let value: &[u8] = match f.name {
+            "chain_id" => &params().chain_id,
+            "version" => &params().version,
+            "domain" => &params().domain,
+            "statement" => &[STATEMENT_HOLD],
+            "statement_version" => &[STATEMENT_VERSION_1],
+            "type" => &DATA_V2,
+            "purpose" => &[PURPOSE_HOLD],
+            "root" => &ctx.root,
+            "marker_set_root" => &ctx.marker_set_root,
+            "verifier" => &ctx.verifier,
+            "challenge" => &ctx.challenge,
+            "cf" => &ctx.cf,
+            other => panic!("unexpected field {other}"),
+        };
+        fields[f.offset..f.offset + f.width].copy_from_slice(value);
+    }
+    assert_eq!(binding, tagged("ghost/hold-binding/v1", &[&fields]));
     // The shipped verifier still rejects every proof of holding.
     assert_eq!(verify_hold(&params(), &ctx, proof), Err(ProofError::HoldUnsettled));
     // The proof is bound to the verifier's choices.
@@ -376,52 +404,40 @@ fn the_hold_public_values_and_proof_hold_no_salt() {
     assert!(!holds(proof.as_bytes(), &SALT), "the proof holds the salt");
 }
 
-/// The context's type picks the statement: a salted proof does not verify
-/// under `DATA`, an opening of the other format is refused, and a version 1
-/// commitment still opens under `DATA`.
+/// A version 1 data commitment, made without a salt, sits in the data tree.
+/// The salted S3 prover refuses to hold it with any salt, a lying prover's
+/// proof of holding under that root does not verify, and a context of the
+/// version 1 data type is unknown.
 #[test]
-fn the_hold_formats_do_not_mix() {
+fn a_version_1_leaf_cannot_be_held() {
     let _one = one_at_a_time();
-    let ctx = hold_context(salted_root());
-    let proof = honest_hold();
+    let ctx = hold_context(version_1_root());
+    for salt in [SALT, [0; SALT_BYTES]] {
+        let attempt = hold_opening(&with_salt(&salted_data(), salt));
+        let refused = prove_salted_hold(&params(), &attempt, &ctx, zk(11));
+        assert_eq!(refused.err(), Some(ProofError::NotInTree), "salt {salt:?}");
+    }
+    let opening = hold_opening(&salted_data());
+    lying_proof_fails(
+        || prove_salted_hold_claiming(&params(), &opening, &ctx, zk(12)),
+        |proof| verify_hold_unsettled(&params(), &ctx, proof),
+    );
+
     let as_v1 = HoldContext {
-        type_tag: DATA,
-        ..ctx.clone()
+        type_tag: DATA_V1,
+        ..hold_context(salted_root())
     };
-    assert_eq!(verify_hold_unsettled(&params(), &as_v1, proof), Err(ProofError::Rejected));
-
-    let salted = hold_opening(&salted_data());
-    let v1 = HoldOpening {
-        s: salted.s,
-        r: salted.r,
-        b: salted.b,
-        cf: salted.cf,
-        rule: EMPTY_RULE,
-        position: salted.position,
-        path: salted.path,
-    };
-    assert_eq!(prove_hold(&params(), &v1, &ctx, zk(11)).err(), Some(ProofError::WrongFormat));
-    assert_eq!(prove_salted_hold(&params(), &salted, &as_v1, zk(12)).err(), Some(ProofError::WrongFormat));
-
-    let leaf = data_commitment(&data_fingerprint(&v1.s, &v1.r, &v1.b, &v1.cf, &EMPTY_RULE));
-    let v1_ctx = HoldContext {
-        root: merkle_root(Tree::Data, &leaf, v1.position, &v1.path),
-        ..as_v1
-    };
-    let v1_proof = prove_hold(&params(), &v1, &v1_ctx, zk(13)).expect("version 1");
-    assert_eq!(verify_hold_unsettled(&params(), &v1_ctx, &v1_proof), Ok(()));
-    let v1_as_salted = HoldContext {
-        type_tag: DATA_V2,
-        ..v1_ctx
-    };
-    assert_eq!(verify_hold_unsettled(&params(), &v1_as_salted, &v1_proof), Err(ProofError::Rejected));
+    assert_eq!(as_v1.check(), Err(ProofError::UnknownType));
+    assert_eq!(hold_binding(&params(), &as_v1), Err(ProofError::UnknownType));
+    assert_eq!(prove_salted_hold(&params(), &opening, &as_v1, zk(13)).err(), Some(ProofError::UnknownType));
+    assert_eq!(verify_hold_unsettled(&params(), &as_v1, honest_hold()), Err(ProofError::UnknownType));
 }
 
 // ---------------------------------------------------------------------------
 // The trace budget.
 
-/// The salted statements are the version 1 ones with 16 more carried columns,
-/// the same height, inside the budget and the proof field.
+/// The salted data statements: the 3,786 columns of an opening without a
+/// salt and 16 carried salt columns, inside the budget and the proof field.
 #[test]
 fn the_salt_costs_sixteen_columns_within_the_budget() {
     let config = shipped_configuration().expect("the shipped configuration builds");
@@ -433,14 +449,10 @@ fn the_salt_costs_sixteen_columns_within_the_budget() {
             .unwrap_or_else(|| panic!("{statement:?} is not in the report"))
             .1
     };
-    for (v1, v2) in [
-        (Statement::DataReveal, Statement::SaltedDataReveal),
-        (Statement::Hold, Statement::SaltedHold),
-    ] {
-        let (v1, v2) = (trace(v1), trace(v2));
-        assert_eq!(v2.trace_width, v1.trace_width + SALT_BYTES);
-        assert_eq!(v1.trace_height, v2.trace_height);
-        assert_eq!((v1.trace_width, v2.trace_width), (3786, 3802));
+    for statement in [Statement::SaltedDataReveal, Statement::SaltedHold] {
+        let v2 = trace(statement);
+        assert_eq!(v2.trace_width, 3786 + SALT_BYTES);
+        assert_eq!(v2.trace_width, 3802);
         assert!(v2.trace_width <= 3824 && v2.trace_width <= MAX_TRACE_WIDTH);
         assert!(v2.trace_height <= MAX_TRACE_HEIGHT);
         assert!(proof_length_bound(v2.trace_height, v2.trace_width) <= PROOF_FIELD_BYTES);
