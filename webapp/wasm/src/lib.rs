@@ -477,7 +477,7 @@ pub extern "C" fn ghost_commit(ptr: *const u8, len: usize) -> u32 {
             return Err(String::from("a commit holds at least 1 wei"));
         }
         let commit = key.salted_coin_commit(0, value, Rule::EMPTY, &mut rng).map_err(|e| e.to_string())?;
-        let salt = commit.salt.ok_or_else(|| String::from("the commit has no salt"))?;
+        let salt = commit.salt;
         let note = encrypt_note(
             &key.note_key(),
             chain_id,
@@ -530,7 +530,7 @@ pub extern "C" fn ghost_restore(ptr: *const u8, len: usize) -> u32 {
             out.extend_from_slice(coin.commitment.as_bytes());
             out.extend_from_slice(coin.marker.as_bytes());
             out.push(u8::from(spent.contains(&coin.marker)));
-            push_salt(&mut out, coin.salt.as_ref());
+            push_salt(&mut out, Some(&coin.salt));
         }
         Ok(out)
     })
@@ -750,7 +750,6 @@ fn real_coin(
     if &leaves[index] != commit.commitment.as_bytes() || tree_root(leaves, z) != terms.root {
         return Err(String::from("the coin is not in the tree under the chosen root"));
     }
-    let salt = Some(salt);
     let coin = OwnedCoin { number, amount: value, rule: Rule::EMPTY, salt, position, path: witness(leaves, index, z) };
     Ok((key, new_key, coin))
 }

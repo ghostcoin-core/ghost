@@ -21,13 +21,13 @@
 //!
 //! | Log | Topics | Data |
 //! |---|---|---|
-//! | commit | `K("ghost/commit-receipt/v1")` | tree index (4), position (4), leaf (32), `v` (32), note (156) |
 //! | salted commit | `K("ghost/commit-receipt/v1")` | tree index (4), position (4), leaf (32), `v` (32), note (156), salt (16) |
 //! | reveal | `K("ghost/reveal-receipt/v1")`, marker | tree index (4), position (4), remainder (32), note (156), recipient (20), out (32) |
 //!
-//! A commit log is 228 bytes for a version 1 commit and 244 for a version 2
-//! (salted) commit, whose salt the node appends after the note. A reveal log
-//! carries no salt: a remainder's salt is only in its note.
+//! A commit log is 244 bytes: the node appends the commitment's salt after
+//! the note. The 228-byte log of an unsalted version 1 commit is refused like
+//! any other wrong length. A reveal log carries no salt: a remainder's salt is
+//! only in its note.
 //!
 //! Integers are big-endian. Logs of any other address are not read here.
 //!
@@ -53,13 +53,11 @@ pub const COIN_TREE_ACCOUNT: [u8; 20] = [
 pub const TAG_COMMIT_RECEIPT: &str = "ghost/commit-receipt/v1";
 /// Tag of the first topic of a reveal log.
 pub const TAG_REVEAL_RECEIPT: &str = "ghost/reveal-receipt/v1";
-/// Data bytes of a commit log: tree index, position, leaf, `v`, note.
-pub const COMMIT_LOG_BYTES: usize = 4 + 4 + 32 + 32 + NOTE_BYTES;
-/// Data bytes of a salted (version 2) commit log: a commit log, then the
-/// commitment's salt.
-pub const SALTED_COMMIT_LOG_BYTES: usize = COMMIT_LOG_BYTES + SALT_BYTES;
+/// Data bytes of a salted (version 2) commit log, the only commit log read:
+/// tree index, position, leaf, `v`, note, then the commitment's salt.
+pub const SALTED_COMMIT_LOG_BYTES: usize = 4 + 4 + 32 + 32 + NOTE_BYTES + SALT_BYTES;
 
-const _: () = assert!(COMMIT_LOG_BYTES == 228 && SALTED_COMMIT_LOG_BYTES == 244);
+const _: () = assert!(SALTED_COMMIT_LOG_BYTES == 244);
 /// Data bytes of a reveal log: tree index, position, remainder, note,
 /// recipient, out.
 pub const REVEAL_LOG_BYTES: usize = 4 + 4 + 32 + NOTE_BYTES + 20 + 32;
@@ -82,8 +80,8 @@ pub struct AppendedLeaf {
     pub leaf: Commitment,
     /// The note stored with it.
     pub note: [u8; NOTE_BYTES],
-    /// The salt a salted commit log carries after the note; `None` for a
-    /// version 1 commit log and for every reveal log.
+    /// The salt a commit log carries after the note; `None` for a reveal
+    /// log.
     pub salt: Option<Salt>,
 }
 
@@ -385,16 +383,14 @@ fn coin_record(topics: &[[u8; 32]], data: &[u8]) -> Result<CoinRecord, &'static 
         if topics.len() != 1 {
             return Err("a commit log does not have exactly one topic");
         }
-        let salted = match data.len() {
-            COMMIT_LOG_BYTES => false,
-            SALTED_COMMIT_LOG_BYTES => true,
-            _ => return Err("a commit log's data is not its length"),
-        };
+        if data.len() != SALTED_COMMIT_LOG_BYTES {
+            return Err("a commit log's data is not its length");
+        }
         let mut data = Fields(data);
         let appended = data.appended_head();
         let v = data.take();
         let note = data.take();
-        let salt = salted.then(|| Salt::from_bytes(data.take()));
+        let salt = Some(Salt::from_bytes(data.take()));
         Ok(CoinRecord::Commit { appended: AppendedLeaf { note, salt, ..appended }, v })
     } else if *first == k(TAG_REVEAL_RECEIPT, &[]) {
         if topics.len() != 2 {

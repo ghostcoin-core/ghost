@@ -19,20 +19,12 @@ pub const TAG_BLINDING: &str = "ghost/blinding/v1";
 pub const TAG_NOTE_KEY: &str = "ghost/note-key/v1";
 /// Data key (SHA3-256).
 pub const TAG_DATA_KEY: &str = "ghost/data-key/v1";
-/// Coin fingerprint `F` (Keccak-256).
-pub const TAG_COIN_FINGERPRINT: &str = "ghost/coin-fingerprint/v1";
 /// Coin commitment `C` (Keccak-256).
 pub const TAG_COIN_COMMITMENT: &str = "ghost/coin-commitment/v1";
-/// Data fingerprint `F_d` (Keccak-256).
-pub const TAG_DATA_FINGERPRINT: &str = "ghost/data-fingerprint/v1";
 /// Data commitment `C` (Keccak-256).
 pub const TAG_DATA_COMMITMENT: &str = "ghost/data-commitment/v1";
 /// Content fingerprint `cf` (Keccak-256).
 pub const TAG_CONTENT_FINGERPRINT: &str = "ghost/content-fingerprint/v1";
-/// Marker of a coin commitment (Keccak-256).
-pub const TAG_COIN_MARKER: &str = "ghost/coin-marker/v1";
-/// Marker of a data commitment (Keccak-256).
-pub const TAG_DATA_MARKER: &str = "ghost/data-marker/v1";
 /// Coin fingerprint `F` of a version 2 (salted) commitment (Keccak-256).
 pub const TAG_COIN_FINGERPRINT_V2: &str = "ghost/coin-fingerprint/v2";
 /// Data fingerprint `F_d` of a version 2 (salted) commitment (Keccak-256).

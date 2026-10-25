@@ -1,12 +1,15 @@
 //! Restore of salted (version 2) coins from the digits and the leaf records,
 //! and the reveal of a restored salted coin, checked with the proofs crate's
-//! own verifier. Leaves made before the salt (version 1) restore as before.
+//! own verifier. A leaf whose note is an unsalted version 1 note is
+//! discarded, never restored.
 
+use ghost_client::note::{chacha20poly1305_seal, note_associated_data, NOTE_PLAINTEXT_BYTES};
 use ghost_client::reveal::{ChainParams, CoinReveal, ProofError, TREE_DEPTH};
 use ghost_client::{
     decrypt_note, encrypt_note, full_reveal, partial_reveal, restore_coins, Amount, Commitment,
-    Content, Current, DiscardReason, KeyFormat, Marker, NoteContents, OwnedCoin, PhantomKey,
-    RevealError, RevealTerms, Rule, Salt, TreeLeaf, COIN_V2, DATA_V2, SALT_BYTES,
+    Content, Current, DiscardReason, KeyFormat, Marker, NoteContents, NoteError, OwnedCoin,
+    PhantomKey, RevealError, RevealTerms, Rule, Salt, TreeLeaf, COIN_V2, DATA_V2, NOTE_BYTES,
+    SALT_BYTES,
 };
 use ghost_proofs::{empty_leaf, tree_node, verify_coin_reveal, verify_salted_coin_reveal, Tree, PROTOCOL_VERSION_1};
 use rand::rngs::StdRng;
@@ -90,20 +93,11 @@ impl Chain {
     /// and the record carries the salt beside the leaf.
     fn salted_commit(&mut self, key: &PhantomKey, wei: u128, rng: &mut StdRng) -> (u32, Salt) {
         let commit = key.salted_coin_commit(0, amount(wei), Rule::EMPTY, rng).unwrap();
-        let salt = commit.salt.unwrap();
+        let salt = commit.salt;
         let contents = NoteContents::salted_coin(0, amount(wei), Rule::EMPTY, salt);
         let note = encrypt_note(&key.note_key(), CHAIN_ID, &commit.commitment, &contents, rng);
         let position = self.push(TreeLeaf { commitment: commit.commitment, note, salt: Some(salt) });
         (position, salt)
-    }
-
-    /// A version 1 commit of `key`'s number 0, as made before the salt,
-    /// with `beside` as the salt the record carries.
-    fn v1_commit(&mut self, key: &PhantomKey, wei: u128, beside: Option<Salt>, rng: &mut StdRng) -> u32 {
-        let commit = key.coin_commit(0, amount(wei), Rule::EMPTY).unwrap();
-        let contents = NoteContents::coin(0, amount(wei), Rule::EMPTY);
-        let note = encrypt_note(&key.note_key(), CHAIN_ID, &commit.commitment, &contents, rng);
-        self.push(TreeLeaf { commitment: commit.commitment, note, salt: beside })
     }
 
     /// Includes a reveal: its marker is spent, its remainder appended with
@@ -125,7 +119,7 @@ fn restored_salted_coin_reveals_with_its_salt() {
     let mut chain = Chain::new();
     chain.salted_commit(&other, 5_000, &mut rng);
     let (position, salt) = chain.salted_commit(&key(), COMMITTED, &mut rng);
-    chain.v1_commit(&other, 6_000, None, &mut rng);
+    chain.salted_commit(&other, 6_000, &mut rng);
 
     // Restore from the digits alone finds the coin and its salt.
     let restored = restore_coins(&key(), CHAIN_ID, &chain.leaves, &chain.spent);
@@ -135,18 +129,18 @@ fn restored_salted_coin_reveals_with_its_salt() {
     };
     let commit = key().coin_commit_with_salt(0, amount(COMMITTED), Rule::EMPTY, salt).unwrap();
     assert_eq!((found.number, found.amount.wei(), found.position), (0, COMMITTED, position));
-    assert_eq!(found.salt, Some(salt));
+    assert_eq!(found.salt, salt);
     assert_eq!(found.commitment, commit.commitment);
     assert_eq!(found.marker, commit.marker);
 
     // The coin as a reveal takes it carries the salt.
     let (root, path) = root_and_path(&chain.leaves, position);
     let coin = found.owned(path);
-    assert_eq!(coin.salt, Some(salt));
+    assert_eq!(coin.salt, salt);
 
-    // Without its salt, or with another, the coin does not open its leaf,
-    // and the reveal is refused before proving.
-    for wrong in [None, Some(Salt::from_bytes([0x42; SALT_BYTES]))] {
+    // With another salt the coin does not open its leaf, and the reveal is
+    // refused before proving.
+    for wrong in [Salt::from_bytes([0; SALT_BYTES]), Salt::from_bytes([0x42; SALT_BYTES])] {
         let coin = OwnedCoin { salt: wrong, ..found.owned(path) };
         let refused = partial_reveal(&params(), &key(), &coin, &terms(root), amount(PAID), &mut rng, [0; 32]);
         assert_eq!(refused.err(), Some(RevealError::Proof(ProofError::NotInTree)));
@@ -161,7 +155,7 @@ fn restored_salted_coin_reveals_with_its_salt() {
 
     // The remainder is salted under a fresh salt, carried in its note.
     let left = COMMITTED - PAID - FEE;
-    let remainder_salt = built.remainder.salt.expect("a salted coin's remainder is salted");
+    let remainder_salt = built.remainder.salt;
     assert_ne!(remainder_salt, salt);
     let expected = key().coin_commit_with_salt(1, amount(left), Rule::EMPTY, remainder_salt).unwrap();
     assert_eq!(built.remainder.number, 1);
@@ -170,7 +164,7 @@ fn restored_salted_coin_reveals_with_its_salt() {
     assert_eq!(&built.reveal.remainder, expected.commitment.as_bytes());
     let note = decrypt_note(&key().note_key(), CHAIN_ID, &expected.commitment, &built.reveal.remainder_note).unwrap();
     assert_eq!(note.type_tag, COIN_V2);
-    assert_eq!(note.salt, Some(remainder_salt));
+    assert_eq!(note.salt, remainder_salt);
     assert_eq!((note.number, note.amount.wei()), (1, left));
 
     // Once included, restore finds the remainder from its note's salt alone.
@@ -181,7 +175,7 @@ fn restored_salted_coin_reveals_with_its_salt() {
         panic!("the remainder is the one unspent coin");
     };
     assert_eq!((current.number, current.amount.wei(), current.position), (1, left, remainder_position));
-    assert_eq!(current.salt, Some(remainder_salt));
+    assert_eq!(current.salt, remainder_salt);
 
     // And the restored remainder reveals in turn, with its salt.
     let (root, path) = root_and_path(&chain.leaves, remainder_position);
@@ -189,44 +183,103 @@ fn restored_salted_coin_reveals_with_its_salt() {
     let built = full_reveal(&params(), &key(), &current.owned(path), &terms(root), &mut rng, zk_randomness).unwrap();
     assert_eq!(verify_salted_coin_reveal(&params(), &built.reveal, &built.proof), Ok(()));
     assert_eq!(&built.reveal.marker, current.marker.as_bytes());
-    assert!(built.remainder.salt.is_some());
-    assert_ne!(built.remainder.salt, Some(remainder_salt));
+    assert_ne!(built.remainder.salt, remainder_salt);
 }
 
 #[test]
-fn leaf_without_a_salt_still_restores() {
+fn leaf_without_a_salt_beside_it_restores_from_its_note() {
+    // A reveal's remainder has no salt beside its leaf: restore reads the
+    // salt from its note.
     let mut rng = StdRng::seed_from_u64(0x01d);
+    let salt = Salt::from_bytes([9; SALT_BYTES]);
+    let commit = key().coin_commit_with_salt(1, amount(COMMITTED), Rule::EMPTY, salt).unwrap();
+    let contents = NoteContents::salted_coin(1, amount(COMMITTED), Rule::EMPTY, salt);
+    let note = encrypt_note(&key().note_key(), CHAIN_ID, &commit.commitment, &contents, &mut rng);
     let mut chain = Chain::new();
-    let position = chain.v1_commit(&key(), COMMITTED, None, &mut rng);
+    let position = chain.push(TreeLeaf { commitment: commit.commitment, note, salt: None });
 
     let restored = restore_coins(&key(), CHAIN_ID, &chain.leaves, &chain.spent);
     assert!(restored.discarded.is_empty());
     let Current::One(found) = restored.current else {
-        panic!("the version 1 coin restores");
+        panic!("the remainder restores");
     };
-    let v1 = key().coin_commit(0, amount(COMMITTED), Rule::EMPTY).unwrap();
-    assert_eq!((found.number, found.amount.wei(), found.position), (0, COMMITTED, position));
-    assert_eq!(found.salt, None);
-    assert_eq!(found.commitment, v1.commitment);
-    assert_eq!(found.marker, v1.marker);
-    assert_eq!(found.owned([[0; 32]; TREE_DEPTH]).salt, None);
+    assert_eq!((found.number, found.amount.wei(), found.position), (1, COMMITTED, position));
+    assert_eq!(found.salt, salt);
+    assert_eq!(found.commitment, commit.commitment);
+    assert_eq!(found.marker, commit.marker);
+    assert_eq!(found.owned([[0; 32]; TREE_DEPTH]).salt, salt);
 
-    // A version 1 note restores as before whatever salt the record carries.
-    let mut carried = Chain::new();
-    let position = carried.v1_commit(&key(), COMMITTED, Some(Salt::from_bytes([9; SALT_BYTES])), &mut rng);
-    let restored = restore_coins(&key(), CHAIN_ID, &carried.leaves, &carried.spent);
-    assert!(restored.discarded.is_empty());
-    let Current::One(found) = restored.current else {
-        panic!("the version 1 coin restores with a salt beside it");
-    };
-    assert_eq!((found.position, found.salt, found.commitment), (position, None, v1.commitment));
-
-    // Spent, it is not current, as before.
-    let mut spent = chain;
-    spent.spent.push(v1.marker);
-    let restored = restore_coins(&key(), CHAIN_ID, &spent.leaves, &spent.spent);
+    // Spent, it is not current.
+    chain.spent.push(commit.marker);
+    let restored = restore_coins(&key(), CHAIN_ID, &chain.leaves, &chain.spent);
     assert!(matches!(restored.current, Current::None));
     assert_eq!(restored.found.len(), 1);
+}
+
+/// A version 1 coin note's plaintext, laid out as version 1 wrote it:
+/// `0x01 || 0x01 || 0x0101 || i (8) || v (32) || cf (32) || content length (8)
+/// || rule (32) || 12 zero bytes`.
+fn version_1_plaintext(number: u64, wei: u128) -> [u8; NOTE_PLAINTEXT_BYTES] {
+    let mut plaintext = [0u8; NOTE_PLAINTEXT_BYTES];
+    plaintext[..4].copy_from_slice(&[0x01, 0x01, 0x01, 0x01]);
+    plaintext[4..12].copy_from_slice(&number.to_be_bytes());
+    plaintext[28..44].copy_from_slice(&wei.to_be_bytes());
+    plaintext
+}
+
+/// `plaintext` sealed under `key`'s note key for `leaf`, as a note on the
+/// chain.
+fn sealed(key: &PhantomKey, leaf: &Commitment, plaintext: [u8; NOTE_PLAINTEXT_BYTES]) -> [u8; NOTE_BYTES] {
+    let mut note = [0u8; NOTE_BYTES];
+    note[..12].copy_from_slice(&[3; 12]);
+    note[12..140].copy_from_slice(&plaintext);
+    let tag = chacha20poly1305_seal(
+        key.note_key().as_bytes(),
+        &[3; 12],
+        &note_associated_data(CHAIN_ID, leaf),
+        &mut note[12..140],
+    );
+    note[140..].copy_from_slice(&tag);
+    note
+}
+
+#[test]
+fn version_1_note_is_discarded_on_restore() {
+    let mut rng = StdRng::seed_from_u64(0x01);
+    let leaf = Commitment::from_bytes([0x71; 32]);
+    let note = sealed(&key(), &leaf, version_1_plaintext(0, COMMITTED));
+    // The note authenticates under the key: it is the key's, not another's.
+    assert_eq!(decrypt_note(&key().note_key(), CHAIN_ID, &leaf, &note).err(), Some(NoteError::UnknownVersion));
+
+    for beside in [None, Some(Salt::from_bytes([9; SALT_BYTES]))] {
+        let mut chain = Chain::new();
+        let position = chain.push(TreeLeaf { commitment: leaf, note, salt: beside });
+        let restored = restore_coins(&key(), CHAIN_ID, &chain.leaves, &chain.spent);
+        assert!(restored.found.is_empty());
+        assert!(matches!(restored.current, Current::None));
+        assert_eq!(restored.discarded.len(), 1);
+        assert_eq!(restored.discarded[0].position, position);
+        assert_eq!(restored.discarded[0].reason, DiscardReason::Malformed(NoteError::UnknownVersion));
+    }
+
+    // Beside a salted coin of the key, only the salted coin is found.
+    let mut chain = Chain::new();
+    chain.push(TreeLeaf { commitment: leaf, note, salt: None });
+    let (position, salt) = chain.salted_commit(&key(), COMMITTED, &mut rng);
+    let restored = restore_coins(&key(), CHAIN_ID, &chain.leaves, &chain.spent);
+    let Current::One(found) = restored.current else {
+        panic!("the salted coin restores");
+    };
+    assert_eq!((found.position, found.salt), (position, salt));
+    assert_eq!(restored.found.len(), 1);
+    assert_eq!(restored.discarded.len(), 1);
+    assert_eq!(restored.discarded[0].position, 0);
+    assert_eq!(restored.discarded[0].reason, DiscardReason::Malformed(NoteError::UnknownVersion));
+
+    // Under another key the note does not authenticate and is passed over.
+    let other = PhantomKey::generate(KeyFormat::Words, &mut rng);
+    let restored = restore_coins(&other, CHAIN_ID, &chain.leaves, &chain.spent);
+    assert!(restored.found.is_empty() && restored.discarded.is_empty());
 }
 
 #[test]
@@ -252,7 +305,7 @@ fn a_salt_beside_the_leaf_that_disagrees_is_discarded() {
     bare[position as usize].salt = None;
     let restored = restore_coins(&key(), CHAIN_ID, &bare, &[]);
     assert_eq!(restored.found.len(), 1);
-    assert_eq!(restored.found[0].salt, Some(salt));
+    assert_eq!(restored.found[0].salt, salt);
 
     // A note whose salt does not open the leaf is discarded.
     let leaf = chain.leaves[position as usize].commitment;
@@ -276,7 +329,7 @@ fn a_salt_beside_the_leaf_that_disagrees_is_discarded() {
         salt: data.salt,
     };
     let note = encrypt_note(&key().note_key(), CHAIN_ID, &data.commitment, &contents, &mut rng);
-    let leaves = vec![TreeLeaf { commitment: data.commitment, note, salt: data.salt }];
+    let leaves = vec![TreeLeaf { commitment: data.commitment, note, salt: Some(data.salt) }];
     let restored = restore_coins(&key(), CHAIN_ID, &leaves, &[]);
     assert!(restored.found.is_empty());
     assert_eq!(restored.discarded[0].reason, DiscardReason::NotACoin);

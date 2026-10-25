@@ -9,7 +9,7 @@ use ghost_client::receipts::{
     check_block_receipts, check_block_receipts_against_header, check_leaves, check_markers,
     header_receipts_root, receipts_root, CheckedBlock, CoinRecord, ReceiptError, COIN_TREE_ACCOUNT,
 };
-use ghost_client::{Commitment, Marker, TreeLeaf, NOTE_BYTES};
+use ghost_client::{Commitment, Marker, Salt, TreeLeaf, NOTE_BYTES, SALT_BYTES};
 
 // ---------------------------------------------------------------- RLP
 
@@ -193,6 +193,10 @@ fn marker_at(position: u32) -> Marker {
     Marker::from_bytes(keccak256(&[b"marker".as_slice(), &position.to_be_bytes()].concat()))
 }
 
+fn salt_at(position: u32) -> Salt {
+    Salt::from_bytes(core::array::from_fn(|j| (position as usize * 3 + j) as u8))
+}
+
 fn commit_log(tree: u32, position: u32) -> Vec<u8> {
     let data = [
         &tree.to_be_bytes()[..],
@@ -200,6 +204,7 @@ fn commit_log(tree: u32, position: u32) -> Vec<u8> {
         leaf_at(tree, position).as_bytes(),
         &[0x05; 32],
         &note_at(position),
+        salt_at(position).as_bytes(),
     ]
     .concat();
     log(&COIN_TREE_ACCOUNT, &[k("ghost/commit-receipt/v1", &[])], &data)
@@ -234,9 +239,11 @@ fn block(start: u32, count: usize) -> Block {
     let mut markers = Vec::new();
     let mut position = start;
     let mut gas = 0;
-    let mut append = |leaves: &mut Vec<TreeLeaf>| {
+    // A commit's leaf has its salt beside it; a reveal's remainder has none.
+    let mut append = |leaves: &mut Vec<TreeLeaf>, commit: bool| {
         let p = position;
-        leaves.push(TreeLeaf { commitment: leaf_at(0, p), note: note_at(p), salt: None });
+        let salt = commit.then(|| salt_at(p));
+        leaves.push(TreeLeaf { commitment: leaf_at(0, p), note: note_at(p), salt });
         position += 1;
         p
     };
@@ -245,18 +252,18 @@ fn block(start: u32, count: usize) -> Block {
         let r = match i % 5 {
             0 => receipt(None, 1, gas, &[log(&OTHER_ADDRESS, &[[0x33; 32]], b"other")]),
             1 => {
-                let p = append(&mut leaves);
+                let p = append(&mut leaves, true);
                 receipt(Some(0x50), 1, gas, &[commit_log(0, p)])
             }
             2 => {
-                let p = append(&mut leaves);
+                let p = append(&mut leaves, false);
                 markers.push(marker_at(p));
                 receipt(Some(0x50), 1, gas, &[reveal_log(0, p)])
             }
             3 => receipt(Some(0x52), 0, gas, &[]),
             _ => {
-                let c = append(&mut leaves);
-                let r = append(&mut leaves);
+                let c = append(&mut leaves, true);
+                let r = append(&mut leaves, false);
                 markers.push(marker_at(r));
                 let other = log(&OTHER_ADDRESS, &[], &[0xee; 300]);
                 receipt(Some(0x50), 1, gas, &[other, commit_log(0, c), reveal_log(0, r)])
@@ -559,7 +566,7 @@ fn single(logs: &[Vec<u8>]) -> Result<CheckedBlock, ReceiptError> {
 fn a_coin_log_off_the_layout_is_refused() {
     let commit_topic = k("ghost/commit-receipt/v1", &[]);
     let reveal_topic = k("ghost/reveal-receipt/v1", &[]);
-    let commit_data = [0u8; 4 + 4 + 32 + 32 + NOTE_BYTES];
+    let commit_data = [0u8; 4 + 4 + 32 + 32 + NOTE_BYTES + SALT_BYTES];
     let reveal_data = [0u8; 4 + 4 + 32 + NOTE_BYTES + 20 + 32];
     assert!(single(&[log(&COIN_TREE_ACCOUNT, &[commit_topic], &commit_data)]).is_ok());
     assert!(single(&[log(&COIN_TREE_ACCOUNT, &[reveal_topic, [9; 32]], &reveal_data)]).is_ok());

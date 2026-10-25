@@ -5,7 +5,7 @@
 use ghost_client::hash::k;
 use ghost_client::receipts::{
     check_block_receipts, check_leaves, receipts_root, CheckedBlock, CoinRecord, ReceiptError,
-    COIN_TREE_ACCOUNT, COMMIT_LOG_BYTES, REVEAL_LOG_BYTES, SALTED_COMMIT_LOG_BYTES,
+    COIN_TREE_ACCOUNT, REVEAL_LOG_BYTES, SALTED_COMMIT_LOG_BYTES,
 };
 use ghost_client::{
     encrypt_note, restore_coins, Amount, Commitment, Current, NoteContents, PhantomKey, Rule, Salt,
@@ -87,19 +87,19 @@ fn check(receipts: &[Vec<u8>]) -> Result<CheckedBlock, ReceiptError> {
 
 #[test]
 fn salted_commit_log_carries_the_salt() {
-    assert_eq!(COMMIT_LOG_BYTES, 228);
     assert_eq!(SALTED_COMMIT_LOG_BYTES, 244);
 
     let key = PhantomKey::parse(DIGITS).unwrap_or_else(|_| panic!("the example key parses"));
     let mut rng = StdRng::seed_from_u64(244);
     let value = Amount::new(1_000_000_000).unwrap();
 
-    // Position 0: a version 1 commit. Position 1: the key's salted commit.
-    // Position 2: a reveal's remainder.
+    // Position 0: another wallet's salted commit. Position 1: the key's
+    // salted commit. Position 2: a reveal's remainder.
     let old_leaf = Commitment::from_bytes([0x10; 32]);
     let old_note = [0x11; NOTE_BYTES];
+    let old_salt = Salt::from_bytes([0x12; SALT_BYTES]);
     let commit = key.salted_coin_commit(0, value, Rule::EMPTY, &mut rng).unwrap();
-    let salt = commit.salt.unwrap();
+    let salt = commit.salt;
     let note = encrypt_note(
         &key.note_key(),
         CHAIN_ID,
@@ -112,9 +112,9 @@ fn salted_commit_log_carries_the_salt() {
 
     let salted = commit_data(1, &commit.commitment, &note, Some(&salt));
     assert_eq!(salted.len(), SALTED_COMMIT_LOG_BYTES);
-    assert_eq!(&salted[COMMIT_LOG_BYTES..], salt.as_bytes());
+    assert_eq!(&salted[SALTED_COMMIT_LOG_BYTES - SALT_BYTES..], salt.as_bytes());
     let receipts = vec![
-        receipt(&[log(&[commit_topic()], &commit_data(0, &old_leaf, &old_note, None))]),
+        receipt(&[log(&[commit_topic()], &commit_data(0, &old_leaf, &old_note, Some(&old_salt)))]),
         receipt(&[
             log(&[commit_topic()], &salted),
             log(&[k("ghost/reveal-receipt/v1", &[]), [9; 32]], &reveal_data(2, &remainder_leaf, &remainder_note)),
@@ -124,7 +124,7 @@ fn salted_commit_log_carries_the_salt() {
     let records = block.records();
     assert_eq!(records.len(), 3);
     assert!(matches!(&records[0], CoinRecord::Commit { .. }));
-    assert_eq!(records[0].appended().salt, None);
+    assert_eq!(records[0].appended().salt, Some(old_salt));
     let CoinRecord::Commit { appended, v } = &records[1] else {
         panic!("a salted commit is a commit record");
     };
@@ -137,7 +137,7 @@ fn salted_commit_log_carries_the_salt() {
 
     // The run of leaves the node serves, the salt beside the commit's leaf.
     let run = vec![
-        TreeLeaf { commitment: old_leaf, note: old_note, salt: None },
+        TreeLeaf { commitment: old_leaf, note: old_note, salt: Some(old_salt) },
         TreeLeaf { commitment: commit.commitment, note, salt: Some(salt) },
         TreeLeaf { commitment: remainder_leaf, note: remainder_note, salt: None },
     ];
@@ -148,7 +148,7 @@ fn salted_commit_log_carries_the_salt() {
     let Current::One(found) = restore_coins(&key, CHAIN_ID, &run, &[]).current else {
         panic!("the salted commit restores");
     };
-    assert_eq!((found.position, found.salt), (1, Some(salt)));
+    assert_eq!((found.position, found.salt), (1, salt));
 
     // A salt beside a leaf that is not the record's is refused.
     let mut other = *salt.as_bytes();
@@ -157,6 +157,7 @@ fn salted_commit_log_carries_the_salt() {
         (1, Some(Salt::from_bytes(other))),
         (1, None),
         (0, Some(salt)),
+        (0, None),
         (2, Some(salt)),
     ];
     for (position, changed) in cases {
@@ -186,4 +187,31 @@ fn salted_commit_log_carries_the_salt() {
             "case {i} is refused"
         );
     }
+}
+
+#[test]
+fn unsalted_commit_log_is_refused() {
+    let leaf = Commitment::from_bytes([0x40; 32]);
+    let note = [0x44; NOTE_BYTES];
+    let salt = Salt::from_bytes([0x45; SALT_BYTES]);
+
+    // The 228-byte log an unsalted version 1 commit had: the salted log
+    // without its salt.
+    let unsalted = commit_data(0, &leaf, &note, None);
+    assert_eq!(unsalted.len(), 228);
+    let salted = commit_data(0, &leaf, &note, Some(&salt));
+    assert_eq!(salted.len(), SALTED_COMMIT_LOG_BYTES);
+    assert_eq!(salted[..228], unsalted[..]);
+
+    let block = |data: &[u8]| vec![receipt(&[log(&[commit_topic()], data)])];
+    let wrong_length = ReceiptError::CoinLog { receipt: 0, log: 0, reason: "a commit log's data is not its length" };
+    assert_eq!(check(&block(&unsalted)).err(), Some(wrong_length));
+    // The same error as any other wrong length.
+    assert_eq!(check(&block(&salted[..SALTED_COMMIT_LOG_BYTES - 1])).err(), Some(wrong_length));
+
+    // The same block with the 244-byte log checks and carries the salt.
+    let checked = check(&block(&salted)).expect("the salted commit log checks");
+    assert_eq!(checked.records().len(), 1);
+    assert_eq!(checked.records()[0].appended().leaf, leaf);
+    assert_eq!(checked.records()[0].appended().salt, Some(salt));
 }
