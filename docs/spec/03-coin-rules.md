@@ -98,7 +98,8 @@ Nothing else writes to the coin tree. In particular:
 - **A data commitment can never create money** (outline, "Coin rules"). Data
   commitments go only into the data tree, are written with a `DATA` type tag
   under their own hash tag, and are never accepted by the coin reveal
-  (section 7, step 3). Data commits burn nothing and mint nothing.
+  (section 7, step 3). A data commit burns the fixed reserve `DATA_RESERVE`
+  of [spec 04](04-data-commitments.md), section 3, and mints nothing.
 - The general proof checker for developer-written statements can never add a
   coin leaf or mint (outline, "Extension points" 3; threat model C37).
 - No contract, precompile caller or account has any right over the coin tree
