@@ -112,6 +112,12 @@ not lowered to it. A component below it is either raised, or stated in the
 threat model as an exception with the reason it does not matter where it is
 used; section 4 lists both kinds.
 
+**Category is not proof.** A category counts the best attack known today; it
+does not say the scheme is proven. ML-DSA-44 and ML-KEM-768 meet their
+categories only if module lattices are as hard as conjectured, while
+SLH-DSA-SHAKE-128s and the hashes reduce to hash-function properties. Section 5
+names the assumption of each account scheme.
+
 **Collisions.** A 256-bit hash has 128 bits classical collision resistance
 (NIST Category 2) and about 85 bits quantum (the Brassard–Høyer–Tapp search,
 `2^(n/3)`, with as much quantum memory). A component that needs collision
@@ -127,7 +133,7 @@ its author's (section 7). Web certificates are outside the chain (section 10.5).
 
 | Component | Today | Classical | Quantum | Against the target | What changes |
 |---|---|---|---|---|---|
-| Account signatures | ECDSA over secp256k1 (base client) | 128 bits | Broken (Shor) | Below | ML-DSA-44 (Category 2) and SLH-DSA-SHAKE-128s (Category 1); every secp256k1 type refused (sections 5 and 6) |
+| Account signatures | ECDSA over secp256k1 (base client) | 128 bits | Broken (Shor) | Below | ML-DSA-44 (Category 2, resting on the conjectured hardness of module lattices) and SLH-DSA-SHAKE-128s (Category 1, resting on hash-function properties only); the scheme is fixed when the account is created and ML-DSA-44 accounts have no rescue path (section 5); every secp256k1 type refused (sections 5 and 6) |
 | Reveal STARK: queries and grinding | Rate 1/4, 57 queries, 16 grinding bits (decision 0003) | 128 conjectured, 72 proven | About 65 conjectured, about 36 proven (section 4.1) | Conjectured at the floor with no margin; proven below | Raised by the rule of section 4.1; proven security over the whole bundled proof is a hard requirement before mainnet (section 4.1), not met today |
 | Reveal STARK: hash output | Keccak-256 digests in the Merkle commitments and the Fiat–Shamir transcript | 128 bits collision | About 85 bits collision; the quantum Fiat–Shamir hash term holds to about 2^85 queries | Meets | Nothing |
 | Reveal STARK: challenge field | Degree-5 extension of BabyBear, about 2^155 elements | Each field term near or below 2^-128 by a rough count | Half of that | At the floor; the build ticket computes it | Section 4.1 |
@@ -312,12 +318,17 @@ parameter set, the signing mode, the encoding of public keys and signatures,
 and the context string used for transactions. Nothing about a scheme is
 negotiated or read from the signature itself.
 
-| Scheme ID | Scheme | Mode | Public key | Signature | NIST category | Status |
-|---|---|---|---|---|---|---|
-| `0x0000` | Reserved | | | | | Refused |
-| `0x0001` | ML-DSA-44 (FIPS 204) | Pure ML-DSA (FIPS 204, algorithms 2 and 3), not HashML-DSA | 1,312 bytes | 2,420 bytes | 2 | Accepted from genesis; the wallet default |
-| `0x0002` | SLH-DSA-SHAKE-128s (FIPS 205) | Pure SLH-DSA (FIPS 205, algorithms 22 and 24), not HashSLH-DSA | 32 bytes | 7,856 bytes | 1 | Accepted from genesis (**Proposed**, question 2) |
-| Every other value | Unassigned | | | | | Refused |
+| Scheme ID | Scheme | Mode | Public key | Signature | NIST category | Security assumption | Status |
+|---|---|---|---|---|---|---|---|
+| `0x0000` | Reserved | | | | | | Refused |
+| `0x0001` | ML-DSA-44 (FIPS 204) | Pure ML-DSA (FIPS 204, algorithms 2 and 3), not HashML-DSA | 1,312 bytes | 2,420 bytes | 2 | The conjectured hardness of module lattices (Module-LWE and Module-SIS); no proof reduces it to a hash | Accepted from genesis; the wallet default |
+| `0x0002` | SLH-DSA-SHAKE-128s (FIPS 205) | Pure SLH-DSA (FIPS 205, algorithms 22 and 24), not HashSLH-DSA | 32 bytes | 7,856 bytes | 1 | Hash-function properties only (of SHAKE256) | Accepted from genesis (**Proposed**, question 2) |
+| Every other value | Unassigned | | | | | | Refused |
+
+The NIST category says how much work the best known attack takes; the security
+assumption says what that rests on. For ML-DSA-44 the category is a conjecture
+about lattices, not a proven bound; for SLH-DSA-SHAKE-128s it follows from
+properties of the hash function, the assumption the rest of Ghost already makes.
 
 **Rules.**
 
@@ -335,11 +346,18 @@ negotiated or read from the signature itself.
   randomness mixed with the key), which FIPS 204 and 205 make the default.
   Verification is the same for hedged and deterministic signatures, so the
   scheme ID does not distinguish them; a signature is valid if it verifies.
-- **Why SLH-DSA too.** ML-DSA rests on module lattices; SLH-DSA rests only on
-  hash functions, the assumption the rest of Ghost already makes (threat model,
-  A1). Accepting it from genesis lets a holder who distrusts lattices choose
-  it, and gives every account a scheme to move to if ML-DSA is weakened, at
-  about three times the signature bytes and a higher verification charge. The
+- **Why SLH-DSA too.** ML-DSA rests on the conjectured hardness of module
+  lattices; SLH-DSA rests only on hash-function properties, the assumption the
+  rest of Ghost already makes (threat model, A1). A holder who wants hash-only
+  security chooses scheme `0x0002` when the account is created, at about three
+  times the signature bytes and a higher verification charge. The choice
+  cannot be made later for an existing account: the address is
+  `K(tag, scheme, pk)[:20]`, so moving funds out of an ML-DSA-44 account takes
+  a transaction signed by its ML-DSA-44 key. ML-DSA-44 accounts have no rescue
+  path: if ML-DSA is forgeable, an attacker can sign for them, and can forge
+  the same move the owner would make and race it. A real rescue path (an
+  address that also commits to an SLH-DSA key at creation) is not part of this
+  specification. The client and wallet sign with ML-DSA-44 only today. The
   small variant (`128s`) is chosen over the fast one (`128f`, 17,088-byte
   signatures) because chain bytes cost more than signing time.
 - **Refused for good.** Stateful hash-based schemes (XMSS, LMS) and one-time
@@ -662,9 +680,25 @@ keeps no state (section 5), so a seed restored on two devices is safe.
    random source for each commit (outline, "Phantom Keys"; spec 01), never from
    the wallet seed. No account key is derived from digits. The wallet tags
    (`ghost/wallet-*`) and the digit tags of spec 01 are disjoint.
-2. **Different alphabets.** Digits are groups of four decimal digits; a seed is
-   words. A wallet refuses digits in the seed field and words in the key field,
-   so neither can be entered as the other.
+2. **Neither is accepted as the other.** A Phantom Key's words and a seed's
+   words come from the same BIP-39 list and lay out their 264 bits the same way
+   (256 bits and an 8-bit check); only the check differs, Ghost's
+   `ghost/key-check/v1` byte (spec 01, section 6) against BIP-39's SHA-256
+   byte. On its own a wrong paste would pass the other check 1 time in 256, so
+   the wallet closes both directions:
+   - **Generating a seed.** A seed whose 24 words also pass the Phantom Key
+     words check is discarded and drawn again (about 1 draw in 256). Every seed
+     the wallet makes therefore fails the key check, so a seed pasted into a key
+     field is refused there.
+   - **Reading a seed.** The seed field refuses digits, and refuses by name
+     ("these words are a Phantom Key") any text that passes the Phantom Key
+     words check, read either the way the key field reads it or the way the
+     seed field does. A Phantom Key pasted into a seed field never opens a
+     wallet.
+
+   Seed words, their derivation and their checksum are unchanged: a seed is
+   still read as BIP-39 words. A seed made before this rule whose words happen
+   to pass the key check (about 1 in 256) is refused as a seed.
 3. **Different screens.** Summon and Claim ask only for digits; restoring a
    wallet asks only for words. No screen asks for both.
 4. **What a Phantom Key gives away.** The holder of the digits can reveal the
@@ -822,8 +856,10 @@ passes with the check it names removed does not count (spec 03, section 10).
   node's verification work within the worker pool's capacity.
 - **QS-9. Blocks fit the message cap.** The test of section 8.4 passes at the
   largest gas limit allowed.
-- **QS-10. Seed and digits stay apart.** The wallet refuses digits as a seed
-  and words as a Phantom Key, and no code path derives one from the other.
+- **QS-10. Seeds and Phantom Keys stay apart.** Over many random keys and
+  seeds, every Phantom Key's words (and digits) are refused as a wallet seed,
+  every generated seed's words fail the Phantom Key check, and no code path
+  derives one from the other (section 9, rules 1 and 2).
 - **QS-11. Both halves of the key exchange count.** Changing either the
   X25519 or the ML-KEM shared secret changes the session keys.
 - **QS-12. The proof meets the rule.** The prover's security gate refuses a

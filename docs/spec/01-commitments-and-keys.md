@@ -410,10 +410,14 @@ with `secret` the 32 secret bytes. Any wrong key, whatever the mistake (one
 wrong word, two swapped words, a word from another key), passes with
 probability 1 in 256; a word not in the list is caught before the check, so
 the check only has to catch real words in the wrong place. The tag is
-Ghost's own, not BIP-39's SHA-256 check, so the wallet's recovery words of
-[spec 09](09-quantum-safe-accounts.md), section 9, typed into a key field fail
-the check with probability 255 in 256, and the screens that ask for one or the
-other never share a field (spec 09, section 9). The words key shown as digits
+Ghost's own, not BIP-39's SHA-256 check. On its own that would let the
+wallet's recovery words of [spec 09](09-quantum-safe-accounts.md), section 9,
+pass a key field 1 time in 256, so the wallet closes the gap both ways (spec
+09, section 9, rule 2): it never generates a seed whose words pass this check,
+and its seed field refuses any words that do pass it. A seed the wallet
+generates, typed into a key field, always fails the check; a words key typed into a seed field is refused as
+a Phantom Key, and the screens that ask for one or the other never share a
+field. The words key shown as digits
 carries a check group of its own, `check(0x20, 0x01, digits)` below over its
 80 secret digits, as group 21.
 
