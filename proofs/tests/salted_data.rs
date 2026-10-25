@@ -138,6 +138,47 @@ fn version_1_root() -> [u8; 32] {
     merkle_root(Tree::Data, &version_1_data_commitment(&o), o.position, &o.path)
 }
 
+/// The fingerprint `F_d` of the salted opening, under the empty rule.
+fn salted_fingerprint(o: &SaltedDataOpening) -> [u8; 32] {
+    data_fingerprint_v2(&o.s, &o.r, &o.b, &o.salt, &o.cf, &EMPTY_RULE)
+}
+
+/// The data leaf of the salted opening with the old outer hash, made without
+/// the reserve: `K(data-commitment, DATA_V2, F_d)`.
+fn leaf_without_reserve(o: &SaltedDataOpening) -> [u8; 32] {
+    tagged("ghost/data-commitment/v1", &[&DATA_V2, &salted_fingerprint(o)])
+}
+
+/// The data leaf of the salted opening with `reserve` wei in the outer hash:
+/// `K(data-commitment, DATA_V2, reserve, F_d)`, the reserve as a 32-byte
+/// big-endian word.
+fn leaf_with_reserve(o: &SaltedDataOpening, reserve: u128) -> [u8; 32] {
+    let mut word = [0u8; 32];
+    word[16..].copy_from_slice(&reserve.to_be_bytes());
+    tagged("ghost/data-commitment/v1", &[&DATA_V2, &word, &salted_fingerprint(o)])
+}
+
+/// The root of a data tree holding `leaf` at the salted opening's position.
+fn root_of(leaf: &[u8; 32]) -> [u8; 32] {
+    let o = salted_data();
+    merkle_root(Tree::Data, leaf, o.position, &o.path)
+}
+
+/// What a reveal of the salted opening claims under `root`.
+fn claimed_reveal(root: [u8; 32]) -> DataReveal {
+    let o = salted_data();
+    let req = request(DataPurpose::Reveal, root);
+    DataReveal {
+        purpose: req.purpose,
+        root,
+        marker: data_marker_v2(&o.r, &o.b, &o.salt),
+        party: req.party,
+        fee: req.fee,
+        rule: req.rule,
+        cf: o.cf,
+    }
+}
+
 fn changed_salt(at: usize) -> [u8; SALT_BYTES] {
     let mut salt = SALT;
     salt[at] ^= 1;
@@ -315,8 +356,98 @@ fn a_version_1_data_leaf_does_not_open() {
     );
 }
 
+/// The fee reserve is bound into the leaf: the crate's data commitment is
+/// the outer hash with `DATA_RESERVE`, recomputed here from its tag.
+#[test]
+fn the_data_leaf_holds_the_reserve() {
+    let o = salted_data();
+    assert_eq!(DATA_RESERVE, 250_000_000_000_000_000);
+    assert_eq!(&DATA_RESERVE_WORD[..16], &[0; 16]);
+    assert_eq!(&DATA_RESERVE_WORD[16..], &DATA_RESERVE.to_be_bytes());
+    assert_eq!(amount_word(DATA_RESERVE), DATA_RESERVE_WORD);
+    let leaf = data_commitment_v2(&salted_fingerprint(&o));
+    assert_eq!(leaf, leaf_with_reserve(&o, DATA_RESERVE));
+    assert_ne!(leaf, leaf_without_reserve(&o));
+    assert_eq!(root_of(&leaf), salted_root());
+}
+
+/// A data leaf built with the old outer hash, without the reserve, sits in
+/// the data tree. The S2 prover refuses to open it, and a lying prover's
+/// reveal under that root does not verify.
+#[test]
+fn a_data_leaf_built_without_the_reserve_does_not_open() {
+    let _one = one_at_a_time();
+    let o = salted_data();
+    let old_root = root_of(&leaf_without_reserve(&o));
+    assert_ne!(old_root, salted_root());
+    let refused = prove_salted_data_reveal(&params(), &o, &request(DataPurpose::Reveal, old_root), zk(20));
+    assert_eq!(refused.err(), Some(ProofError::NotInTree));
+
+    let claimed = claimed_reveal(old_root);
+    lying_proof_fails(
+        || prove_salted_data_reveal_claiming(&params(), &o, &claimed, zk(21)),
+        |proof| verify_salted_data_reveal_unsettled(&params(), &claimed, proof),
+    );
+}
+
+/// A data leaf made with a reserve of `DATA_RESERVE + 1` sits in the data
+/// tree: no reveal of it verifies against the statement, which takes the
+/// constant `DATA_RESERVE`. The honest proof of the honest leaf still
+/// verifies, and not for the other root.
+#[test]
+fn a_data_reveal_proof_for_a_different_reserve_fails() {
+    let _one = one_at_a_time();
+    let o = salted_data();
+    let other_root = root_of(&leaf_with_reserve(&o, DATA_RESERVE + 1));
+    assert_ne!(other_root, salted_root());
+    let refused = prove_salted_data_reveal(&params(), &o, &request(DataPurpose::Reveal, other_root), zk(22));
+    assert_eq!(refused.err(), Some(ProofError::NotInTree));
+
+    let claimed = claimed_reveal(other_root);
+    lying_proof_fails(
+        || prove_salted_data_reveal_claiming(&params(), &o, &claimed, zk(23)),
+        |proof| verify_salted_data_reveal_unsettled(&params(), &claimed, proof),
+    );
+
+    let (tx, proof) = honest_reveal();
+    assert_eq!(tx.root, root_of(&leaf_with_reserve(&o, DATA_RESERVE)));
+    assert_eq!(verify_salted_data_reveal_unsettled(&params(), tx, proof), Ok(()));
+    let moved = DataReveal {
+        root: other_root,
+        ..tx.clone()
+    };
+    assert_eq!(
+        verify_salted_data_reveal_unsettled(&params(), &moved, proof),
+        Err(ProofError::Rejected)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // S3: the proof of holding.
+
+/// S3 opens the leaf as S2 does, so it binds the reserve too: a leaf made
+/// without the reserve, or with `DATA_RESERVE + 1`, cannot be held, and the
+/// honest proof of holding the honest leaf still verifies.
+#[test]
+fn a_proof_of_holding_binds_the_reserve_too() {
+    let _one = one_at_a_time();
+    let o = salted_data();
+    let opening = hold_opening(&o);
+    for leaf in [leaf_without_reserve(&o), leaf_with_reserve(&o, DATA_RESERVE + 1)] {
+        let ctx = hold_context(root_of(&leaf));
+        assert_ne!(ctx.root, salted_root());
+        assert_eq!(prove_salted_hold(&params(), &opening, &ctx, zk(24)).err(), Some(ProofError::NotInTree));
+        lying_proof_fails(
+            || prove_salted_hold_claiming(&params(), &opening, &ctx, zk(25)),
+            |proof| verify_hold_unsettled(&params(), &ctx, proof),
+        );
+        assert_eq!(verify_hold_unsettled(&params(), &ctx, honest_hold()), Err(ProofError::Rejected));
+    }
+
+    let ctx = hold_context(root_of(&leaf_with_reserve(&o, DATA_RESERVE)));
+    assert_eq!(ctx.root, salted_root());
+    assert_eq!(verify_hold_unsettled(&params(), &ctx, honest_hold()), Ok(()));
+}
 
 #[test]
 fn a_salted_proof_of_holding_verifies_with_the_salt() {

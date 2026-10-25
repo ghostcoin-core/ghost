@@ -811,8 +811,8 @@ root = f2a8cb20f27775cb0888dfe39577a9fab8a2630f2b8406b07e281e142f317a16
 [data-tree-one-leaf]
 kind = tree-root
 tree = data
-leaves = 523c415b17bb5c6b2270b71193a2737273d1be5aa519cd253155323aaad97e3f
-root = caa746ecf6160767cdf1cdffb8c1aa5628cce4e6037cac1b90e5978ae65cc5e8
+leaves = cb3181bcb1a051e9b2e9eb947f4dfe6aa30b70f37f1518153de92b15d5049e44
+root = f06603ac6e6f5a0ccac7e2e90aff6e8d9aa4c28b66df5690668e990fb582a77a
 
 [coin-page-two-leaves]
 kind = page

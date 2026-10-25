@@ -552,8 +552,9 @@ class SaltTest(unittest.TestCase):
         fd = checker.keccak_tagged("ghost/data-fingerprint/v2", self.s, self.r, self.b, SALT_A,
                                    data2, cf, self.rule)
         self.assertEqual(self.data(SALT_A)[0], fd)
+        reserve = (250_000_000_000_000_000).to_bytes(32, "big")
         self.assertEqual(self.data(SALT_A)[1],
-                         checker.keccak_tagged("ghost/data-commitment/v1", data2, fd))
+                         checker.keccak_tagged("ghost/data-commitment/v1", data2, reserve, fd))
         self.assertEqual(self.data(SALT_A)[2],
                          checker.keccak_tagged("ghost/data-marker/v2", self.r, self.b, SALT_A))
 
@@ -716,6 +717,32 @@ class SaltTest(unittest.TestCase):
         text = self.text.replace("`r`, `b`, `salt` | 101 | 1 |", "`r`, `b`, `salt` | 101 | 2 |", 1)
         self.assertIn("tag ghost/coin-marker/v2: table says '2' Keccak permutations, recomputed '1'",
                       self.run_on(text))
+        # The data commitment counts the reserve word: 91 bytes, not the 59
+        # of the outer hash without it.
+        self.assertEqual(rows["`ghost/data-commitment/v1`"]["Input bytes"], "91")
+        text = self.text.replace("`DATA`, `DATA_RESERVE`, `F_d` | 91 | 1 |", "`DATA`, `F_d` | 59 | 1 |")
+        self.assertIn("tag ghost/data-commitment/v1: table says '59' input bytes, recomputed 91",
+                      self.run_on(text))
+
+    def test_data_commitment_without_the_reserve_is_caught(self):
+        # The data vectors are computed with DATA_RESERVE in the outer hash;
+        # a checker that leaves it out finds every data commitment wrong.
+        self.assertEqual(checker.DATA_RESERVE, 250_000_000_000_000_000)
+
+        def without_reserve(fingerprint, version=checker.VERSION_2):
+            return checker.keccak_tagged(checker.TAG_DATA_COMMITMENT, checker.type_tag("DATA", version),
+                                         fingerprint)
+
+        def other_reserve(fingerprint, version=checker.VERSION_2):
+            return checker.keccak_tagged(checker.TAG_DATA_COMMITMENT, checker.type_tag("DATA", version),
+                                         (checker.DATA_RESERVE + 1).to_bytes(32, "big"), fingerprint)
+
+        for wrong in (without_reserve, other_reserve):
+            with self.subTest(wrong=wrong.__name__), mock.patch.object(checker, "data_commitment", wrong):
+                errors = checker.run(SPEC)[0]
+                self.assertTrue(any("[data-commit-salted] commitment" in e for e in errors), errors)
+                self.assertTrue(any("[data-commit-salted-other] commitment" in e for e in errors), errors)
+        self.assertEqual(checker.run(SPEC)[0], [])
 
 
 if __name__ == "__main__":

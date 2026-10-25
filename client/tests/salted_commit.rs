@@ -4,8 +4,8 @@
 //! commit; and the 206-byte data of a salted commit.
 
 use ghost_client::{
-    salted_commit_data, Amount, Content, Fingerprint, NoteContents, PhantomKey, Rule, Salt,
-    CommitError, COIN_V2, DATA_V2, NOTE_BYTES, SALTED_COMMIT_DATA_BYTES,
+    check_data_commit_value, salted_commit_data, Amount, Content, Fingerprint, NoteContents, PhantomKey,
+    Rule, Salt, CommitError, COIN_V2, DATA_RESERVE_WEI, DATA_V2, NOTE_BYTES, SALTED_COMMIT_DATA_BYTES,
     SALTED_COMMIT_FORMAT_VERSION, SALT_BYTES,
 };
 use rand::rngs::StdRng;
@@ -112,6 +112,59 @@ fn two_salts_give_unrelated_commitments_and_markers() {
     assert_ne!(a.fingerprint, b.fingerprint);
     assert_ne!(a.commitment, b.commitment);
     assert_ne!(a.marker, b.marker);
+}
+
+/// `K(tag, parts...)` of spec 01, section 2, recomputed here from its
+/// definition: Keccak-256 over the tag's length byte, the tag, the parts.
+fn k(tag: &str, parts: &[&[u8]]) -> [u8; 32] {
+    let mut msg = vec![u8::try_from(tag.len()).unwrap()];
+    msg.extend_from_slice(tag.as_bytes());
+    for part in parts {
+        msg.extend_from_slice(part);
+    }
+    ghost_proofs::keccak256(&msg)
+}
+
+/// A data commit sends exactly the reserve: every other value, zero
+/// included, is refused.
+#[test]
+fn a_data_commit_with_any_other_value_is_rejected() {
+    assert_eq!(DATA_RESERVE_WEI, 250_000_000_000_000_000);
+    assert_eq!(DATA_RESERVE_WEI, ghost_proofs::DATA_RESERVE);
+    for value in [0, DATA_RESERVE_WEI - 1, DATA_RESERVE_WEI + 1, 1_000_000_000_000_000_000, u128::MAX] {
+        assert_eq!(check_data_commit_value(value), Err(CommitError::WrongDataReserve), "{value}");
+    }
+    assert_eq!(check_data_commit_value(DATA_RESERVE_WEI), Ok(()));
+}
+
+/// The data commitment's outer hash takes the reserve as a 32-byte
+/// big-endian amount word after the type tag, and differs from the outer
+/// hash without it.
+#[test]
+fn the_data_commitment_binds_the_reserve() {
+    let key = vector_key("data-commit-salted");
+    let content = Content::new(spec_field("data-commit-salted", "content-ascii").into_bytes());
+    let commit = key
+        .data_commit_with_salt(&content, Rule::EMPTY, vector_salt("data-commit-salted"))
+        .unwrap();
+    let f = commit.fingerprint.as_bytes();
+    let tag = "ghost/data-commitment/v1";
+
+    let mut word = [0u8; 32];
+    word[16..].copy_from_slice(&DATA_RESERVE_WEI.to_be_bytes());
+    assert_eq!(word, amount(DATA_RESERVE_WEI).to_bytes());
+    let with_reserve = k(tag, &[&DATA_V2, &word, f]);
+    let without_reserve = k(tag, &[&DATA_V2, f]);
+
+    assert_eq!(commit.commitment.as_bytes(), &with_reserve);
+    assert_ne!(commit.commitment.as_bytes(), &without_reserve);
+    assert_eq!(ghost_client::commit::salted_data_commitment(&commit.fingerprint).as_bytes(), &with_reserve);
+    // The proofs crate opens the same leaf.
+    assert_eq!(&ghost_proofs::data_commitment_v2(f), commit.commitment.as_bytes());
+    // Another reserve gives another leaf.
+    let mut other = word;
+    other[31] ^= 1;
+    assert_ne!(k(tag, &[&DATA_V2, &other, f]), with_reserve);
 }
 
 #[test]

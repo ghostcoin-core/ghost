@@ -79,8 +79,8 @@ pub use account::{
     VerifiedAccountTx, WalletSeed,
 };
 pub use commit::{
-    salted_commit_data, Amount, CoinCommit, Commitment, CommitError, Content, ContentFingerprint,
-    DataCommit, Fingerprint, Marker, Rule, Salt, TypeTag, COIN_V2, DATA_V2,
+    check_data_commit_value, salted_commit_data, Amount, CoinCommit, Commitment, CommitError, Content,
+    ContentFingerprint, DataCommit, Fingerprint, Marker, Rule, Salt, TypeTag, COIN_V2, DATA_RESERVE_WEI, DATA_V2,
     SALTED_COMMIT_DATA_BYTES, SALTED_COMMIT_FORMAT_VERSION, SALT_BYTES, V_MAX,
 };
 pub use derive::{Blinding, DataKey, KeyBytes, NoteKey, RevealSecret, Secret};

@@ -7,7 +7,7 @@
 //! coin:  F   = K("ghost/coin-fingerprint/v2", s, r, b, salt, COIN_V2, cf, rule)
 //!        C   = K("ghost/coin-commitment/v1", COIN_V2, F, v)
 //! data:  F_d = K("ghost/data-fingerprint/v2", s, r, b, salt, DATA_V2, cf, rule)
-//!        C   = K("ghost/data-commitment/v1", DATA_V2, F_d)
+//!        C   = K("ghost/data-commitment/v1", DATA_V2, DATA_RESERVE_WEI, F_d)
 //! cf = K("ghost/content-fingerprint/v1", len(content) as 8 bytes, content)
 //! coin marker:  m = K("ghost/coin-marker/v2", r, b, salt)
 //! data marker:  m = K("ghost/data-marker/v2", r, b, salt)
@@ -83,6 +83,12 @@ impl fmt::Debug for Salt {
 /// The largest amount in wei, `2^96 - 1`.
 pub const V_MAX: u128 = (1 << 96) - 1;
 
+/// The fee reserve of a data commitment (spec 04, section 3, "The fee
+/// reserve"): 2.5 x 10^17 wei, 0.25 GHOST. A data commit sends exactly this
+/// value, the node burns it, and it is bound into the leaf's outer hash; it
+/// pays the fee of the data reveal or revocation.
+pub const DATA_RESERVE_WEI: u128 = 250_000_000_000_000_000;
+
 /// Why a commit cannot be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommitError {
@@ -90,6 +96,8 @@ pub enum CommitError {
     AmountTooLarge,
     /// The rule is not the empty rule, the only rule version 1 accepts.
     RuleNotSupported,
+    /// A data commit's value is not exactly [`DATA_RESERVE_WEI`].
+    WrongDataReserve,
 }
 
 impl fmt::Display for CommitError {
@@ -97,11 +105,27 @@ impl fmt::Display for CommitError {
         match self {
             Self::AmountTooLarge => write!(f, "the amount is above 2^96 - 1 wei"),
             Self::RuleNotSupported => write!(f, "version 1 accepts only the empty rule"),
+            Self::WrongDataReserve => write!(
+                f,
+                "a data commit must send exactly the reserve, {DATA_RESERVE_WEI} wei"
+            ),
         }
     }
 }
 
 impl std::error::Error for CommitError {}
+
+/// Checks the value a data commit will send: exactly [`DATA_RESERVE_WEI`].
+/// Any other value, zero included, is [`CommitError::WrongDataReserve`]
+/// (spec 04, section 3, "The commit rule"). A wallet building a data commit
+/// calls this on the value it will send.
+pub const fn check_data_commit_value(value: u128) -> Result<(), CommitError> {
+    if value == DATA_RESERVE_WEI {
+        Ok(())
+    } else {
+        Err(CommitError::WrongDataReserve)
+    }
+}
 
 /// An amount in wei, in `[0, V_MAX]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -325,9 +349,14 @@ pub fn salted_data_fingerprint(
     ))
 }
 
-/// `C = K("ghost/data-commitment/v1", DATA_V2, F_d)`.
+/// `C = K("ghost/data-commitment/v1", DATA_V2, DATA_RESERVE_WEI, F_d)`, the
+/// reserve as a 32-byte big-endian amount word, the format of a coin's `v`.
 pub fn salted_data_commitment(fingerprint: &Fingerprint) -> Commitment {
-    Commitment(hash::k(TAG_DATA_COMMITMENT, &[&DATA_V2, fingerprint.as_bytes()]))
+    let reserve = Amount(DATA_RESERVE_WEI).to_bytes();
+    Commitment(hash::k(
+        TAG_DATA_COMMITMENT,
+        &[&DATA_V2, &reserve, fingerprint.as_bytes()],
+    ))
 }
 
 /// `m = K("ghost/data-marker/v2", r, b, salt)`.

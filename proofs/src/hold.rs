@@ -37,11 +37,15 @@
 //!
 //! ```text
 //! F_d     K(data-fingerprint, s, r, b, salt, DATA, cf, rule)  2 blocks, cf public, rule private
-//! C       K(data-commitment, DATA, F_d)                       1
+//! C       K(data-commitment, DATA, DATA_RESERVE, F_d)         1, reserve constant
 //! N0..N31 K(data-tree-node, level, left, right)               32, N31 = root
 //! M       K(data-marker, r, b, salt)                          1, private
 //! B       K(hold-binding, fields)                             2, = binding
 //! ```
+//!
+//! `C` takes the fee reserve `DATA_RESERVE` as a constant amount word, as in
+//! S2 (the opening is the same, [`push_data_opening`]): a leaf made with
+//! another reserve does not open.
 
 use alloc::collections::BTreeMap;
 use alloc::vec;

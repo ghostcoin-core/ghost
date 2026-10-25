@@ -78,9 +78,9 @@ pub use data::{DataRevealRequest, prove_salted_data_reveal, verify_salted_data_r
 #[doc(hidden)]
 pub use data::prove_salted_data_reveal_claiming;
 pub use hash::{
-    COIN_V2, DATA_V2, EMPTY_RULE, RATE_BYTES, SALT_BYTES, TREE_DEPTH, Tree, coin_commitment_v2, coin_fingerprint_v2,
-    coin_marker_v2, data_commitment_v2, data_fingerprint_v2, data_marker_v2, empty_leaf, keccak256, merkle_root,
-    permutations, tag_bytes, tagged, tree_node,
+    COIN_V2, DATA_RESERVE, DATA_RESERVE_WORD, DATA_V2, EMPTY_RULE, RATE_BYTES, SALT_BYTES, TREE_DEPTH, Tree,
+    coin_commitment_v2, coin_fingerprint_v2, coin_marker_v2, data_commitment_v2, data_fingerprint_v2, data_marker_v2,
+    empty_leaf, keccak256, merkle_root, permutations, tag_bytes, tagged, tree_node,
 };
 pub use hold::{ChallengeBook, HoldContext, SaltedHoldOpening, hold_binding, verify_hold};
 #[cfg(feature = "unsettled-points-test")]

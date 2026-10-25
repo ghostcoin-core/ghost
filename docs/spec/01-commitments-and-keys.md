@@ -90,17 +90,22 @@ coin:  F   = K("ghost/coin-fingerprint/v2", s, r, b, salt, COIN, cf, rule)
        C   = K("ghost/coin-commitment/v1", COIN, F, v)
 
 data:  F_d = K("ghost/data-fingerprint/v2", s, r, b, salt, DATA, cf, rule)
-       C   = K("ghost/data-commitment/v1", DATA, F_d)
+       C   = K("ghost/data-commitment/v1", DATA, DATA_RESERVE, F_d)
 ```
 
 with `COIN` = `0x02 0x01` and `DATA` = `0x02 0x02`. This is commitment format
 version 2, the only format. The salt sits right after `b`. The commitment tags
-keep their `v1` suffix, because their input layout (type tag, fingerprint,
-amount) is unchanged; the version byte inside the type tag names the format
+keep their `v1` suffix; the version byte inside the type tag names the format
 there.
 
 `v` is the amount the node has just burned, and the type tag in the outer hash
-is set by the node: for every new commit it is the version 2 type tag. A
+is set by the node: for every new commit it is the version 2 type tag.
+`DATA_RESERVE` is the data commitment's fee reserve, the protocol constant
+250,000,000,000,000,000 wei (2.5 x 10^17 wei, 0.25 GHOST) of
+[spec 04](04-data-commitments.md), section 3, "The fee reserve": a data commit
+sends exactly that value, the node burns it and puts it in the outer hash as
+a 32-byte big-endian amount word, the same word format as a coin's `v`. The
+wallet chooses no amount for data, and `F_d` has no amount field. A
 remainder commitment is built the same way inside the reveal proof, from its
 own fresh blinding, its own fresh salt and its own amount.
 
@@ -233,7 +238,7 @@ the tag as well as the inputs.
 | `ghost/coin-fingerprint/v2` | Keccak-256 | Coin fingerprint `F` (section 3) | `s`, `r`, `b`, `salt`, `COIN`, `cf`, `rule` | 204 | 2 |
 | `ghost/coin-commitment/v1` | Keccak-256 | Coin commitment `C`, the coin-tree leaf (section 3) | `COIN`, `F`, `v` | 91 | 1 |
 | `ghost/data-fingerprint/v2` | Keccak-256 | Data fingerprint `F_d` (section 3) | `s`, `r`, `b`, `salt`, `DATA`, `cf`, `rule` | 204 | 2 |
-| `ghost/data-commitment/v1` | Keccak-256 | Data commitment `C`, the data-tree leaf (section 3) | `DATA`, `F_d` | 59 | 1 |
+| `ghost/data-commitment/v1` | Keccak-256 | Data commitment `C`, the data-tree leaf (section 3) | `DATA`, `DATA_RESERVE`, `F_d` | 91 | 1 |
 | `ghost/content-fingerprint/v1` | Keccak-256 | Content fingerprint `cf` (section 3) | content length as 8 bytes, content | 37 + content | not in a proof in version 1 |
 | `ghost/coin-marker/v2` | Keccak-256 | One-time marker of a coin commitment (section 3) | `r`, `b`, `salt` | 101 | 1 |
 | `ghost/data-marker/v2` | Keccak-256 | One-time marker of a data commitment (section 3) | `r`, `b`, `salt` | 101 | 1 |
@@ -268,7 +273,8 @@ Notes on the table:
   remainder 3 and the tree path 32, where the benchmark plan's one-byte tags
   cost slightly less for the opening. The salt does not change these counts:
   a fingerprint is 204 bytes, still under the 272 bytes that two permutations
-  absorb, and a marker is 101 bytes, under the 136 of one. The difference is a few permutations per
+  absorb, and a marker is 101 bytes, under the 136 of one. Nor does the data
+  fee reserve: a data commitment is 91 bytes, one permutation. The difference is a few permutations per
   proof, against a measured worst case of about 5.2 seconds for the whole
   proof against a 10-second target ([benchmark results](../benchmarks/results.md)).
 
@@ -667,6 +673,16 @@ commitment has, and the type tag is inside both `F` and `C`. A commitment is
 opened only with the `v2` fingerprint and marker tags and a 16-byte salt right
 after `b`.
 
+**The data fee reserve.** Data format version 2 (type tag `0x02 0x02`, tags
+`v2`) now has `DATA_RESERVE` in the outer hash of `C` (section 3;
+[spec 04](04-data-commitments.md), section 3, "The fee reserve"), so the
+`ghost/data-commitment/v1` input is 91 bytes (section 4). The reserve re-sets
+data format version 2 rather than adding a version 3: no recorded network or
+fixture held a version 2 data leaf made without the reserve, and the vectors
+of section 14 are computed with it. The coin format is unchanged.
+`DATA_RESERVE` belongs to the version: changing it later is a new commitment
+format version.
+
 **Rules (Proposed).**
 
 - A type tag, note version or scheme ID the reader does not know is rejected
@@ -987,7 +1003,7 @@ salt = 00112233445566778899aabbccddeeff
 type-tag = 0202
 content-fingerprint = 7da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c
 fingerprint = 166302e38b333317b6aa9cf4d62cf53ff15809a6180192333cb078c10e7eae7a
-commitment = 523c415b17bb5c6b2270b71193a2737273d1be5aa519cd253155323aaad97e3f
+commitment = cb3181bcb1a051e9b2e9eb947f4dfe6aa30b70f37f1518153de92b15d5049e44
 marker = c340c4a3020d70f72ed289d4e5fcc0c41cd41224d69bea229f0f8a6ecbb77e3b
 
 [data-commit-salted-other]
@@ -1002,7 +1018,7 @@ salt = f0e1d2c3b4a5968778695a4b3c2d1e0f
 type-tag = 0202
 content-fingerprint = 7da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c
 fingerprint = 9791d56e38696d267ba64caa54c3d5d9caa4dd00fb96c6caf7b8ade65724b660
-commitment = e14cd5b39ce0df5e812d94f8977eb5e2de4c75338ecd1232c995f1a2c3f91ec5
+commitment = a19fe2b42a927bf7c3d832c6650184166a52847c4218f021d84cd6d61346652b
 marker = 40b6aa08963fee7e02d69cf4d7c5e9d2ba775d28991f4e08e27ed97c8a38acc8
 ```
 
@@ -1072,7 +1088,7 @@ content-length = 18
 rule = 0000000000000000000000000000000000000000000000000000000000000000
 salt = 00112233445566778899aabbccddeeff
 chain-id = 1234
-leaf = 523c415b17bb5c6b2270b71193a2737273d1be5aa519cd253155323aaad97e3f
+leaf = cb3181bcb1a051e9b2e9eb947f4dfe6aa30b70f37f1518153de92b15d5049e44
 plaintext = 0201020200000000000000000000000000000000000000007da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c0000000000000012000000000000000000000000000000000000000000000000000000000000000000112233445566778899aabbccddeeff00000000000000000000000000000000
-associated-data = 00000000000004d2523c415b17bb5c6b2270b71193a2737273d1be5aa519cd253155323aaad97e3f
+associated-data = 00000000000004d2cb3181bcb1a051e9b2e9eb947f4dfe6aa30b70f37f1518153de92b15d5049e44
 ```
