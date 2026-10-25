@@ -76,8 +76,7 @@ type tag ("Core protocol" 3), the same fields as a coin commitment in
 `r`, random blinding `b`, a salt, the type tag, the content fingerprint and
 the rule. This document adds one type: `DATA` (**Proposed**: the only data
 type in the first version, question 6). A new data commitment is commitment
-format version 2, type tag `0x02 0x02`; a version 1 data leaf (`0x01 0x02`,
-no salt) already on a chain stays valid ([spec 01](01-commitments-and-keys.md),
+format version 2, type tag `0x02 0x02` ([spec 01](01-commitments-and-keys.md),
 section 10). An unknown data type or an unknown version byte is rejected
 wherever a type tag is checked, and never read with a guessed version.
 
@@ -93,8 +92,7 @@ carries `F_d` and the salt. The salt is public: it is not a secret and is not
 computed from the digits; it makes every data leaf a separate target, so one
 guess at a key cannot be checked against every leaf at once (threat model,
 C20). The data marker takes the same salt,
-`K("ghost/data-marker/v2", r, b, salt)`. A version 1 data commitment has no
-salt and hashes as before. The node computes
+`K("ghost/data-marker/v2", r, b, salt)`. The node computes
 
 ```text
 C = H(tag_data_commitment, DATA, DATA_RESERVE, F_d)
@@ -343,7 +341,7 @@ commitment of those bytes shares, not that they concern one commitment.
 
 **Verifier checks (Proposed order).** The verifier stops at the first failure.
 
-1. The type tag is `DATA` at commitment format version 2 or 1, and the purpose
+1. The type tag is `DATA` at commitment format version 2, and the purpose
    is hold. Any other version byte is rejected.
 2. The chain identifier and version are this chain's.
 3. The challenge is one this verifier issued, has not been answered before, and
@@ -411,9 +409,8 @@ value to carry (question 3; "Fee settlement at reveal and revoke", below).
    or account fields. **Proposed:** the same encoded size as the coin reveal,
    with the amount-out and remainder fields required to be zero.
 2. **Encoding.** Every public input is canonical.
-3. **Type.** The type tag is `DATA` at commitment format version 2 or, for a
-   leaf already on a chain, version 1. A `COIN` type or an unknown version byte
-   is rejected here; a coin reveal follows spec 03, section 7.
+3. **Type.** The type tag is `DATA` at commitment format version 2. A `COIN`
+   type or an unknown version byte is rejected here; a coin reveal follows spec 03, section 7.
 4. **Chain, version and domain.** This chain's current values.
 5. **Purpose.** The purpose is reveal or revoke. Any other value is rejected.
 6. **Fee.** The fee is the coin reveal's, unchanged: it equals the window fee
@@ -437,7 +434,7 @@ value to carry (question 3; "Fee settlement at reveal and revoke", below).
     in section 3 with type `DATA` and the constant `DATA_RESERVE` (no new
     private input) under the public root, that the public marker
     is derived from that `C`'s secret parts and salt with the data marker tag
-    of its version (so one commitment has one marker), that the public `cf` is
+    (so one commitment has one marker), that the public `cf` is
     the content fingerprint inside that `C`, that the salt stays a private
     input, that the rule is the empty rule, and that the binding digest is the
     one in the public inputs.
@@ -603,8 +600,8 @@ everything that is on the chain or derivable (outline, second milestone 4):
    (threat model, section 6 item 8). The one note that decrypts under
    authenticated encryption is the wallet's. **Proposed:** the wallet never
    asks an endpoint for one commitment, one position or one marker.
-3. Recompute `F_d` and `C` from the derived values, the note's `cf` and, for a
-   version 2 commitment, the salt published with its commit (fetched in bulk
+3. Recompute `F_d` and `C` from the derived values, the note's `cf` and the
+   salt published with its commit (fetched in bulk
    with the note history, never asked for one leaf at a time), and check that
    `C` is the leaf stored with that note. If it is not, restore fails closed.
 4. Compute the marker locally, with the same salt, and check it against the data spent-marker set,
@@ -765,8 +762,7 @@ assumes every other check passes.
   test chain whose window fee is `DATA_RESERVE + 1`) is rejected at section 6,
   step 6, before the proof is verified, and nothing changes; with the window
   fee exactly `DATA_RESERVE` it is accepted and nothing is forfeited.
-- **CR-D19. Content fingerprint binding.** For a version 1 and a version 2
-  commitment: a valid data reveal whose `cf` is replaced with the fingerprint
+- **CR-D19. Content fingerprint binding.** A valid data reveal whose `cf` is replaced with the fingerprint
   of other bytes fails at section 6, step 10, and a proof of holding made for
   one `cf` is rejected at verifier check 6 when the verifier asks about
   another; a prover that opens the commitment but claims another `cf` makes no

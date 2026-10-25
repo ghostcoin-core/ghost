@@ -118,7 +118,7 @@ them:
 |---|---|---|---|
 | 0 | 2 | `version` | `TX_VERSION`, `0x0001` |
 | 2 | 8 | `chain_id` | This chain's identifier (spec 02, section 2) |
-| 10 | 32 | `marker` | The coin marker `K("ghost/coin-marker/v1", r, b)` (spec 02, section 4) |
+| 10 | 32 | `marker` | The coin marker `K("ghost/coin-marker/v2", r, b, salt)` (spec 02, section 4) |
 | 42 | 32 | `root` | A coin-tree root from the header of an earlier canonical block, with no tree index (spec 05, section 5) |
 | 74 | 32 | `remainder` | The remainder commitment `C'` |
 | 106 | 20 | `recipient` | The address credited with `out` |

@@ -51,9 +51,8 @@ settled, the check rejects (fails closed) and the point is listed in section 11.
   protocol" 10). Tag strings are fixed in the proof-statement specification;
   the names used here are placeholders for distinct tags.
 - "Type tag" is the commitment's version and type (outline, "Core protocol" 3).
-  `COIN` is the coin type at the commitment's format version: every new commit
-  and every remainder is version 2, the salted format (`0x02 0x01`), and
-  version 1 leaves (`0x01 0x01`) already on a chain stay valid
+  `COIN` is the coin type at commitment format version 2, the salted format
+  (`0x02 0x01`), which every commit and every remainder uses
   ([spec 01](01-commitments-and-keys.md), sections 3 and 10). `DATA` is any
   data type.
 - "Marker" is the one-time marker a one-time reveal publishes (outline, "Core
@@ -149,8 +148,7 @@ where `s` is the secret, `r` the reveal secret, `b` fresh random blinding,
 (for the first milestone `rule` is the empty rule). The tag is
 `ghost/coin-fingerprint/v2` and the type tag is that of commitment format
 version 2 ([spec 01](01-commitments-and-keys.md), section 3). The salt is
-public and makes every leaf a separate target for anyone guessing keys; a
-version 1 commitment, made before the salt, has none and hashes as before. The
+public and makes every leaf a separate target for anyone guessing keys. The
 commit carries `F` and its salt. The node computes
 
 ```text
@@ -257,8 +255,8 @@ chain, and step 13 is the only step that writes.
    `[0, V_MAX]`, and the recipient a 20-byte address with no other bits set.
    Roots, markers and commitments are 32-byte strings with no modulus check
    ([spec 01](01-commitments-and-keys.md), section 12, item 2).
-3. **Type.** The type tag is `COIN` at commitment format version 2 or, for a
-   leaf already on a chain, version 1. A `DATA` type, an unknown type or an
+3. **Type.** The type tag is `COIN` at commitment format version 2. A `DATA`
+   type, an unknown type or an
    unknown version byte is rejected here, before any lookup or proof
    verification, and never read with a guessed version, so a data commitment
    never reaches the mint.
@@ -293,16 +291,14 @@ chain, and step 13 is the only step that writes.
     - **Membership:** an input commitment `C`, opened as in section 5 with type
       `COIN`, is a leaf under the public tree root.
     - **Marker derivation:** the public marker is derived from `C`'s secret
-      parts and, for a version 2 leaf, its salt, so one commitment has one
+      parts and its salt, so one commitment has one
       marker. The salt is a private input of the proof, never a public one.
     - **Remainder:** the public remainder commitment is built as in section 5
       from `F'` and `v'`, with the same type, content fingerprint and rule as
       `C`, at commitment format version 2, and `s'`, `r'`, `b'` and its salt
       free ([spec 02](02-proof-statements.md), section 4, constraint 4).
       Fresh blinding and a fresh salt are the wallet's duty (section 8), not
-      something the proof shows: a version 1 remainder that reused `r` and `b`
-      would carry the spent marker and could never be revealed, which harms
-      only its own holder.
+      something the proof shows.
     - **Conservation:** `v = out + v' + fee`.
     - **Ranges:** `v`, `out`, `v'` and `fee` are each in `[0, V_MAX]`, so `v'`
       cannot be negative and the sum cannot wrap.
@@ -355,10 +351,8 @@ never publishes (outline, core requirement 3).
   `r'`, so only the new key controls the remainder. The proof does not require
   `s' = s`; the chain cannot tell a claim from a partial reveal.
 - **What carries over.** Type, content fingerprint and rule are equal to the
-  input's. The commitment format version does not carry over: every remainder
-  is version 2, so the first reveal of a version 1 leaf moves its value into a
-  salted remainder. There is nothing else to carry over in the first
-  milestone.
+  input's, and every remainder is commitment format version 2 with its own
+  salt. There is nothing else to carry over in the first milestone.
 - **Boundary cases** (outline, "First milestone" 8):
   - Full reveal: `out = v - fee`, `v' = 0`.
   - Zero-amount claim: `out = 0`, `v' = v - fee`, new key; nothing is minted to

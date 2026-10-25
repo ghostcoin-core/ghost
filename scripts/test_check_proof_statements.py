@@ -192,6 +192,24 @@ class CheckerTest(unittest.TestCase):
         text = self.damaged("`ghost/hold-binding/v1`.", "`ghost/hold-binding/v1`. See `ghost/made-up/v1`.")
         self.assert_gap(text, "tag ghost/made-up/v1 is not in the tag table")
 
+    def test_version_1_tags_are_not_in_the_tag_table(self):
+        # The unsalted fingerprint and marker tags left spec 01's tag table, so
+        # spec 02 may not name them, nor any other tag the table does not list.
+        known = {checker.name_of(line.strip("|").split("|")[0])
+                 for line in self.tags.splitlines() if line.startswith("| `ghost/")}
+        for tag in ("ghost/coin-fingerprint/v1", "ghost/data-fingerprint/v1",
+                    "ghost/coin-marker/v1", "ghost/data-marker/v1"):
+            with self.subTest(tag=tag):
+                self.assertNotIn(tag, known)
+                self.assertNotIn(tag, self.text)
+        self.assertTrue(set(checker.SALTED_TAGS) <= known)
+        text = self.damaged("`K(\"ghost/coin-marker/v2\", r, b, salt)` was never",
+                            "`K(\"ghost/coin-marker/v2\", r, b, salt)` (or "
+                            "`K(\"ghost/coin-marker/v1\", r, b)`) was never")
+        errors = self.errors(text)
+        self.assertIn("tag ghost/coin-marker/v1 is not in the tag table of spec 01", errors)
+        self.assertEqual(len(errors), 1, errors)
+
     def test_property_numbering_gap(self):
         self.assert_gap(self.damaged("- **PS-3. One commitment", "- **PS-30. One commitment"),
                         "properties are numbered")

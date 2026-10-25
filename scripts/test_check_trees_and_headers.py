@@ -366,7 +366,7 @@ class CheckerTest(unittest.TestCase):
                         "no conflict citing spec 06, 8.3")
 
     def test_unknown_tag(self):
-        text = self.damaged("`ghost/data-marker/v1`, each", "`ghost/spent-set/v1`, each")
+        text = self.damaged("`ghost/data-marker/v2`, each", "`ghost/spent-set/v1`, each")
         self.assert_gap(text, "tag ghost/spent-set/v1 is not in the tag table")
         self.assert_gap(self.text, "no tag table found in spec 01", spec01="no table")
 

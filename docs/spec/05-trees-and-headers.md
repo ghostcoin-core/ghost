@@ -321,7 +321,7 @@ reserved system-account storage, journaled and covered by the state root (base
 client plan 7.3):
 
 - **One set per marker tag.** The coin spent-marker set holds the markers of
-  `ghost/coin-marker/v1`, the data set those of `ghost/data-marker/v1`, each in
+  `ghost/coin-marker/v2`, the data set those of `ghost/data-marker/v2`, each in
   its own reserved account. A coin marker is never looked up in the data set or
   the other way round (spec 04, section 2).
 - **Keyed by the marker.** In the set's account, the storage slot whose key is

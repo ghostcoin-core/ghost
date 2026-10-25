@@ -24,7 +24,7 @@ specification. Section 14 holds test vectors, and
 |---|---|---|
 | Commitment format | One format with a type tag: secret `s`, reveal secret `r`, blinding `b`, salt, type tag, content fingerprint, rule; a coin commitment adds the amount | Outline ("Core protocol" 3) |
 | Per-commitment salt | Every new commitment (commit, remainder, data) has a fresh random 16-byte salt from the wallet, public, inside `F` (so `C`) and the marker, so one guess at a key checks one leaf, never all of them (section 3) | Founder direction, 2026-10-20; front desk decision |
-| Commitment format version | Version 2 is the salted format and the only one a wallet makes; version 1 (no salt) stays valid for leaves already on a chain, told apart by the version byte of the type tag and by the `v2` fingerprint and marker tags (section 10) | Front desk decision |
+| Commitment format version | Version 2, the salted format, the only one: the version byte of the type tag and the `v2` fingerprint and marker tags (section 10) | Front desk decision |
 | Two-step commitment | The wallet's fingerprint, then the node's commitment over type tag, fingerprint and (for coins) amount | [Spec 03](03-coin-rules.md), section 5; [spec 04](04-data-commitments.md), section 3 |
 | Hash for commitments, markers, tree nodes and anything checked inside a proof | Keccak-256, original padding | Front desk decision; [benchmark results](../benchmarks/results.md) |
 | Hash for deriving secrets from the digits, the note key and the checksum | SHA3-256 (FIPS 202) | Front desk decision; use for the checksum **Proposed** |
@@ -36,7 +36,7 @@ specification. Section 14 holds test vectors, and
 | Derivation | Each secret is the tagged SHA3-256 of the key bytes, one tag per secret | Outline ("Technical starting picks"); layout **Proposed** |
 | Remainder blinding | Derived from the digits and the commitment's hop number, used once per key on any one chain (section 8) | Outline ("Coin rules"; "Do not carry over"); counter **Proposed** |
 | Finding the current remainder | Bulk trial decryption of the notes, then the marker of each found commitment against the spent-marker set | Threat model, section 6 item 8; method **Proposed** |
-| Encrypted note | 156 bytes on the chain: random nonce, ChaCha20-Poly1305 ciphertext of a fixed 128-byte plaintext, tag. Note version 2 carries the commitment's salt; version 1 stays valid for notes already on a chain (section 9) | Outline ("Core protocol" 11); scheme and layout **Proposed**; note version 2 front desk decision |
+| Encrypted note | 156 bytes on the chain: random nonce, ChaCha20-Poly1305 ciphertext of a fixed 128-byte plaintext, tag. Note version 2 carries the commitment's salt (section 9) | Outline ("Core protocol" 11); scheme and layout **Proposed**; note version 2 front desk decision |
 | Versions | Version suffix on every tag, a version byte in every type tag, a key format code, a note version and a scheme ID | Outline ("Extension points" 1 and 4); values **Proposed** |
 
 ## 2. Conventions
@@ -59,10 +59,8 @@ specification. Section 14 holds test vectors, and
   as digit groups (section 5); "derived from the digits" means derived from
   the key in either form. **Key bytes** are the encoding of the key that every
   derivation takes (section 7).
-- `COIN` and `DATA` are the two type tags of the commitment's format version
-  (section 10): `0x02 0x01` and `0x02 0x02` in version 2, the format every new
-  commitment uses, and `0x01 0x01` and `0x01 0x02` in version 1, which stays
-  valid for leaves already on a chain.
+- `COIN` and `DATA` are the two type tags of commitment format version 2
+  (section 10): `0x02 0x01` and `0x02 0x02`.
 - "Reject" means the value is invalid and is not used; for a transaction it has
   the meaning of spec 03, section 2.
 
@@ -76,8 +74,8 @@ Its fields, each a fixed width:
 | `s` | 32 bytes | The secret. Derived from the digits (section 7) |
 | `r` | 32 bytes | The separate reveal secret. Derived from the digits; the marker is computed from it (below) |
 | `b` | 32 bytes | Random blinding. Derived from the digits and a counter, fresh for every commitment the key makes (section 8) |
-| `salt` | 16 bytes | Version 2: a fresh random value from the wallet's secure random source, new for every commitment (below). Public, not derived from the digits. Absent in version 1 |
-| type tag | 2 bytes | The commitment format version, then the type: in version 2 `COIN` is `0x02 0x01` and `DATA` is `0x02 0x02`; in version 1 they are `0x01 0x01` and `0x01 0x02` (section 10) |
+| `salt` | 16 bytes | A fresh random value from the wallet's secure random source, new for every commitment (below). Public, not derived from the digits |
+| type tag | 2 bytes | The commitment format version, then the type: `COIN` is `0x02 0x01` and `DATA` is `0x02 0x02` (section 10) |
 | `cf` | 32 bytes | The content fingerprint. For `DATA`, a tagged hash of the content (below). For `COIN`, 32 zero bytes: a coin has no content |
 | `rule` | 32 bytes | The optional rule, as a 32-byte value. The empty rule is 32 zero bytes, and it is the only rule version 1 accepts ([spec 03](03-coin-rules.md), section 7, step 11; [spec 04](04-data-commitments.md), question 9) |
 | `v` | 32 bytes | Coins only: the amount in wei, an integer in `[0, V_MAX]` with `V_MAX = 2^96 - 1` ([spec 03](03-coin-rules.md), section 2) |
@@ -96,35 +94,20 @@ data:  F_d = K("ghost/data-fingerprint/v2", s, r, b, salt, DATA, cf, rule)
 ```
 
 with `COIN` = `0x02 0x01` and `DATA` = `0x02 0x02`. This is commitment format
-version 2, the only format a wallet makes. The salt sits right after `b`. The
-commitment tags keep their `v1` suffix, because their input layout (type tag,
-fingerprint, amount) does not change; the version byte inside the type tag
-tells the two formats apart there.
+version 2, the only format. The salt sits right after `b`. The commitment tags
+keep their `v1` suffix, because their input layout (type tag, fingerprint,
+amount) is unchanged; the version byte inside the type tag names the format
+there.
 
 `v` is the amount the node has just burned, and the type tag in the outer hash
 is set by the node: for every new commit it is the version 2 type tag. A
 remainder commitment is built the same way inside the reveal proof, from its
-own fresh blinding, its own fresh salt and its own amount; it is always
-version 2, whatever the version of the commitment it comes from.
+own fresh blinding, its own fresh salt and its own amount.
 
-**Version 1, still valid.** Commitments made before the salt was added are
-version 1. They have no salt: it is absent, not zero, so they hash exactly as
-before, under the `v1` fingerprint and marker tags with the version 1 type tag,
-and every such leaf already on a chain stays valid and revealable (section 10):
+A reader or verifier that sees a version byte or a tag it does not know
+rejects it and never guesses (section 10).
 
-```text
-coin:  F   = K("ghost/coin-fingerprint/v1", s, r, b, COIN, cf, rule)     COIN = 0x01 0x01
-       C   = K("ghost/coin-commitment/v1", COIN, F, v)
-
-data:  F_d = K("ghost/data-fingerprint/v1", s, r, b, DATA, cf, rule)     DATA = 0x01 0x02
-       C   = K("ghost/data-commitment/v1", DATA, F_d)
-```
-
-A wallet never makes a new version 1 commitment. A reader or verifier that
-sees a version byte or a tag it does not know rejects it and never guesses
-(section 10).
-
-**Salt.** Every version 2 commitment, whether a commit, a remainder or a data
+**Salt.** Every commitment, whether a commit, a remainder or a data
 commitment, has its own salt: 16 bytes the wallet draws from its secure random
 source when it makes the commitment (threat model, A6), never reused and never
 computed from the digits or from another value. It is public: nothing rests on
@@ -155,27 +138,17 @@ coin marker:  m = K("ghost/coin-marker/v2", r, b, salt)
 data marker:  m = K("ghost/data-marker/v2", r, b, salt)
 ```
 
-with the same salt as the commitment, right after `b`. A version 1 commitment
-keeps its version 1 marker, `K("ghost/coin-marker/v1", r, b)` or
-`K("ghost/data-marker/v1", r, b)`. So one commitment has one marker, and a
-remainder, which has fresh blinding and a fresh salt, has a different one. The
-coin and data tags keep the coin and data spent-marker sets apart
-([spec 04](04-data-commitments.md), section 2), and the `v1` and `v2` tags keep
-a version 1 marker from ever equalling a version 2 marker. The version 1 marker
-is the layout the [benchmark plan](../benchmarks/plan.md) costed (the tagged
-hash of `r` and `b`); the 16 more bytes of the salt still fit in one Keccak
-permutation (section 4).
+with the same salt as the commitment, right after `b`. So one commitment has
+one marker, and a remainder, which has fresh blinding and a fresh salt, has a
+different one. The coin and data tags keep the coin and data spent-marker sets
+apart ([spec 04](04-data-commitments.md), section 2). The
+[benchmark plan](../benchmarks/plan.md) costed the tagged hash of `r` and `b`;
+the 16 more bytes of the salt still fit in one Keccak permutation (section 4).
 
 **Multi-target guessing.** An attacker who guesses keys wants any key that
-holds anything, not one key in particular. Without a salt, `F` depends only on
-the key's derived values and fields every coin shares (`COIN`, a zero `cf`, the
-empty rule), and the marker only on `r` and `b_i`. One guess at a key then
-gives one `F` and one marker per commitment number, each of which can be looked
-up at once against every
-`F` ever published and every spent marker: one guess checks every leaf. With
-`N` leaves that divides the work by `N`: about 2^33 leaves cost about 33 bits
-classically and about 17 under a quantum search (threat model, C20). The salt
-removes this shortcut. Each leaf's `F`, `C` and marker depend on its own salt,
+holds anything, not one key in particular (threat model, C20). The salt keeps
+one guess from being looked up at once against every `F` ever published and
+every spent marker. Each leaf's `F`, `C` and marker depend on its own salt,
 so a guess has to be hashed again for each leaf it is tested against, and
 testing a guess against all `N` leaves costs `N` times as much as testing it
 against one. Classically, finding any one key among the `N` then costs as much
@@ -183,9 +156,9 @@ as finding one given key; under a quantum search over pairs of a key and a
 leaf, the `N` targets are offset by the `N` times larger search space, so the
 cost is again about the square root of the key space. So:
 
-| Key | Version 2 leaf, one or all leaves | Version 1 leaf, all leaves at once (`N` about 2^33) |
-|---|---|---|
-| 24 words (256 bits) | about 256 bits classical, 128 quantum | about 223 classical, 111 quantum |
+| Key | One leaf or all leaves |
+|---|---|
+| 24 words (256 bits) | about 256 bits classical, 128 quantum |
 
 The twelve-group digit key (about 146 bits, 73 quantum) and the
 twenty-four-group one fell short of this or doubled every format, and are no
@@ -194,12 +167,10 @@ longer accepted (section 5).
 Precomputation does not help either: no table built before a commit can hold
 its salt. Salts are 128 bits drawn at random, so two leaves share one with
 probability about 2^-63 even among 2^33 leaves, and a shared salt would only
-put those two leaves back to the version 1 cost against each other. The notes
-already have no shortcut, because each is checked under its own random nonce
-and its own leaf as associated data (section 9). The salt does not raise the
-cost of guessing one particular key, which the key's length alone sets (section
-5); a version 1 leaf keeps the version 1 figures until its value is revealed
-into a version 2 remainder.
+let one guess be tested against those two leaves at once. The notes already
+have no shortcut, because each is checked under its own random nonce and its
+own leaf as associated data (section 9). The salt does not raise the cost of
+guessing one particular key, which the key's length alone sets (section 5).
 
 **Why two secrets.** The outline's format has a secret and a separate reveal
 secret. In version 1 both are derived from the digits and both are needed to
@@ -213,19 +184,18 @@ statements are the next specification. The format needs these of them:
 
 - A proof opens a commitment only through both steps above, with the type tag
   checked against the tree and the purpose, so a data leaf never opens as a
-  coin and the other way round. The version byte of the type tag selects the
-  fingerprint and marker tags: `v2` with the salt for version 2, `v1` without
-  it for version 1; any other version is rejected.
+  coin and the other way round. The version byte of the type tag must be 2,
+  opened with the `v2` fingerprint and marker tags and the salt; any other
+  version is rejected.
 - The marker it publishes or checks is computed from the same `r`, `b` and
   salt as the commitment it opens.
 - A remainder keeps the input's type, `cf` and `rule`
-  ([spec 03](03-coin-rules.md), section 8) and is always version 2, with its
-  own salt; its `s`, `r`, `b` and salt are inputs the proof does not
+  ([spec 03](03-coin-rules.md), section 8) and has its own salt; its `s`, `r`, `b` and salt are inputs the proof does not
   constrain, so the chain cannot tell a claim to a new key from a partial
   reveal under the same key. Freshness of `b` and of the salt is the wallet's
   rule (section 8), not something the proof can check.
-- The salt is a private input of every proof that opens a version 2
-  commitment, never a public input. It is not secret, but the commit published
+- The salt is a private input of every proof that opens a commitment, never a
+  public input. It is not secret, but the commit published
   it, so a reveal that published it too would name its commit
   ([spec 02](02-proof-statements.md), section 3).
 - Every value checked inside a proof is a Keccak-256 hash of section 4 with its
@@ -248,9 +218,8 @@ free: no tag followed by data can read as another tag followed by other data.
 Within one tag every input has a fixed width, so the inputs cannot be shifted
 between fields either.
 
-Every tag is in this table, those of commitment format version 2 and those of
-version 1 that stay valid for leaves already on a chain. No other tag exists; a
-new use gets a new row before it is used. Input bytes count the length byte and
+Every tag is in this table. No other tag exists; a new use gets a new row
+before it is used. Input bytes count the length byte and
 the tag as well as the inputs.
 
 | Tag | Hash | Use | Inputs after the tag | Input bytes | Keccak permutations |
@@ -261,17 +230,13 @@ the tag as well as the inputs.
 | `ghost/blinding/v1` | SHA3-256 | Blinding `b_i` of the key's commitment number `i` (section 8) | key bytes, `i` as 8 bytes | 26 + key bytes | not in a proof |
 | `ghost/note-key/v1` | SHA3-256 | Note key `k_note` (section 9) | key bytes | 18 + key bytes | not in a proof |
 | `ghost/data-key/v1` | SHA3-256 | Data key `k_data` ([spec 04](04-data-commitments.md), section 4) | key bytes | 18 + key bytes | not in a proof |
-| `ghost/coin-fingerprint/v2` | Keccak-256 | Coin fingerprint `F` of a version 2 commitment (section 3) | `s`, `r`, `b`, `salt`, `COIN`, `cf`, `rule` | 204 | 2 |
-| `ghost/coin-fingerprint/v1` | Keccak-256 | Coin fingerprint `F` of a version 1 commitment, for leaves already on a chain (section 3) | `s`, `r`, `b`, `COIN`, `cf`, `rule` | 188 | 2 |
-| `ghost/coin-commitment/v1` | Keccak-256 | Coin commitment `C`, the coin-tree leaf, of either version (section 3) | `COIN`, `F`, `v` | 91 | 1 |
-| `ghost/data-fingerprint/v2` | Keccak-256 | Data fingerprint `F_d` of a version 2 commitment (section 3) | `s`, `r`, `b`, `salt`, `DATA`, `cf`, `rule` | 204 | 2 |
-| `ghost/data-fingerprint/v1` | Keccak-256 | Data fingerprint `F_d` of a version 1 commitment, for leaves already on a chain (section 3) | `s`, `r`, `b`, `DATA`, `cf`, `rule` | 188 | 2 |
-| `ghost/data-commitment/v1` | Keccak-256 | Data commitment `C`, the data-tree leaf, of either version (section 3) | `DATA`, `F_d` | 59 | 1 |
+| `ghost/coin-fingerprint/v2` | Keccak-256 | Coin fingerprint `F` (section 3) | `s`, `r`, `b`, `salt`, `COIN`, `cf`, `rule` | 204 | 2 |
+| `ghost/coin-commitment/v1` | Keccak-256 | Coin commitment `C`, the coin-tree leaf (section 3) | `COIN`, `F`, `v` | 91 | 1 |
+| `ghost/data-fingerprint/v2` | Keccak-256 | Data fingerprint `F_d` (section 3) | `s`, `r`, `b`, `salt`, `DATA`, `cf`, `rule` | 204 | 2 |
+| `ghost/data-commitment/v1` | Keccak-256 | Data commitment `C`, the data-tree leaf (section 3) | `DATA`, `F_d` | 59 | 1 |
 | `ghost/content-fingerprint/v1` | Keccak-256 | Content fingerprint `cf` (section 3) | content length as 8 bytes, content | 37 + content | not in a proof in version 1 |
-| `ghost/coin-marker/v2` | Keccak-256 | One-time marker of a version 2 coin commitment (section 3) | `r`, `b`, `salt` | 101 | 1 |
-| `ghost/coin-marker/v1` | Keccak-256 | One-time marker of a version 1 coin commitment (section 3) | `r`, `b` | 85 | 1 |
-| `ghost/data-marker/v2` | Keccak-256 | One-time marker of a version 2 data commitment (section 3) | `r`, `b`, `salt` | 101 | 1 |
-| `ghost/data-marker/v1` | Keccak-256 | One-time marker of a version 1 data commitment (section 3) | `r`, `b` | 85 | 1 |
+| `ghost/coin-marker/v2` | Keccak-256 | One-time marker of a coin commitment (section 3) | `r`, `b`, `salt` | 101 | 1 |
+| `ghost/data-marker/v2` | Keccak-256 | One-time marker of a data commitment (section 3) | `r`, `b`, `salt` | 101 | 1 |
 | `ghost/coin-tree-node/v1` | Keccak-256 | Inner node of the coin tree | level as 1 byte, left child, right child | 89 | 1 per level |
 | `ghost/data-tree-node/v1` | Keccak-256 | Inner node of the data tree | level as 1 byte, left child, right child | 89 | 1 per level |
 | `ghost/empty-leaf/v1` | Keccak-256 | The value of an unused leaf position in either tree | none | 20 | a constant |
@@ -302,9 +267,8 @@ Notes on the table:
   commitment costs 3 permutations (2 for `F`, 1 for `C`), its marker 1, the
   remainder 3 and the tree path 32, where the benchmark plan's one-byte tags
   cost slightly less for the opening. The salt does not change these counts:
-  a version 2 fingerprint is 204 bytes, still under the 272 bytes that two
-  permutations absorb, and a version 2 marker is 101 bytes, under the 136 of
-  one. The difference is a few permutations per
+  a fingerprint is 204 bytes, still under the 272 bytes that two permutations
+  absorb, and a marker is 101 bytes, under the 136 of one. The difference is a few permutations per
   proof, against a measured worst case of about 5.2 seconds for the whole
   proof against a 10-second target ([benchmark results](../benchmarks/results.md)).
 
@@ -330,8 +294,8 @@ absurd math era live bid rhythm alien crouch range attend journey trip
   words are unique by their first four letters. This is the layout of
   BIP-39, with Ghost's own check tag and format code: about 256 bits of
   secret, about 128 bits against one key under a quantum search, and the same
-  128 against all salted (version 2) leaves at once, about 111 for version 1
-  leaves (section 3, "Multi-target guessing"; threat model, C20). 24 words is a length
+  128 against all leaves at once (section 3, "Multi-target guessing"; threat
+  model, C20). 24 words is a length
   crypto users already write down for their backups. Scannable codes and file
   export stay conveniences, never the only way to back up a key.
 - **The same key as digits.** For people who prefer digits, a words key is
@@ -393,9 +357,8 @@ absurd math era live bid rhythm alien crouch range attend journey trip
 - **One key, one first commitment.** The app generates a new key for every
   commit and for every claim to a new key, and never makes a second first
   commitment under a key that already has one, because two leaves with the
-  same blinding would share `s`, `r` and `b_0`, and under version 1 also a
-  marker (section 8). Their different salts keep version 2 markers apart, but
-  the rule stays.
+  same blinding would share `s`, `r` and `b_0` (section 8). Their different
+  salts keep their markers apart, but the rule stays.
 
 ## 6. Checksum
 
@@ -524,7 +487,7 @@ over" list.
 **Fresh blinding on every commitment (Proposed).** The commitments a key makes
 are numbered `i = 0, 1, 2, ...`. Number 0 is the key's first commitment: the
 commit, or the remainder of a claim into a new key. Commitment number `i` uses
-the blinding `b_i` of section 7 and, in version 2, a salt drawn fresh for that
+the blinding `b_i` of section 7 and a salt drawn fresh for that
 commitment (section 3), never reused. A reveal under the key creates its
 remainder with the number one above the commitment it spends (review 01, F2
 and N3):
@@ -538,8 +501,8 @@ reveal of number `k - 1`. A retry after a dropped or reorganised reveal of the
 same input takes the same number again, and numbers have no gaps.
 
 - **Never the same value twice on one chain.** Distinct numbers give distinct
-  `b_i` (the collision resistance of SHA3-256), and a version 2 remainder also
-  has its own random salt, so every remainder has a commitment and a marker
+  `b_i` (the collision resistance of SHA3-256), and a remainder also has its
+  own random salt, so every remainder has a commitment and a marker
   that differ from every earlier one in its sequence on the same chain (threat
   model, C26). A key's commitments on one chain form a
   single line, because each one after number 0 is made by spending the key's
@@ -547,8 +510,7 @@ same input takes the same number again, and numbers have no gaps.
   each. Two included reveals that made the same number `k` would both spend the
   key's number `k - 1` on that chain, publish the same input marker, and only
   one of them is included.
-- **Equal numbers, different salts.** A version 2 marker
-  `K(tag, r, b_i, salt)` depends on the key, the number and the commitment's
+- **Equal numbers, different salts.** A marker `K(tag, r, b_i, salt)` depends on the key, the number and the commitment's
   own salt. Two remainders numbered `k`, made on one chain, on two branches, by
   two devices or by a retry, come from reveals that publish the same input
   marker, the marker of number `k - 1` (that marker is the input's, fixed when
@@ -556,30 +518,12 @@ same input takes the same number again, and numbers have no gaps.
   commitments and their own markers are unrelated, and revealing them in turn
   ties nothing together. One chain still accepts one reveal per input marker,
   so nothing is doubled.
-- **Equal numbers mean the same input marker, on every branch (version 1).** A
-  version 1 commitment's marker `K(tag, r, b_i)` depends only on the key and
-  the number, not on the amount or the branch. Version 1 leaves made before the
-  salt keep this behaviour. So any two version 1 remainders numbered `k`, made on
-  one chain, on two branches, by two devices or by a retry, come from reveals
-  that publish the same input marker, the marker of number `k - 1`. Two such
-  remainders share their blinding, and if their amounts are equal their
-  commitments are equal, but that only repeats what the shared input marker
-  already shows: the same commitment of the key was revealed in both places.
-  When they are revealed in turn they publish the same marker, which again only
-  shows the same number of the same key revealed in both places, as a fork that
-  replays a reveal does (threat model T4). It never ties a reveal to another
-  number of the key, and it cannot double anything, because one chain accepts
-  one reveal per marker. A rule of "one above the highest number used", with
-  gaps, would not have this property: after a reorganisation a clean device
-  could give one number to remainders of two different inputs and so link two
-  reveals with different input markers.
 - **Same key by default.** By default the remainder keeps `s` and `r`, so the
   same key controls it. A claim uses a newly generated key, whose own
   commitment number 0 holds the remainder (outline, "Coin rules").
-- **A key used for two first commitments.** Both are number 0. Under version 1
-  they share a marker, so only one can ever be revealed; under version 2 their
-  salts differ, so both can be, but they still share `s`, `r` and `b_0`. The
-  wallet never does this (section 5, "Generation").
+- **A key used for two first commitments.** Both are number 0. Their salts
+  differ, so both can be revealed, but they still share `s`, `r` and `b_0`.
+  The wallet never does this (section 5, "Generation").
 - **Data commitments** have no remainder in version 1
   ([spec 04](04-data-commitments.md), question 3), so a data key uses only
   `b_0`.
@@ -596,12 +540,9 @@ C41):
 3. Try `k_note` on every note (section 9). Under authenticated encryption only
    the key's own notes decrypt; every other note fails and is passed over.
 4. For each note that decrypts, read its number `i`, amount `v`, type tag,
-   `cf` and `rule`, and for a version 2 type tag the commitment's salt, which
-   note version 2 carries (section 9; a commit also publishes it with its
-   leaf);
-   compute `b_i`, then `F` and `C` under the tags of the type tag's version
-   (section 3). A version 1 type tag has no salt. If `C` is not
-   the leaf the note is stored with, discard that note and report it; never
+   `cf` and `rule`, and the commitment's salt, which note version 2 carries
+   (section 9; a commit also publishes it with its leaf); compute `b_i`, then
+   `F` and `C` (section 3). If `C` is not the leaf the note is stored with, discard that note and report it; never
    trust a note's contents without this check.
 5. Compute each found commitment's marker and look it up in the coin
    spent-marker set, also fetched in bulk. Notes and markers count only once
@@ -620,7 +561,7 @@ C41):
 7. The next number to use is one more than the current remainder's `i`.
 
 Every note ciphertext uses a fresh random nonce, every marker is a hash of a
-different `b_i` (and in version 2 of a different salt), and no request names a
+different `b_i` and a different salt, and no request names a
 single value, so restore publishes and
 requests nothing that ties the sequence together (outline, "First milestone" 4).
 The same steps restore a data key from the data tree ([spec 04](04-data-commitments.md),
@@ -649,18 +590,14 @@ weakness beyond the square-root search on its 256-bit key (threat model, C2).
 leaf the note is stored with. A note copied to another leaf or another chain
 fails to decrypt.
 
-**Plaintext: 128 bytes, fixed.** There are two note versions, told apart by
-byte 0. Both are 128 bytes, so the note on the chain has one length whatever
-its version.
-
-Note version 2, the note of a version 2 (salted) commitment and the one a
-wallet writes for every new commitment:
+**Plaintext: 128 bytes, fixed.** Note version 2, told apart by byte 0, the
+note a wallet writes for every commitment:
 
 | Offset | Width | Field |
 |---|---|---|
 | 0 | 1 | Note version, `0x02` |
 | 1 | 1 | Scheme ID, `0x01` (section 10) |
-| 2 | 2 | Type tag of version 2: `COIN` `0x02 0x01` or `DATA` `0x02 0x02` |
+| 2 | 2 | Type tag: `COIN` `0x02 0x01` or `DATA` `0x02 0x02` |
 | 4 | 8 | Commitment number `i` (section 8) |
 | 12 | 12 | Amount `v` in wei, 12 bytes big-endian; zero for data |
 | 24 | 32 | Content fingerprint `cf`; 32 zero bytes for a coin |
@@ -670,24 +607,7 @@ wallet writes for every new commitment:
 | 112 | 16 | Zero padding |
 
 The amount is 12 bytes because `V_MAX` is `2^96 - 1`
-([spec 03](03-coin-rules.md), section 2): the 32-byte amount of version 1
-always has 20 leading zero bytes, and dropping them makes room for the salt
-without changing the 128-byte plaintext or the 156-byte note.
-
-Note version 1, the note of a version 1 commitment, keeps its layout. It stays
-valid for leaves already on a chain and is never rewritten:
-
-| Offset | Width | Field |
-|---|---|---|
-| 0 | 1 | Note version, `0x01` |
-| 1 | 1 | Scheme ID, `0x01` (section 10) |
-| 2 | 2 | Type tag of version 1: `COIN` `0x01 0x01` or `DATA` `0x01 0x02` |
-| 4 | 8 | Commitment number `i` (section 8) |
-| 12 | 32 | Amount `v` in wei; zero for data |
-| 44 | 32 | Content fingerprint `cf`; 32 zero bytes for a coin |
-| 76 | 8 | Content length in bytes; zero for a coin |
-| 84 | 32 | Rule; 32 zero bytes for the empty rule |
-| 116 | 12 | Zero padding |
+([spec 03](03-coin-rules.md), section 2), so no amount needs more.
 
 The plaintext holds only what the key cannot derive. It never holds `s`, `r`,
 `b_i`, `k_note`, `k_data`, the digits, a storage location or a tree position
@@ -695,10 +615,9 @@ The plaintext holds only what the key cannot derive. It never holds `s`, `r`,
 derived from the digits, so it belongs here.
 
 A wallet rejects a note whose version, scheme ID or type tag it does not know,
-or whose padding is not zero. The note version and the version of its type tag
-must agree: note version 2 is read only with a version 2 type tag, and note
-version 1 only with a version 1 type tag. A note whose two versions disagree
-is rejected, never read with a guessed layout.
+or whose padding is not zero. Note version 2 is read only with a version 2
+type tag; a note with any other type tag is rejected, never read with a
+guessed layout.
 
 **On the chain: 156 bytes, fixed.**
 `nonce (12 bytes) || ciphertext (128 bytes) || tag (16 bytes)`. Every note has this one length, coin or data, so its length is not a
@@ -708,15 +627,14 @@ length ([spec 03](03-coin-rules.md), section 6, step 5).
 **What it gives away.** Without the digits, nothing beyond its fixed length.
 Anyone shown the digits can read every note of the key (threat model, T6).
 
-**The salt and the note.** A version 2 commitment can be opened only with its
-salt, so the holder must be able to read the salt back from the chain. A
-commit publishes it with `F`. A remainder's salt has nowhere public to go,
-because a reveal publishes no field for it, so the remainder's note carries
-it, under the reveal's binding of the note ([spec 02](02-proof-statements.md),
-section 7). Note version 1 has 12 free bytes, fewer than 16, so the note
-that carries a salt is note version 2 above, at offset 96. A wallet writes
-note version 2 for every version 2 commitment, a commit's as well as a
-remainder's, so restore reads every salt the same way; a commit's note carries
+**The salt and the note.** A commitment can be opened only with its salt, so
+the holder must be able to read the salt back from the chain. A commit
+publishes it with `F`. A remainder's salt has nowhere public to go, because a
+reveal publishes no field for it, so the remainder's note carries it, at
+offset 96, under the reveal's binding of the note
+([spec 02](02-proof-statements.md), section 7). A wallet writes note version 2
+for every commitment, a commit's as well as a remainder's, so restore reads
+every salt the same way; a commit's note carries
 the same salt the commit publishes with `F`. On restore, the salt read from a
 note is checked like every other field of the note: the commitment computed
 with it must be the leaf the note is stored with (section 8, step 4).
@@ -730,29 +648,24 @@ later scheme can be added and old commitments migrated safely (outline,
 | Item | Value | Where it sits |
 |---|---|---|
 | Tag version | suffix `/v1`; `/v2` for the fingerprint and marker tags of commitment format version 2 | Every tag of section 4 |
-| Commitment format version | `0x02` salted, the only version a wallet makes; `0x01` without salt, valid for leaves already on a chain | First byte of every type tag; inside `F` and `C` |
+| Commitment format version | `0x02` salted, the only version | First byte of every type tag; inside `F` and `C` |
 | Type | `0x01` coin, `0x02` data | Second byte of the type tag |
-| Type tags | Version 2: `COIN` `0x02 0x01`, `DATA` `0x02 0x02`. Version 1: `COIN` `0x01 0x01`, `DATA` `0x01 0x02` | Inside `F` and `C`; the note |
+| Type tags | `COIN` `0x02 0x01`, `DATA` `0x02 0x02` | Inside `F` and `C`; the note |
 | Key format code | `0x20` words (24 words, or 21 digit groups), the only code; `0x0C` and `0x18` of the removed digit keys are not reused | First byte of the key bytes and the checksum input |
-| Note version | `0x02` with the salt, the note of a version 2 commitment and the only version a wallet writes; `0x01` without salt, valid for notes already on a chain. Each is read only with a type tag of its own version | Byte 0 of the note plaintext |
-| Scheme ID | `0x01` | Byte 1 of the note plaintext; implied by commitment format versions 1 and 2 |
+| Note version | `0x02` with the salt, the only version; read only with a version 2 type tag | Byte 0 of the note plaintext |
+| Scheme ID | `0x01` | Byte 1 of the note plaintext; implied by commitment format version 2 |
 
 **Scheme 1** is this whole document: Keccak-256 with the tags of section 4 for
 commitments, markers and trees; SHA3-256 for the checksum and derivation;
 ChaCha20-Poly1305 for notes; the key formats of section 5. Commitment format
-version 2 adds the salt to the fingerprint and the marker and changes nothing
-else, so it stays inside scheme 1: same hashes, same derivation, same note
-encryption. "Version 1" elsewhere in this document, without "commitment
-format", means the first protocol version, which has both commitment formats.
+version 2, with the salt in the fingerprint and the marker, is part of scheme
+1. "Version 1" elsewhere in this document, without "commitment format", means
+the first protocol version.
 
-**Telling the formats apart.** The version byte of the type tag says which
-format a commitment has, and the type tag is inside both `F` and `C`. A
-version 2 commitment is opened only with the `v2` fingerprint and marker tags
-and a 16-byte salt right after `b`; a version 1 commitment only with the `v1`
-tags and no salt. The tags differ, so a version 1 fingerprint or marker can
-never equal a version 2 one, and the salt can be neither added to a version 1
-commitment nor dropped from a version 2 one. The commitment tags are shared,
-and the type tag inside them keeps the two versions' leaves apart.
+**The format version.** The version byte of the type tag says which format a
+commitment has, and the type tag is inside both `F` and `C`. A commitment is
+opened only with the `v2` fingerprint and marker tags and a 16-byte salt right
+after `b`.
 
 **Rules (Proposed).**
 
@@ -760,15 +673,12 @@ and the type tag inside them keeps the two versions' leaves apart.
   everywhere it is checked. Nothing is read with a guessed version.
 - A reader or verifier that sees a commitment format version byte or a tag it
   does not know rejects it and never guesses (front desk decision). A type tag
-  of version 2 with a `v1` fingerprint or marker tag, or of version 1 with a
-  `v2` one or a salt, is rejected the same way.
-- A note of note version 2 with a version 1 type tag, or of note version 1
-  with a version 2 type tag, is rejected (section 9). Version 1 notes stay
-  valid and are never rewritten; a wallet writes only note version 2.
-- Version 1 type tags and tags stay valid for leaves already on a chain: a
-  version 1 leaf can always be revealed and its marker recorded, as the
-  survival rule below requires. A wallet makes only version 2 commitments:
-  every commit, remainder and data commitment it creates has a fresh salt.
+  of version 2 opened without the `v2` fingerprint and marker tags or without
+  a salt is rejected the same way.
+- A note of note version 2 with a type tag of another version is rejected
+  (section 9).
+- Every commit, remainder and data commitment a wallet creates has a fresh
+  salt.
 - A new scheme gets a new scheme ID, a new commitment format version, and new
   tags with a new suffix (`/v2`) for every use whose rule changes. A tag is never
   reused with a different input layout.
@@ -802,7 +712,7 @@ and the type tag inside them keeps the two versions' leaves apart.
   hashes (tree and header specification).
 - The transaction formats, including where `F`, the salt and the note sit in
   a commit (transaction-format specification). The note version that carries
-  a version 2 commitment's salt is fixed here: note version 2 (section 9).
+  a commitment's salt is fixed here: note version 2 (section 9).
 - The data encryption itself: [spec 04](04-data-commitments.md), section 4 sets
   its rules; this document fixes only `k_data`.
 - Chain identifier values.
@@ -841,19 +751,16 @@ difference is listed here for the founder's review.
    step 1, derives a single `b`. Here `b` is per commitment number; for data,
    which has no remainder, it is always `b_0`, so the two agree.
 7. **Remainder type tag and migration.** [Spec 03](03-coin-rules.md), section
-   8, carried the type tag unchanged into the remainder, which would have kept
-   a version 1 leaf's value unsalted forever. It now keeps the input's type,
-   `cf` and `rule` and makes every remainder commitment format version 2 with
-   a fresh salt, so the first reveal of a version 1 leaf moves its value into a
-   salted remainder. Moving a commitment to a later scheme (section 10) still
-   needs that rule revisited when a second scheme exists.
+   8, keeps the input's type, `cf` and `rule` in the remainder and makes every
+   remainder commitment format version 2 with a fresh salt. Moving a
+   commitment to a later scheme (section 10) still needs that rule revisited
+   when a second scheme exists.
 8. **Phantom Key length.** [Spec 09](09-quantum-safe-accounts.md), section 4.2
    and question 1, proposes a 14-group key (about 172 bits) to meet its target
    against all leaves at once, and leaves this document unchanged until that
    is decided. This document instead makes the 24-word key the only format
    (section 5): about 128 bits against one key and, with the salt, about 128
-   against all version 2 leaves at once under a quantum search (about 111
-   against version 1 leaves), above that target. The 12-group and 24-group
+   against all leaves at once under a quantum search, above that target. The 12-group and 24-group
    digit keys that spec 09 still describes are no longer generated or
    accepted.
 
@@ -989,68 +896,31 @@ b1 = 270868c5961cb6a126290431a569f33baa59cb5017d0dc6e2965e5cb63aacf8e
 b2 = c3fd9b712431920e9baf30949ef7400ad02609ffcbb2a274ea15691d089bab38
 note-key = 35136c4a7bdccb4b26159c15f86567a483ac58e1b2c40dca49a5d099272c4181
 data-key = 97f75e4a033cf853da070528681b5af557e75070c54c9cd599b2b879915351af
-```
 
-### Commitment vectors
-
-`version` is the commitment format version (section 10). The first block is
-version 1, without a salt, as on a chain before the salt was added: a commit of
-1 GHOST under the example key (number 0), then the remainder of a
-reveal that leaves 0.7 GHOST (number 1), then a data commitment. These leaves
-stay valid, so their vectors stay.
-
-```text
-[coin-commit]
-kind = coin-commitment
-version = 1
-key = 0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
-index = 0
-amount = 1000000000000000000
-rule = 0000000000000000000000000000000000000000000000000000000000000000
-type-tag = 0101
-fingerprint = adb657b17abd3d6a22f29a4d9fded4367c0c27f0b167fc5d9eccf33dfbc2ff6c
-commitment = 9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c
-marker = ed3aec8b2a68aa001654023dafa7bf3a187b9f3bb59940fd40389b20beda8a98
-
-[coin-remainder]
-kind = coin-commitment
-version = 1
-key = 0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
-index = 1
-amount = 700000000000000000
-rule = 0000000000000000000000000000000000000000000000000000000000000000
-type-tag = 0101
-fingerprint = d1f0a17727dfbee9609e21f3aeed5fc004d21fd4f48a00af8f954e91f606b620
-commitment = 5530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503
-marker = 19fc0d871f7118ea3ecd015da559a01c7158a82dbd5160dd961680b122a3142e
-
-[data-commit]
-kind = data-commitment
-version = 1
+[derivation-words-data]
+kind = derivation
 key = 0005 7669 0013 0642 8065 9560 5300 0376 8759 3842 1040 3453 0406 4124 0510 2397 3211 7841 8613 4399 8027
-index = 0
-content-ascii = Ghost example data
-content-length = 18
-rule = 0000000000000000000000000000000000000000000000000000000000000000
-type-tag = 0102
-content-fingerprint = 7da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c
-fingerprint = b1e44e364ce85a0f886580a51de4af3c5678d39fa9b975a0827067cca7bc4090
-commitment = 5bc2c9ef3f27a49943b7885eb8babf9be3dda232a41894f3ca5a09b0129340c1
-marker = f10b00e4d411afc3a56a0c1d72f49f02b8ea370ffe2430fca37596e82ae38d61
+key-bytes = 207f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f
+s = 71346e4c283b18e2f1a77d5920f65d0848305b59764accadd7c49779b0eab58b
+r = e1e807d15b2d02e98c2b5b1948535fa358c45b1679ef7e5195644d07a2b32f39
+b0 = 2da9fad9db8f4e8f8b9897f02d2814e97c9811c89103473fc8762ae6dee35b0d
+b1 = e4f33eac55470fc11d63503efa6184c858922c3586e77b7d53c3af2b36732557
+b2 = c55cf5f0cfacf72c5e0942a7f4e7c59a3c433bff8db6a95f96d478803547c9f9
+note-key = 08f3c586fe83f60374f0551ad5a25ddab61fd4fc70ab71572c0aae3b042c82ab
+data-key = 8656f5cbfdecd73bb29f88309564a1610be34a6e12db2e6152778df15dc7cca3
 ```
 
 ### Salted commitment vectors
 
-Version 2, the format a wallet makes. The same keys, numbers, amounts and
-content as above, each under two example salts. The salts here are fixed so
-that the vectors can be repeated; a wallet draws every salt fresh from its
-secure random source. The same secret under two salts gives unrelated
-fingerprints, commitments and markers, and neither matches the version 1 value
-above, so one guess at a key no longer checks every leaf (section 3,
-"Multi-target guessing"). Their kinds, `salted-coin-commitment` and
-`salted-data-commitment`, are their own: a `coin-commitment` or
-`data-commitment` vector is always version 1, so a reader that knows only
-version 1 never meets a salt.
+`version` is the commitment format version (section 10), always 2. The
+vectors are a commit of 1 GHOST under the example key (number 0), then the
+remainder of a reveal that leaves 0.7 GHOST (number 1), then a data
+commitment under the data example key, each under two example salts. Their
+kinds are `salted-coin-commitment` and `salted-data-commitment`. The salts
+here are fixed so that the vectors can be repeated; a wallet draws every salt
+fresh from its secure random source. The same secret under two salts gives
+unrelated fingerprints, commitments and markers, so one guess at a key checks
+one leaf (section 3, "Multi-target guessing").
 
 ```text
 [coin-commit-salted]
@@ -1138,6 +1008,8 @@ marker = 40b6aa08963fee7e02d69cf4d7c5e9d2ba775d28991f4e08e27ed97c8a38acc8
 
 ### Tree vectors
 
+The node vectors hash fixed example leaf values; any 32-byte values would do.
+
 ```text
 [empty-leaf]
 kind = empty-leaf
@@ -1160,55 +1032,16 @@ right = e050b25c8ab09717b0a6846b688b5047b93c0d37e18599cc7deec37f914bcca4
 node = 0de6f3bbe8f76caac7b160081a5eaca1dc70c1858774fe3cad999681b2ef4fdc
 ```
 
-### Note vectors
-
-The plaintext and associated data of the notes stored with `[coin-remainder]`
-and `[data-commit]`. Encryption itself follows RFC 8439 and its own vectors.
-`version` is the note version (section 9). A `note` vector is always note
-version 1 with a version 1 type tag, as a `coin-commitment` vector is always
-commitment format version 1; the checker refuses a `note` vector with a
-version 2 type tag. Every note vector's `leaf` is the commitment of a
-commitment vector above, and its fields are that commitment's.
-
-```text
-[note-coin-remainder]
-kind = note
-version = 1
-type = COIN
-type-tag = 0101
-index = 1
-amount = 700000000000000000
-content-fingerprint = 0000000000000000000000000000000000000000000000000000000000000000
-content-length = 0
-rule = 0000000000000000000000000000000000000000000000000000000000000000
-chain-id = 1234
-leaf = 5530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503
-plaintext = 01010101000000000000000100000000000000000000000000000000000000000000000009b6e64a8ec60000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-associated-data = 00000000000004d25530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503
-
-[note-data-commit]
-kind = note
-version = 1
-type = DATA
-type-tag = 0102
-index = 0
-amount = 0
-content-fingerprint = 7da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c
-content-length = 18
-rule = 0000000000000000000000000000000000000000000000000000000000000000
-chain-id = 1234
-leaf = 5bc2c9ef3f27a49943b7885eb8babf9be3dda232a41894f3ca5a09b0129340c1
-plaintext = 01010102000000000000000000000000000000000000000000000000000000000000000000000000000000007da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c00000000000000120000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-associated-data = 00000000000004d25bc2c9ef3f27a49943b7885eb8babf9be3dda232a41894f3ca5a09b0129340c1
-```
-
 ### Salted note vectors
 
-Note version 2, the note a wallet writes: the plaintext and associated data of
-the notes stored with `[coin-remainder-salted]` and `[data-commit-salted]`,
-each carrying that commitment's salt at offset 96 after a 12-byte amount.
-Their kind, `salted-note`, is their own, and the checker refuses a
-`salted-note` vector with a version 1 type tag.
+The plaintext and associated data of the notes stored with
+`[coin-remainder-salted]` and `[data-commit-salted]`. Encryption itself
+follows RFC 8439 and its own vectors. `version` is the note version (section
+9), always 2, and each note carries its commitment's salt at offset 96 after
+a 12-byte amount. Their kind is `salted-note`, and the checker refuses one
+whose type tag is not of version 2. Every note vector's `leaf` is the
+commitment of a commitment vector above, and its fields are that
+commitment's.
 
 ```text
 [note-coin-remainder-salted]

@@ -24,6 +24,54 @@ WORDS_EXAMPLE = ("0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 29
                  "7303 1997 5454 7598 3699 7944 0671 6812")
 
 
+# Vector blocks of the removed unsalted format (commitment format version 1),
+# in the shape the specification once carried them; the checker must refuse
+# them.
+V1_COIN_COMMIT = f"""[coin-commit]
+kind = coin-commitment
+version = 1
+key = {WORDS_EXAMPLE}
+index = 0
+amount = 1000000000000000000
+rule = {"00" * 32}
+type-tag = 0101
+fingerprint = adb657b17abd3d6a22f29a4d9fded4367c0c27f0b167fc5d9eccf33dfbc2ff6c
+commitment = 9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c
+marker = ed3aec8b2a68aa001654023dafa7bf3a187b9f3bb59940fd40389b20beda8a98
+"""
+
+V1_DATA_COMMIT = f"""[data-commit]
+kind = data-commitment
+version = 1
+key = 0005 7669 0013 0642 8065 9560 5300 0376 8759 3842 1040 3453 0406 4124 0510 2397 3211 7841 8613 4399 8027
+index = 0
+content-ascii = Ghost example data
+content-length = 18
+rule = {"00" * 32}
+type-tag = 0102
+content-fingerprint = 7da4cd394ac5e0c0054e0ae3b73f031cf36ece8091b8f877da1847ce5709398c
+fingerprint = b1e44e364ce85a0f886580a51de4af3c5678d39fa9b975a0827067cca7bc4090
+commitment = 5bc2c9ef3f27a49943b7885eb8babf9be3dda232a41894f3ca5a09b0129340c1
+marker = f10b00e4d411afc3a56a0c1d72f49f02b8ea370ffe2430fca37596e82ae38d61
+"""
+
+V1_NOTE = f"""[note-coin-remainder]
+kind = note
+version = 1
+type = COIN
+type-tag = 0101
+index = 1
+amount = 700000000000000000
+content-fingerprint = {"00" * 32}
+content-length = 0
+rule = {"00" * 32}
+chain-id = 1234
+leaf = 5530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503
+plaintext = {"01010101" + "00" * 7 + "01" + "00" * 24 + "09b6e64a8ec60000" + "00" * 84}
+associated-data = 00000000000004d25530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503
+"""
+
+
 def words_vectors():
     """The WordsVector entries of client/tests/word_key.rs, as dicts."""
     text = WORD_KEY_TESTS.read_text(encoding="utf-8")
@@ -77,7 +125,7 @@ class CheckerTest(unittest.TestCase):
         with mock.patch.object(checker, "keccak256", lambda data: hashlib.sha3_256(data).digest()):
             errors = checker.run(SPEC)[0]
         self.assertTrue(any("known value" in e for e in errors))
-        self.assertTrue(any("[coin-commit] commitment" in e for e in errors))
+        self.assertTrue(any("[coin-commit-salted] commitment" in e for e in errors))
 
     def test_broken_permutation_fails_self_test(self):
         constants = list(checker._ROUND_CONSTANTS)
@@ -93,23 +141,24 @@ class CheckerTest(unittest.TestCase):
             ("derivation-words", "b1"),
             ("derivation-words", "note-key"),
             ("derivation-words", "data-key"),
-            ("coin-commit", "fingerprint"),
-            ("coin-commit", "commitment"),
-            ("coin-remainder", "marker"),
+            ("derivation-words-data", "b2"),
+            ("derivation-words-data", "data-key"),
             ("coin-commit-salted", "fingerprint"),
+            ("coin-commit-salted", "commitment"),
+            ("coin-commit-salted", "marker"),
             ("coin-commit-salted-other", "commitment"),
             ("coin-remainder-salted", "marker"),
+            ("coin-remainder-salted-other", "fingerprint"),
             ("data-commit-salted", "fingerprint"),
+            ("data-commit-salted", "content-fingerprint"),
+            ("data-commit-salted", "commitment"),
+            ("data-commit-salted", "marker"),
             ("data-commit-salted-other", "marker"),
-            ("data-commit", "content-fingerprint"),
-            ("data-commit", "commitment"),
-            ("data-commit", "marker"),
             ("empty-leaf", "leaf"),
             ("coin-tree-node", "node"),
             ("data-tree-node", "node"),
-            ("note-coin-remainder", "plaintext"),
-            ("note-data-commit", "associated-data"),
             ("note-coin-remainder-salted", "plaintext"),
+            ("note-coin-remainder-salted", "associated-data"),
             ("note-data-commit-salted", "plaintext"),
             ("note-data-commit-salted", "associated-data"),
             ("keccak-abc", "digest"),
@@ -121,9 +170,10 @@ class CheckerTest(unittest.TestCase):
                 self.assertTrue(any(f"[{vector}] {name}" in e for e in errors), errors)
 
     def test_changed_amount_changes_commitment(self):
-        errors = self.run_on(self.replace_field("coin-commit", "amount", "1000000000000000001"))
-        self.assertTrue(any("[coin-commit] commitment" in e for e in errors))
-        self.assertFalse(any("[coin-commit] fingerprint" in e for e in errors))
+        errors = self.run_on(self.replace_field("coin-commit-salted", "amount",
+                                                "1000000000000000001"))
+        self.assertTrue(any("[coin-commit-salted] commitment" in e for e in errors))
+        self.assertFalse(any("[coin-commit-salted] fingerprint" in e for e in errors))
 
     def test_checksum_errors_are_caught(self):
         # A wrong check group in a key that the document calls valid.
@@ -167,10 +217,10 @@ class CheckerTest(unittest.TestCase):
                     checker.parse_key(key)
                 with self.assertRaises(ValueError):
                     checker.valid_key_bytes(key)
-                text = self.replace_field("coin-commit", "key", key)
+                text = self.replace_field("coin-commit-salted", "key", key)
                 errors = self.run_on(text)
-                self.assertTrue(any("[coin-commit] cannot be checked" in e for e in errors),
-                                errors)
+                self.assertTrue(any("[coin-commit-salted] cannot be checked" in e
+                                    for e in errors), errors)
         # Every key in the document is a words key of 21 groups.
         keys = [v["key"] for v in checker.parse_vectors(checker.section(self.text, "Test vectors"))
                 if "key" in v]
@@ -252,7 +302,7 @@ class CheckerTest(unittest.TestCase):
         with mock.patch.object(checker, "derive_blinding", lambda kb, i: original(kb, 0)):
             errors = checker.run(SPEC)[0]
         self.assertTrue(any("[derivation-words] b1" in e for e in errors))
-        self.assertTrue(any("[coin-remainder] marker" in e for e in errors))
+        self.assertTrue(any("[coin-remainder-salted] marker" in e for e in errors))
 
     def test_blindings_and_secrets_are_distinct(self):
         kb = checker.valid_key_bytes(self.field("derivation-words", "key"))
@@ -262,12 +312,12 @@ class CheckerTest(unittest.TestCase):
         self.assertEqual(len(set(values)), len(values))
 
     def test_missing_vector_kind_fails(self):
-        # Both note vectors sit in one block; drop the block's contents.
-        start = self.text.index("[note-coin-remainder]")
+        # Both tree-node vectors sit after the empty leaf in one block; drop them.
+        start = self.text.index("[coin-tree-node]")
         end = self.text.index("```", start)
-        self.assertNotIn("kind = note", self.text[:start] + self.text[end:])
+        self.assertNotIn("kind = tree-node", self.text[:start] + self.text[end:])
         errors = self.run_on(self.text[:start] + self.text[end:])
-        self.assertIn("no vector of kind note", errors)
+        self.assertIn("no vector of kind tree-node", errors)
 
     def test_salted_note_layout(self):
         # Note version 2 (section 9), field by field: version, scheme, type tag,
@@ -309,15 +359,15 @@ class CheckerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             checker.note_plaintext("COIN", 0, checker.V_MAX + 1, bytes(32), 0, bytes(32),
                                    SALT_A, checker.NOTE_VERSION_2)
-        # A salt is required in version 2 and refused in version 1.
+        # A salt is required, and note version 2 is the only one.
         with self.assertRaises(ValueError):
             checker.note_plaintext("COIN", 0, 1, bytes(32), 0, bytes(32), None,
                                    checker.NOTE_VERSION_2)
-        with self.assertRaises(ValueError):
-            checker.note_plaintext("COIN", 0, 1, bytes(32), 0, bytes(32), SALT_A,
-                                   checker.NOTE_VERSION)
-        with self.assertRaises(ValueError):
-            checker.note_plaintext("COIN", 0, 1, bytes(32), 0, bytes(32), SALT_A, 3)
+        for note_version in (1, 3):
+            with self.subTest(note_version=note_version):
+                with self.assertRaises(ValueError):
+                    checker.note_plaintext("COIN", 0, 1, bytes(32), 0, bytes(32), SALT_A,
+                                           note_version)
         # A changed salt byte is caught: the plaintext no longer matches, and
         # the salt is no longer the one of the commitment the note is stored with.
         salt = self.field("note-coin-remainder-salted", "salt")
@@ -344,26 +394,12 @@ class CheckerTest(unittest.TestCase):
         self.assertIn("no vector of kind salted-note", errors)
 
     def test_note_version_must_match_type_tag(self):
-        # A salted-note vector (note version 2) with a version 1 type tag.
-        errors = self.run_on(self.replace_field("note-coin-remainder-salted", "type-tag", "0101"))
-        self.assertTrue(any("[note-coin-remainder-salted] cannot be checked: note version 2 "
-                            "needs a version 2 type tag, not 0101" in e for e in errors), errors)
-        # A note vector (note version 1) with a version 2 type tag.
-        errors = self.run_on(self.replace_field("note-data-commit", "type-tag", "0202"))
-        self.assertTrue(any("[note-data-commit] cannot be checked: note version 1 needs a "
-                            "version 1 type tag, not 0202" in e for e in errors), errors)
-        # The kind fixes the note version: neither kind takes the other's.
-        errors = self.run_on(self.replace_field("note-coin-remainder", "version", "2"))
-        self.assertTrue(any("[note-coin-remainder] cannot be checked: kind note is note "
-                            "version 1, not 2" in e for e in errors), errors)
-        start = self.text.index("[note-data-commit-salted]\n")
-        at = self.text.index("kind = salted-note", start)
-        old = "kind = salted-note"
-        errors = self.run_on(self.text[:at] + "kind = note" + self.text[at + len(old):])
-        self.assertTrue(any("[note-data-commit-salted] cannot be checked: kind note is note "
-                            "version 1, not 2" in e for e in errors), errors)
+        # The kind fixes the note version: a salted-note vector is note version 2.
+        errors = self.run_on(self.replace_field("note-coin-remainder-salted", "version", "1"))
+        self.assertTrue(any("[note-coin-remainder-salted] cannot be checked: kind salted-note "
+                            "is note version 2, not 1" in e for e in errors), errors)
         # An unknown type tag version, or a type tag of another type, is refused.
-        for tag in ("0301", "0203"):
+        for tag in ("0301", "0203", "0101"):
             with self.subTest(tag=tag):
                 errors = self.run_on(self.replace_field("note-coin-remainder-salted",
                                                         "type-tag", tag))
@@ -372,17 +408,16 @@ class CheckerTest(unittest.TestCase):
         errors = self.run_on(self.replace_field("note-coin-remainder-salted", "type-tag", "0202"))
         self.assertTrue(any("[note-coin-remainder-salted] cannot be checked: type tag 0202 is "
                             "DATA, not COIN" in e for e in errors), errors)
-        # The type tag written into the plaintext follows the note version.
-        v1 = checker.note_plaintext("DATA", 0, 0, bytes(32), 0, bytes(32))
-        v2 = checker.note_plaintext("DATA", 0, 0, bytes(32), 0, bytes(32), SALT_A,
-                                    checker.NOTE_VERSION_2)
-        self.assertEqual((v1[:4], v2[:4]), (b"\x01\x01\x01\x02", b"\x02\x01\x02\x02"))
+        # The note version and the type tag written into the plaintext are
+        # those of version 2, also by default.
+        v2 = checker.note_plaintext("DATA", 0, 0, bytes(32), 0, bytes(32), SALT_A)
+        self.assertEqual(v2[:4], b"\x02\x01\x02\x02")
 
     def test_missing_remainder_vector_fails(self):
-        start = self.text.index("[coin-remainder]")
-        end = self.text.index("[data-commit]", start)
+        start = self.text.index("[coin-remainder-salted]\n")
+        end = self.text.index("[data-commit-salted]\n", start)
         errors = self.run_on(self.text[:start] + self.text[end:])
-        self.assertTrue(any("index 1" in e for e in errors))
+        self.assertTrue(any("index 1" in e for e in errors), errors)
 
     def test_tag_table_must_list_every_tag(self):
         text = self.text.replace("| `ghost/hold-binding/v1` |", "| hold binding |", 1)
@@ -393,7 +428,7 @@ class CheckerTest(unittest.TestCase):
         self.assertTrue(any("ghost/empty-leaf/v2 is listed" in e for e in errors))
 
     def test_tags_are_distinct_ascii_with_version(self):
-        self.assertEqual(len(checker.ALL_TAGS), 23)
+        self.assertEqual(len(checker.ALL_TAGS), 19)
         for tag in checker.ALL_TAGS:
             self.assertRegex(tag, r"^ghost/[a-z0-9-]+/v[12]$")
         v2 = sorted(t for t in checker.ALL_TAGS if t.endswith("/v2"))
@@ -401,6 +436,51 @@ class CheckerTest(unittest.TestCase):
                               "ghost/data-fingerprint/v2", "ghost/data-marker/v2"])
         prefixes = {checker._tag_prefix(t) for t in checker.ALL_TAGS}
         self.assertEqual(len(prefixes), len(checker.ALL_TAGS))
+
+    def test_version_1_vectors_are_refused(self):
+        # A block of an old unsalted kind is an unknown kind, not a vector the
+        # checker still recomputes.
+        for name, block, kind in (("coin-commit", V1_COIN_COMMIT, "coin-commitment"),
+                                  ("data-commit", V1_DATA_COMMIT, "data-commitment"),
+                                  ("note-coin-remainder", V1_NOTE, "note")):
+            with self.subTest(kind=kind):
+                at = self.text.index("### Tree vectors")
+                text = self.text[:at] + "```text\n" + block + "```\n\n" + self.text[at:]
+                errors = self.run_on(text)
+                self.assertIn(f"[{name}] unknown kind {kind!r}", errors)
+        # A version 1 type tag in a salted vector is refused, never read as
+        # another version.
+        errors = self.run_on(self.replace_field("coin-commit-salted", "type-tag", "0101"))
+        self.assertTrue(any("[coin-commit-salted] type-tag: document has '0101'" in e
+                            for e in errors), errors)
+        errors = self.run_on(self.replace_field("note-data-commit-salted", "type-tag", "0102"))
+        self.assertTrue(any("[note-data-commit-salted] cannot be checked: unknown type tag 0102"
+                            in e for e in errors), errors)
+        for tag in (b"\x01\x01", b"\x01\x02"):
+            with self.subTest(tag=tag.hex()):
+                with self.assertRaises(ValueError):
+                    checker.read_type_tag(tag)
+        # Nothing hashes under version 1: no type tag, fingerprint or marker.
+        kb = checker.valid_key_bytes(WORDS_EXAMPLE)
+        r, b = checker.derive_reveal_secret(kb), checker.derive_blinding(kb, 0)
+        for call in (lambda: checker.type_tag("COIN", 1),
+                     lambda: checker.marker("COIN", r, b, None, 1),
+                     lambda: checker.marker("DATA", r, b, SALT_A, 1),
+                     lambda: checker.coin_fingerprint(r, r, b, bytes(32), None, 1)):
+            with self.assertRaises(ValueError):
+                call()
+        self.assertFalse(hasattr(checker, "VERSION_1"))
+        # The unsalted tags are not in the table, and listing one is refused.
+        for tag in ("ghost/coin-fingerprint/v1", "ghost/data-fingerprint/v1",
+                    "ghost/coin-marker/v1", "ghost/data-marker/v1"):
+            with self.subTest(tag=tag):
+                self.assertNotIn(tag, checker.ALL_TAGS)
+                self.assertNotIn(f"`{tag}`", self.text)
+                row = "| `ghost/empty-leaf/v1` |"
+                text = self.text.replace(row, f"| `{tag}` | Keccak-256 | old | `r`, `b` "
+                                              f"| 85 | 1 |\n" + row, 1)
+                self.assertIn(f"tag {tag} is listed but not known to this checker",
+                              self.run_on(text))
 
     def test_unknown_kind_and_bad_lines_fail(self):
         text = self.text.replace("kind = empty-leaf", "kind = nothing", 1)
@@ -431,7 +511,7 @@ class SaltTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.vectors = {v["name"]: v for v in
                         checker.parse_vectors(checker.section(self.text, "Test vectors"))}
-        kb = checker.valid_key_bytes(self.vectors["coin-commit"]["key"])
+        kb = checker.valid_key_bytes(self.vectors["coin-commit-salted"]["key"])
         self.s = checker.derive_secret(kb)
         self.r = checker.derive_reveal_secret(kb)
         self.b = checker.derive_blinding(kb, 0)
@@ -457,11 +537,8 @@ class SaltTest(unittest.TestCase):
         for make in (self.coin, self.data):
             with self.subTest(kind=make.__name__):
                 a, b = make(SALT_A), make(SALT_B)
-                old = make(None, checker.VERSION_1)
-                for x, y, z in zip(a, b, old):
+                for x, y in zip(a, b):
                     self.assertGreaterEqual(checker._bits_apart(x, y), checker.MIN_BITS_APART)
-                    self.assertGreaterEqual(checker._bits_apart(x, z), checker.MIN_BITS_APART)
-                    self.assertGreaterEqual(checker._bits_apart(y, z), checker.MIN_BITS_APART)
 
     def test_salt_sits_right_after_b(self):
         coin2 = bytes([0x02, 0x01])
@@ -480,16 +557,14 @@ class SaltTest(unittest.TestCase):
         self.assertEqual(self.data(SALT_A)[2],
                          checker.keccak_tagged("ghost/data-marker/v2", self.r, self.b, SALT_A))
 
-    def test_version_1_hashes_as_before(self):
-        # No salt and the v1 tags: exactly the formula before the salt existed.
-        coin1 = bytes([0x01, 0x01])
-        f = checker.keccak_tagged("ghost/coin-fingerprint/v1", self.s, self.r, self.b, coin1,
-                                  bytes(32), self.rule)
-        self.assertEqual(self.coin(None, checker.VERSION_1)[0], f)
-        self.assertEqual(self.coin(None, checker.VERSION_1)[2],
-                         checker.keccak_tagged("ghost/coin-marker/v1", self.r, self.b))
-        v = self.vectors["coin-commit"]
-        self.assertEqual(self.coin(None, checker.VERSION_1)[0].hex(), v["fingerprint"])
+    def test_version_2_is_the_default(self):
+        # The functions take version 2 when no version is given.
+        f = checker.coin_fingerprint(self.s, self.r, self.b, self.rule, SALT_A)
+        self.assertEqual(f, self.coin(SALT_A)[0])
+        self.assertEqual(checker.coin_commitment(f, 10**18), self.coin(SALT_A)[1])
+        self.assertEqual(checker.marker("COIN", self.r, self.b, SALT_A), self.coin(SALT_A)[2])
+        self.assertEqual(f.hex(), self.vectors["coin-commit-salted"]["fingerprint"])
+        self.assertEqual(checker.type_tag("DATA", checker.VERSION_2), b"\x02\x02")
 
     def test_document_vectors_match_two_salts(self):
         a, b = self.vectors["coin-commit-salted"], self.vectors["coin-commit-salted-other"]
@@ -500,24 +575,17 @@ class SaltTest(unittest.TestCase):
         self.assertEqual(checker.check_salt_pairs(list(self.vectors.values())), [])
 
     def test_ignoring_the_salt_is_caught(self):
-        original_fp, original_marker = checker._fingerprint, checker.marker
-
         def fp_without_salt(type_name, s, r, b, cf, rule, salt, version):
-            if version == checker.VERSION_2:
-                tag = checker.VERSION_TAGS[version][type_name][0]
-                return checker.keccak_tagged(tag, s, r, b, checker.type_tag(type_name, version), cf, rule)
-            return original_fp(type_name, s, r, b, cf, rule, salt, version)
+            tag = checker.VERSION_TAGS[version][type_name][0]
+            return checker.keccak_tagged(tag, s, r, b, checker.type_tag(type_name, version), cf, rule)
 
         with mock.patch.object(checker, "_fingerprint", fp_without_salt):
             errors = checker.run(SPEC)[0]
         self.assertTrue(any("[coin-commit-salted] fingerprint" in e for e in errors), errors)
         self.assertTrue(any("[data-commit-salted-other] commitment" in e for e in errors), errors)
-        self.assertFalse(any("[coin-commit] " in e for e in errors), errors)
 
-        def marker_without_salt(type_name, r, b, salt=None, version=checker.VERSION_1):
-            if version == checker.VERSION_2:
-                return checker.keccak_tagged(checker.VERSION_TAGS[version][type_name][1], r, b)
-            return original_marker(type_name, r, b, salt, version)
+        def marker_without_salt(type_name, r, b, salt=None, version=checker.VERSION_2):
+            return checker.keccak_tagged(checker.VERSION_TAGS[version][type_name][1], r, b)
 
         with mock.patch.object(checker, "marker", marker_without_salt):
             errors = checker.run(SPEC)[0]
@@ -535,8 +603,10 @@ class SaltTest(unittest.TestCase):
         self.assertTrue(any("[coin-commit-salted] fingerprint" in e for e in errors), errors)
 
     def test_v1_tags_with_salt_are_caught(self):
-        # A version 2 commitment hashed under the version 1 tags must not pass.
-        with mock.patch.dict(checker.VERSION_TAGS, {checker.VERSION_2: checker.VERSION_TAGS[checker.VERSION_1]}):
+        # A commitment hashed under the removed unsalted tags must not pass.
+        old_tags = {"COIN": ("ghost/coin-fingerprint/v1", "ghost/coin-marker/v1"),
+                    "DATA": ("ghost/data-fingerprint/v1", "ghost/data-marker/v1")}
+        with mock.patch.dict(checker.VERSION_TAGS, {checker.VERSION_2: old_tags}):
             errors = checker.run(SPEC)[0]
         self.assertTrue(any("[coin-commit-salted] fingerprint" in e for e in errors), errors)
         self.assertTrue(any("[coin-commit-salted] marker" in e for e in errors), errors)
@@ -576,19 +646,19 @@ class SaltTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.coin(bad)
         with self.assertRaises(ValueError):
-            self.coin(SALT_A, checker.VERSION_1)
+            self.coin(SALT_A, 1)
         text = self.text.replace("salt = 00112233445566778899aabbccddeeff",
                                  "salt = 00112233445566778899aabbccddee", 1)
         self.assertTrue(any("[coin-commit-salted] cannot be checked" in e
                             for e in self.run_on(text)))
 
     def test_unknown_version_is_rejected(self):
-        for tag in (b"\x03\x01", b"\x00\x01", b"\x02\x03", b"\x02"):
+        for tag in (b"\x03\x01", b"\x00\x01", b"\x02\x03", b"\x02", b"\x01\x01", b"\x01\x02"):
             with self.subTest(tag=tag.hex()):
                 with self.assertRaises(ValueError):
                     checker.read_type_tag(tag)
         self.assertEqual(checker.read_type_tag(b"\x02\x01"), (2, "COIN"))
-        self.assertEqual(checker.read_type_tag(b"\x01\x02"), (1, "DATA"))
+        self.assertEqual(checker.read_type_tag(b"\x02\x02"), (2, "DATA"))
         with self.assertRaises(ValueError):
             self.coin(SALT_A, 3)
         with self.assertRaises(ValueError):
@@ -600,15 +670,16 @@ class SaltTest(unittest.TestCase):
                             for e in self.run_on(text)))
 
     def test_salted_vectors_have_their_own_kind(self):
-        # A coin-commitment or data-commitment vector is always version 1, so a
-        # reader that knows only version 1 can take all of them.
+        # Every commitment and note vector is of a salted kind, at version 2
+        # and with a salt; a salted vector relabelled with an old kind is refused.
         vectors = checker.parse_vectors(checker.section(self.text, "Test vectors"))
+        salted = [v for v in vectors if "salt" in v]
+        self.assertEqual(len(salted), 8)
         for v in vectors:
-            if v.get("kind") in ("coin-commitment", "data-commitment"):
-                self.assertEqual(v.get("version"), "1", v["name"])
-                self.assertNotIn("salt", v, v["name"])
-            if v.get("kind", "").startswith("salted-"):
+            if v.get("kind", "").startswith("salted-") or "salt" in v:
+                self.assertTrue(v["kind"].startswith("salted-"), v["name"])
                 self.assertEqual(v.get("version"), "2", v["name"])
+                self.assertIn("salt", v, v["name"])
         for name, kind in (("coin-commit-salted", "coin-commitment"),
                            ("data-commit-salted", "data-commitment")):
             with self.subTest(name=name):
@@ -616,15 +687,13 @@ class SaltTest(unittest.TestCase):
                 at = self.text.index(f"kind = salted-{kind}", start)
                 old = f"kind = salted-{kind}"
                 text = self.text[:at] + f"kind = {kind}" + self.text[at + len(old):]
-                errors = self.run_on(text)
-                self.assertTrue(any(f"[{name}] cannot be checked: kind {kind} is version 1"
-                                    in e for e in errors), errors)
-        start = self.text.index("[coin-commit]\n")
-        at = self.text.index("kind = coin-commitment", start)
-        old = "kind = coin-commitment"
-        text = self.text[:at] + "kind = salted-coin-commitment" + self.text[at + len(old):]
-        self.assertTrue(any("[coin-commit] cannot be checked: kind salted-coin-commitment "
-                            "is version 2" in e for e in self.run_on(text)))
+                self.assertIn(f"[{name}] unknown kind {kind!r}", self.run_on(text))
+        start = self.text.index("[coin-commit-salted]\n")
+        at = self.text.index("version = 2", start)
+        text = self.text[:at] + "version = 1" + self.text[at + len("version = 2"):]
+        self.assertTrue(any("[coin-commit-salted] cannot be checked: kind "
+                            "salted-coin-commitment is version 2, not 1" in e
+                            for e in self.run_on(text)))
 
     def test_type_tag_is_checked(self):
         start = self.text.index("[coin-commit-salted]\n")
