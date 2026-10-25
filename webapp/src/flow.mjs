@@ -47,6 +47,7 @@ import {
   CONFIRMATIONS,
   SETTLE_DEPTH,
   feeForNextBlock,
+  feeStillAccepted,
   formatGhost,
   nextBaseFee,
   parseAddress,
@@ -1635,7 +1636,12 @@ export function createFlow({
   }
 
   // Proves a reveal of the key's current coin and sends it. A proof whose
-  // fee window lapsed while it was being made is made again.
+  // fee lapsed while it was being made is made again; a fee of the previous
+  // window still counts while the next block's base fee is within its cover
+  // limit (spec 07, section 5). Before each proof, when fewer than two blocks
+  // of the next block's window are left or that block's base fee is already
+  // above the window fee's cover limit, it waits a block at a time for the
+  // next window's fee.
   //
   // After restore, every path, the one where the key holds no coin
   // included, asks the endpoint the same thing in the same order before
@@ -1689,6 +1695,27 @@ export function createFlow({
     const outOfTime = () => now() - started >= headMovedMs;
     attempts: for (;;) {
       if (feeChanges >= FEE_ATTEMPTS) throw new Error("the fee changed every time a proof was ready; try again");
+      // A proof for a window that is about to close, or whose fee no longer
+      // covers the next block's base fee, would likely lapse: wait for the
+      // next window's fee, one poll every `pollMs`. At a window's first block
+      // the base fee is b_ref, within the cover limit, so this ends within 3
+      // blocks. A fee that still covers the next block is also taken in the
+      // window after (spec 07, section 5), so when the chain does not move
+      // for `maxPolls` polls only a fee past its cover limit stops the
+      // reveal.
+      for (let polls = 0; ; polls += 1) {
+        const tip = await syncTip();
+        const next = await feeForNextBlock(tip, headerAt);
+        if (!next.wait) break;
+        if (polls >= maxPolls) {
+          if (nextBaseFee(tip) > next.coverLimit) {
+            throw new Error(`the chain has not reached block ${tip.number + 1} yet; refresh later`);
+          }
+          break;
+        }
+        progress("waiting for the next fee window");
+        await sleep(pollMs);
+      }
       const scan = await scanKey(request.key);
       let args = null;
       let failure = null;
@@ -1715,8 +1742,7 @@ export function createFlow({
         }
       }
       let tip = await syncTip();
-      const { fee } = await feeForNextBlock(tip, headerAt);
-      if (fee !== scan.fee) {
+      if (!(await feeStillAccepted(scan.fee, tip, headerAt))) {
         feeChanges += 1;
         continue;
       }
@@ -1757,7 +1783,7 @@ export function createFlow({
         progress(refusal ? "the node's chain moved on; sending again" : "the node let the reveal go; sending again");
         await sleep(resendMs);
         tip = await syncTip();
-        if ((await feeForNextBlock(tip, headerAt)).fee !== scan.fee) {
+        if (!(await feeStillAccepted(scan.fee, tip, headerAt))) {
           feeChanges += 1;
           continue attempts;
         }
