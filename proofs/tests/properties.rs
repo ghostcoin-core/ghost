@@ -4,7 +4,7 @@
 //! time, so the code cannot drift from them: the amount and conservation
 //! vectors of spec 02, the derivation and commitment vectors of spec 01 and
 //! the tree vectors of spec 05. The example witness is the spec 01 example:
-//! a commit of 1 GHOST under the standard example key, revealed against the
+//! a commit of 1 GHOST under the words example key, revealed against the
 //! two-leaf coin tree of spec 05.
 //!
 //! Every negative test first builds a valid proof and asserts that it
@@ -153,12 +153,23 @@ fn derive(tag: &str, parts: &[&[u8]]) -> [u8; 32] {
     sha3_256(&msg)
 }
 
-/// `(s, r, b_0, b_1)` of a standard Phantom Key.
+/// `(s, r, b_0, b_1)` of a Phantom Key written as its digit view: the 80
+/// secret digits read as one decimal number into 32 bytes, after code `0x20`.
 fn key_secrets(key: &str) -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
-    let digits: String = key.chars().filter(char::is_ascii_digit).collect();
-    assert_eq!(digits.len(), 48);
-    let mut key_bytes = vec![0x0c];
-    key_bytes.extend_from_slice(&digits.as_bytes()[..44]);
+    let digits: Vec<u8> = key.bytes().filter(u8::is_ascii_digit).collect();
+    assert_eq!(digits.len(), 84);
+    let mut secret = [0u8; 32];
+    for digit in &digits[..80] {
+        let mut carry = u32::from(digit - b'0');
+        for byte in secret.iter_mut().rev() {
+            let value = u32::from(*byte) * 10 + carry;
+            *byte = value as u8;
+            carry = value >> 8;
+        }
+        assert_eq!(carry, 0, "the secret is below 2^256");
+    }
+    let mut key_bytes = vec![0x20];
+    key_bytes.extend_from_slice(&secret);
     (
         derive("ghost/secret/v1", &[&key_bytes]),
         derive("ghost/reveal-secret/v1", &[&key_bytes]),
@@ -208,7 +219,7 @@ struct Coin {
 /// two-leaf coin tree of spec 05, revealed with the given amounts. The
 /// remainder is number 1 of the same key.
 fn example_coin(v: u128, out: u128, remainder: u128, fee: u128) -> Coin {
-    let key = vector(SPEC_01, "derivation-standard")["key"].clone();
+    let key = vector(SPEC_01, "derivation-words")["key"].clone();
     let (s, r, b0, b1) = key_secrets(&key);
     let mut path = empty_subtrees(Tree::Coin);
     path[0] = hex32(&vector(SPEC_01, "coin-remainder")["commitment"]);
@@ -597,8 +608,9 @@ fn conservation_vectors_from_spec_agree() {
 /// fingerprint, commitment, marker and tree vectors agree.
 #[test]
 fn commitment_vectors_from_spec_agree() {
-    let d = vector(SPEC_01, "derivation-standard");
+    let d = vector(SPEC_01, "derivation-words");
     let (s, r, b0, b1) = key_secrets(&d["key"]);
+    assert!(d["key-bytes"].starts_with("20"), "a words key");
     assert_eq!((s, r, b0, b1), (hex32(&d["s"]), hex32(&d["r"]), hex32(&d["b0"]), hex32(&d["b1"])));
     for (name, b) in [("coin-commit", b0), ("coin-remainder", b1)] {
         let c = vector(SPEC_01, name);

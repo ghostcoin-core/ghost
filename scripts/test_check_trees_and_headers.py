@@ -199,9 +199,39 @@ class CheckerTest(unittest.TestCase):
     # -- vectors -----------------------------------------------------------
 
     def test_tree_root_vector(self):
+        text = self.damaged("root = d754c9e4e70031e9902edfaa8065469577da43c8c0300cc342e169531ba2a6f7\n",
+                            "root = d754c9e4e70031e9902edfaa8065469577da43c8c0300cc342e169531ba2a6f8\n")
+        self.assert_gap(text, "vector data-tree-one-leaf: root is")
         text = self.damaged("root = dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a\n",
                             "root = dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237b\n")
-        self.assert_gap(text, "vector data-tree-one-leaf: root is")
+        self.assert_gap(text, "vector data-tree-header-example: root is")
+
+    def test_tree_leaves_are_spec_01_commitments(self):
+        # The leaves of the two-leaf coin tree are spec 01's coin-commit and
+        # coin-remainder, made with its words example key.
+        old_leaf = "9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c"
+        self.assertNotIn(old_leaf[:-1] + "d", self.spec01)
+        spec01 = self.spec01.replace(old_leaf, old_leaf[:-1] + "d")
+        self.assert_gap(self.text, "vector coin-tree-two-leaves: leaves are not the commitments",
+                        spec01=spec01)
+        self.assert_gap(self.text, "vector coin-page-two-leaves: leaves are not the commitments",
+                        spec01=spec01)
+        data = self.in_block("data-tree-one-leaf",
+                             "leaves = 5bc2c9ef3f27a49943b7885eb8babf9be3dda232a41894f3ca5a09b0129340c1",
+                             "leaves = 39c4e1e8edca6f366db5125e1bc9484063fa9f35da539638207f03732d913b06")
+        self.assert_gap(data, "vector data-tree-one-leaf: leaves are not the commitments")
+        self.assert_gap(self.text, "no test vectors found in spec 01", spec01="no vectors")
+
+    def test_spec_01_leaves_need_a_words_key(self):
+        # A twelve-group digit key in spec 01 is refused like the client refuses it.
+        words = "0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812"
+        self.assertIn(f"key = {words}\nindex = 1\namount = 700000000000000000", self.spec01)
+        spec01 = self.spec01.replace(
+            f"key = {words}\nindex = 1\namount = 700000000000000000",
+            "key = 1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417\n"
+            "index = 1\namount = 700000000000000000", 1)
+        self.assert_gap(self.text, "spec 01 vector coin-remainder is not made with a words key",
+                        spec01=spec01)
 
     def test_empty_tree_vector(self):
         old = "tree = coin\nroot = 8e66512042388a7863d500c4f96861466ae48b9d64ea1e10ec382c31aa61b5a8"
@@ -213,7 +243,7 @@ class CheckerTest(unittest.TestCase):
                         "no empty-tree vector for the data tree")
 
     def test_page_vector(self):
-        self.assert_gap(self.damaged("page-root = 06d0", "page-root = 16d0"),
+        self.assert_gap(self.damaged("page-root = 69e1", "page-root = 79e1"),
                         "vector coin-page-two-leaves: page-root")
         self.assert_gap(self.damaged("empty-page-root = b50a", "empty-page-root = c50a"),
                         "vector coin-page-two-leaves: empty-page-root")
@@ -343,10 +373,11 @@ class CheckerTest(unittest.TestCase):
 class TreeAndRlpTest(unittest.TestCase):
     def test_roots_against_spec_01_node_vector(self):
         # Spec 01's coin-tree-node vector is the level-0 node of the two leaves.
-        left = bytes.fromhex("562d92a92bb8f2b3b772b55220a5ee26f189bedc0f4bfa513205df1545029458")
-        right = bytes.fromhex("93312061656298f41cd5a9f116d070b38b0acf5f8d968c58e32170f70e7aed15")
+        left = bytes.fromhex("9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c")
+        right = bytes.fromhex("5530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503")
         node = checker.node(checker.TAG_COIN_NODE, 0, left, right)
-        self.assertEqual(node.hex(), "cc8b5b4159cc8853fc72d43b3c64807607386b732abf9fbaa93a6ee9ef574026")
+        self.assertEqual(node.hex(), "df419dcb5b0e8b93b8bc2dffb17e8257e0b8b7d5d177a69f1b6cd18acffaee6d")
+        self.assertIn(f"node = {node.hex()}", SPEC01.read_text(encoding="utf-8"))
         self.assertEqual(checker.empty_leaf().hex(),
                          "e050b25c8ab09717b0a6846b688b5047b93c0d37e18599cc7deec37f914bcca4")
 

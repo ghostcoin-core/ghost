@@ -4,9 +4,10 @@
 Reads every vector block in the "Test vectors" section of
 docs/spec/01-commitments-and-keys.md, recomputes the Phantom Key checksum and
 every derivation from the rules in that document, and exits nonzero on any
-mismatch. It reads a words key from its digit view (code 0x20, the 80 secret
-digits and their check group) and the retired twelve- and twenty-four-group
-digit keys that the vectors keep as fixed test data. It also checks that the tag table lists exactly the tags used here,
+mismatch. Every key is a words key, read from its digit view: code 0x20, the 80
+secret digits and their check group 21; any other number of digits, the
+retired twelve- and twenty-four-group digit keys among them, is refused. It
+also checks that the tag table lists exactly the tags used here,
 with the right input sizes, that the same secret under two salts gives
 unrelated fingerprints, commitments and markers, and that every note vector
 has a type tag of its note version and is the note of a commitment vector.
@@ -183,10 +184,6 @@ FORMAT_WORDS = 0x20
 WORDS_GROUPS = 21
 WORDS_SECRET_GROUPS = 20
 SECRET_LIMIT = 1 << 256
-# The retired twelve- and twenty-four-group digit keys. The client no longer
-# makes or accepts them; the vectors of section 14 keep them as test data.
-FORMAT_12 = 0x0C
-FORMAT_24 = 0x18
 
 # Commitment format versions (section 10). Version 1 has no salt and stays
 # valid for leaves already on a chain; a wallet makes only version 2.
@@ -258,49 +255,34 @@ def parse_key(text):
     if not (digits.isascii() and digits.isdigit()):
         raise ValueError(f"key has characters other than digits: {text!r}")
     groups = [digits[i : i + 4] for i in range(0, len(digits), 4)]
-    if len(digits) == 4 * WORDS_GROUPS:
-        return FORMAT_WORDS, groups[:WORDS_SECRET_GROUPS], groups[WORDS_SECRET_GROUPS:]
-    if len(digits) == 48:
-        return FORMAT_12, groups[:11], [groups[11]]
-    if len(digits) == 96:
-        return FORMAT_24, groups[:11] + groups[12:23], [groups[11], groups[23]]
-    raise ValueError(f"key must have 21 groups of four digits (or 12 or 24 in a "
-                     f"retired test vector): {text!r}")
-
-
-def _check_group(fmt, part, payload_groups):
-    h = sha3_tagged(TAG_KEY_CHECK, bytes([fmt, part]), "".join(payload_groups).encode("ascii"))
-    return f"{int.from_bytes(h, 'big') % 10000:04d}"
+    if len(digits) != 4 * WORDS_GROUPS:
+        raise ValueError(f"key must have {WORDS_GROUPS} groups of four digits, "
+                         f"not {len(digits)} digits: {text!r}")
+    return FORMAT_WORDS, groups[:WORDS_SECRET_GROUPS], groups[WORDS_SECRET_GROUPS:]
 
 
 def compute_checks(fmt, payload):
-    if fmt == FORMAT_WORDS:
-        # The check group 21 over the 80 secret digits (section 6).
-        if len(payload) != WORDS_SECRET_GROUPS:
-            raise ValueError(f"a key has {WORDS_SECRET_GROUPS} secret groups, not {len(payload)}")
-        return [_check_group(fmt, 1, payload)]
-    if fmt == FORMAT_12:
-        return [_check_group(fmt, 1, payload[:11])]
-    if fmt == FORMAT_24:
-        return [_check_group(fmt, 1, payload[:11]), _check_group(fmt, 2, payload)]
-    raise ValueError(f"unknown key format code {fmt:02x}")
+    """The check group 21 over the 80 secret digits (section 6)."""
+    if fmt != FORMAT_WORDS:
+        raise ValueError(f"unknown key format code {fmt:02x}")
+    if len(payload) != WORDS_SECRET_GROUPS:
+        raise ValueError(f"a key has {WORDS_SECRET_GROUPS} secret groups, not {len(payload)}")
+    h = sha3_tagged(TAG_KEY_CHECK, bytes([fmt, 0x01]), "".join(payload).encode("ascii"))
+    return [f"{int.from_bytes(h, 'big') % 10000:04d}"]
 
 
 def in_range(fmt, payload):
-    """A words key's 80 secret digits, read in decimal, are below 2^256."""
-    return fmt != FORMAT_WORDS or int("".join(payload)) < SECRET_LIMIT
+    """The 80 secret digits, read in decimal, are below 2^256."""
+    return int("".join(payload)) < SECRET_LIMIT
 
 
 def key_bytes(fmt, payload):
-    """`0x20 || the 32 secret bytes` for a words key; `code || secret digits as
-    ASCII` for a retired digit key."""
-    if fmt == FORMAT_WORDS:
-        if not in_range(fmt, payload):
-            raise ValueError("the 80 secret digits are 2^256 or more")
-        return bytes([fmt]) + int("".join(payload)).to_bytes(32, "big")
-    if fmt in (FORMAT_12, FORMAT_24):
-        return bytes([fmt]) + "".join(payload).encode("ascii")
-    raise ValueError(f"unknown key format code {fmt:02x}")
+    """`0x20 || the 32 secret bytes`."""
+    if fmt != FORMAT_WORDS:
+        raise ValueError(f"unknown key format code {fmt:02x}")
+    if not in_range(fmt, payload):
+        raise ValueError("the 80 secret digits are 2^256 or more")
+    return bytes([fmt]) + int("".join(payload)).to_bytes(32, "big")
 
 
 def valid_key_bytes(text):
@@ -669,13 +651,16 @@ def check_coverage(vectors):
         if kind not in kinds:
             errors.append(f"no vector of kind {kind}")
     checksum = [v for v in vectors if v.get("kind") == "checksum"]
-    for fmt, valid in (("0c", "yes"), ("18", "yes"), ("0c", "no"), ("18", "no")):
-        if not any(v.get("format") == fmt and v.get("valid") == valid for v in checksum):
-            errors.append(f"no checksum vector with format {fmt} and valid = {valid}")
-    derivations = [v for v in vectors if v.get("kind") == "derivation"]
-    for groups in (12, 24):
-        if not any(len(re.sub(r"[ -]", "", v.get("key", ""))) == 4 * groups for v in derivations):
-            errors.append(f"no derivation vector for a {groups}-group key")
+    for valid in ("yes", "no"):
+        if not any(v.get("format") == f"{FORMAT_WORDS:02x}" and v.get("valid") == valid
+                   for v in checksum):
+            errors.append(f"no checksum vector with format {FORMAT_WORDS:02x} and valid = {valid}")
+    def written_check(v):
+        groups = v.get("key", "").split()
+        return groups[-1] if groups else None
+
+    if not any(v.get("valid") == "no" and v.get("check") == written_check(v) for v in checksum):
+        errors.append("no checksum vector of an out-of-range secret with a right check group")
     def of(family, version):
         return [v for v in vectors
                 if COMMITMENT_KINDS.get(v.get("kind")) == (family, version)
