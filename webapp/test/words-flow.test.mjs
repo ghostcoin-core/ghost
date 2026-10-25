@@ -189,8 +189,8 @@ test("a salted coin is revealed and claimed", async () => {
     assert.equal(claimedCoin[0].salt.length, 16);
     flow.summonClose();
 
-    // No proof was ever a decoy of version 1, and no key left the app.
-    assert.ok(proofs().every((a) => !a.decoy || a.salted === true));
+    // No proof was ever a decoy, and no key left the app.
+    assert.ok(proofs().every((a) => !a.decoy));
     assertNothingOfKey(node, key);
     assertNothingOfKey(node, newKey);
   } finally {
@@ -220,11 +220,10 @@ test("a version 1 coin still reveals", async () => {
     assert.equal(s.status, "unclaimed");
     assert.equal(s.current.position, position);
 
-    // A reveal that cannot be made: the decoy mirrors the coin's version.
+    // A reveal that cannot be made: nothing is proved for it.
+    const proved = proofs().length;
     await assert.rejects(flow.summonReveal({ amount: "5", recipient: RECIPIENT }), /at most/);
-    const decoy = proofs().at(-1);
-    assert.equal(decoy.decoy, true);
-    assert.equal(decoy.salted, false, "a version 1 decoy for a version 1 coin");
+    assert.equal(proofs().length, proved, "no proof, no stand-in proof either");
 
     // The reveal: no salt goes to the prover, and the stand-in verifies the
     // proof as version 1 once the salted check fails.

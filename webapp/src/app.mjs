@@ -2,7 +2,7 @@
 // input to it. All logic is in flow.mjs; nothing here keeps a key beyond
 // the element that shows it, which is emptied when the step ends.
 
-import { formatGhost, parseGhost } from "./chain.mjs";
+import { formatGhost, parseAddress, parseGhost } from "./chain.mjs";
 import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, WALLET_APPROVAL, createFlow, normalKey, wrongWords } from "./flow.mjs";
 import { downloadKeyImage } from "./keyimage.mjs";
 import { browserProver } from "./prover.mjs";
@@ -103,9 +103,10 @@ function vanishAct(step, run) {
 // the box, not typing), whether the reveal is being sent, the reveal record
 // from before it (so the steps tick only for this one), the amount sent,
 // the Done screen's figures and the card's one plain error line. The
-// reveal is paid to the connected wallet's address only. `summonConfirm`
-// is the confirm screen's summon while it shows: the amount as typed, as
-// formatted, and the wallet's address it names.
+// reveal is paid to the payout field's address. `summonConfirm` is the
+// confirm screen's summon while it shows: the amount as typed, as
+// formatted, the payout address it names, the connected wallet's address
+// and the warnings it shows.
 let summonOpening = false;
 let summonLoud = false;
 let summonConfirm = null;
@@ -116,6 +117,25 @@ let summonAmount = "";
 let summonDone = null;
 let summonRecheck = null;
 let summonError = null;
+
+// The payout field: pre-filled, once per connected wallet and per Summon,
+// with a fresh address of that wallet (flow.newReceiveAddress), or with the
+// connected address when the wallet has none to give. `payoutFor` is the
+// wallet address it was filled for, `payoutTyped` whether the user has
+// typed in it since; a typed address is never replaced. Nothing is stored.
+let payoutFor = null;
+let payoutTyped = false;
+
+// Fewer commits than this of a full Summon's `out + fee` among the receipts
+// the page checked, and the amount warning shows.
+const FEW_SAME_AMOUNT = 10;
+
+const NO_PAYOUT = "Enter the address to pay, 0x and 40 hex digits.";
+const ZERO_PAYOUT = "The zero address can't receive a Summon: the GHOST would be lost.";
+const SAME_ADDRESS =
+  "This is your connected wallet's address, the one a Vanish is sent from. The chain shows that address on both sides, which links this Summon to its Vanish. A new address from your wallet avoids that.";
+const VANISHED_ADDRESS =
+  "This address sent a Vanish from this page. The chain shows it on both sides, which links this Summon to its Vanish. A new address from your wallet avoids that.";
 
 const NOT_A_KEY = "That doesn't look like a Phantom Key. It should be 24 words.";
 const NO_AMOUNT = "Enter an amount to summon.";
@@ -204,9 +224,62 @@ function settling(p) {
   return Boolean(p && /blocks deep/.test(p.stage));
 }
 
-// The Summon card: the paste box and the amount box, the confirm screen,
-// the waiting screen with its three steps while the reveal goes out, and
-// Done.
+// The amount in the box, or null when it does not parse.
+function amountOf(text) {
+  try {
+    return parseGhost(text);
+  } catch {
+    return null;
+  }
+}
+
+// The same-address warning for the payout `text`: the connected wallet's
+// address, or one this page sent a Vanish from. Empty otherwise, a
+// half-typed address included. Advice only: it never blocks the Summon.
+function payoutWarning(text, state) {
+  const address = String(text).trim().toLowerCase();
+  if (!address) return "";
+  if (state.wallet && address === state.wallet.address) return SAME_ADDRESS;
+  if ((state.vanishedFrom || []).includes(address)) return VANISHED_ADDRESS;
+  return "";
+}
+
+// The amount warning for a Summon of `out`: only a full Summon, whose `out`
+// plus the network fee is all the key holds, which is public and is what
+// its Vanish committed, and only when fewer than FEW_SAME_AMOUNT commits in
+// the receipts the page checked are of that amount (the flow's
+// amountMatches). A partial Summon shows none. Advice only.
+function amountWarning(s, out) {
+  if (!s || !s.current || out === null || s.amountMatches == null) return "";
+  if (out + s.fee !== s.current.amount || s.amountMatches >= FEW_SAME_AMOUNT) return "";
+  const n = s.amountMatches;
+  return (
+    `A full Summon shows ${formatGhost(s.current.amount)} GHOST with the network fee, and only ${n} ${n === 1 ? "Vanish" : "Vanishes"} ` +
+    "the app checked are of that amount, so the amount alone can link this Summon to its Vanish. A partial Summon, less than Max, avoids that."
+  );
+}
+
+// Fills the payout field for the connected wallet `w` with a fresh address
+// of that wallet, or with its own address when it has none to give (the
+// same-address warning then shows). The answer is dropped if the user typed
+// meanwhile or the wallet changed.
+async function fillPayout(w) {
+  payoutFor = w.address;
+  $("summon-payout").value = "";
+  let fresh = null;
+  try {
+    fresh = await flow.newReceiveAddress();
+  } catch {
+    fresh = null;
+  }
+  if (payoutTyped || payoutFor !== w.address || flow.state.wallet !== w) return;
+  $("summon-payout").value = fresh || w.address;
+  render(flow.state);
+}
+
+// The Summon card: the paste box, the amount box and the payout field, the
+// confirm screen, the waiting screen with its three steps while the reveal
+// goes out, and Done.
 function renderSummon(state) {
   const s = state.summon;
   const screen = summonSending ? "waiting" : summonDone ? "done" : summonConfirm ? "confirm" : "form";
@@ -218,9 +291,22 @@ function renderSummon(state) {
   const c = screen === "confirm" ? summonConfirm : null;
   $("summon-confirm-text").textContent = c ? `Summon ${c.amount} GHOST to ${shortAddress(c.address)}` : "";
   $("summon-confirm").title = c ? c.address : "";
+  $("summon-confirm-address").textContent = c ? c.address : "";
+  $("summon-confirm-warning").textContent = c ? c.warnings.join(" ") : "";
 
   const coin = Boolean(s && s.status === "unclaimed" && s.current && s.current.amount > 0n && !summonOpening);
   $("summon-amount-area").hidden = !coin;
+  // The payout field: a fresh address of the connected wallet once a coin
+  // shows, empty with no wallet.
+  const w = state.wallet;
+  if (coin && w && !payoutTyped && payoutFor !== w.address) fillPayout(w);
+  if (!w && !payoutTyped && payoutFor !== null) {
+    payoutFor = null;
+    $("summon-payout").value = "";
+  }
+  const onForm = coin && screen === "form";
+  $("summon-payout-warning").textContent = onForm ? payoutWarning($("summon-payout").value, state) : "";
+  $("summon-amount-warning").textContent = onForm ? amountWarning(s, amountOf($("summon-amount").value)) : "";
   $("summon-in-key").textContent = coin ? `${formatGhost(s.current.amount)} GHOST` : "—";
   $("summon-note").textContent = summonNote(s);
   const pending = Boolean(s && s.lastReveal && s.lastReveal.stage === "sent");
@@ -241,7 +327,8 @@ function renderSummon(state) {
 
   const d = summonDone;
   $("summon-done-amount").textContent = d ? d.amount : "";
-  $("summon-done-address").textContent = d ? d.address : "";
+  $("summon-done-address").textContent = d ? shortAddress(d.address) : "";
+  $("summon-done-address").title = d ? d.address : "";
   $("summon-done-rest").textContent =
     !d || d.rest === null
       ? ""
@@ -361,7 +448,7 @@ function describeSummon(s) {
 }
 
 // How many coins the settled tree holds, or why the app waits. The count is
-// of commitments, not people; the holder decides whether to wait for more.
+// of commitments, not people, and is information only: no advice to wait.
 function describeCover(s) {
   if (s.status !== "unclaimed" || !s.current) return null;
   if (s.wait) return { warning: true, text: `Not yet: ${s.wait.message}.` };
@@ -372,8 +459,7 @@ function describeCover(s) {
     warning: false,
     text:
       `The tree holds ${covers} coins as of block ${height}.${more} ` +
-      "That is a count of commitments, not of people, and not a promise of anonymity: one party can make many of them, and amounts or timing can still match your reveal to your commit. " +
-      "Fewer coins make it easier to link the reveal to your commit: reveal now, or wait for more coins and press Refresh. The choice is yours.",
+      "That is a count of commitments, not of people, and not a promise of anonymity: amounts and timing can still match your reveal to your commit.",
   };
 }
 
@@ -720,12 +806,15 @@ for (const id of ["vanish-done-button", "vanish-after-done"]) {
 }
 window.addEventListener("pagehide", forgetVanish);
 
-// The key leaves the page's memory: the paste box and the amount are
-// emptied and the flow closes the key. On Done, on leaving the Summon tab
-// and on pagehide.
+// The key leaves the page's memory: the paste box, the amount and the
+// payout field are emptied and the flow closes the key. On Done, on leaving
+// the Summon tab and on pagehide. The next Summon gets a fresh address.
 function forgetSummon() {
   $("summon-key").value = "";
   $("summon-amount").value = "";
+  $("summon-payout").value = "";
+  payoutFor = null;
+  payoutTyped = false;
   summonConfirm = null;
   summonDone = null;
   summonPending = null;
@@ -790,14 +879,16 @@ $("summon-key").addEventListener("blur", () => openKey(true));
 
 // The Done screen's figures for a reveal the flow shows Done.
 function summonDoneOf(r) {
-  return { amount: formatGhost(r.out), address: shortAddress(r.recipient), rest: restOf(flow.state.summon) };
+  return { amount: formatGhost(r.out), address: r.recipient, rest: restOf(flow.state.summon) };
 }
 
-// Summon pays the connected wallet's address only; with no wallet connected
-// the main button opens the wallet list. An amount that does not parse, or
-// is more than the key can send, is refused here, never rounded. Pressing
-// Summon proves and sends nothing: it opens the confirm screen, which names
-// the amount and the wallet's address.
+// Summon pays the payout field's address, by default a fresh address of the
+// connected wallet; with no wallet connected the main button opens the
+// wallet list. An amount that does not parse, or is more than the key can
+// send, and a payout that is not an address are refused here, never
+// rounded. The warnings are advice and never block. Pressing Summon proves
+// and sends nothing: it opens the confirm screen, which names the amount
+// and the payout address, with the same warnings.
 $("summon-form").addEventListener("submit", (event) => {
   if (event) event.preventDefault();
   const s = flow.state.summon;
@@ -817,12 +908,37 @@ $("summon-form").addEventListener("submit", (event) => {
   }
   if (out === null || out === 0n) summonError = NO_AMOUNT;
   else if (out > s.available) summonError = holdsText(s, out);
-  if (!summonError) summonConfirm = { amount: text.trim(), shown: formatGhost(out), address: flow.state.wallet.address };
+  let to = null;
+  if (!summonError) {
+    try {
+      to = parseAddress($("summon-payout").value);
+    } catch {
+      summonError = NO_PAYOUT;
+    }
+  }
+  if (!summonError && /^0x0{40}$/.test(to)) summonError = ZERO_PAYOUT;
+  if (!summonError) {
+    summonConfirm = {
+      amount: text.trim(),
+      shown: formatGhost(out),
+      address: to,
+      wallet: flow.state.wallet.address,
+      warnings: [payoutWarning(to, flow.state), amountWarning(s, out)].filter(Boolean),
+    };
+  }
   render(flow.state);
 });
 $("summon-max").addEventListener("click", () => {
   const s = flow.state.summon;
   if (s && s.current) $("summon-amount").value = formatGhost(s.available);
+  render(flow.state);
+});
+$("summon-amount").addEventListener("input", () => render(flow.state));
+// A typed payout is the user's: it is never replaced by a fresh address.
+$("summon-payout").addEventListener("input", () => {
+  payoutTyped = true;
+  summonError = null;
+  render(flow.state);
 });
 
 // Cancel on the confirm screen: back to the form, the key and the amount
@@ -834,8 +950,8 @@ $("summon-cancel").addEventListener("click", () => {
 });
 
 // Confirm Summon: the only place a reveal is proved and sent, for the amount
-// and the address the confirm screen named. A second press while it runs
-// does nothing; a wallet changed since the screen opened sends nothing.
+// and the payout address the confirm screen named. A second press while it
+// runs does nothing; a wallet changed since the screen opened sends nothing.
 $("summon-confirm-button").addEventListener("click", async () => {
   const c = summonConfirm;
   if (!c || summonSending) return;
@@ -847,7 +963,7 @@ $("summon-confirm-button").addEventListener("click", async () => {
     render(flow.state);
     return;
   }
-  if (!flow.state.wallet || flow.state.wallet.address !== c.address) {
+  if (!flow.state.wallet || flow.state.wallet.address !== c.wallet) {
     summonError = WALLET_CHANGED;
     render(flow.state);
     return;
@@ -857,7 +973,7 @@ $("summon-confirm-button").addEventListener("click", async () => {
   summonSending = true;
   render(flow.state);
   try {
-    const r = await flow.summonReveal({ amount: c.amount, recipient: flow.state.wallet.address });
+    const r = await flow.summonReveal({ amount: c.amount, recipient: c.address });
     summonDone = summonDoneOf(r);
     summonRecheck = null;
   } catch (err) {

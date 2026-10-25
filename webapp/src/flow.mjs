@@ -108,6 +108,9 @@ export const MAX_COMMIT_FEE = 10n ** 16n;
 // The progress while the connected wallet shows the commit for the user to
 // approve; the page's waiting screen reads it.
 export const WALLET_APPROVAL = "approve the Vanish in your wallet";
+// The JSON-RPC code of a request the wallet does not know: a wallet without
+// ghost_newReceiveAddress answers it so.
+const METHOD_NOT_FOUND = -32601;
 // Times a reveal is proved again when the fee window changes meanwhile.
 const FEE_ATTEMPTS = 3;
 // The node's refusal of a reveal it could not check while new blocks kept
@@ -460,9 +463,9 @@ export function leafBlock({ rootHeaders: headers, rootCounts: counts, prefixRoot
 // the settled block S, SETTLE_DEPTH below the tip, if the shared rule
 // (tree_state.rs, through the worker) picks it, that is if S is at or above
 // the coin's block, so S's tree holds the coin. No other commit is waited
-// for: the plan says how many coins S's tree covers (`covers`), and whether
-// to reveal now or wait for more is the holder's choice. It sends no
-// request: the scan fetched everything it reads.
+// for: the plan says how many coins S's tree covers (`covers`), shown as
+// information only. It sends no request: the scan fetched everything it
+// reads.
 //
 // When the coin's block is not yet SETTLE_DEPTH deep, it throws a WaitError
 // with the plain line settleWait and `from`, the tip at which it will be.
@@ -471,8 +474,9 @@ export function leafBlock({ rootHeaders: headers, rootCounts: counts, prefixRoot
 // in `scan.trees`) is proven against that tree's final root, which every
 // leaf of the tree shares and a header of the page's chain carries (spec 05,
 // section 5, item 5, and section 13, item 4): no later root of the next tree
-// holds it, and no wait applies. The rule is still asked once, as for a
-// decoy, so the worker's work does not depend on the coin's tree.
+// holds it, and no wait applies. The rule is still asked once, as for a key
+// with no coin (askRuleForDecoy), so the worker's work does not depend on the
+// coin's tree.
 export async function planReveal(prover, scan, coin, progress = () => {}) {
   const { chain, rootHeaders: headers, rootCounts: counts, settledAt } = scan;
   const trees = scan.trees ?? [scan.tree];
@@ -557,8 +561,9 @@ function coinLogsOf(list) {
 }
 
 // The leaf a coin tree log appended, `{ treeIndex, position, leaf, note,
-// salt, marker }` (`salt` null but for a version 2 commit, `marker` null but
-// for a reveal), read exactly as client/src/receipts.rs reads it. `topics`
+// salt, marker, v }` (`salt` null but for a version 2 commit, `marker` null
+// but for a reveal, `v` the committed amount of a commit, null for a
+// reveal), read exactly as client/src/receipts.rs reads it. `topics`
 // are the hex first topics of a commit and a reveal log. A log that is not
 // exactly a commit or a reveal log is refused.
 export function coinRecord(log, topics) {
@@ -574,12 +579,13 @@ export function coinRecord(log, topics) {
     const salted = data.length === COMMIT_LOG_BYTES + SALT_BYTES;
     if (data.length !== COMMIT_LOG_BYTES && !salted) throw new Error("a commit log's data is not its length");
     const salt = salted ? data.slice(COMMIT_LOG_BYTES) : null;
-    return { ...head(), note: data.slice(72, 72 + NOTE_BYTES), salt, marker: null };
+    const v = BigInt(toHex(data.slice(40, 72)));
+    return { ...head(), note: data.slice(72, 72 + NOTE_BYTES), salt, marker: null, v };
   }
   if (first === topics.reveal) {
     if (log.topics.length !== 2) throw new Error("a reveal log does not have exactly two topics");
     if (data.length !== REVEAL_LOG_BYTES) throw new Error("a reveal log's data is not its length");
-    return { ...head(), note: data.slice(40, 40 + NOTE_BYTES), salt: null, marker: log.topics[1] };
+    return { ...head(), note: data.slice(40, 40 + NOTE_BYTES), salt: null, marker: log.topics[1], v: null };
   }
   throw new Error("a coin tree log's first topic is neither a commit nor a reveal");
 }
@@ -674,7 +680,7 @@ const PAGE_LEVELS = 12;
 // The worker proves a coin only against the root of a tree of TREE_DEPTH
 // levels (lib.rs, ghost_prove), which no header of a test node of smaller
 // trees carries, so a reveal there is refused before it is proved, as any
-// coin the worker cannot prove: the work done is a decoy's.
+// reveal that cannot be made: nothing is proved.
 //
 // TEST_DEPTH_REVEAL: the one exception is a module built with the
 // test-tree-depth feature, for the tests and scripts/recovery-blackout.sh
@@ -921,6 +927,10 @@ export function createFlow({
     chainRefused: null,
     // The connected wallet: null, or { id, name, address, balance }.
     wallet: null,
+    // The addresses this page sent a Vanish commit from in this session,
+    // lower case: a Summon paid to one of them puts the same address on both
+    // sides. Kept in memory only.
+    vanishedFrom: [],
     busy: null,
     progress: null,
     error: null,
@@ -1143,11 +1153,11 @@ export function createFlow({
   // (client/src/hash.rs: Keccak-256 of the tag's length byte and the tag),
   // asked of the worker once per page session.
   let logTopics = null;
+  // The same topics hashed in the page (commitAmounts).
+  let logTopicsHere = null;
+  const tagBytes = (tag) => concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]);
   async function coinLogTopics() {
-    const topic = async (tag) => {
-      const bytes = concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]);
-      return toHex((await prover.request("keccak256", { bytes })).hash);
-    };
+    const topic = async (tag) => toHex((await prover.request("keccak256", { bytes: tagBytes(tag) })).hash);
     logTopics ??= { commit: await topic(COMMIT_RECEIPT_TAG), reveal: await topic(REVEAL_RECEIPT_TAG) };
     return logTopics;
   }
@@ -1208,6 +1218,9 @@ export function createFlow({
   // once the tree has rolled over the same checks are made here, over every
   // tree, from the coin tree logs of the receipts the worker has just checked
   // against their receiptsRoot (checkTreesAgainstReceipts).
+  //
+  // Returns how many commits of each amount those checked receipts hold
+  // (commitAmounts), which a Summon's amount warning reads.
   async function checkReceipts(chain, trees, spent, placeOf, markerAnchor) {
     const { hc, tip } = chain;
     progress("checking the coin tree against the block receipts");
@@ -1275,7 +1288,7 @@ export function createFlow({
       } catch (err) {
         throw receiptsRefused(err.message);
       }
-      return;
+      return commitAmounts(hc, blocks);
     }
     const topics = await coinLogTopics();
     try {
@@ -1284,6 +1297,27 @@ export function createFlow({
     } catch (err) {
       throw receiptsRefused(err.message);
     }
+    return commitAmounts(hc, blocks);
+  }
+
+  // How many commits of each amount `v` the coin tree logs of `blocks`' receipts
+  // hold, as a Map from `v` to its count. The receipts are those checkReceipts
+  // has just checked against each block's receiptsRoot, so this asks nothing
+  // of the endpoint or the worker: the topics are hashed here (keccak256).
+  function commitAmounts(hc, blocks) {
+    logTopicsHere ??= { commit: toHex(keccak256(tagBytes(COMMIT_RECEIPT_TAG))), reveal: toHex(keccak256(tagBytes(REVEAL_RECEIPT_TAG))) };
+    const counts = new Map();
+    try {
+      for (const block of blocks) {
+        for (const log of hc.coinLogs.get(toHex(block.hash))) {
+          const { v } = coinRecord(log, logTopicsHere);
+          if (v !== null) counts.set(v, (counts.get(v) ?? 0) + 1);
+        }
+      }
+    } catch (err) {
+      throw receiptsRefused(err.message);
+    }
+    return counts;
   }
 
   // Everything the endpoint is asked for a key is asked before the key is
@@ -1345,7 +1379,7 @@ export function createFlow({
       return place;
     });
     const rootCounts = places.map((place) => (place.treeIndex === tree.treeIndex ? place.count : 0));
-    await checkReceipts(chain, trees, spent, placeOf, markerAnchor);
+    const commitsByAmount = await checkReceipts(chain, trees, spent, placeOf, markerAnchor);
     const settledAt = chain.settled === null ? null : chain.settled - chain.low;
     const settledPlace = settledAt === null ? null : places[settledAt];
     const settledLeaves = settledPlace === null ? tree.leaves : trees[settledPlace.treeIndex].leaves.slice(0, settledPlace.count * 32);
@@ -1361,7 +1395,7 @@ export function createFlow({
       });
       for (const coin of restored.found) found.push({ ...coin, treeIndex: t.treeIndex });
     }
-    return { chain, trees, tree, rootHeaders, rootCounts, prefixRoots, settledAt, settledLeaves, fee, found };
+    return { chain, trees, tree, rootHeaders, rootCounts, prefixRoots, settledAt, settledLeaves, fee, found, commitsByAmount };
   }
 
   // The receipt of `hash`, or null while no block holds it.
@@ -1603,51 +1637,19 @@ export function createFlow({
     };
   }
 
-  // The worker's input for a decoy of the same kind over the same leaves
-  // (lib.rs, ghost_prove): a throwaway key's coin of the fee plus 1 wei at
-  // the last position, proved as a real reveal would be. It is salted, as a
-  // new coin is, unless the key's current coin is of version 1: the decoy
-  // mirrors the coin's version, so the work does not depend on the coin. The
-  // tree-state rule is asked once too, as it is for a coin, whenever the
-  // scan has a settled block.
-  async function decoyArgs(scan, { kind, recipient }) {
-    const { chain, settledLeaves } = scan;
-    await askRuleForDecoy(prover, scan);
-    const claim = kind === "claim";
-    const { current } = keyStatus(scan.found);
-    return {
-      decoy: true,
-      salted: !current || current.salt != null,
-      chainId: chain.chainId,
-      domain: chain.genesis.hash,
-      kind: claim ? "claim" : "partial",
-      root: new Uint8Array(32),
-      recipient: fromHex(claim ? ZERO_ADDRESS : recipient, 20),
-      out: claim ? 0n : 1n,
-      fee: scan.fee,
-      number: 0n,
-      amount: scan.fee + (claim ? 1n : 2n),
-      position: Math.max(settledLeaves.length / 32 - 1, 0),
-      leaves: settledLeaves,
-      key: "",
-      newKey: "",
-    };
-  }
-
   // Proves a reveal of the key's current coin and sends it. A proof whose
   // fee window lapsed while it was being made is made again.
   //
   // After restore, every path, the one where the key holds no coin
-  // included, does the same work and then asks the endpoint the same thing
-  // in the same order before anything depends on the outcome. The work is a
-  // proof: of the coin when there is one to reveal, otherwise of a decoy
-  // (`decoyArgs`), so the time before the next request is a proof's time on
-  // every path, the fee retries included. A coin's proof the worker refuses
-  // takes a proof's time too: the worker proves a decoy before it answers
-  // with the refusal (lib.rs, ghost_prove). The requests are eth_blockNumber,
-  // the tip's header and the fee for the next block. Only then does a
-  // failure surface, or the reveal go out; sending the reveal is what links
-  // the connection to the coin.
+  // included, asks the endpoint the same thing in the same order before
+  // anything depends on the outcome: eth_blockNumber, the tip's header and
+  // the fee for the next block. Only then does a failure surface, or the
+  // reveal go out; sending the reveal is what links the connection to the
+  // coin. A reveal that cannot be made is not proved at all: no stand-in
+  // proof is made in its place, since a full proof only to say "no coin"
+  // costs hundreds of megabytes and hides almost nothing. (A coin's proof
+  // the worker itself refuses still takes a proof's time in the worker,
+  // lib.rs, ghost_prove.)
   //
   // A Summon comes here only after settleFirst, so a coin this page
   // committed or left as a remainder is already SETTLE_DEPTH deep. A coin
@@ -1702,17 +1704,18 @@ export function createFlow({
         failure = err;
       }
       let proved = null;
-      progress("proving in the background worker");
-      try {
-        // A coin of a test node's smaller tree carries that node's stub
-        // proof (TEST_DEPTH_REVEAL); a decoy is always of 32 levels.
-        const op = args && treeDepth !== TREE_DEPTH ? "proveTestDepth" : "prove";
-        const result = await prover.request(op, args ?? (await decoyArgs(scan, request)), (stage) =>
-          progress(stage === "proving" ? "proving in the background worker" : stage),
-        );
-        if (args) proved = result;
-      } catch (err) {
-        failure ??= err;
+      if (args) {
+        progress("proving in the background worker");
+        try {
+          // A coin of a test node's smaller tree carries that node's stub
+          // proof (TEST_DEPTH_REVEAL).
+          const op = treeDepth !== TREE_DEPTH ? "proveTestDepth" : "prove";
+          proved = await prover.request(op, args, (stage) =>
+            progress(stage === "proving" ? "proving in the background worker" : stage),
+          );
+        } catch (err) {
+          failure = err;
+        }
       }
       let tip = await syncTip();
       const { fee } = await feeForNextBlock(tip, headerAt);
@@ -1910,6 +1913,7 @@ export function createFlow({
           refusal: err.message,
           coins: [],
           current: null,
+          amountMatches: null,
           cover: null,
           wait: null,
           tip: null,
@@ -1930,9 +1934,13 @@ export function createFlow({
     s.fee = fee;
     s.available = current && current.amount > fee ? current.amount - fee : 0n;
     s.tip = scan.chain.tip.number;
-    // What a reveal now would prove against, for the holder to choose: the
-    // block and how many coins its tree covers, or why the app waits. The
-    // rule is asked for every key, a coin or not.
+    // How many commits in the receipts the page checked are of the coin's
+    // amount, the key's own commit included: a full Summon publishes
+    // `out + fee`, which is that amount (null with no coin).
+    s.amountMatches = current ? (scan.commitsByAmount.get(current.amount) ?? 0) : null;
+    // What a reveal now would prove against, as information: the block and
+    // how many coins its tree covers, or why the app waits. The rule is
+    // asked for every key, a coin or not.
     s.cover = null;
     s.wait = null;
     if (current) {
@@ -2080,6 +2088,31 @@ export function createFlow({
       if (c) forget(c);
     },
 
+    // A fresh receive address of the connected wallet, one that never sent
+    // or received anything, for a Summon to pay (the connector's optional
+    // newReceiveAddress, wallet-connect.mjs), lower case. Null when no wallet
+    // is connected, when the wallet has no such request (the connector has
+    // no newReceiveAddress, answers null, or the wallet answers "method not
+    // found", -32601) or when another wallet was connected meanwhile. The
+    // wallet hands out a new address each time; nothing is stored here.
+    async newReceiveAddress() {
+      const c = connector;
+      if (!c || !state.wallet || typeof c.newReceiveAddress !== "function") return null;
+      let answer;
+      try {
+        answer = await c.newReceiveAddress();
+      } catch (err) {
+        if (err && err.code === METHOD_NOT_FOUND) return null;
+        throw err;
+      }
+      if (connector !== c || answer == null) return null;
+      const text = typeof answer === "string" ? answer : answer.address;
+      if (!/^0x[0-9a-fA-F]{40}$/.test(String(text))) throw new Error("the wallet answered without a receive address");
+      const address = parseAddress(text);
+      if (address === ZERO_ADDRESS) throw new Error("the wallet answered with the zero address");
+      return address;
+    },
+
     // Vanish, step 1: a new key of 24 words for `amountText` GHOST, shown
     // to the user to write down; copying it or downloading its image is a
     // convenience beside that, never the only backup.
@@ -2143,7 +2176,10 @@ export function createFlow({
         if (commit.payload.length !== COMMIT_DATA_BYTES || commit.payload[0] !== 0 || commit.payload[1] !== 2) {
           throw new Error(`the commit is not ${COMMIT_DATA_BYTES} bytes of version 2; nothing was sent`);
         }
+        const from = state.wallet && state.wallet.address;
         const txHash = await sendFromWallet({ chainId, to: state.commitEntry, value: v.amount, data: commit.payload, at: sentAfter });
+        // sendFromWallet sends only what the account `from` signed.
+        if (!state.vanishedFrom.includes(from)) state.vanishedFrom.push(from);
         // The user has the key; the app no longer needs it. The node took
         // the commit: the page shows it Sent at once.
         dropKey(v);
@@ -2190,6 +2226,7 @@ export function createFlow({
           status: "scanning",
           coins: [],
           current: null,
+          amountMatches: null,
           cover: null,
           wait: null,
           claim: null,

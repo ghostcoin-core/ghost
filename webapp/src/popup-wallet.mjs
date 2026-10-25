@@ -13,6 +13,8 @@ import { USER_REJECTED, WalletRejected, snapTransaction } from "./wallet-connect
 // The wallet's origin, where it is hosted.
 export const POPUP_WALLET_ORIGIN = "https://ghost-wallet-nine.vercel.app";
 export const POPUP_WALLET = { id: "ghost-popup-wallet", name: "Ghost wallet" };
+// The JSON-RPC code the wallet answers a request it does not know with.
+export const METHOD_NOT_FOUND = -32601;
 
 // The browser refused to open the wallet's window, as in-app browsers do.
 export class PopupBlocked extends Error {
@@ -70,7 +72,7 @@ export function popupConnector({ win = globalThis, origin = POPUP_WALLET_ORIGIN,
   }
 
   // Posts one request once the wallet said it is listening, and waits for
-  // its answer.
+  // its answer. A refusal keeps the wallet's code.
   async function ask(what, method, params) {
     open();
     const target = popup;
@@ -82,7 +84,7 @@ export function popupConnector({ win = globalThis, origin = POPUP_WALLET_ORIGIN,
       return await answer;
     } catch (err) {
       if (err && err.code === USER_REJECTED) throw new WalletRejected(what);
-      throw new Error(`the wallet refused ${what}: ${(err && err.message) || err}`);
+      throw Object.assign(new Error(`the wallet refused ${what}: ${(err && err.message) || err}`), { code: err && err.code });
     }
   }
 
@@ -108,6 +110,25 @@ export function popupConnector({ win = globalThis, origin = POPUP_WALLET_ORIGIN,
       } catch {
         throw new Error("the wallet answered without a signed transaction");
       }
+    },
+
+    // A fresh receive address of the wallet (ghost_newReceiveAddress), as
+    // { address } in lower case, or null when the wallet does not know the
+    // request (method not found). Turned down in the wallet, it is a
+    // WalletRejected.
+    async newReceiveAddress() {
+      if (!address) throw new Error("connect the wallet first");
+      let answer;
+      try {
+        answer = await ask("the new address", "ghost_newReceiveAddress");
+      } catch (err) {
+        if (err && err.code === METHOD_NOT_FOUND) return null;
+        throw err;
+      }
+      if (!answer || typeof answer.address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(answer.address)) {
+        throw new Error("the wallet answered without a receive address");
+      }
+      return { address: answer.address.toLowerCase() };
     },
 
     // Forgets the account and closes the wallet's window; the wallet keeps

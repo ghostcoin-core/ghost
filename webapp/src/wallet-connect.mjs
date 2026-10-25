@@ -17,6 +17,14 @@
 // The flow (flow.mjs, walletConnect) checks the sender against the connected
 // address and the hash against the envelope before it sends anything.
 //
+// A connector may also have `newReceiveAddress() -> { address } | null`: a
+// fresh address of the same wallet, one it never used before, for a Summon
+// to pay so the address that sent the Vanish is not the one paid (the Ghost
+// pop-up wallet's ghost_newReceiveAddress request). Null, a missing method,
+// or an error with code -32601 (method not found) means the wallet has no
+// such request; the page then starts the payout field with the connected
+// address and warns about it (flow.mjs, newReceiveAddress).
+//
 // The connection is not remembered: nothing is written to browser storage
 // or a cookie, and the user connects again on the next page load.
 

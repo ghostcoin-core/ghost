@@ -147,6 +147,12 @@
                 In this key: <span id="summon-in-key">—</span>
                 <button id="summon-max" class="link" type="button">Max</button>
               </p>
+              <p id="summon-amount-warning" class="warning-line" role="status"></p>
+              <label class="payout-box">
+                <span>Pay to</span>
+                <input id="summon-payout" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="0x followed by 40 hex digits">
+              </label>
+              <p id="summon-payout-warning" class="warning-line" role="status"></p>
             </div>
             <p id="summon-note" class="status" role="status"></p>
             <p><button id="summon-refresh" class="link" type="button" hidden>Check again</button></p>
@@ -154,7 +160,8 @@
           </form>
           <div id="summon-confirm" class="screen confirm" hidden>
             <h2><span id="summon-confirm-text"></span></h2>
-            <p>The coin goes to your connected wallet. Nothing is proved or sent until you confirm.</p>
+            <p>The coin goes to <span id="summon-confirm-address" class="address"></span>. Nothing is proved or sent until you confirm.</p>
+            <p id="summon-confirm-warning" class="warning-line" role="status"></p>
             <button id="summon-confirm-button" class="primary wide big" type="button">Confirm Summon</button>
             <button id="summon-cancel" class="wide" type="button">Cancel</button>
           </div>
@@ -172,7 +179,7 @@
           <div id="summon-done" class="screen done" hidden>
             <svg class="icon icon-done" aria-hidden="true" focusable="false"><use href="#icon-ghost"></use></svg>
             <h2><span id="summon-done-amount"></span> GHOST summoned</h2>
-            <p>Sent to your wallet <span id="summon-done-address"></span>.</p>
+            <p>Sent to <span id="summon-done-address"></span>.</p>
             <p id="summon-done-rest"></p>
             <p><button id="summon-recheck" class="link" type="button">Check the summon is still in the chain</button></p>
             <p id="summon-recheck-status" class="status" role="status"></p>

@@ -22,10 +22,10 @@ sees a wallet's seed or key (see Wallet). It does three things.
 - **Summon.** The user types any valid key: its 24 words, or its digits.
   Keys issued before the words, twelve (or twenty-four) groups of digits,
   still open, restore, reveal and claim. The app finds the key's coin on the
-  chain and reveals any available amount to the connected wallet's address;
+  chain and reveals any available amount to the payout address, by default a
+  fresh address of the connected wallet that never vanished;
   the rest, minus the fee, stays under the same key as the next commitment.
-  (The flow controller's `summonReveal` still takes any 20-byte recipient,
-  which the tests use; only the page pays the connected wallet alone.)
+  (The flow controller's `summonReveal` takes any 20-byte recipient.)
 - **Claim.** The app creates a new key of 24 words, shows it and runs the
   same save check on it, then moves the coin's value minus the fee to the
   new key. A
@@ -132,18 +132,49 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
   and "GHOST"), with `In this key:` and the coin's amount and Max (the
   amount less the network fee) under it, right-aligned. The main button
   reads "Summon", or "Connect wallet" with no wallet connected, when it
-  opens the wallet list. Summon pays only the connected wallet's address
-  (`flow.state.wallet.address`); the page has no payout address field. A
-  coin the tree-state rule holds back (see Summon and Claim) shows a plain
-  line and "Check again" instead of a Summon it would refuse.
+  opens the wallet list. A coin the tree-state rule holds back (see Summon
+  and Claim) shows a plain line and "Check again" instead of a Summon it
+  would refuse.
+
+  **Payout address.** Under the amount, "Pay to": a plain address input
+  (`summon-payout`). Once a key's coin shows with a wallet connected, the
+  page asks the wallet for a fresh receive address (the flow's
+  `newReceiveAddress`, the connector's optional `newReceiveAddress()`,
+  which the Ghost pop-up wallet answers as `ghost_newReceiveAddress` with a
+  new account index each call) and fills the field with it. A wallet
+  without that request (no such method, a null answer, or "method not
+  found", -32601), or one that turns it down, leaves the field with the
+  connected address instead. With no wallet connected the field is empty
+  and the Summon button asks to connect. The user can type any address;
+  a typed address is never replaced. On Summon it is checked with
+  `parseAddress` ("Enter the address to pay, 0x and 40 hex digits."), and
+  the zero address is refused. Each Summon gets a new address: Done,
+  leaving the tab and `pagehide` empty the field. Nothing is stored.
+
+  **Privacy warnings.** Two lines in the caution color, under the field
+  and again on the confirm screen. Both are advice and never block the
+  Summon:
+  - the payout is the connected wallet's address, or an address this page
+    sent a Vanish from in this session (the flow's `vanishedFrom`): the
+    chain then shows the same public address on both sides, which links the
+    Summon to its Vanish whatever the proof hides (threat model C31);
+  - a full Summon (the amount plus the network fee is all the key holds):
+    `out` is public and the fee is the same for every reveal of a block, so
+    it publishes the Vanish's amount. The flow counts the commits of that
+    amount among the receipts the page has already checked (the `v` of each
+    commit log, `coinRecord`; the key's own commit included), with no new
+    request, as `amountMatches`. Fewer than 10, and the line says how many
+    and suggests a partial Summon, less than Max. A partial Summon shows no
+    amount warning.
   1. **Confirm.** Pressing Summon proves and sends nothing: the card shows
      "Summon *amount* GHOST to *short address*" (the amount as typed and
-     the connected wallet's address, the full address as the screen's
-     title), the primary button "Confirm Summon" and "Cancel". Cancel
+     the payout address, the full address as the screen's title and in
+     "The coin goes to *address*."), the warnings, the primary button
+     "Confirm Summon" and "Cancel". Cancel
      returns to the form with the key and the amount kept and calls
      nothing. Only Confirm Summon calls the flow's `summonReveal`, with
-     that amount and address; a second press while it runs does nothing,
-     and a wallet changed since the screen opened sends nothing. The
+     that amount and payout address; a second press while it runs does
+     nothing, and a wallet changed since the screen opened sends nothing. The
      confirm step shows for every Summon. No wallet signature is asked
      for: the reveal goes out as a type 0x50 reveal with no sender,
      authorized by the Phantom Key's proof, so whoever holds the key can
@@ -154,7 +185,8 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
      progress and the reveal record's Sent, never from a timer), then "Keep
      this page open. This takes about 10 seconds."
   3. **Done**, once the reveal is in a block: the ghost icon, "*amount*
-     GHOST summoned", "Sent to your wallet *short address*.", then
+     GHOST summoned", "Sent to *short address*." (the payout address, the
+     full one as its title), then
      "*rest* GHOST is still in your key. The same key still works." or
      "This key is now empty.", "Check the summon is still in the chain"
      (Refresh's recheck of the reveal's block), and the main button "Done",
@@ -365,8 +397,8 @@ item of `lib.rs`, behind the feature, so the module the page ships is built
 from the same source as before. At a depth below 32 the flow asks the worker
 `testDepthProver` for the depth the module's reveal is made for; when that is
 the flow's depth it asks `proveTestDepth` for the coin, and otherwise refuses
-with `SMALL_TREE_REVEAL`. A decoy is always proved at 32 levels, and a flow of
-32 levels asks for neither.
+with `SMALL_TREE_REVEAL`; a reveal that cannot be made is not proved at all.
+A flow of 32 levels asks for neither.
 
 ## Headers
 
@@ -568,8 +600,10 @@ node holds it: ghost-node at the pinned commit takes a type `0x52`
 transaction into its pool and still answers `transaction type not supported`,
 and its JSON shows such a transaction's `from` as the zero address until its
 RPC derives it from the public key. A reveal is a native transaction with no account, so Summon and
-Claim sign nothing with the wallet. The page pays a Summon to the connected wallet's address; the flow
-controller's `summonReveal` still pays any 20-byte address it is given.
+Claim sign nothing with the wallet. The page pays a Summon to the payout
+field's address, by default a fresh address of the connected wallet (see
+Summon tab); the flow controller's `summonReveal` pays any 20-byte address it
+is given.
 
 The commit entry address defaults to the internal network's coin commit
 entry, `0x67686f7374000000000000000000000000000005` ("ghost" in ASCII, then
@@ -600,21 +634,18 @@ app makes no data commitments.
    restore, the one where the key holds no unspent coin included, then asks
    the endpoint the same thing in the same order before anything depends on
    what restore found: `eth_blockNumber`, the tip's header and the fee
-   headers for the next block. Before these requests the worker always
-   makes a proof and sends nothing: of the coin when it can be revealed,
-   otherwise of a decoy, a throwaway key's coin placed at the last position
-   of the same leaves, of the same kind. The decoy mirrors the version of
-   the key's coin (salted, as a new coin is, unless the key's current coin
-   is of version 1), so the work does not depend on the coin. A coin's proof that the worker
-   refuses before proving (its coin not under the root, amounts that do not
-   balance) proves a decoy in its place and only then returns the refusal.
-   So the time before them is a proof's on every path, refusals and fee
-   retries included. The worker's other work
-   (the leaf count of every header read, restore, the tree-state rule) is the
-   same on every path too. Only after these requests does a failure surface
-   or the reveal go out. Found or not, failing or not, the endpoint sees the
-   same requests at the same pace up to the reveal; the reveal itself tells
-   it the connection holds a coin.
+   headers for the next block. Before these requests the worker proves the
+   coin when it can be revealed; a reveal that cannot be made (no unspent
+   coin, more than the coin can send) is not proved at all. The page used
+   to prove a decoy in its place, a full proof of about 260 MB only to say
+   "no coin", which hid almost nothing, so it no longer does (the module's
+   `decoy` argument stays, unused by the page). A coin's proof that the
+   worker refuses (its coin not under the root, amounts that do not
+   balance) still takes a proof's time in the worker before the refusal.
+   Only after these requests does a failure surface or the reveal go out.
+   Found or not, failing or not, the endpoint sees the same requests in the
+   same order up to the reveal, though not at the same pace; the reveal
+   itself tells it the connection holds a coin.
 3. **Tree state.** There is no forced wait (founder decision, 2026-10-20).
    The proof uses the settled root of
    [spec 02](spec/02-proof-statements.md), section 8, through the client
@@ -627,11 +658,13 @@ app makes no data commitments.
    the tree that ends at the leaf, so a leaf added before `S - 32` still
    counts as following it. So a coin can be revealed 2 blocks after anyone
    else commits.
-   - **Holder's choice.** Opening a key shows, for its coin, the block whose
-     root a reveal or claim made now would use and how many coins that tree
-     covers (its leaf count), and how many newer coins are not settled yet.
-     Fewer coins make the reveal easier to link to the commit; the holder
-     reveals now or waits and presses Refresh. The app never makes them wait.
+   - **Cover, as information.** Opening a key shows, for its coin, the block
+     whose root a reveal or claim made now would use and how many coins that
+     tree covers (its leaf count), and how many newer coins are not settled
+     yet. The text says the count is of commitments, not of people, and that
+     amounts and timing can still match a reveal to its commit; it gives no
+     advice to wait, since the membership proof over the settled root
+     already hides which leaf is opened. The app never makes the holder wait.
    - **Nobody committed since.** When no leaf follows the coin, the only tree
      that holds it ends with the coin's own block, and a reveal against that
      root would tie it to its commit. The app says so plainly, keeps Reveal
@@ -879,7 +912,7 @@ app makes no data commitments.
   view is shown, and refuses a wrong, short or digit answer; a salted coin is
   revealed and claimed, its salt passed to the prover and its remainders
   salted; a version 1 coin of an old 12-group key still reveals and claims,
-  with no salt and a version 1 decoy when its reveal cannot be made.
+  with no salt, and nothing is proved when its reveal cannot be made.
 - `wasm.test.mjs`: the module against the golden vectors of spec 01 and
   spec 05, the header's RLP and hash included, the version 2 commit and the
   words key; a receipt's encoding and the receipts root; and the receipts
@@ -977,13 +1010,14 @@ app makes no data commitments.
   an error is a fixed plain line, never the error's own text.
 - `summon-screens.test.mjs`, with nothing built: `index.html` read as text
   for the Summon tab's fixed wording (the paste box, the amount box with
-  `In this key:` and Max, the waiting steps, Done), with no payout address
-  field, and `app.mjs` read as text and run against a small stand-in page
+  `In this key:` and Max, the payout field under it, the waiting steps,
+  Done), and `app.mjs` read as text and run against a small stand-in page
   and a stand-in flow. A pasted key opens and shows its coin; an unfinished
   or wrong key typed shows no error until the box is left, and then a plain
   line naming a position at most; an amount that does not parse, or more
   than the key can send, is flagged and sends nothing; after Confirm Summon
-  the reveal goes to the connected wallet's address, with the three steps ticking off from the
+  the reveal goes to the fresh address the payout field was filled with (a
+  new one for the next Summon), with the three steps ticking off from the
   flow's progress; Done shows the rest, then "This key is now empty." after
   the rest is summoned; with no wallet connected the button reads "Connect
   wallet" and opens the wallet list; the list holds only the Ghost wallet,
@@ -1019,11 +1053,27 @@ app makes no data commitments.
   and shows its own line, never the wallet's text.
 - `summon-confirm.test.mjs`: Summon's confirm step through `app.mjs` with a
   stand-in flow that logs every call. Summon shows "Summon *amount* GHOST
-  to 0x3a…91c" with the full address as the title and calls nothing;
-  Cancel returns to the form with the key and amount kept and calls
-  nothing; Confirm Summon calls `summonReveal` once with the amount and the
-  wallet's address, and a second press does nothing; a wallet changed
-  meanwhile, leaving the tab and `pagehide` send nothing.
+  to 0x7c…44d" (the payout address) with the full address as the title and
+  calls nothing; with a wallet that has no fresh address it names the
+  wallet's own and warns; Cancel returns to the form with the key and
+  amount kept and calls nothing; Confirm Summon calls `summonReveal` once
+  with the amount and the payout address, and a second press does nothing;
+  a wallet changed meanwhile, leaving the tab and `pagehide` send nothing.
+- `summon-payout.test.mjs`: the payout field and the privacy warnings
+  through `app.mjs` with a stand-in flow, then the flow against the node
+  stand-in. By default the field holds a fresh address and the Summon pays
+  it with no warning; a wallet without the request (null, or method not
+  found) leaves the connected address, with the same-address warning on the
+  form and the confirm screen, and the Summon still goes; with no wallet the
+  field is empty and Summon asks to connect; a typed address is kept, warned
+  about when it is the wallet's or one this page vanished from, and checked
+  with `parseAddress`; a full Summon whose amount fewer than 10 checked
+  commits share warns and suggests a partial Summon, and a partial one does
+  not. The pop-up connector sends `ghost_newReceiveAddress` and reads
+  method not found as null. The flow's `newReceiveAddress` gives a new
+  account of the tests' wallet each call; `amountMatches` counts the
+  checked commits of the coin's amount; a reveal that cannot be made is not
+  proved.
 
 The key image download, drawn on a canvas in the page, and Claim's
 digit-view button are not covered by the headless tests; the flow's digit
