@@ -23,7 +23,8 @@ section 13.
 |---|---|---|
 | Commitment format | The outline's one format with a type tag, the same as the coin's in [spec 03](03-coin-rules.md), without the amount | Outline |
 | Data type | One type, `DATA` at the current version | **Proposed** (question 6) |
-| Data and money | A data commitment goes only into the data tree, carries no amount, burns nothing, mints nothing, and is rejected at the coin reveal's type check | Outline; spec 03, section 3 and CR-4 |
+| Data and money | A data commitment goes only into the data tree, carries no amount the wallet chooses, burns the fixed reserve `DATA_RESERVE` at commit, never mints money, and is rejected at the coin reveal's type check | Outline; spec 03, section 3 and CR-4; reserve front desk decision, 2026-10-25 |
+| Fee reserve | `DATA_RESERVE` = 2.5 x 10^17 wei (0.25 GHOST), a protocol constant: a data commit sends exactly it, the node burns it and binds it into the leaf | Front desk decision, 2026-10-25; size question 10 |
 | Content fingerprint | A tagged hash over the plaintext bytes and their length, inside the commitment; the commit never publishes it, a data reveal publishes it and a proof of holding names it, each bound to it inside the proof, so anyone holding the bytes can check them | **Proposed**; question 8 |
 | Where the data lives | Off the chain, wherever the user chooses; the chain never stores, checks or promises availability of it | Outline ("Data storage") |
 | Encryption | Client-side, standard authenticated encryption under a data key derived from the digits with its own hash tag | Outline (second milestone 1); construction **Proposed** |
@@ -33,8 +34,8 @@ section 13.
 | Not-yet-revealed evidence | The proof of holding shows, inside the proof, that the commitment's marker is not in the spent-marker set under a root in a block header | **Proposed** (threat model, section 6 item 2; question 2) |
 | One-time reveal | Publishes one marker, the content fingerprint and a node-computed binding digest; publishes no data, key, `F_d` or commitment; mints nothing | Outline; contents **Proposed**; content fingerprint question 8 |
 | Remainder on a data reveal | None | **Proposed** (question 3) |
-| Fee of a data reveal | Not settled; every data reveal is rejected at the fee check until it is | **Proposed** (fail closed, question 1) |
-| Revocation | A one-time reveal by the holder with the revoke purpose; afterwards every proof of holding that opens the revoked commitment against marker status that includes the revocation fails | Outline (second milestone 6); purpose tag **Proposed** (question 4) |
+| Fee of a data reveal | The coin reveal's window fee and cover rule ([spec 07](07-private-transaction.md), section 5), paid out of the reserve, with `fee <= DATA_RESERVE`; the rest of the reserve is forfeited, credited to nobody, never refunded | Front desk decision, 2026-10-25 (question 1) |
+| Revocation | A one-time reveal by the holder with the revoke purpose, settled like a reveal; afterwards every proof of holding that opens the revoked commitment against marker status that includes the revocation fails | Outline (second milestone 6); purpose tag **Proposed** (question 4) |
 | Restore | The digits alone give the note key, the data key and the commitment; the wallet finds its note by bulk trial decryption | Outline; method **Proposed** |
 | Lost host | The bytes are lost unless a copy exists; the commitment, marker status and proofs of holding still work | Outline ("Data storage") |
 | Owner, pause switch, upgrade key | None, over any part of this | Outline ("Reference: old Specter code") |
@@ -96,19 +97,94 @@ C20). The data marker takes the same salt,
 salt and hashes as before. The node computes
 
 ```text
-C = H(tag_data_commitment, DATA, F_d)
+C = H(tag_data_commitment, DATA, DATA_RESERVE, F_d)
 ```
 
-with `DATA` set by the node, and writes `C` as a leaf of the data tree. This
-differs from the coin commitment of spec 03 in one way: the node's outer hash
-uses the data commitment tag and the `DATA` type and takes no amount, because a
-data commit burns nothing (**Proposed**). For the first version `rule` is the
-empty rule (**Proposed**, as for coins in spec 03, section 2).
+with `DATA` and `DATA_RESERVE` set by the node, and writes `C` as a leaf of the
+data tree. This differs from the coin commitment of spec 03 in two ways: the
+node's outer hash uses the data commitment tag and the `DATA` type, and the
+amount in it is the constant `DATA_RESERVE`, not a value the wallet chooses
+(the fee reserve, below). For the first version `rule` is the empty rule
+(**Proposed**, as for coins in spec 03, section 2).
+
+### The fee reserve
+
+A one-time reveal pays a fee, and the outline takes that fee from the
+commitment inside the proof, never from a public account ("Transactions and
+fees"; "Reference: old Specter code"). A data commitment has no amount of its
+own to pay from, so every data commit burns a small fixed reserve into the
+commitment, and that reserve pays the reveal fee (section 6, "Fee settlement
+at reveal and revoke"). Front desk decision, 2026-10-25.
+
+**The constant.** The reserve is a protocol constant, the same for every data
+commitment:
+
+```text
+DATA_RESERVE = 250,000,000,000,000,000 wei = 2.5 x 10^17 wei = 0.25 GHOST
+```
+
+It is sized from the genesis fee of a private reveal, 26,100,495,343,659,410
+wei, about 0.0261 GHOST ([spec 07](07-private-transaction.md), section 4,
+`window-genesis`): `DATA_RESERVE` is about 9.58 times that fee. The fee grows
+with the base fee, so a data reveal or a revocation stays possible until the
+base fee is about 9.6 times the genesis base fee; above that, a commitment
+whose fee would exceed `DATA_RESERVE` cannot be revealed or revoked until the
+base fee falls (section 6, step 6). Whether 0.25 GHOST is the right size is
+question 10.
+
+**The commit rule.** A data commit must send value exactly `DATA_RESERVE`. Any
+other value, zero included, is rejected, as a coin commit's value is checked
+(spec 03, section 6, step 6; section 4 below, commit check 1). The node burns
+the value from the sender, credits it to nobody, adds it to `total_in`
+(spec 03, section 9) and computes the leaf with `DATA_RESERVE` in the outer
+hash. The amount is therefore bound by the node, not claimed by the wallet:
+the only reserve that ever enters a data leaf is the one the node burned in
+the same state change, and the wallet's `F_d` has no amount field to claim
+another. "No amount" for data means no value the wallet chooses: the reserve
+is a constant, burned at commit, and a data commitment never mints money.
+
+**Why a constant.** A constant keeps the accounting exact: the hidden total
+`total_in - total_out` stays equal to what the live commitments hold, the coin
+amounts plus `DATA_RESERVE` for each data commitment not yet revealed or
+revoked. And it leaks nothing: every data commitment holds the same amount, so
+the commit's value says nothing about the data, its size or its owner beyond
+"this is a data commit", which the entry point already shows. A reserve the
+wallet chose would be either a hidden amount the data statement would have to
+range-check and conserve, or a public one whose tiers set commitments apart.
+
+**Format version.** `DATA_RESERVE` changes the node-computed outer hash of
+`DATA`, so it is part of the commitment format. Nothing has launched and
+version 1 is being removed, so the reserve re-sets data format version 2 (type
+tag `0x02 0x02`, tags `v2`) rather than adding a version 3, on one condition:
+no recorded network or fixture holds a version 2 data leaf made without the
+reserve. The implementation work checks the condition (the salted data vectors
+of [spec 01](01-commitments-and-keys.md), section 14, are computed without the
+reserve and are among the fixtures to check). If one does, the reserve is
+data format version 3 instead (type tag `0x03 0x02`, tags `v3`), and the coin
+keeps version 2. `DATA_RESERVE` belongs to the version: changing it later is a
+new version, and existing leaves keep the reserve of theirs.
+
+**Worked example: the commit.** Start from `total_in = 0` and
+`total_out = 0`. A sender with public balance 1 GHOST makes a data commit with
+value 250,000,000,000,000,000 wei:
+
+```text
+sender balance  1,000,000,000,000,000,000 -> 750,000,000,000,000,000 (plus the commit's own gas)
+total_in        0 -> 250,000,000,000,000,000
+total_out       0
+hidden total    250,000,000,000,000,000 = 1 x DATA_RESERVE
+leaf            C = H(tag_data_commitment, DATA, 250,000,000,000,000,000, F_d)
+```
+
+The same commit with value 249,999,999,999,999,999 wei, 250,000,000,000,000,001
+wei or 0 is rejected, nothing is burned and no leaf is written.
 
 **Never money.** A data commitment can never create money (outline, "Coin
 rules"; [spec 03](03-coin-rules.md), section 3 and CR-4). It goes only into the
-data tree, under its own hash tags, carries no amount, burns nothing and mints
-nothing. A data reveal presented to the coin reveal is rejected at the coin
+data tree, under its own hash tags, carries no amount the wallet chooses,
+burns the constant reserve at commit and mints nothing: at reveal the reserve
+pays the fee and the rest is forfeited, and nothing is ever credited to a
+recipient. A data reveal presented to the coin reveal is rejected at the coin
 reveal's type check (spec 03, section 7, step 3). Because the coin and data
 outer hashes carry different tags, a leaf of one tree cannot be opened as a leaf
 of the other without a collision of the tagged hash (threat model, A1).
@@ -205,17 +281,20 @@ data commit entry point. The node makes the checks of
 and exact-length format, no final commitment and no type field, canonical
 `F_d`, fixed note length), then:
 
-1. **Nothing burned.** The transaction's value is exactly 0. Any other value is
-   rejected; a data commit moves no GHOST into or out of the hidden set and
-   does not change spec 03's running totals.
-2. **Tree room.** The data tree has room for one more leaf, as spec 03,
+1. **Reserve.** The transaction's value is exactly `DATA_RESERVE` (section 3,
+   "The fee reserve"). Any other value, zero included, is rejected.
+2. **Funds.** The sender's balance covers `DATA_RESERVE` plus the maximum gas
+   cost, as spec 03, section 6, step 7.
+3. **Tree room.** The data tree has room for one more leaf, as spec 03,
    section 6, step 8, with the same default until the rollover is specified.
-3. **Compute and apply, all or nothing.** The node computes
-   `C = H(tag_data_commitment, DATA, F_d)` and, in one state change, appends
+4. **Compute and apply, all or nothing.** The node computes
+   `C = H(tag_data_commitment, DATA, DATA_RESERVE, F_d)` and, in one state
+   change, debits `DATA_RESERVE` from the sender and credits it to nobody,
+   adds `DATA_RESERVE` to `total_in` (spec 03, section 9), appends
    `C` to the data tree, stores the note with it and writes the receipt (leaf
    `C`, tree index and position, and the note bytes; spec 05, section 8,
-   item 5). The new data-tree root goes into the block header (outline,
-   "Core protocol" 6).
+   item 5). If any part fails, none applies. The new data-tree root goes into
+   the block header (outline, "Core protocol" 6).
 
 ## 5. Proof of holding
 
@@ -321,9 +400,9 @@ anyone holding the revealed bytes computes their `cf` (section 3) and compares
 it: equal bytes match the commitment, other bytes do not (question 8).
 
 **What it never publishes.** No data, no data key or part of one, no
-commitment `C`, no position and no `F_d`. It mints nothing,
-burns no committed value and creates no remainder: a data commitment holds no
-value to carry (question 3).
+commitment `C`, no position and no `F_d`. It mints nothing and creates no
+remainder: the reserve pays the fee and the rest is forfeited, so there is no
+value to carry (question 3; "Fee settlement at reveal and revoke", below).
 
 **Order of checks.** The node stops at the first failure.
 
@@ -337,13 +416,15 @@ value to carry (question 3).
    is rejected here; a coin reveal follows spec 03, section 7.
 4. **Chain, version and domain.** This chain's current values.
 5. **Purpose.** The purpose is reveal or revoke. Any other value is rejected.
-6. **Fee.** **Proposed (fail closed):** the outline requires a one-time reveal
-   to check that the fee is current ("Core protocol" 9) and takes the fee from
-   the commitment inside the proof ("Transactions and fees"), but a data
-   commitment holds no value. Until the founder settles where a data reveal's
-   fee comes from (question 1), every data reveal is rejected at this step.
-   No public account may pay it, because a public sender paying the fee on
-   reveal is an old-design mistake (outline, "Reference: old Specter code").
+6. **Fee.** The fee is the coin reveal's, unchanged: it equals the window fee
+   of [spec 07](07-private-transaction.md), section 4, for the including
+   block's window or the window before it, and the cover rule of spec 07,
+   section 5, holds for the including block (spec 03, section 7, step 5).
+   Then one check the coin reveal does not have: `fee <= DATA_RESERVE`. A
+   reveal or revocation that fails any of these is rejected here, before the
+   proof is verified. The fee comes out of the commitment's reserve; no public
+   account may pay it, because a public sender paying the fee on reveal is an
+   old-design mistake (outline, "Reference: old Specter code").
 7. **Binding digest.** The node computes it from the transaction's fields and
    uses its own value as the public input, never one taken from the sender.
 8. **Root.** The data-tree root of an ancestor of the including block, which on
@@ -353,25 +434,128 @@ value to carry (question 3).
    canonical chain, and no earlier transaction in the same block uses it.
 10. **Proof.** The proof verifies against the public inputs. It establishes
     that the prover knows `r` and the other secret parts of a leaf `C` built as
-    in section 3 with type `DATA` under the public root, that the public marker
+    in section 3 with type `DATA` and the constant `DATA_RESERVE` (no new
+    private input) under the public root, that the public marker
     is derived from that `C`'s secret parts and salt with the data marker tag
     of its version (so one commitment has one marker), that the public `cf` is
     the content fingerprint inside that `C`, that the salt stays a private
     input, that the rule is the empty rule, and that the binding digest is the
     one in the public inputs.
 11. **Apply, all or nothing.** In one state change: add the marker to the data
-    spent-marker set, settle the fee as question 1 decides, and write the
-    receipt (marker, purpose, verifier or recipient field; the marker is what
-    wallets take status from, spec 05, section 8). It carries no leaf and no
-    note, because nothing is appended, and never the spent commitment `C`. Nothing is minted,
-    nothing is appended to either tree, and spec 03's running totals do not
-    change. A reorganisation that removes the block makes the marker unspent
-    again.
+    spent-marker set; add `DATA_RESERVE` to `total_out` (spec 03, section 9);
+    burn the base-fee part of the fee and pay the tip to the block finder, as
+    for a coin reveal (spec 07, section 5, "The cover rule"); forfeit
+    `DATA_RESERVE - fee`, credited to nobody; and write the receipt (marker,
+    purpose, verifier or recipient field; the marker is what wallets take
+    status from, spec 05, section 8). It carries no leaf and no note, because
+    nothing is appended, and never the spent commitment `C`. Nothing is
+    minted, nothing is credited to the verifier or recipient field, and
+    nothing is appended to either tree. If any part fails, none applies. A
+    reorganisation that removes the block reverts all of it together and makes
+    the marker unspent again.
 
 The marker rule is the coin's (spec 03, section 7, step 8; outline, "Core
 protocol" 5): a marker is unique on the canonical chain, and a repeat is
 rejected in the same block and in any later block. A reveal is final to the
 degree that the chain is (threat model, section 6 item 3).
+
+### Fee settlement at reveal and revoke
+
+Front desk decision, 2026-10-25 (question 1). The reveal fee of a data
+commitment is paid out of its reserve (section 3, "The fee reserve").
+
+**The fee.** A data reveal's fee is the coin reveal's, unchanged: strict
+equality with the window fee of [spec 07](07-private-transaction.md),
+section 4, for the including block's window or the window before it, and the
+cover rule of spec 07, section 5, for the including block. The data reveal
+carries the same fee field, at the same position and size, as the coin reveal,
+bound in the binding digest the same way. The node adds one check, before the
+proof (step 6): `fee <= DATA_RESERVE`. The proof needs no new private input
+and no remainder: the reserve is a constant inside `C`, and no part of it is
+carried into a new commitment (question 3 stays).
+
+**The accounting.** In the apply step (step 11) `total_out` grows by
+`DATA_RESERVE`, the whole reserve, whatever the fee. Of it:
+
+- the base-fee part of the fee is burned, as for a coin (spec 07, section 5,
+  `burn = G_PRIV * max(price_w, beta)`);
+- the tip, `fee - burn`, goes to the block finder, as for a coin;
+- `DATA_RESERVE - fee` is forfeited: it leaves the hidden set with the rest
+  and is credited to nobody.
+
+So `burn + tip_paid + forfeit = DATA_RESERVE`, and the hidden total
+`total_in - total_out` drops by exactly what the spent commitment held. Each
+data commitment adds `DATA_RESERVE` to `total_in` once and to `total_out` at
+most once, because its marker can be spent once.
+
+**Revocation.** Revoke is a reveal with the revoke purpose, so it settles
+identically: the same window fee and cover rule, the same `fee <= DATA_RESERVE`
+check, `total_out` grows by `DATA_RESERVE`, the base-fee part is burned, the
+tip goes to the finder and the rest is forfeited. A revocation never refunds,
+to the holder or to anyone.
+
+**Cost.** At the genesis fee, 26,100,495,343,659,410 wei, about 89.6% of the
+reserve is forfeited per data commitment. The reserve is about 9.6 times that
+fee so that a data reveal and a revocation stay possible until the base fee is
+about 9.6 times the genesis base fee. A commitment whose current fee exceeds
+`DATA_RESERVE` cannot be revealed or revoked until the base fee falls; it is
+not lost, and its proofs of holding keep working.
+
+**Worked example.** Two data commitments `A` and `B` are made from
+`total_in = 0`, `total_out = 0`. `A` is revealed in a block of
+`window-genesis` (spec 07, section 4) and `B` is revoked in a block of
+`window-next`, each in a block whose base fee is at most the window's price,
+so the burn is the base-fee part and the tip is the nominal tip. Amounts in
+wei.
+
+```text
+after commit A and B
+  total_in      500,000,000,000,000,000
+  total_out     0
+  hidden total  500,000,000,000,000,000 = 2 x DATA_RESERVE
+
+reveal A, window-genesis
+  fee           26,100,495,343,659,410   (<= DATA_RESERVE)
+  burned        23,727,723,039,690,372
+  tip to finder  2,372,772,303,969,038
+  forfeited    223,899,504,656,340,590
+  total_in      500,000,000,000,000,000
+  total_out     250,000,000,000,000,000
+  hidden total  250,000,000,000,000,000 = 1 x DATA_RESERVE (B)
+
+revoke B, window-next
+  fee           28,710,544,875,705,410   (<= DATA_RESERVE)
+  burned        26,100,495,341,550,372
+  tip to finder  2,610,049,534,155,038
+  forfeited    221,289,455,124,294,590
+  total_in      500,000,000,000,000,000
+  total_out     500,000,000,000,000,000
+  hidden total  0
+```
+
+In each settlement `burned + tip + forfeited = 250,000,000,000,000,000`. A
+reveal of `A` with a fee of 26,100,495,343,659,411 (not the window's fee), or
+in a window whose fee were above 250,000,000,000,000,000, is rejected at
+step 6 and changes nothing.
+
+**What each rule stops.**
+
+- **A reveal that cannot pay.** `fee <= DATA_RESERVE`, checked before the
+  proof, rejects a reveal whose fee the reserve does not cover, so no data
+  reveal ever moves more out of the hidden set than its commitment put in.
+- **A public payer.** The fee comes from the reserve bound inside `C`; the
+  reveal has no sender, account or signature field to pay it, so no public
+  account is tied to the reveal (outline, "Reference: old Specter code").
+- **A refund that links commit to reveal.** The leftover is forfeited, not
+  refunded. A refund to a public address would name who revealed and tie that
+  address to the commit; a refund as a coin remainder commitment would add a
+  coin leaf, a note and remainder constraints to the data statement, and a
+  hidden amount to a statement that has none. Both cost more security surface
+  than the waste they save.
+- **Fee differences that tell data reveals from coin reveals.** The fee is the
+  same window fee a coin reveal pays in the same window, in the same field, so
+  the fee says nothing about whether a reveal is a coin or a data reveal, a
+  reveal or a revocation.
 
 ## 7. Revocation
 
@@ -387,6 +571,9 @@ commitment still proves holding of itself.
   cannot be passed off as a revocation or the other way round (question 4).
   It needs the digits, like every one-time reveal; no administrator, miner or
   committee can revoke (outline, core requirement 1).
+- **Fee.** Revocation settles as in section 6, "Fee settlement at reveal and
+  revoke": the window fee out of the reserve, the rest forfeited, never a
+  refund.
 - **Effect.** The commitment's marker is in the data spent-marker set. Every
   later proof of holding for that commitment against a spent-marker-set root
   that includes the marker fails, because the proof must show the marker is not
@@ -482,8 +669,7 @@ storage"; threat model, C7 and C32) and are the only claims made for data.
 
 There is no code yet. These are the tests the node, the wallet and a reference
 verifier must pass, written as inputs and the expected result. Each case
-assumes every other check passes; for data reveals that includes a test build
-in which question 1 is settled.
+assumes every other check passes.
 
 - **CR-D1. No key part on the chain.** A wallet commits, proves holding twice
   and revokes. Every byte string in every commit payload, note plaintext
@@ -514,9 +700,8 @@ in which question 1 is settled.
   issued is rejected at the same check.
 - **CR-D5. A data commitment mints nothing.** A data reveal presented to the
   coin reveal is rejected at spec 03, section 7, step 3, with no proof
-  verified, no marker recorded and no balance changed (spec 03, CR-4). A data
-  commit with a non-zero value is rejected at section 4, commit check 1, and
-  nothing is burned.
+  verified, no marker recorded and no balance changed (spec 03, CR-4). A valid
+  data reveal credits nothing to its verifier or recipient field.
 - **CR-D6. A coin leaf is not data.** A data reveal or proof of holding whose
   proof opens a coin leaf against a coin-tree root is rejected at section 6,
   step 8 (or verifier check 5). Against a data-tree root, a proof that opens a
@@ -568,8 +753,18 @@ in which question 1 is settled.
 - **CR-D17. Reorganisation.** A block with a revocation is removed by a
   reorganisation. Afterwards the marker is unspent and a fresh proof of
   holding on the new canonical chain is accepted.
-- **CR-D18. Fee fails closed.** Until question 1 is settled, a data reveal
-  that passes every other check is rejected at section 6, step 6.
+- **CR-D18. Fee settles from the reserve.** In a block of `window-genesis`
+  whose base fee is at most the price, a data reveal and a revocation with
+  `fee` = 26,100,495,343,659,410 are each accepted: `total_out` grows by
+  exactly `DATA_RESERVE`, 23,727,723,039,690,372 is burned,
+  2,372,772,303,969,038 is credited to the block finder, no other balance
+  changes, and the remaining 223,899,504,656,340,590 is credited to nobody. A
+  data reveal or revocation with a fee one wei off the window fee, or one
+  that fails the cover rule, is rejected at section 6, step 6. A data reveal
+  or revocation whose fee is the window's fee but above `DATA_RESERVE` (in a
+  test chain whose window fee is `DATA_RESERVE + 1`) is rejected at section 6,
+  step 6, before the proof is verified, and nothing changes; with the window
+  fee exactly `DATA_RESERVE` it is accepted and nothing is forfeited.
 - **CR-D19. Content fingerprint binding.** For a version 1 and a version 2
   commitment: a valid data reveal whose `cf` is replaced with the fingerprint
   of other bytes fails at section 6, step 10, and a proof of holding made for
@@ -577,6 +772,14 @@ in which question 1 is settled.
   another; a prover that opens the commitment but claims another `cf` makes no
   proof that verifies. The revealed bytes recompute the reveal's `cf`, and
   other bytes do not (spec 02, PS-26).
+- **CR-D20. A data commit sends exactly the reserve.** Data commits with value
+  0, `DATA_RESERVE - 1`, `DATA_RESERVE + 1` and 1 GHOST are each rejected at
+  section 4, commit check 1: nothing is burned, no leaf or note is written and
+  `total_in` is unchanged. A data commit with value exactly `DATA_RESERVE`
+  is accepted: the sender is debited `DATA_RESERVE` (plus gas), `total_in`
+  grows by `DATA_RESERVE`, and the leaf equals
+  `H(tag_data_commitment, DATA, DATA_RESERVE, F_d)`, so a proof that opens it
+  with any other amount in the outer hash does not verify.
 
 Each requirement must fail if the check it names is removed; a test that still
 passes with the check deleted does not count.
@@ -594,11 +797,15 @@ pausable settings.
 
 Each has a default that rejects or adds nothing until the founder decides.
 
-1. **Fee of a data reveal.** A data commitment holds no value, so the coin
-   reveal's fee source does not apply, and a public account paying the fee is
-   ruled out. Where does the fee come from? Default: every data reveal,
-   including revocation, is rejected at section 6, step 6; the second
-   milestone cannot pass until this is settled.
+1. **Fee of a data reveal.** Where does the fee come from, when a public
+   account paying it is ruled out? Answered (front desk decision,
+   2026-10-25): from the fee reserve. Every data commit burns the constant
+   `DATA_RESERVE` into the commitment (section 3, "The fee reserve"); a data
+   reveal or revocation pays the coin reveal's window fee out of it, with
+   `fee <= DATA_RESERVE`, and the rest is forfeited, credited to nobody
+   (section 6, "Fee settlement at reveal and revoke"). Rejected: a
+   wallet-chosen reserve, a public account paying the reveal, and a refund of
+   the leftover.
 2. **Spent-marker-set root in headers.** Should every header carry the data
    spent-marker-set root? Default: proofs of holding are accepted only against
    a root the verifier takes from a header it trusts; without one, the
@@ -626,6 +833,13 @@ Each has a default that rejects or adds nothing until the founder decides.
    shares, and not the commitment.
 9. **Rules on data.** Are rules on data in the first version? Default: none;
    any non-empty rule is rejected at section 6, step 10.
+10. **Size of the reserve.** Is 0.25 GHOST the right reserve? A larger one
+    keeps data reveals and revocations possible at higher base fees and
+    forfeits more per commitment; a smaller one forfeits less and blocks them
+    sooner (about 90% forfeited and a limit of about 9.6 times the genesis base
+    fee at 0.25 GHOST). Once a network holds data leaves, changing it is a
+    new commitment format version (section 3, "Format version"). Default: `DATA_RESERVE` =
+    2.5 x 10^17 wei as stated.
 
 ## 14. Follow-ups outside this document
 
@@ -647,5 +861,18 @@ itself:
 - The data tree's root rules (which roots are canonical, the rollover, and
   whether the spent-marker-set root goes in the header) are fixed with the
   tree and header specification.
+- The fee reserve (section 3, "The fee reserve"; section 6, "Fee settlement
+  at reveal and revoke") touches other specifications, edited by the
+  implementation work, not here: [spec 02](02-proof-statements.md), the S2
+  inputs (the data leaf opened with `DATA_RESERVE` in its outer hash, and the
+  fee bound against it); [spec 03](03-coin-rules.md), section 3 (beyond its
+  sentence on data commits, changed with this document) and section 9 (`total_in` and `total_out` count the reserve, and
+  the hidden total includes `DATA_RESERVE` for each live data commitment);
+  [spec 07](07-private-transaction.md), the data reveal encoding (the same fee
+  field as the coin reveal, and its "Data reveals" notes, which still say the
+  data reveal fee is unsettled); and [spec 01](01-commitments-and-keys.md),
+  section 10 (the data outer hash with the reserve, the re-set of data format
+  version 2 or, under the condition of section 3, version 3), with its data
+  test vectors.
 - The threat model's C32, C41 and C43 rows should point to this document once
   it is accepted; this document does not edit it.
