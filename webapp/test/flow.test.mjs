@@ -21,7 +21,6 @@ import {
   DEFAULT_COMMIT_ENTRY,
   PRIORITY_FEE_CAP,
   HEAD_MOVED_SENDS,
-  WaitError,
   ZERO_ADDRESS,
   createFlow,
 } from "../src/flow.mjs";
@@ -647,34 +646,29 @@ test("a claim is Done, and the old key claimed, at the first block that holds it
   }
 });
 
-test("a coin is summoned 2 blocks after a later commit, and a coin nobody followed waits", async () => {
-  const { node, flow, done } = await setUp();
+test("a coin nobody committed after is summoned once its own block is 2 deep", async () => {
+  const { node, flow, chain, done } = await setUp();
   try {
     const lonely = await vanish(flow, "1");
-    // Nobody has committed since: the app warns plainly and waits.
-    node.mineTo(node.tip() + 10);
+    const block = node.leaves.at(-1).block;
+    // Its block is not yet 2 deep: one plain line, no other commit asked for.
+    chain.mining = false;
     let s = await flow.summonOpen(lonely);
     assert.equal(s.status, "unclaimed");
     assert.equal(s.cover, null);
-    assert.equal(s.wait.alone, true);
-    assert.match(s.wait.message, /^nobody has committed a coin since this one/);
-    await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), (err) => err instanceof WaitError && err.alone);
-    assert.equal(node.reveals.length, 0, "never proved against its own block root");
+    assert.equal(s.wait.from, block + 2);
+    assert.match(s.wait.message, new RegExp(`block ${block}, is not yet 2 blocks deep`));
 
-    // A stranger commits in block `block`; one block later it is not yet
-    // settled, two blocks later the coin can be revealed against its root.
-    node.foreignCommits(1);
-    const block = node.tip();
-    s = await flow.summonOpen(lonely);
-    assert.equal(s.wait.alone, false);
-    assert.match(s.wait.message, new RegExp(`revealed from block ${block + 2}`));
+    // Two blocks later, with nobody else committing, it can be revealed
+    // against its own block's tree.
     node.mineTo(block + 2);
     s = await flow.summonOpen(lonely);
     assert.equal(s.wait, null);
     assert.deepEqual(s.cover, { height: block, covers: node.leaves.length, total: node.leaves.length });
+    chain.mining = true;
     const reveal = await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
     assert.equal(node.reveals.length, 1);
-    assert.equal(toHex(node.reveals[0].root), toHex(node.blocks[block].coinTreeRoot), "the root of the stranger's block");
+    assert.equal(toHex(node.reveals[0].root), toHex(node.blocks[block].coinTreeRoot), "the root of the coin's own block");
     assert.ok(reveal.block > block + 2);
     assert.equal(node.balances.get(RECIPIENT), GHOST / 4n);
   } finally {
