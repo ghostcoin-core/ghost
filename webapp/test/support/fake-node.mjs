@@ -181,8 +181,7 @@ function nodeFee(blocks, height) {
   const tip = blocks[blocks.length - 1];
   // Every block here is half full, so a child's base fee equals its parent's.
   let price = start < blocks.length ? blocks[start].baseFee : tip.baseFee;
-  // One growth step above b_ref (FEE_STEPS = 1).
-  price = price + price / 8n + price / 20000n + 1n;
+  for (let j = 0; j < 3; j += 1) price = price + price / 8n + price / 20000n + 1n;
   // g_priv of spec 07, section 4: the reveal gas the node charges.
   const base = 21_090_372n * price;
   return base + (base + 9n) / 10n;
@@ -578,15 +577,8 @@ export async function startFakeNode({
     if (raw[0] === 0x52) return accountTx(raw);
     const tip = blocks.length - 1;
     const reveal = ghost.decodeEnvelope({ chainId, domain: blocks[0].hash, envelope: fromHex(hex) });
-    // The fee of the including block's window or of the window before it,
-    // and the cover rule against the including block's base fee (a child's
-    // base fee here equals its parent's).
     const fee = nodeFee(blocks, tip + 1);
-    const previous = tip + 1 >= 4 ? nodeFee(blocks, tip + 1 - 4) : null;
-    const matched = reveal.fee === fee || reveal.fee === previous;
-    if (!matched || blocks[tip].baseFee * 21_090_372n > reveal.fee) {
-      throw new Error(`fee ${reveal.fee} is not the fee in force, ${fee}`);
-    }
+    if (reveal.fee !== fee) throw new Error(`fee ${reveal.fee} is not the fee in force, ${fee}`);
     if (!blocks.some((b) => toHex(b.coinTreeRoot) === toHex(reveal.root))) throw new Error("root not eligible");
     if (spent.some((s) => toHex(s.marker) === toHex(reveal.marker))) throw new Error("marker already spent");
     const { stale } = headMoving;
