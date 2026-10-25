@@ -98,8 +98,7 @@ export const SALT_BYTES = 16;
 const SALT_RECORD_BYTES = 1 + SALT_BYTES;
 // A leaf with its note.
 export const LEAF_RECORD_BYTES = 32 + 156;
-// The commit versions: 2, salted, is what the app sends; 1 only for tests
-// that need a coin made before the salt.
+// The commit version: 2, salted, the only one.
 export const COMMIT_VERSION = 2;
 
 // The salt record of `salt`, a 16-byte salt or null.
@@ -149,7 +148,7 @@ export class Ghost {
 
   constants() {
     const out = new Output(this.call("ghost_constants", new Uint8Array(0)));
-    return { envelopeBytes: out.u32(), commitPayloadBytes: out.u32(), commitV1PayloadBytes: out.u32() };
+    return { envelopeBytes: out.u32(), commitPayloadBytes: out.u32() };
   }
 
   // A new key in the default format: 24 words separated by single spaces.
@@ -173,10 +172,11 @@ export class Ghost {
     return this.text("ghost_key_digits", encoder.encode(text));
   }
 
-  // The commit of a key's first coin: version 2 (206 bytes, a fresh salt
-  // from `seed`) unless a test asks for version 1 (190 bytes).
-  commit({ chainId, amount, seed, key, version = COMMIT_VERSION }) {
-    const input = new Input().u8(version).u64(chainId).bytes(word(amount)).bytes(seed, 32).text(key).build();
+  // The commit of a key's first coin: version 2, 206 bytes, a fresh salt
+  // from `seed`. A `version` other than 2 is refused.
+  commit({ chainId, amount, seed, key, version }) {
+    if (version !== undefined && version !== COMMIT_VERSION) throw new Error("unknown commit version");
+    const input = new Input().u8(COMMIT_VERSION).u64(chainId).bytes(word(amount)).bytes(seed, 32).text(key).build();
     const out = new Output(this.call("ghost_commit", input));
     return { commitment: out.take(32), marker: out.take(32), payload: out.rest() };
   }
@@ -184,7 +184,8 @@ export class Ghost {
   // `records`: leaves with their notes (188 bytes each) from position 0;
   // `salts`: the salt read beside each leaf (16 bytes, or null), one per
   // leaf, all null when not given; `markers`: spent markers (32 bytes each).
-  // Each coin found carries its salt, null for a version 1 coin.
+  // Each coin found carries its salt; one found without a salt (null) is
+  // refused by `prove`.
   restore({ chainId, key, records, salts = null, markers }) {
     const count = records.length / LEAF_RECORD_BYTES;
     if (salts !== null && salts.length !== count) throw new Error("one salt (or null) is expected per leaf");
@@ -237,11 +238,11 @@ export class Ghost {
   }
 
   // kind: "partial" or "claim". `leaves`: the tree under `root`. `salt`: the
-  // coin's salt from restore, null for a version 1 coin. With `decoy`, the
-  // same work for a throwaway key (lib.rs, ghost_prove), of a salted coin
-  // unless `salted` is false.
+  // coin's salt from restore; a coin without one (null) is refused. With
+  // `decoy`, the same work for a throwaway salted coin of a throwaway key
+  // (lib.rs, ghost_prove).
   prove(a) {
-    const salt = a.decoy ? (a.salted === false ? null : new Uint8Array(SALT_BYTES)) : (a.salt ?? null);
+    const salt = a.decoy ? new Uint8Array(SALT_BYTES) : (a.salt ?? null);
     const input = new Input()
       .u64(a.chainId)
       .bytes(a.domain, 32)
@@ -284,9 +285,10 @@ export class Ghost {
     };
   }
 
-  // `C` as the node computes it from a commit's `F`, amount and version.
+  // `C` as the node computes it from a commit's `F`, amount and version, 2:
+  // any other version is refused.
   coinCommitment(fingerprint, amount, version) {
-    if (version !== 1 && version !== 2) throw new Error("the commit version is 1 or 2");
+    if (version !== COMMIT_VERSION) throw new Error("unknown commit version");
     return this.call("ghost_coin_commitment", new Input().bytes(fingerprint, 32).bytes(word(amount)).u8(version).build());
   }
 

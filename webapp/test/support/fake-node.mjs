@@ -7,8 +7,8 @@
 // node's log layout (as the client library reads it, after ghost-node
 // docs/private-transactions.md, "Receipts"): a commit's log has the coin
 // tree account as address, the topic K("ghost/commit-receipt/v1") and the
-// tree index, position, leaf, value and note, then the salt of a version 2
-// commit; a reveal's log has K("ghost/reveal-receipt/v1") and the marker as
+// tree index, position, leaf, value, note and the commit's salt; a reveal's
+// log has K("ghost/reveal-receipt/v1") and the marker as
 // topics and the tree index, position, remainder, note, recipient and amount
 // out. The header's receiptsRoot is computed from their consensus encoding
 // (written here apart from the app's) by the module's ghost_receipts_root,
@@ -59,15 +59,12 @@ export const TEST_CHAIN_PARAMS = Object.freeze({
 export const FAKE_CHAIN_ID = 7_777_001n;
 // The commit data the node takes (ghost-node core/ghostpriv/commit.go):
 // version 0x0002, F, the coin's salt and the note (206 bytes,
-// SaltedCommitDataSize), or version 0x0001, F and the note (190 bytes,
-// CommitDataSize), and the node's words for anything else, which it follows
-// with the length (`: N bytes`).
+// SaltedCommitDataSize), and the node's words for anything else, which it
+// follows with the length (`: N bytes`).
 export const SALT_BYTES = 16;
 export const SALTED_COMMIT_VERSION = Uint8Array.of(0x00, 0x02);
 export const SALTED_COMMIT_DATA_BYTES = 2 + 32 + SALT_BYTES + NOTE_BYTES;
-export const COMMIT_VERSION = Uint8Array.of(0x00, 0x01);
-export const COMMIT_DATA_BYTES = 2 + 32 + NOTE_BYTES;
-export const COMMIT_DATA_ERROR = "commit data is not 190 bytes of version 1 or 206 bytes of version 2";
+export const COMMIT_DATA_ERROR = "commit data is not 206 bytes of version 2";
 // The node's refusal of a reveal whose checks saw a new head every time
 // (ghost-node core/txpool/ghostpool): a transient bound on work per reveal.
 export const HEAD_MOVED_ERROR = "chain head kept moving while the reveal was checked";
@@ -229,7 +226,7 @@ export async function startFakeNode({
   const early = BigInt(earlyHalfLives) * BigInt(TEST_CHAIN_PARAMS.halfLife);
   const scheduled = 1n << BigInt(earlyHalfLives);
   let difficultyOverride = null;
-  const leaves = []; // { commitment, note, salt, block }; salt null but for a version 2 commit
+  const leaves = []; // { commitment, note, salt, block }; salt null but for a commit
   const spent = []; // { marker, block }
   const blocks = [];
   const receipts = new Map();
@@ -342,13 +339,12 @@ export async function startFakeNode({
   };
   const rootOf = (list) => depthRoot(treesOf(list).at(-1).map((l) => l.commitment));
 
-  // A commit's log: tree index, position, leaf, value and note, then the
-  // salt of a version 2 commit (228 or 244 bytes). `index` is the leaf's
-  // index in `leaves`.
+  // A commit's log: tree index, position, leaf, value, note and salt (244
+  // bytes). `index` is the leaf's index in `leaves`.
   const commitLog = (index, commitment, value, note, salt) => ({
     address: coinTreeAccount,
     topics: [COMMIT_TOPIC],
-    data: concat([u32(treeOf(index)), u32(positionOf(index)), commitment, word(value), note, ...(salt ? [salt] : [])]),
+    data: concat([u32(treeOf(index)), u32(positionOf(index)), commitment, word(value), note, salt]),
   });
   // A reveal's log: the marker as second topic; tree index, position,
   // remainder, note, recipient and amount out (248 bytes).
@@ -479,9 +475,9 @@ export async function startFakeNode({
   }
 
   // A commit in a new block, or, with `pooled`, in the pool until the next.
-  // A version 2 commit's salt is stored with its leaf.
-  function appendCommit(fingerprint, value, note, { pooled = false, txHash = null, salt = null } = {}) {
-    const commitment = ghost.coinCommitment(fingerprint, value, salt ? 2 : 1);
+  // Its salt is stored with its leaf.
+  function appendCommit(fingerprint, value, note, salt, { pooled = false, txHash = null } = {}) {
+    const commitment = ghost.coinCommitment(fingerprint, value, 2);
     const hash = txHash ?? toHex(sha256("fake commit", String((nonce += 1))));
     const entry = {
       hash,
@@ -509,18 +505,17 @@ export async function startFakeNode({
   // With `pooled`, it waits in the pool for the next block.
   function foreignCommit(value = 10n ** 18n, { pooled = false } = {}) {
     nonce += 1;
-    return appendCommit(sha256("stranger", String(nonce)), value, concat([sha256("n1", String(nonce)), new Uint8Array(NOTE_BYTES - 32)]), {
-      salt: sha256("stranger salt", String(nonce)).slice(0, SALT_BYTES),
-      pooled,
-    });
+    const note = concat([sha256("n1", String(nonce)), new Uint8Array(NOTE_BYTES - 32)]);
+    const salt = sha256("stranger salt", String(nonce)).slice(0, SALT_BYTES);
+    return appendCommit(sha256("stranger", String(nonce)), value, note, salt, { pooled });
   }
 
   // A commit sent by the wallet to the commit entry address (spec 03,
   // section 6, in the layout of the node's ghostpriv commit data): version
-  // 0x0002 (2 bytes), F (32), the salt (16), the note (156); or version
-  // 0x0001, F and the note. The amount is the value. It refuses what the
-  // real node refuses, in its words where it has them, and anything it
-  // cannot read as a commit.
+  // 0x0002 (2 bytes), F (32), the salt (16), the note (156). The amount is
+  // the value. It refuses what the real node refuses, in its words where it
+  // has them, and anything it cannot read as a commit, among it the 190-byte
+  // commit of version 0x0001.
   function walletCommit({ to, value, data }, txHash = null) {
     if (typeof to !== "string" || to.toLowerCase() !== String(commitEntry).toLowerCase()) {
       throw new Error("not the commit entry address");
@@ -531,10 +526,12 @@ export async function startFakeNode({
     } catch {
       throw new Error(COMMIT_DATA_ERROR);
     }
-    const is = (version, bytes) => payload.length === bytes && payload[0] === version[0] && payload[1] === version[1];
-    let salt = null;
-    if (is(SALTED_COMMIT_VERSION, SALTED_COMMIT_DATA_BYTES)) salt = payload.slice(34, 34 + SALT_BYTES);
-    else if (!is(COMMIT_VERSION, COMMIT_DATA_BYTES)) throw new Error(`${COMMIT_DATA_ERROR}: ${payload.length} bytes`);
+    const salted =
+      payload.length === SALTED_COMMIT_DATA_BYTES &&
+      payload[0] === SALTED_COMMIT_VERSION[0] &&
+      payload[1] === SALTED_COMMIT_VERSION[1];
+    if (!salted) throw new Error(`${COMMIT_DATA_ERROR}: ${payload.length} bytes`);
+    const salt = payload.slice(34, 34 + SALT_BYTES);
     let v;
     try {
       v = BigInt(value);
@@ -544,8 +541,8 @@ export async function startFakeNode({
     if (v < 1n || v >= 1n << 96n) throw new Error("commit amount out of range");
     const fingerprint = payload.slice(2, 34);
     if (fingerprint.every((b) => b === 0)) throw new Error("all-zero fingerprint");
-    const note = payload.slice(salt ? 34 + SALT_BYTES : 34);
-    const result = appendCommit(fingerprint, v, note, { pooled: pool.on, txHash, salt });
+    const note = payload.slice(34 + SALT_BYTES);
+    const result = appendCommit(fingerprint, v, note, salt, { pooled: pool.on, txHash });
     commits.push({ ...result, value: v });
     return result.hash;
   }
@@ -690,7 +687,7 @@ export async function startFakeNode({
     },
     // A coin or data page as `{ kind, treeIndex, page, filled, entries }`; a
     // marker page as `{ count, markers }`. An entry is `{ leaf, note }`, with
-    // `salt` (16 bytes of hex) for a version 2 commit's leaf, as the node
+    // `salt` (16 bytes of hex) for a commit's leaf, as the node
     // serves it.
     ghost_getTreePage: (params) => {
       const [kind, block, treeIndex] = treeArgs(params, 4, 3);

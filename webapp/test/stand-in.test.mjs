@@ -1,28 +1,31 @@
 // The node stand-in refuses the commits the real node refuses: not to the
-// commit entry address, data neither 206 bytes of version 0x0002 nor 190
-// bytes of version 0x0001, in the node's words (`commit data is not 190
-// bytes of version 1 or 206 bytes of version 2: N bytes`). It accepts both
-// the salted 206-byte payload the app sends and the 190-byte payload of a
-// coin made before the salt, keeps a version 2 commit's salt with its leaf
-// and serves it as `salt`; a refusal adds no leaf.
+// commit entry address, data not 206 bytes of version 0x0002 (the 190-byte
+// commit of version 0x0001 among it), in the node's words (`commit data is
+// not 206 bytes of version 2: N bytes`). It accepts the salted 206-byte
+// payload the app sends, keeps its salt with its leaf and serves it as
+// `salt`; a refusal adds no leaf.
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { concat, fromHex, toHex, toQuantity } from "../src/bytes.mjs";
-import { DEFAULT_COMMIT_ENTRY, receiptBytes } from "../src/flow.mjs";
+import { concat, fromHex, toHex, toQuantity, word } from "../src/bytes.mjs";
+import { DEFAULT_COMMIT_ENTRY, coinRecord, receiptBytes } from "../src/flow.mjs";
 import { loadModule } from "./support/env.mjs";
 import { COIN_TREE_ACCOUNT, COMMIT_DATA_ERROR, HEAD_MOVED_ERROR, startFakeNode } from "./support/fake-node.mjs";
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const GHOST = 10n ** 18n;
-const vector = JSON.parse(await readFile(new URL("./vectors/commit-payload.json", import.meta.url), "utf8"));
-const fingerprint = fromHex(vector.fingerprint, 32);
-const note = fromHex(vector.note, 156);
+// A synthetic F and note: the stand-in opens no note.
+const fingerprint = Uint8Array.from({ length: 32 }, (_, i) => 0xa0 + i);
+const note = Uint8Array.from({ length: 156 }, (_, i) => i);
 const salt = Uint8Array.from({ length: 16 }, (_, i) => 0x10 + i);
-// A version 2 payload: the vector's F and note around a salt.
+// A version 2 payload: F, the salt and the note.
 const salted = toHex(concat([Uint8Array.of(0x00, 0x02), fingerprint, salt, note]));
+// Another version 2 payload of the same F under another salt.
+const otherSalt = Uint8Array.from({ length: 16 }, (_, i) => 0x30 + i);
+const salted2 = toHex(concat([Uint8Array.of(0x00, 0x02), fingerprint, otherSalt, note]));
+// The 190-byte commit of version 0x0001, made before the salt.
+const unsalted = toHex(concat([Uint8Array.of(0x00, 0x01), fingerprint, note]));
 
 async function withNode(check) {
   const ghost = await loadModule();
@@ -42,7 +45,7 @@ const dataError = (err) => err.message === COMMIT_DATA_ERROR || err.message.star
 
 test("the stand-in's refusal is the node's words, with the length", () =>
   withNode(async (_node, wallet) => {
-    assert.equal(COMMIT_DATA_ERROR, "commit data is not 190 bytes of version 1 or 206 bytes of version 2");
+    assert.equal(COMMIT_DATA_ERROR, "commit data is not 206 bytes of version 2");
     await assert.rejects(send(wallet, { data: toHex(new Uint8Array(205)) }), (err) => err.message === `${COMMIT_DATA_ERROR}: 205 bytes`);
   }));
 
@@ -55,24 +58,32 @@ test("the stand-in refuses the old 189-byte commit of version 0x01", () =>
     assert.equal(node.commits.length, 0);
   }));
 
+test("the stand-in refuses the 190-byte commit of version 0x0001", () =>
+  withNode(async (node, wallet) => {
+    assert.equal(fromHex(unsalted).length, 190);
+    await assert.rejects(send(wallet, { data: unsalted }), (err) => err.message === `${COMMIT_DATA_ERROR}: 190 bytes`);
+    assert.equal(node.leaves.length, 0, "no leaf");
+    assert.equal(node.commits.length, 0);
+    // The same F and note with a salt, as version 2, is taken.
+    await send(wallet, { data: salted });
+    assert.equal(node.leaves.length, 1);
+  }));
+
 test("the stand-in refuses a wrong version and a wrong length", () =>
   withNode(async (node, wallet) => {
-    // 190 bytes of any version but 1, 206 bytes of any version but 2.
-    for (const version of [[0x00, 0x02], [0x01, 0x00], [0x00, 0x00], [0x01, 0x01]]) {
+    // 190 bytes of any version, 206 bytes of any version but 2.
+    for (const version of [[0x00, 0x01], [0x00, 0x02], [0x01, 0x00], [0x00, 0x00], [0x01, 0x01]]) {
       await assert.rejects(send(wallet, { data: toHex(concat([Uint8Array.from(version), fingerprint, note])) }), dataError);
     }
     for (const version of [[0x00, 0x01], [0x02, 0x00], [0x00, 0x03], [0x01, 0x02]]) {
       await assert.rejects(send(wallet, { data: toHex(concat([Uint8Array.from(version), fingerprint, salt, note])) }), dataError);
     }
-    const right = fromHex(vector.data, 190);
-    await assert.rejects(send(wallet, { data: toHex(concat([right, Uint8Array.of(0)])) }), dataError);
-    await assert.rejects(send(wallet, { data: toHex(right.slice(0, 189)) }), dataError);
     const rightSalted = fromHex(salted, 206);
     await assert.rejects(send(wallet, { data: toHex(concat([rightSalted, Uint8Array.of(0)])) }), dataError);
     await assert.rejects(send(wallet, { data: toHex(rightSalted.slice(0, 205)) }), dataError);
     await assert.rejects(send(wallet, { data: "0x" }), dataError);
     await assert.rejects(send(wallet, { data: null }), dataError);
-    await assert.rejects(send(wallet, { data: `${vector.data}0` }), dataError, "not whole bytes of hex");
+    await assert.rejects(send(wallet, { data: `${salted}0` }), dataError, "not whole bytes of hex");
     assert.equal(node.leaves.length, 0);
     assert.equal(node.commits.length, 0);
   }));
@@ -85,17 +96,16 @@ test("the stand-in accepts the 206-byte commit of version 0x0002 and keeps its s
     // C = K(tag, COIN_V2, F, v), the note after the salt, the salt kept.
     const ghost = await loadModule();
     assert.equal(toHex(node.leaves[0].commitment), toHex(ghost.coinCommitment(fingerprint, GHOST, 2)));
-    assert.notEqual(toHex(node.leaves[0].commitment), vector.commitment, "not the version 1 leaf of the same F");
-    assert.equal(toHex(node.leaves[0].note), vector.note);
+    assert.equal(toHex(node.leaves[0].note), toHex(note));
     assert.equal(toHex(node.leaves[0].salt), toHex(salt));
     const page = await rpcCall(node, "ghost_getTreePage", ["coin", "0x0", "0x0", tipHash(node)]);
-    assert.deepEqual(page.result.entries[0], { leaf: toHex(node.leaves[0].commitment), note: vector.note, salt: toHex(salt) });
+    assert.deepEqual(page.result.entries[0], { leaf: toHex(node.leaves[0].commitment), note: toHex(note), salt: toHex(salt) });
   }));
 
 test("the stand-in refuses a commit not to the commit entry address", () =>
   withNode(async (node, wallet) => {
     for (const to of ["0x0000000000000000000000000000000000000000", "0x67686f7374000000000000000000000000000007", null]) {
-      await assert.rejects(send(wallet, { to, data: vector.data }), /not the commit entry address/);
+      await assert.rejects(send(wallet, { to, data: salted }), /not the commit entry address/);
     }
     assert.equal(node.leaves.length, 0);
   }));
@@ -103,23 +113,29 @@ test("the stand-in refuses a commit not to the commit entry address", () =>
 test("the stand-in refuses an amount it cannot take", () =>
   withNode(async (node, wallet) => {
     for (const value of ["0x0", toQuantity(1n << 96n), "not a number"]) {
-      await assert.rejects(send(wallet, { value, data: vector.data }), /commit amount out of range/);
+      await assert.rejects(send(wallet, { value, data: salted }), /commit amount out of range/);
     }
     assert.equal(node.leaves.length, 0);
   }));
 
-test("the stand-in accepts the 190-byte commit of version 0x0001", () =>
-  withNode(async (node, wallet) => {
-    const hash = await send(wallet, { data: vector.data });
-    assert.match(hash, /^0x[0-9a-f]{64}$/);
-    assert.equal(node.commits.length, 1);
-    assert.equal(node.leaves.length, 1);
-    // The leaf is C = K(tag, COIN, F, v) of spec 01, vector coin-commit, and
-    // the note is the payload's last 156 bytes.
-    assert.equal(toHex(node.leaves[0].commitment), vector.commitment);
-    assert.equal(toHex(node.leaves[0].note), vector.note);
-    assert.equal(node.leaves[0].salt, null, "a version 1 commit has no salt");
-  }));
+// The app reads a commit log of 244 bytes, its salt last; the 228-byte log of
+// a commit of version 1, with no salt, is refused like any other length.
+test("a version 1 commit log is refused", () => {
+  const topics = { commit: toHex(new Uint8Array(32).fill(1)), reveal: toHex(new Uint8Array(32).fill(2)) };
+  const head = concat([new Uint8Array(4), Uint8Array.of(0, 0, 0, 3), new Uint8Array(32).fill(7), word(GHOST), note]);
+  const log = (data) => ({ succeeded: true, topics: [new Uint8Array(32).fill(1)], data });
+  assert.equal(head.length, 228);
+  assert.throws(() => coinRecord(log(head), topics), /commit log's data is not its length/);
+  const record = coinRecord(log(concat([head, salt])), topics);
+  assert.equal(toHex(record.salt), toHex(salt));
+  assert.equal(record.position, 3);
+  assert.equal(record.v, GHOST);
+  assert.equal(toHex(record.note), toHex(note));
+  // Any other length is refused too.
+  for (const bytes of [concat([head, salt.slice(1)]), concat([head, salt, Uint8Array.of(0)])]) {
+    assert.throws(() => coinRecord(log(bytes), topics), /commit log's data is not its length/);
+  }
+});
 
 // The stand-in's tree page methods answer in exactly the node's shape
 // (ghost-node docs/trees-and-headers.md, "Wallet tree pages") and refuse
@@ -139,7 +155,7 @@ test("the stand-in serves page roots as an array and coin pages as { kind, treeI
   withNode(async (node, wallet) => {
     const empty = await rpcCall(node, "ghost_getPageRoots", ["coin", "0x0", tipHash(node)]);
     assert.deepEqual(empty.result, [], "an empty coin tree has no page roots");
-    await send(wallet, { data: vector.data });
+    await send(wallet, { data: salted });
     node.foreignCommits(1);
     const anchor = tipHash(node);
     const roots = await rpcCall(node, "ghost_getPageRoots", ["coin", "0x0", anchor]);
@@ -152,9 +168,8 @@ test("the stand-in serves page roots as an array and coin pages as { kind, treeI
     assert.equal(page.result.treeIndex, "0x0");
     assert.equal(page.result.page, "0x0");
     assert.equal(page.result.filled, "0x2");
-    // A version 1 commit's entry has no salt; a stranger's version 2 commit
-    // has its 16 bytes.
-    assert.deepEqual(page.result.entries[0], { leaf: vector.commitment, note: vector.note });
+    // Every commit's entry has its 16-byte salt, a stranger's too.
+    assert.deepEqual(page.result.entries[0], { leaf: toHex(node.leaves[0].commitment), note: toHex(note), salt: toHex(salt) });
     assert.deepEqual(Object.keys(page.result.entries[1]).sort(), ["leaf", "note", "salt"]);
     assert.match(page.result.entries[1].salt, /^0x[0-9a-f]{32}$/);
     const data = await rpcCall(node, "ghost_getPageRoots", ["data", "0x0", anchor]);
@@ -212,14 +227,14 @@ test("the stand-in serves each block's receipts by hash, in the node's log layou
   withNode(async (node, wallet) => {
     const ghost = await loadModule();
     const topic = (tag) => toHex(ghost.keccak256(concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)])));
-    await send(wallet, { data: vector.data });
     await send(wallet, { data: salted });
+    await send(wallet, { data: salted2 });
     node.mine();
-    const [v1, v2] = node.leaves;
+    const [first, second] = node.leaves;
     for (const block of node.blocks) {
       const reply = await rpcCall(node, "eth_getBlockReceipts", [toHex(block.hash)]);
       assert.ok(Array.isArray(reply.result));
-      assert.equal(reply.result.length, block === node.blocks[v1.block] || block === node.blocks[v2.block] ? 1 : 0);
+      assert.equal(reply.result.length, block === node.blocks[first.block] || block === node.blocks[second.block] ? 1 : 0);
       assert.equal(toHex(ghost.receiptsRoot(reply.result.map(receiptBytes))), block.json.receiptsRoot, `block ${block.number}`);
       for (const receipt of reply.result) {
         assert.equal(receipt.blockHash, toHex(block.hash));
@@ -227,12 +242,11 @@ test("the stand-in serves each block's receipts by hash, in the node's log layou
       }
     }
     assert.equal(node.blocks[0].json.receiptsRoot, "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421", "genesis: the empty trie");
-    // A version 1 commit's log: 228 bytes, no salt; a version 2 commit's:
-    // 244 bytes, its salt last.
+    // A commit's log: 244 bytes, its salt last.
     const logOf = async (leaf) => (await rpcCall(node, "eth_getBlockReceipts", [toHex(node.blocks[leaf.block].hash)])).result[0].logs;
     for (const [leaf, position, bytes] of [
-      [v1, 0, 228],
-      [v2, 1, 244],
+      [first, 0, 244],
+      [second, 1, 244],
     ]) {
       const logs = await logOf(leaf);
       assert.equal(logs.length, 1);
@@ -244,7 +258,7 @@ test("the stand-in serves each block's receipts by hash, in the node's log layou
       assert.equal(toHex(data.slice(8, 40)), toHex(leaf.commitment));
       assert.equal(toHex(data.slice(40, 72)), toHex(node.word(GHOST)));
       assert.equal(toHex(data.slice(72, 228)), toHex(leaf.note));
-      assert.equal(toHex(data.slice(228)), leaf.salt ? toHex(leaf.salt) : "0x");
+      assert.equal(toHex(data.slice(228)), toHex(leaf.salt));
     }
     // A block the stand-in does not know has no receipts.
     assert.equal((await rpcCall(node, "eth_getBlockReceipts", [`0x${"ee".repeat(32)}`])).result, null);
@@ -308,7 +322,7 @@ test("the stand-in's miner can commit as it mines, and a lookup finds only what 
     node.stopMining();
     assert.ok(node.leaves.length > leaves, "the miner committed");
     assert.equal(node.headMoving.refuseWhileMining, true, "a plain restart refuses sends again");
-    const hash = await send(wallet, { data: vector.data });
+    const hash = await send(wallet, { data: salted });
     const found = await rpcCall(node, "eth_getTransactionByHash", [hash]);
     assert.equal(found.result.hash, hash);
     assert.match(found.result.blockNumber, /^0x[0-9a-f]+$/);
