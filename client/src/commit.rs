@@ -1,23 +1,14 @@
 //! Building a commit (spec 01, sections 3 and 8).
 //!
-//! ```text
-//! coin:  F   = K("ghost/coin-fingerprint/v1", s, r, b, COIN, cf, rule)
-//!        C   = K("ghost/coin-commitment/v1", COIN, F, v)
-//! data:  F_d = K("ghost/data-fingerprint/v1", s, r, b, DATA, cf, rule)
-//!        C   = K("ghost/data-commitment/v1", DATA, F_d)
-//! cf = K("ghost/content-fingerprint/v1", len(content) as 8 bytes, content)
-//! coin marker:  m = K("ghost/coin-marker/v1", r, b)
-//! data marker:  m = K("ghost/data-marker/v1", r, b)
-//! ```
-//!
-//! Version 2, the salted format every new commitment takes, adds a fresh
-//! 16-byte salt right after `b` in the fingerprint and the marker:
+//! Every commitment takes version 2, the salted format: a fresh 16-byte salt
+//! right after `b` in the fingerprint and the marker.
 //!
 //! ```text
 //! coin:  F   = K("ghost/coin-fingerprint/v2", s, r, b, salt, COIN_V2, cf, rule)
 //!        C   = K("ghost/coin-commitment/v1", COIN_V2, F, v)
 //! data:  F_d = K("ghost/data-fingerprint/v2", s, r, b, salt, DATA_V2, cf, rule)
 //!        C   = K("ghost/data-commitment/v1", DATA_V2, F_d)
+//! cf = K("ghost/content-fingerprint/v1", len(content) as 8 bytes, content)
 //! coin marker:  m = K("ghost/coin-marker/v2", r, b, salt)
 //! data marker:  m = K("ghost/data-marker/v2", r, b, salt)
 //! ```
@@ -36,9 +27,8 @@ use rand_core::CryptoRng;
 
 use crate::derive::{Blinding, RevealSecret, Secret};
 use crate::hash::{
-    self, TAG_COIN_COMMITMENT, TAG_COIN_FINGERPRINT, TAG_COIN_FINGERPRINT_V2, TAG_COIN_MARKER,
-    TAG_COIN_MARKER_V2, TAG_CONTENT_FINGERPRINT, TAG_DATA_COMMITMENT, TAG_DATA_FINGERPRINT,
-    TAG_DATA_FINGERPRINT_V2, TAG_DATA_MARKER, TAG_DATA_MARKER_V2,
+    self, TAG_COIN_COMMITMENT, TAG_COIN_FINGERPRINT_V2, TAG_COIN_MARKER_V2,
+    TAG_CONTENT_FINGERPRINT, TAG_DATA_COMMITMENT, TAG_DATA_FINGERPRINT_V2, TAG_DATA_MARKER_V2,
 };
 use crate::key::PhantomKey;
 use crate::note::NOTE_BYTES;
@@ -46,12 +36,6 @@ use crate::wipe::wipe;
 
 /// A type tag: the commitment format version, then the type.
 pub type TypeTag = [u8; 2];
-
-/// The type tag of a coin commitment, version 1.
-pub const COIN: TypeTag = [0x01, 0x01];
-
-/// The type tag of a data commitment, version 1.
-pub const DATA: TypeTag = [0x01, 0x02];
 
 /// The type tag of a coin commitment, version 2: the salted format.
 pub const COIN_V2: TypeTag = [0x02, 0x01];
@@ -279,66 +263,6 @@ impl Drop for Content {
     }
 }
 
-/// `F = K("ghost/coin-fingerprint/v1", s, r, b, COIN, cf, rule)` with `cf` the
-/// 32 zero bytes of a coin.
-pub fn coin_fingerprint(s: &Secret, r: &RevealSecret, b: &Blinding, rule: &Rule) -> Fingerprint {
-    Fingerprint(hash::k(
-        TAG_COIN_FINGERPRINT,
-        &[
-            s.as_bytes(),
-            r.as_bytes(),
-            b.as_bytes(),
-            &COIN,
-            ContentFingerprint::COIN.as_bytes(),
-            rule.as_bytes(),
-        ],
-    ))
-}
-
-/// `C = K("ghost/coin-commitment/v1", COIN, F, v)`.
-pub fn coin_commitment(fingerprint: &Fingerprint, amount: Amount) -> Commitment {
-    Commitment(hash::k(
-        TAG_COIN_COMMITMENT,
-        &[&COIN, fingerprint.as_bytes(), &amount.to_bytes()],
-    ))
-}
-
-/// `m = K("ghost/coin-marker/v1", r, b)`.
-pub fn coin_marker(r: &RevealSecret, b: &Blinding) -> Marker {
-    Marker(hash::k(TAG_COIN_MARKER, &[r.as_bytes(), b.as_bytes()]))
-}
-
-/// `F_d = K("ghost/data-fingerprint/v1", s, r, b, DATA, cf, rule)`.
-pub fn data_fingerprint(
-    s: &Secret,
-    r: &RevealSecret,
-    b: &Blinding,
-    cf: &ContentFingerprint,
-    rule: &Rule,
-) -> Fingerprint {
-    Fingerprint(hash::k(
-        TAG_DATA_FINGERPRINT,
-        &[
-            s.as_bytes(),
-            r.as_bytes(),
-            b.as_bytes(),
-            &DATA,
-            cf.as_bytes(),
-            rule.as_bytes(),
-        ],
-    ))
-}
-
-/// `C = K("ghost/data-commitment/v1", DATA, F_d)`.
-pub fn data_commitment(fingerprint: &Fingerprint) -> Commitment {
-    Commitment(hash::k(TAG_DATA_COMMITMENT, &[&DATA, fingerprint.as_bytes()]))
-}
-
-/// `m = K("ghost/data-marker/v1", r, b)`.
-pub fn data_marker(r: &RevealSecret, b: &Blinding) -> Marker {
-    Marker(hash::k(TAG_DATA_MARKER, &[r.as_bytes(), b.as_bytes()]))
-}
-
 /// `F = K("ghost/coin-fingerprint/v2", s, r, b, salt, COIN_V2, cf, rule)`
 /// with `cf` the 32 zero bytes of a coin.
 pub fn salted_coin_fingerprint(
@@ -453,16 +377,14 @@ pub struct CoinCommit {
     pub commitment: Commitment,
     /// The marker published when this commitment is revealed.
     pub marker: Marker,
-    /// The salt of a version 2 commitment, which the commit carries in the
-    /// clear beside `F`; `None` for version 1.
-    pub salt: Option<Salt>,
+    /// The salt, which the commit carries in the clear beside `F`.
+    pub salt: Salt,
 }
 
 impl CoinCommit {
-    /// The type tag of this commitment: `COIN_V2` with a salt, `COIN`
-    /// without.
+    /// The type tag of this commitment: `COIN_V2`.
     pub fn type_tag(&self) -> TypeTag {
-        if self.salt.is_some() { COIN_V2 } else { COIN }
+        COIN_V2
     }
 }
 
@@ -477,54 +399,27 @@ pub struct DataCommit {
     pub commitment: Commitment,
     /// The marker published when this commitment is revealed or revoked.
     pub marker: Marker,
-    /// The salt of a version 2 commitment, which the commit carries in the
-    /// clear beside `F_d`; `None` for version 1.
-    pub salt: Option<Salt>,
+    /// The salt, which the commit carries in the clear beside `F_d`.
+    pub salt: Salt,
 }
 
 impl DataCommit {
-    /// The type tag of this commitment: `DATA_V2` with a salt, `DATA`
-    /// without.
+    /// The type tag of this commitment: `DATA_V2`.
     pub fn type_tag(&self) -> TypeTag {
-        if self.salt.is_some() { DATA_V2 } else { DATA }
+        DATA_V2
     }
 }
 
 impl PhantomKey {
-    /// The version 1 coin commitment number `index` of this key, holding
-    /// `amount`, without a salt: the format of leaves already on a chain.
-    /// A new commitment is [`salted_coin_commit`](Self::salted_coin_commit).
-    ///
-    /// Number 0 is the key's first commitment (the commit); a remainder takes
-    /// one more than the number of the commitment it spends (spec 01,
-    /// section 8). Version 1 accepts only the empty rule.
-    pub fn coin_commit(
-        &self,
-        index: u64,
-        amount: Amount,
-        rule: Rule,
-    ) -> Result<CoinCommit, CommitError> {
-        if !rule.is_empty() {
-            return Err(CommitError::RuleNotSupported);
-        }
-        let key_bytes = self.key_bytes();
-        let s = key_bytes.secret();
-        let r = key_bytes.reveal_secret();
-        let b = key_bytes.blinding(index);
-        let fingerprint = coin_fingerprint(&s, &r, &b, &rule);
-        Ok(CoinCommit {
-            fingerprint,
-            commitment: coin_commitment(&fingerprint, amount),
-            marker: coin_marker(&r, &b),
-            salt: None,
-        })
-    }
-
     /// A new version 2 coin commitment number `index` of this key, holding
     /// `amount`, under a fresh 16-byte salt drawn from the caller's secure
     /// random source. The salt is returned in the commit: the caller puts it
     /// in the clear beside `F` ([`salted_commit_data`]) and in the note
     /// ([`NoteContents::salted_coin`](crate::note::NoteContents::salted_coin)).
+    ///
+    /// Number 0 is the key's first commitment (the commit); a remainder takes
+    /// one more than the number of the commitment it spends (spec 01,
+    /// section 8). Only the empty rule is accepted.
     pub fn salted_coin_commit<R: CryptoRng + ?Sized>(
         &self,
         index: u64,
@@ -560,7 +455,7 @@ impl PhantomKey {
             fingerprint,
             commitment: salted_coin_commitment(&fingerprint, amount),
             marker: salted_coin_marker(&r, &b, &salt),
-            salt: Some(salt),
+            salt,
         })
     }
 
@@ -580,7 +475,8 @@ impl PhantomKey {
     }
 
     /// The version 2 data commitment of this key for `content` under `salt`.
-    /// Like version 1 it uses the blinding `b_0`.
+    /// A data commitment has no remainder, so it always uses the blinding
+    /// `b_0`.
     pub fn data_commit_with_salt(
         &self,
         content: &Content,
@@ -601,32 +497,7 @@ impl PhantomKey {
             fingerprint,
             commitment: salted_data_commitment(&fingerprint),
             marker: salted_data_marker(&r, &b, &salt),
-            salt: Some(salt),
-        })
-    }
-
-    /// The version 1 data commitment of this key for `content`, without a
-    /// salt. A new data commitment is
-    /// [`salted_data_commit`](Self::salted_data_commit).
-    ///
-    /// A data commitment has no remainder in version 1, so it always uses the
-    /// blinding `b_0`. Version 1 accepts only the empty rule.
-    pub fn data_commit(&self, content: &Content, rule: Rule) -> Result<DataCommit, CommitError> {
-        if !rule.is_empty() {
-            return Err(CommitError::RuleNotSupported);
-        }
-        let key_bytes = self.key_bytes();
-        let s = key_bytes.secret();
-        let r = key_bytes.reveal_secret();
-        let b = key_bytes.blinding(0);
-        let content_fingerprint = content.fingerprint();
-        let fingerprint = data_fingerprint(&s, &r, &b, &content_fingerprint, &rule);
-        Ok(DataCommit {
-            content_fingerprint,
-            fingerprint,
-            commitment: data_commitment(&fingerprint),
-            marker: data_marker(&r, &b),
-            salt: None,
+            salt,
         })
     }
 }

@@ -336,64 +336,6 @@ fn spec_vector_keys_are_all_words_keys() {
     }
 }
 
-fn check_coin_commit(name: &str) {
-    let v = vector(name);
-    assert_eq!(v.get("kind"), "coin-commitment");
-    let key = parse(v.get("key"));
-    let index: u64 = v.get("index").parse().unwrap();
-    let amount = Amount::new(v.get("amount").parse().unwrap()).unwrap();
-    let rule = Rule::from_bytes(v.hex32("rule"));
-    let commit = key.coin_commit(index, amount, rule).unwrap();
-    assert_eq!(commit.fingerprint.as_bytes(), &v.hex32("fingerprint"));
-    assert_eq!(commit.commitment.as_bytes(), &v.hex32("commitment"));
-    assert_eq!(commit.marker.as_bytes(), &v.hex32("marker"));
-}
-
-#[test]
-fn commit_matches_vector_coin_commit() {
-    check_coin_commit("coin-commit");
-}
-
-#[test]
-fn commit_matches_vector_coin_remainder() {
-    check_coin_commit("coin-remainder");
-
-    // The remainder differs from the first commitment in every public value.
-    let key = parse(VALID_KEYS[0]);
-    let amount = Amount::new(700_000_000_000_000_000).unwrap();
-    let first = key.coin_commit(0, amount, Rule::EMPTY).unwrap();
-    let remainder = key.coin_commit(1, amount, Rule::EMPTY).unwrap();
-    assert_ne!(first.fingerprint, remainder.fingerprint);
-    assert_ne!(first.commitment, remainder.commitment);
-    assert_ne!(first.marker, remainder.marker);
-}
-
-#[test]
-fn commit_matches_vector_data_commit() {
-    let v = vector("data-commit");
-    assert_eq!(v.get("kind"), "data-commitment");
-    assert_eq!(v.get("index"), "0", "a data commitment uses b_0");
-    let key = parse(v.get("key"));
-    let content = Content::new(v.get("content-ascii").as_bytes().to_vec());
-    assert_eq!(
-        content.len(),
-        v.get("content-length").parse::<usize>().unwrap()
-    );
-    let rule = Rule::from_bytes(v.hex32("rule"));
-    let commit = key.data_commit(&content, rule).unwrap();
-    assert_eq!(
-        content.fingerprint().as_bytes(),
-        &v.hex32("content-fingerprint")
-    );
-    assert_eq!(
-        commit.content_fingerprint.as_bytes(),
-        &v.hex32("content-fingerprint")
-    );
-    assert_eq!(commit.fingerprint.as_bytes(), &v.hex32("fingerprint"));
-    assert_eq!(commit.commitment.as_bytes(), &v.hex32("commitment"));
-    assert_eq!(commit.marker.as_bytes(), &v.hex32("marker"));
-}
-
 #[test]
 fn commit_rejects_amount_above_maximum_and_non_empty_rule() {
     assert!(Amount::new(ghost_client::V_MAX).is_ok());
@@ -402,17 +344,20 @@ fn commit_rejects_amount_above_maximum_and_non_empty_rule() {
         Err(ghost_client::CommitError::AmountTooLarge)
     );
     let key = parse(VALID_KEYS[0]);
+    let mut rng = StdRng::seed_from_u64(5);
     let mut rule = [0u8; 32];
     rule[31] = 1;
     assert_eq!(
-        key.coin_commit(0, Amount::new(1).unwrap(), Rule::from_bytes(rule))
+        key.salted_coin_commit(0, Amount::new(1).unwrap(), Rule::from_bytes(rule), &mut rng)
             .err(),
         Some(ghost_client::CommitError::RuleNotSupported)
     );
-    assert!(
-        key.data_commit(&Content::new(b"x".to_vec()), Rule::from_bytes(rule))
-            .is_err()
+    assert_eq!(
+        key.salted_data_commit(&Content::new(b"x".to_vec()), Rule::from_bytes(rule), &mut rng)
+            .err(),
+        Some(ghost_client::CommitError::RuleNotSupported)
     );
+    assert!(key.salted_coin_commit(0, Amount::new(1).unwrap(), Rule::EMPTY, &mut rng).is_ok());
 }
 
 #[test]

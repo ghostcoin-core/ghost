@@ -5,7 +5,7 @@
 
 use ghost_client::{
     salted_commit_data, Amount, Content, Fingerprint, NoteContents, PhantomKey, Rule, Salt,
-    CommitError, COIN, COIN_V2, DATA, DATA_V2, NOTE_BYTES, SALTED_COMMIT_DATA_BYTES,
+    CommitError, COIN_V2, DATA_V2, NOTE_BYTES, SALTED_COMMIT_DATA_BYTES,
     SALTED_COMMIT_FORMAT_VERSION, SALT_BYTES,
 };
 use rand::rngs::StdRng;
@@ -64,7 +64,7 @@ fn two_salts_give_unrelated_commitments_and_markers() {
             assert_eq!(commit.fingerprint.as_bytes(), &hex32(name, "fingerprint"), "{name}");
             assert_eq!(commit.commitment.as_bytes(), &hex32(name, "commitment"), "{name}");
             assert_eq!(commit.marker.as_bytes(), &hex32(name, "marker"), "{name}");
-            assert_eq!(commit.salt, Some(salt));
+            assert_eq!(commit.salt, salt);
             assert_eq!(commit.type_tag(), COIN_V2);
 
             // The proofs crate's own version 2 hashes agree.
@@ -89,16 +89,6 @@ fn two_salts_give_unrelated_commitments_and_markers() {
         assert_ne!(a.fingerprint, b.fingerprint);
         assert_ne!(a.commitment, b.commitment);
         assert_ne!(a.marker, b.marker);
-
-        // Neither is the version 1 commitment of the same key and number.
-        let v1 = key.coin_commit(index, value, Rule::EMPTY).unwrap();
-        assert_eq!(v1.salt, None);
-        assert_eq!(v1.type_tag(), COIN);
-        for salted in [a, b] {
-            assert_ne!(salted.fingerprint, v1.fingerprint);
-            assert_ne!(salted.commitment, v1.commitment);
-            assert_ne!(salted.marker, v1.marker);
-        }
     }
 
     // Data, under two salts.
@@ -114,7 +104,7 @@ fn two_salts_give_unrelated_commitments_and_markers() {
         assert_eq!(commit.fingerprint.as_bytes(), &hex32(name, "fingerprint"), "{name}");
         assert_eq!(commit.commitment.as_bytes(), &hex32(name, "commitment"), "{name}");
         assert_eq!(commit.marker.as_bytes(), &hex32(name, "marker"), "{name}");
-        assert_eq!(commit.salt, Some(salt));
+        assert_eq!(commit.salt, salt);
         assert_eq!(commit.type_tag(), DATA_V2);
         commits.push(commit);
     }
@@ -122,14 +112,6 @@ fn two_salts_give_unrelated_commitments_and_markers() {
     assert_ne!(a.fingerprint, b.fingerprint);
     assert_ne!(a.commitment, b.commitment);
     assert_ne!(a.marker, b.marker);
-    let v1 = key.data_commit(&content, Rule::EMPTY).unwrap();
-    assert_eq!(v1.salt, None);
-    assert_eq!(v1.type_tag(), DATA);
-    for salted in [a, b] {
-        assert_ne!(salted.fingerprint, v1.fingerprint);
-        assert_ne!(salted.commitment, v1.commitment);
-        assert_ne!(salted.marker, v1.marker);
-    }
 }
 
 #[test]
@@ -143,14 +125,14 @@ fn new_commit_draws_a_fresh_salt_each_time() {
     let first = key.salted_coin_commit(0, value, Rule::EMPTY, &mut rng).unwrap();
     let mut drawn = [0u8; SALT_BYTES];
     expected.fill_bytes(&mut drawn);
-    assert_eq!(first.salt, Some(Salt::from_bytes(drawn)));
+    assert_eq!(first.salt, Salt::from_bytes(drawn));
     assert_eq!(first.type_tag(), COIN_V2);
 
     // The same key, number and amount again: a new salt, so a new leaf and
     // a new marker.
     let second = key.salted_coin_commit(0, value, Rule::EMPTY, &mut rng).unwrap();
     expected.fill_bytes(&mut drawn);
-    assert_eq!(second.salt, Some(Salt::from_bytes(drawn)));
+    assert_eq!(second.salt, Salt::from_bytes(drawn));
     assert_ne!(first.salt, second.salt);
     assert_ne!(first.fingerprint, second.fingerprint);
     assert_ne!(first.commitment, second.commitment);
@@ -158,7 +140,7 @@ fn new_commit_draws_a_fresh_salt_each_time() {
 
     // Each is the version 2 commitment under the salt it returns.
     for commit in [first, second] {
-        let again = key.coin_commit_with_salt(0, value, Rule::EMPTY, commit.salt.unwrap()).unwrap();
+        let again = key.coin_commit_with_salt(0, value, Rule::EMPTY, commit.salt).unwrap();
         assert_eq!(again, commit);
     }
 
@@ -174,12 +156,11 @@ fn new_commit_draws_a_fresh_salt_each_time() {
     let content = Content::new(b"Ghost example data".to_vec());
     let d1 = key.salted_data_commit(&content, Rule::EMPTY, &mut rng).unwrap();
     let d2 = key.salted_data_commit(&content, Rule::EMPTY, &mut rng).unwrap();
-    assert!(d1.salt.is_some() && d2.salt.is_some());
     assert_ne!(d1.salt, d2.salt);
     assert_ne!(d1.commitment, d2.commitment);
     assert_ne!(d1.marker, d2.marker);
     assert!(d1.content_fingerprint == d2.content_fingerprint);
-    let again = key.data_commit_with_salt(&content, Rule::EMPTY, d1.salt.unwrap()).unwrap();
+    let again = key.data_commit_with_salt(&content, Rule::EMPTY, d1.salt).unwrap();
     assert!(again == d1);
 
     // Version 2 still accepts only the empty rule.
@@ -201,7 +182,7 @@ fn salted_commit_data_is_206_bytes() {
     let mut rng = StdRng::seed_from_u64(206);
     let value = amount(1_000_000_000);
     let commit = key.salted_coin_commit(0, value, Rule::EMPTY, &mut rng).unwrap();
-    let salt = commit.salt.unwrap();
+    let salt = commit.salt;
     // The note of a new commit is note version 2 carrying the same salt.
     let contents = NoteContents::salted_coin(0, value, Rule::EMPTY, salt);
     let note = ghost_client::encrypt_note(&key.note_key(), 1234, &commit.commitment, &contents, &mut rng);
@@ -215,13 +196,13 @@ fn salted_commit_data_is_206_bytes() {
     assert_eq!(50 + NOTE_BYTES, 206);
 
     let read = ghost_client::decrypt_note(&key.note_key(), 1234, &commit.commitment, &note).unwrap();
-    assert_eq!(read.salt, Some(salt));
+    assert_eq!(read.salt, salt);
     assert_eq!(read.type_tag, COIN_V2);
 
     // A data commit has the same layout.
     let content = Content::new(b"Ghost example data".to_vec());
     let data_commit = key.salted_data_commit(&content, Rule::EMPTY, &mut rng).unwrap();
-    let data_salt = data_commit.salt.unwrap();
+    let data_salt = data_commit.salt;
     let data_note = [0x5a; NOTE_BYTES];
     let data = salted_commit_data(&data_commit.fingerprint, &data_salt, &data_note);
     assert_eq!(&data[..2], &SALTED_COMMIT_FORMAT_VERSION);

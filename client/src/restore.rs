@@ -8,13 +8,12 @@
 //! 1. It tries the key's note key on every note. Only the key's own notes
 //!    authenticate; every other note is passed over.
 //! 2. For each note that decrypts, it recomputes `b_i`, `F` and `C` from the
-//!    digits and the note's number, amount and rule, under the tags of the
-//!    note's type tag: a version 2 (`COIN_V2`) note carries the commitment's
-//!    salt, which goes into `F` and the marker; a version 1 (`COIN`) note has
-//!    none and restores as before. A note whose `C` is not the leaf it sits
-//!    with is discarded and reported, never trusted. So is a version 2 note
-//!    whose salt is not the one the caller read beside the leaf, when the
-//!    caller has one.
+//!    digits and the note's number, amount, rule and salt: every note is
+//!    version 2 (`COIN_V2`) and carries the commitment's salt, which goes into
+//!    `F` and the marker. A version 1 note, which has no salt, is discarded
+//!    as malformed. A note whose `C` is not the leaf it sits with is discarded
+//!    and reported, never trusted. So is a note whose salt is not the one the
+//!    caller read beside the leaf, when the caller has one.
 //! 3. It computes each found commitment's marker and looks it up in the spent
 //!    markers. The current coin is the found commitment whose marker is
 //!    unspent; the next number to use is one above its number.
@@ -27,7 +26,7 @@ use std::collections::BTreeSet;
 
 use core::fmt;
 
-use crate::commit::{Amount, Commitment, Marker, Rule, Salt, COIN, COIN_V2};
+use crate::commit::{Amount, Commitment, Marker, Rule, Salt, COIN_V2};
 use crate::key::PhantomKey;
 use crate::note::{decrypt_note, NoteError, NOTE_BYTES};
 use crate::reveal::{OwnedCoin, TREE_DEPTH};
@@ -40,9 +39,9 @@ pub struct TreeLeaf {
     pub commitment: Commitment,
     /// The 156-byte note stored with it.
     pub note: [u8; NOTE_BYTES],
-    /// The salt the caller read beside the leaf: the one a version 2 commit
-    /// published in the clear. `None` for a leaf without one (a version 1
-    /// commit, or a reveal's remainder, whose salt is only in its note).
+    /// The salt the caller read beside the leaf: the one a commit published
+    /// in the clear. `None` for a leaf without one (a reveal's remainder,
+    /// whose salt is only in its note).
     pub salt: Option<Salt>,
 }
 
@@ -54,8 +53,8 @@ pub enum DiscardReason {
     LeafMismatch,
     /// The note is for a data commitment, found in the coin tree.
     NotACoin,
-    /// The note authenticated but its contents are not a note either note
-    /// version reads.
+    /// The note authenticated but its contents are not a note version 2
+    /// reads: a version 1 note gives `Malformed(NoteError::UnknownVersion)`.
     Malformed(NoteError),
 }
 
@@ -88,8 +87,8 @@ pub struct FoundCoin {
     pub amount: Amount,
     /// The rule.
     pub rule: Rule,
-    /// Its salt, for a version 2 commitment; `None` for version 1.
-    pub salt: Option<Salt>,
+    /// Its salt.
+    pub salt: Salt,
     /// The position of its leaf, read from the chain.
     pub position: u32,
     /// The leaf `C`.
@@ -167,26 +166,23 @@ pub fn restore_coins(
                 continue;
             }
         };
-        let commit = match (contents.type_tag, contents.salt) {
-            (COIN, None) => key.coin_commit(contents.number, contents.amount, contents.rule),
-            (COIN_V2, Some(salt)) => {
-                if leaf.salt.is_some_and(|beside| beside != salt) {
-                    discarded.push(DiscardedNote {
-                        position,
-                        reason: DiscardReason::LeafMismatch,
-                    });
-                    continue;
-                }
-                key.coin_commit_with_salt(contents.number, contents.amount, contents.rule, salt)
-            }
-            _ => {
-                discarded.push(DiscardedNote {
-                    position,
-                    reason: DiscardReason::NotACoin,
-                });
-                continue;
-            }
-        };
+        if contents.type_tag != COIN_V2 {
+            discarded.push(DiscardedNote {
+                position,
+                reason: DiscardReason::NotACoin,
+            });
+            continue;
+        }
+        let salt = contents.salt;
+        if leaf.salt.is_some_and(|beside| beside != salt) {
+            discarded.push(DiscardedNote {
+                position,
+                reason: DiscardReason::LeafMismatch,
+            });
+            continue;
+        }
+        let commit =
+            key.coin_commit_with_salt(contents.number, contents.amount, contents.rule, salt);
         match commit {
             Ok(commit) if commit.commitment == leaf.commitment => found.push(FoundCoin {
                 number: contents.number,

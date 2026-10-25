@@ -439,41 +439,24 @@ fn spec_vector_keys_are_words_keys() {
                 && v.get("marker") == marker
                 && v.get("index") == index.to_string()
                 && v.get("amount") == wei.to_string()
-                && salt.map_or(!has(v, "salt"), |s| has(v, "salt") && v.get("salt") == s)
+                && has(v, "salt")
+                && v.get("salt") == salt
         });
         assert!(found, "no spec 01 vector for commitment {commitment}");
     }
 }
 
-/// A coin commitment under a words key: (digit view, number, amount, salt or
-/// none, fingerprint, commitment, marker). The values were recomputed
+/// A salted coin commitment under a words key: (digit view, number, amount,
+/// salt, fingerprint, commitment, marker). The values were recomputed
 /// independently by `scripts/check_commitment_vectors.py`.
-type CoinVector = (&'static str, u64, u128, Option<&'static str>, &'static str, &'static str, &'static str);
+type CoinVector = (&'static str, u64, u128, &'static str, &'static str, &'static str, &'static str);
 
-const COIN_VECTORS: [CoinVector; 6] = [
+const COIN_VECTORS: [CoinVector; 4] = [
     (
         WORDS_VECTORS[4].digits,
         0,
         1_000_000_000_000_000_000,
-        None,
-        "adb657b17abd3d6a22f29a4d9fded4367c0c27f0b167fc5d9eccf33dfbc2ff6c",
-        "9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c",
-        "ed3aec8b2a68aa001654023dafa7bf3a187b9f3bb59940fd40389b20beda8a98",
-    ),
-    (
-        WORDS_VECTORS[4].digits,
-        1,
-        700_000_000_000_000_000,
-        None,
-        "d1f0a17727dfbee9609e21f3aeed5fc004d21fd4f48a00af8f954e91f606b620",
-        "5530014e689c4a5a4b494f49a4a5be5a08a2c4d78e66128b824e5c1309c00503",
-        "19fc0d871f7118ea3ecd015da559a01c7158a82dbd5160dd961680b122a3142e",
-    ),
-    (
-        WORDS_VECTORS[4].digits,
-        0,
-        1_000_000_000_000_000_000,
-        Some("00112233445566778899aabbccddeeff"),
+        "00112233445566778899aabbccddeeff",
         "8b4163e74a80b77f5cb3ca11a10a4482299d86193290c0dbe126eed33fadcf13",
         "1525d1f6caa2f9314988542a3dcb7ab5a76a9ba5dd3fef97a1ecf72ddeb516bc",
         "d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78",
@@ -482,7 +465,7 @@ const COIN_VECTORS: [CoinVector; 6] = [
         WORDS_VECTORS[4].digits,
         0,
         1_000_000_000_000_000_000,
-        Some("f0e1d2c3b4a5968778695a4b3c2d1e0f"),
+        "f0e1d2c3b4a5968778695a4b3c2d1e0f",
         "f0d8df5bafcd237f6ce079cca85ee24f6d8c9f8d27c3c7da1d5a5d9b2f4dcee2",
         "ad1dc91acf32d8300693a5ed9d0c70dfc1e52d1721df648a19be869f7cf5db1f",
         "8a674db2fa27d946788e49f4bfa33d5b39fd1f738164fea4490b4266ab71e621",
@@ -491,7 +474,7 @@ const COIN_VECTORS: [CoinVector; 6] = [
         WORDS_VECTORS[4].digits,
         1,
         700_000_000_000_000_000,
-        Some("0123456789abcdeffedcba9876543210"),
+        "0123456789abcdeffedcba9876543210",
         "47cd0d41d685ed61766f9c8a2475e04c33b2d8c75b25647210f482ad8ce2c26a",
         "a1f0774fc85bd02f9661ce63b14484abc808950848b3797a980c201a2946af72",
         "f7476caa827fa1478d8f2a561e2638a7d4817793176eaced88798bf7d28fa806",
@@ -500,7 +483,7 @@ const COIN_VECTORS: [CoinVector; 6] = [
         WORDS_VECTORS[4].digits,
         1,
         700_000_000_000_000_000,
-        Some("89abcdef0123456776543210fedcba98"),
+        "89abcdef0123456776543210fedcba98",
         "da130c26dc4beba75cff9ac5a0fd290eafbea8c4d9956b1daac36cfb728ff8a6",
         "44d90289fe50570b498537b5c4da8dabc46b7703dba96751da8eb16868a9af7e",
         "e76d066c481bbbc4fa3a67b5aeb5fab6675156207982ca03d8098985befa22b7",
@@ -513,22 +496,14 @@ fn words_key_commitment_vectors() {
         let key = parse(digits);
         assert_eq!(words_of(&key), WORDS_VECTORS[4].words);
         let amount = Amount::new(wei).unwrap();
-        let commit = match salt {
-            None => key.coin_commit(index, amount, Rule::EMPTY).unwrap(),
-            Some(salt) => {
-                let salt = Salt::from_bytes(decode_hex(salt).try_into().unwrap());
-                key.coin_commit_with_salt(index, amount, Rule::EMPTY, salt).unwrap()
-            }
-        };
-        assert_eq!(hex(commit.fingerprint.as_bytes()), fingerprint, "{index} {salt:?}");
-        assert_eq!(hex(commit.commitment.as_bytes()), commitment, "{index} {salt:?}");
-        assert_eq!(hex(commit.marker.as_bytes()), marker, "{index} {salt:?}");
+        let salt_bytes = Salt::from_bytes(decode_hex(salt).try_into().unwrap());
+        let commit = key.coin_commit_with_salt(index, amount, Rule::EMPTY, salt_bytes).unwrap();
+        assert_eq!(hex(commit.fingerprint.as_bytes()), fingerprint, "{index} {salt}");
+        assert_eq!(hex(commit.commitment.as_bytes()), commitment, "{index} {salt}");
+        assert_eq!(hex(commit.marker.as_bytes()), marker, "{index} {salt}");
         // The same key typed as words gives the same commitment.
         let from_words = parse(WORDS_VECTORS[4].words);
-        let again = match commit.salt {
-            None => from_words.coin_commit(index, amount, Rule::EMPTY).unwrap(),
-            Some(salt) => from_words.coin_commit_with_salt(index, amount, Rule::EMPTY, salt).unwrap(),
-        };
+        let again = from_words.coin_commit_with_salt(index, amount, Rule::EMPTY, commit.salt).unwrap();
         assert_eq!(again, commit);
     }
 }

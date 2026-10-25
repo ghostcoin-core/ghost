@@ -18,19 +18,17 @@
 //! [`choose_tree_state`](crate::tree_state::choose_tree_state), never the root
 //! of the block that added the leaf.
 //!
-//! A salted (version 2) coin, one whose [`OwnedCoin::salt`] is set, is proved
-//! by [`ghost_proofs::prove_salted_coin_reveal`]: its salt and a fresh salt
-//! for the remainder, drawn from the caller's generator, are private
-//! witnesses, and the remainder's note is note version 2, carrying that
-//! fresh salt. A coin without a salt (version 1, made before the salt) is
-//! proved by [`ghost_proofs::prove_coin_reveal`] and its remainder is
-//! version 1, as before. Every builder refuses what the prover refuses.
+//! Every coin is salted (version 2) and is proved by
+//! [`ghost_proofs::prove_salted_coin_reveal`]: its salt and a fresh salt for
+//! the remainder, drawn from the caller's generator, are private witnesses,
+//! and the remainder's note is note version 2, carrying that fresh salt.
+//! Every builder refuses what the prover refuses.
 
 use core::fmt;
 
 pub use ghost_proofs::{
-    ChainParams, CoinOpening, CoinRemainder, CoinReveal, Proof, ProofError, RevealRequest,
-    SaltedCoinOpening, SaltedCoinRemainder, TREE_DEPTH,
+    ChainParams, CoinReveal, Proof, ProofError, RevealRequest, SaltedCoinOpening,
+    SaltedCoinRemainder, TREE_DEPTH,
 };
 use rand_core::CryptoRng;
 
@@ -90,11 +88,10 @@ pub struct OwnedCoin {
     pub number: u64,
     /// The amount `v`.
     pub amount: Amount,
-    /// The rule; version 1 accepts only the empty rule.
+    /// The rule; only the empty rule is accepted.
     pub rule: Rule,
-    /// The coin's salt, for a version 2 (salted) commitment; `None` for a
-    /// version 1 commitment made before the salt.
-    pub salt: Option<Salt>,
+    /// The coin's salt.
+    pub salt: Salt,
     /// The position of the coin's leaf in the coin tree, read from the chain.
     pub position: u32,
     /// The 32 sibling hashes from the leaf up to `root`, computed by the
@@ -123,9 +120,8 @@ pub struct RemainderCoin {
     pub amount: Amount,
     /// The rule, the input's.
     pub rule: Rule,
-    /// Its fresh salt, carried in its note, when the input is salted; `None`
-    /// when the input is version 1 and so is the remainder.
-    pub salt: Option<Salt>,
+    /// Its fresh salt, carried in its note.
+    pub salt: Salt,
     /// `C'`, the new leaf.
     pub commitment: Commitment,
     /// The marker it publishes when it is revealed in turn.
@@ -142,23 +138,21 @@ pub struct BuiltReveal {
     pub remainder: RemainderCoin,
 }
 
-/// Runs the prover for one coin reveal of a version 1 (unsalted) coin; the
-/// builders prove a salted coin with
-/// [`ghost_proofs::prove_salted_coin_reveal`] under the same rules.
+/// Runs the prover for one coin reveal of a salted coin, as the builders do.
 ///
 /// It is what a background worker runs. It starts no thread, reads no
 /// operating system random source or clock and uses no file or network, so
 /// it builds for `wasm32-unknown-unknown`; `zk_randomness` must be 32 fresh
 /// bytes from the caller's secure random source. It refuses what
-/// [`ghost_proofs::prove_coin_reveal`] refuses.
+/// [`ghost_proofs::prove_salted_coin_reveal`] refuses.
 pub fn prove_reveal(
     params: &ChainParams,
-    opening: &CoinOpening,
-    remainder: &CoinRemainder,
+    opening: &SaltedCoinOpening,
+    remainder: &SaltedCoinRemainder,
     request: &RevealRequest,
     zk_randomness: [u8; 32],
 ) -> Result<(CoinReveal, Proof), ProofError> {
-    ghost_proofs::prove_coin_reveal(params, opening, remainder, request, zk_randomness)
+    ghost_proofs::prove_salted_coin_reveal(params, opening, remainder, request, zk_randomness)
 }
 
 /// A partial reveal: pays `out` to the recipient and keeps `v - out - fee`
@@ -241,14 +235,11 @@ fn build<R: CryptoRng + ?Sized>(
         .and_then(|wei| Amount::new(wei).ok())
         .ok_or(RevealError::Proof(ProofError::ConservationFails))?;
 
-    // A salted input gets a salted remainder under a fresh salt; a version 1
-    // input keeps a version 1 remainder.
-    let remainder_salt = coin.salt.map(|_| Salt::random(rng));
-    let commit = match remainder_salt {
-        Some(salt) => holder.coin_commit_with_salt(number, left, coin.rule, salt),
-        None => holder.coin_commit(number, left, coin.rule),
-    }
-    .map_err(|_| RevealError::Proof(ProofError::RuleNotEmpty))?;
+    // The remainder is salted under a fresh salt.
+    let remainder_salt = Salt::random(rng);
+    let commit = holder
+        .coin_commit_with_salt(number, left, coin.rule, remainder_salt)
+        .map_err(|_| RevealError::Proof(ProofError::RuleNotEmpty))?;
     let remainder = RemainderCoin {
         number,
         amount: left,
@@ -257,10 +248,7 @@ fn build<R: CryptoRng + ?Sized>(
         commitment: commit.commitment,
         marker: commit.marker,
     };
-    let contents = match remainder_salt {
-        Some(salt) => NoteContents::salted_coin(number, left, coin.rule, salt),
-        None => NoteContents::coin(number, left, coin.rule),
-    };
+    let contents = NoteContents::salted_coin(number, left, coin.rule, remainder_salt);
     let chain_id = u64::from_be_bytes(params.chain_id);
     let remainder_note = encrypt_note(
         &holder.note_key(),
@@ -280,64 +268,29 @@ fn build<R: CryptoRng + ?Sized>(
         rule: *coin.rule.as_bytes(),
         remainder_note,
     };
-    let proved = match (coin.salt, remainder_salt) {
-        (Some(salt), Some(new_salt)) => {
-            let mut opening = SaltedCoinOpening {
-                s: *input.secret().as_bytes(),
-                r: *input.reveal_secret().as_bytes(),
-                b: *input.blinding(coin.number).as_bytes(),
-                salt: *salt.as_bytes(),
-                v: coin.amount.to_bytes(),
-                position: coin.position,
-                path: coin.path,
-            };
-            let mut new_coin = SaltedCoinRemainder {
-                s: *output.secret().as_bytes(),
-                r: *output.reveal_secret().as_bytes(),
-                b: *output.blinding(number).as_bytes(),
-                salt: *new_salt.as_bytes(),
-                v: left.to_bytes(),
-            };
-            let proved = ghost_proofs::prove_salted_coin_reveal(
-                params,
-                &opening,
-                &new_coin,
-                &request,
-                zk_randomness,
-            );
-            for secret in [&mut opening.s, &mut opening.r, &mut opening.b, &mut opening.v] {
-                wipe(secret);
-            }
-            for secret in [&mut new_coin.s, &mut new_coin.r, &mut new_coin.b, &mut new_coin.v] {
-                wipe(secret);
-            }
-            proved
-        }
-        _ => {
-            let mut opening = CoinOpening {
-                s: *input.secret().as_bytes(),
-                r: *input.reveal_secret().as_bytes(),
-                b: *input.blinding(coin.number).as_bytes(),
-                v: coin.amount.to_bytes(),
-                position: coin.position,
-                path: coin.path,
-            };
-            let mut new_coin = CoinRemainder {
-                s: *output.secret().as_bytes(),
-                r: *output.reveal_secret().as_bytes(),
-                b: *output.blinding(number).as_bytes(),
-                v: left.to_bytes(),
-            };
-            let proved = prove_reveal(params, &opening, &new_coin, &request, zk_randomness);
-            for secret in [&mut opening.s, &mut opening.r, &mut opening.b, &mut opening.v] {
-                wipe(secret);
-            }
-            for secret in [&mut new_coin.s, &mut new_coin.r, &mut new_coin.b, &mut new_coin.v] {
-                wipe(secret);
-            }
-            proved
-        }
+    let mut opening = SaltedCoinOpening {
+        s: *input.secret().as_bytes(),
+        r: *input.reveal_secret().as_bytes(),
+        b: *input.blinding(coin.number).as_bytes(),
+        salt: *coin.salt.as_bytes(),
+        v: coin.amount.to_bytes(),
+        position: coin.position,
+        path: coin.path,
     };
+    let mut new_coin = SaltedCoinRemainder {
+        s: *output.secret().as_bytes(),
+        r: *output.reveal_secret().as_bytes(),
+        b: *output.blinding(number).as_bytes(),
+        salt: *remainder_salt.as_bytes(),
+        v: left.to_bytes(),
+    };
+    let proved = prove_reveal(params, &opening, &new_coin, &request, zk_randomness);
+    for secret in [&mut opening.s, &mut opening.r, &mut opening.b, &mut opening.v] {
+        wipe(secret);
+    }
+    for secret in [&mut new_coin.s, &mut new_coin.r, &mut new_coin.b, &mut new_coin.v] {
+        wipe(secret);
+    }
     let (reveal, proof) = proved?;
     debug_assert_eq!(&reveal.remainder, remainder.commitment.as_bytes());
     Ok(BuiltReveal {
