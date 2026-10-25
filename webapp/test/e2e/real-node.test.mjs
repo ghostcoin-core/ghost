@@ -31,14 +31,13 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { concat, fromHex, toHex, toQuantity } from "../../src/bytes.mjs";
-import { ACCOUNT_EXTRA_GAS, DEFAULT_COMMIT_ENTRY, WaitError, createFlow } from "../../src/flow.mjs";
+import { DEFAULT_COMMIT_ENTRY, createFlow } from "../../src/flow.mjs";
 import { startBlockPacer } from "../support/block-pacer.mjs";
-import { TEST_WALLET_ADDRESS, loadModule, nodeProver, testConnector, testSign } from "../support/env.mjs";
+import { TEST_WALLET_ADDRESS, loadModule, nodeProver, testConnector } from "../support/env.mjs";
 
 const GETH = process.env.GHOST_NODE_GETH;
 const NETWORK_ID = 6_777_971n;
 const GHOST = 10n ** 18n;
-const NOTE_BYTES = 156;
 const SALT_BYTES = 16;
 const PAGE = 4096;
 // A reveal proves against the root of the block this many below the tip.
@@ -259,8 +258,6 @@ if (!GETH) {
       }
     }
 
-    const receiptOf = (hash) => waitOnChain(`the receipt of ${hash}`, () => rpc("eth_getTransactionReceipt", [hash]), hash);
-
     // Every leaf of coin tree 0 with the salt served beside it (null when
     // there is none), and every spent coin marker, as of the tip.
     async function chainTree() {
@@ -286,43 +283,8 @@ if (!GETH) {
       return { leaves, salts, markers };
     }
 
-    // A commit by someone else: a version 2 commit of a random F and salt
-    // and a note no key opens. It puts a leaf after ours, which the
-    // tree-state rule waits for. It is an account transaction from the
-    // funded account, signed by the tests' wallet directly rather than
-    // through the flow.
-    async function strangerCommit() {
-      const data = concat([Uint8Array.of(0x00, 0x02), randomBytes(32), randomBytes(SALT_BYTES), randomBytes(NOTE_BYTES)]);
-      assert.equal(data.length, 206);
-      const value = GHOST / 100n;
-      const call = { from: node.miner, to: DEFAULT_COMMIT_ENTRY, value: toQuantity(value), data: toHex(data) };
-      const tip = await rpc("eth_getBlockByNumber", ["latest", false]);
-      const priority = BigInt(await rpc("eth_maxPriorityFeePerGas"));
-      const signed = await testSign({
-        chainId: NETWORK_ID,
-        genesis: fromHex((await rpc("eth_getBlockByNumber", ["0x0", false])).hash, 32),
-        nonce: BigInt(await rpc("eth_getTransactionCount", [node.miner, "pending"])),
-        maxPriorityFeePerGas: priority,
-        maxFeePerGas: 2n * BigInt(tip.baseFeePerGas) + priority,
-        gasLimit: BigInt(await rpc("eth_estimateGas", [call])) + ACCOUNT_EXTRA_GAS,
-        to: fromHex(DEFAULT_COMMIT_ENTRY, 20),
-        value,
-        data,
-      });
-      const hash = toHex(signed.txHash);
-      // The node answers an error once its pool has taken a type 0x52
-      // transaction (its RPC log line recovers the sender with the plain
-      // signer); what counts is that it holds the transaction.
-      await rpc("eth_sendRawTransaction", [toHex(signed.envelope)]).catch(() => null);
-      assert.ok(await rpc("eth_getTransactionByHash", [hash]), "the node holds the stranger's commit");
-      const receipt = await receiptOf(hash);
-      assert.equal(receipt.status, "0x1", "the stranger's commit is executed");
-      assert.equal(receipt.type, "0x52");
-      return { block: Number(BigInt(receipt.blockNumber)), hash };
-    }
-
-    // Until `block` is 2 blocks deep, so that the settled tree holds a leaf
-    // added after the coin's (the commit `hash` put it there).
+    // Until `block` is 2 blocks deep, so that the settled tree holds the
+    // coin the transaction `hash` in it added.
     async function waitSettledAfter(block, hash) {
       await waitOnChain(`block ${block + SETTLE_DEPTH}`, async () => (await blockNumber()) >= block + SETTLE_DEPTH, hash);
     }
@@ -387,16 +349,6 @@ if (!GETH) {
     const clock = () => Math.max(Math.floor(Date.now() / 1000), nodeTime);
     const flow = createFlow({ prover, endpoint: node.url, networks, pollMs: 1000, maxPolls: 1800, onChange, clock });
 
-    // A stranger's commit, then the tip 2 blocks past it: from then on the
-    // settled block's tree holds a leaf after the coin, and the coin can be
-    // revealed at once.
-    async function strangerCommitSettled() {
-      const { block, hash } = await strangerCommit();
-      await waitSettledAfter(block, hash);
-      console.log(`a stranger committed in block ${block}; it is ${SETTLE_DEPTH} blocks deep`);
-      return block;
-    }
-
     try {
       assert.equal(BigInt(await rpc("eth_chainId")), NETWORK_ID);
       assert.equal((await rpc("eth_getBlockByNumber", ["0x0", false])).timestamp, "0x6abda280", "the internal network's genesis");
@@ -457,29 +409,23 @@ if (!GETH) {
       const marker = toHex(restored[0].marker);
       assert.ok(!tree.markers.includes(marker));
 
-      // --- Nobody has committed since the coin: the app waits ---
+      // --- Summon: 0.25 GHOST to a fresh address, from the same wallet
+      // and nobody else committing. The coin's own block counts once it is
+      // 2 deep; until then the page shows one plain line and the Summon
+      // goes on by itself, with no extra step ---
+      const commitBlock = Number(BigInt(commitReceipt.blockNumber));
       const recipient = toHex(randomBytes(20));
       assert.equal(await balance(recipient), 0n);
-      let s = await flow.summonOpen(key);
-      assert.equal(s.status, "unclaimed");
-      assert.equal(s.current.amount, GHOST);
-      assert.equal(s.wait?.alone, true, "no leaf follows the coin yet");
-      assert.equal(s.cover, null);
-      await assert.rejects(flow.summonReveal({ amount: "0.25", recipient }), (err) => {
-        assert.ok(err instanceof WaitError, `the app waits: ${err.message}`);
-        assert.equal(err.alone, true);
-        assert.match(err.message, /^nobody has committed a coin since this one/);
-        console.log(`tree-state rule holds: ${err.message}`);
-        return true;
-      });
-      assert.equal(await balance(recipient), 0n, "nothing was revealed");
-
-      // --- Summon: 0.25 GHOST to a fresh address, 2 blocks after a
-      // stranger's commit, with no further wait ---
-      const followed = await strangerCommitSettled();
-      s = await flow.summonRefresh();
-      assert.equal(s.wait, null, "the coin can be revealed now");
-      assert.ok(s.cover.height >= followed, "against a settled root that holds the stranger's leaf");
+      const s0 = await flow.summonOpen(key);
+      assert.equal(s0.status, "unclaimed");
+      assert.equal(s0.current.amount, GHOST);
+      if (s0.wait) {
+        assert.match(s0.wait.message, new RegExp(`is not yet ${SETTLE_DEPTH} blocks deep`), "the plain settle line");
+        assert.equal(s0.wait.from, commitBlock + SETTLE_DEPTH);
+        console.log(`the Summon waits for the settle: ${s0.wait.message}`);
+      } else {
+        assert.ok(s0.cover.height >= commitBlock, "against a settled root that holds the coin");
+      }
       const reveal = await flow.summonReveal({ amount: "0.25", recipient });
       const left = GHOST - GHOST / 4n - reveal.fee;
 
@@ -500,17 +446,20 @@ if (!GETH) {
       assert.ok(tree.markers.includes(marker), "the coin's marker is spent");
       assert.ok(tree.leaves.includes(remainder), "the remainder's leaf is in the coin tree");
       assert.equal(tree.salts[tree.leaves.indexOf(remainder)], null, "a remainder's salt is only in its note");
-      s = flow.state.summon;
+      let s = flow.state.summon;
       assert.equal(s.status, "unclaimed", "still unclaimed after a partial reveal");
       assert.equal(s.current.number, 1n);
       assert.equal(s.current.amount, left, "the remainder is the coin less what went out and the fee");
 
-      // The remainder is the newest coin: it waits too, until a stranger
-      // commits after it.
-      assert.equal(s.wait?.alone, true, "no leaf follows the remainder yet");
-      await strangerCommitSettled();
+      // The remainder is the newest coin and nobody commits after it: it
+      // waits only for its own block to be 2 deep.
+      if (s.wait) {
+        assert.match(s.wait.message, new RegExp(`is not yet ${SETTLE_DEPTH} blocks deep`), "the plain settle line");
+        assert.equal(s.wait.from, reveal.block + SETTLE_DEPTH);
+      }
+      await waitSettledAfter(reveal.block, reveal.txHash);
 
-      // --- Claim: the remainder to a new key, with no further wait ---
+      // --- Claim: the remainder to a new key, with no other commit ---
       const newKey = await flow.claimStart();
       const claimPositions = flow.claimSaved();
       const claimed = await flow.claimCheck(answersFor(newKey, claimPositions));
@@ -538,9 +487,9 @@ if (!GETH) {
       assert.equal(s.status, "unclaimed");
       assert.equal(s.current.amount, claimed.amount);
       flow.summonClose();
-      // The account sent the commit and the two strangers' commits, all type
-      // 0x52, and nothing else.
-      assert.equal(BigInt(await rpc("eth_getTransactionCount", [TEST_WALLET_ADDRESS, "latest"])), 3n);
+      // The account sent the commit, type 0x52, and nothing else: one
+      // wallet, no second one.
+      assert.equal(BigInt(await rpc("eth_getTransactionCount", [TEST_WALLET_ADDRESS, "latest"])), 1n);
     } catch (err) {
       console.error(`--- last lines of geth's log ---\n${node.tail()}`);
       throw err;
