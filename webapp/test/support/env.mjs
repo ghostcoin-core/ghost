@@ -125,11 +125,23 @@ export function testSign(fields) {
   });
 }
 
+// The address of the tests' wallet's account `index` of its seed: 0 is the
+// connected account, TEST_WALLET_ADDRESS.
+export async function testAccountAddress(index) {
+  const { address } = await testWalletWorker().request("walletAccount", { words: TEST_WALLET_WORDS, index });
+  return toHex(address);
+}
+
 // The tests' wallet as a connector of wallet-connect.mjs. `log` records each
 // call; `approve(fields)`, when given, runs before each signature and may
-// throw to stand for the user turning it down.
-export function testConnector({ log = [], approve = null } = {}) {
+// throw to stand for the user turning it down. Its newReceiveAddress hands
+// out the address of a new account index of the same seed each call (1,
+// then 2, ...), as the Ghost pop-up wallet's ghost_newReceiveAddress does;
+// with `fresh` false it answers as a wallet without that request does:
+// method not found (-32601).
+export function testConnector({ log = [], approve = null, fresh = true } = {}) {
   let connected = false;
+  let issued = TEST_ACCOUNT_INDEX;
   return {
     id: "test-wallet",
     name: "Test wallet",
@@ -144,6 +156,13 @@ export function testConnector({ log = [], approve = null } = {}) {
       if (!connected) throw new Error("the test wallet is not connected");
       if (approve) await approve(fields);
       return testSign(fields);
+    },
+    async newReceiveAddress() {
+      log.push("newReceiveAddress");
+      if (!connected) throw new Error("the test wallet is not connected");
+      if (!fresh) throw Object.assign(new Error("unknown method ghost_newReceiveAddress"), { code: -32601 });
+      issued += 1;
+      return { address: await testAccountAddress(issued) };
     },
     disconnect() {
       log.push("disconnect");

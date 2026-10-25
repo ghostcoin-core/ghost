@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { formatGhost, parseGhost } from "../src/chain.mjs";
+import { formatGhost, parseAddress, parseGhost } from "../src/chain.mjs";
 import { WALLET_APPROVAL } from "../src/flow.mjs";
 
 const normalKey = (text) => String(text).trim().split(/\s+/).join(" ");
@@ -18,8 +18,10 @@ const source = readFileSync(new URL("../src/app.mjs", import.meta.url), "utf8");
 
 const GHOST = 10n ** 18n;
 const FEE = 10n ** 14n;
-const WALLET = "0x3a00000000000000000000000000000000091c";
-const OTHER_WALLET = "0x5b00000000000000000000000000000000077e";
+const WALLET = `0x3a${"0".repeat(34)}091c`;
+const OTHER_WALLET = `0x5b${"0".repeat(34)}077e`;
+// The fresh address the stand-in wallet hands out for the payout.
+const FRESH = `0x7c${"0".repeat(34)}044d`;
 const KEY = Array.from({ length: 24 }, (_, i) => `word${String.fromCharCode(97 + i)}`).join(" ");
 
 // The markup of the element with `id`, its closing tag included.
@@ -113,8 +115,9 @@ const settle = async (n = 4) => {
 
 // Starts app.mjs with a stand-in flow whose key holds 2 GHOST. Every call
 // made of the flow is logged by name in `log.calls`; the reveal waits until
-// `release()` when `hold` is set.
-function startPage({ hold = false } = {}) {
+// `release()` when `hold` is set. The wallet's fresh address is `fresh`, or
+// none (null) for a wallet without the request.
+function startPage({ hold = false, fresh = FRESH } = {}) {
   const elements = new Map();
   const document = {
     getElementById(id) {
@@ -164,6 +167,9 @@ function startPage({ hold = false } = {}) {
     };
     const flow = {
       state,
+      async newReceiveAddress() {
+        return fresh;
+      },
       async summonOpen(text) {
         state.summon = { key: normalKey(text), format: "words", groups: 21, coins: [], claim: null, lastReveal: null, pinned: null };
         coinState(state.summon);
@@ -210,7 +216,7 @@ function startPage({ hold = false } = {}) {
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
   const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "WALLET_APPROVAL", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
-  new Function(...names, ...more, body)(
+  new Function(...names, ...more, "parseAddress", body)(
     document,
     window,
     { clipboard: { writeText: async () => {} } },
@@ -226,6 +232,7 @@ function startPage({ hold = false } = {}) {
     "http://127.0.0.1:8545",
     () => ({}),
     async () => {},
+    parseAddress,
   );
   $("tab-summon").fire("click");
   return { $, log, screens, window, release, state: () => state };
@@ -248,6 +255,11 @@ test("the confirm screen: the amount and address line, one primary Confirm Summo
   const screen = element("summon-confirm");
   assert.match(tags.get("summon-confirm"), /\bhidden\b/);
   assert.match(screen, /<h2><span id="summon-confirm-text"><\/span><\/h2>/);
+  // It names the payout address in full, not "your wallet", and has a line
+  // for the warnings.
+  assert.match(screen, /The coin goes to <span id="summon-confirm-address"[^>]*><\/span>\./);
+  assert.doesNotMatch(screen, /your connected wallet|your wallet/);
+  assert.match(tags.get("summon-confirm-warning"), /class="warning-line"/);
   assert.match(element("summon-confirm-button"), /^<button\b[^>]*class="primary[^"]*"[^>]*type="button"[^>]*>Confirm Summon<\/button>$/);
   assert.match(element("summon-cancel"), /^<button\b[^>]*type="button"[^>]*>Cancel<\/button>$/);
   assert.doesNotMatch(tags.get("summon-cancel"), /primary/);
@@ -264,12 +276,14 @@ test("only Confirm Summon calls summonReveal", () => {
 
 // --- Driven through app.mjs ---
 
-test("Summon opens the confirm screen naming the amount and the wallet, and proves nothing", async () => {
+test("Summon opens the confirm screen naming the amount and the payout address, and proves nothing", async () => {
   const page = startPage();
   await pressSummon(page, "0.5");
   assert.deepEqual(page.screens(), ["confirm"]);
-  assert.equal(page.$("summon-confirm-text").textContent, "Summon 0.5 GHOST to 0x3a…91c");
-  assert.equal(page.$("summon-confirm").title, WALLET, "the full address as the title");
+  assert.equal(page.$("summon-confirm-text").textContent, "Summon 0.5 GHOST to 0x7c…44d");
+  assert.equal(page.$("summon-confirm").title, FRESH, "the full address as the title");
+  assert.equal(page.$("summon-confirm-address").textContent, FRESH);
+  assert.equal(page.$("summon-confirm-warning").textContent, "", "a fresh address: no warning");
   assert.equal(page.log.reveals.length, 0, "summonReveal is not called before Confirm");
   assert.deepEqual(page.log.calls, [], "nothing is asked of the flow");
   assert.equal(page.$("summon-error").textContent, "");
@@ -277,8 +291,21 @@ test("Summon opens the confirm screen naming the amount and the wallet, and prov
   // The amount as typed.
   const typed = startPage();
   await pressSummon(typed, "1.50");
-  assert.equal(typed.$("summon-confirm-text").textContent, "Summon 1.50 GHOST to 0x3a…91c");
+  assert.equal(typed.$("summon-confirm-text").textContent, "Summon 1.50 GHOST to 0x7c…44d");
   assert.equal(typed.log.reveals.length, 0);
+});
+
+test("a wallet with no fresh address: the confirm screen names the wallet's own address and warns", async () => {
+  const page = startPage({ fresh: null });
+  await pressSummon(page, "0.5");
+  assert.deepEqual(page.screens(), ["confirm"]);
+  assert.equal(page.$("summon-confirm-text").textContent, "Summon 0.5 GHOST to 0x3a…91c");
+  assert.match(page.$("summon-confirm-warning").textContent, /^This is your connected wallet's address, the one a Vanish is sent from\./);
+  // The warning is advice: Confirm Summon still sends, to that address.
+  page.$("summon-confirm-button").fire("click");
+  await settle(8);
+  assert.deepEqual(page.log.reveals, [{ amount: "0.5", recipient: WALLET }]);
+  assert.deepEqual(page.screens(), ["done"]);
 });
 
 test("Cancel returns to the form with the key and amount kept, and calls nothing", async () => {
@@ -305,7 +332,7 @@ test("Cancel returns to the form with the key and amount kept, and calls nothing
   assert.equal(page.log.reveals.length, 0);
 });
 
-test("Confirm Summon calls summonReveal once with the amount and the wallet's address; a second press does nothing", async () => {
+test("Confirm Summon calls summonReveal once with the amount and the payout address; a second press does nothing", async () => {
   const page = startPage({ hold: true });
   await pressSummon(page, "0.5");
   page.$("summon-confirm-button").fire("click");
@@ -315,12 +342,13 @@ test("Confirm Summon calls summonReveal once with the amount and the wallet's ad
   page.$("summon-confirm-button").fire("click");
   page.$("summon-form").fire("submit");
   await settle();
-  assert.deepEqual(page.log.reveals, [{ amount: "0.5", recipient: WALLET }]);
+  assert.deepEqual(page.log.reveals, [{ amount: "0.5", recipient: FRESH }]);
   page.release();
   await settle(8);
   assert.deepEqual(page.screens(), ["done"]);
-  assert.deepEqual(page.log.reveals, [{ amount: "0.5", recipient: WALLET }], "called once");
-  assert.equal(page.$("summon-done-address").textContent, "0x3a…91c");
+  assert.deepEqual(page.log.reveals, [{ amount: "0.5", recipient: FRESH }], "called once");
+  assert.equal(page.$("summon-done-address").textContent, "0x7c…44d", "the payout address, not the wallet's");
+  assert.equal(page.$("summon-done-address").title, FRESH);
 });
 
 test("a wallet changed while the confirm screen shows sends nothing", async () => {

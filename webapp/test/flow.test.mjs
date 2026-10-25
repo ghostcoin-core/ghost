@@ -391,10 +391,8 @@ test("the requests do not depend on whether the key owns a coin", async () => {
     let fromWork = work.length;
     await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), /holds no unspent coin/);
     const notOwner = seen(node, from);
-    const notOwnerTimes = timeline(node, work, from, fromWork);
     const notOwnerProofs = work.slice(fromWork).filter((w) => w.op === "prove");
-    assert.equal(notOwnerProofs.length, 1, "a key with no coin still has a proof made");
-    assert.equal(notOwnerProofs[0].decoy, true, "of a decoy");
+    assert.deepEqual(notOwnerProofs, [], "a key with no coin has no proof made");
 
     from = node.requests.length;
     assert.equal((await flow.summonOpen(owner)).status, "unclaimed");
@@ -413,14 +411,9 @@ test("the requests do not depend on whether the key owns a coin", async () => {
     assert.ok(owned.some((r) => r.startsWith('["eth_getBlockByNumber"')), "the settled and fee headers are fetched");
     assert.deepEqual(owned, notOwner, "a failed reveal asks the same whether the key owns the coin or not");
     assert.deepEqual(
-      timeline(node, work, from, fromWork),
-      notOwnerTimes,
-      "the worker does the same work at the same place among the requests whether the key owns the coin or not",
-    );
-    assert.deepEqual(
-      work.slice(fromWork).filter((w) => w.op === "prove").map((w) => w.decoy),
-      [true],
-      "a reveal that cannot be made proves a decoy",
+      work.slice(fromWork).filter((w) => w.op === "prove"),
+      [],
+      "a reveal that cannot be made proves nothing",
     );
     assert.equal(node.reveals.length, 1, "only the claim from the other device");
 
@@ -434,24 +427,17 @@ test("the requests do not depend on whether the key owns a coin", async () => {
     const sentAt = revealed.findIndex((r) => r.startsWith('["eth_sendRawTransaction"'));
     assert.ok(sentAt > 0);
     assert.deepEqual(revealed.slice(0, sentAt), notOwner, "the requests before the reveal do not depend on what restore found");
-    const revealedTimes = timeline(node, work, from, fromWork);
-    const sentEvent = revealedTimes.findIndex((r) => r.startsWith('["eth_sendRawTransaction"'));
-    assert.deepEqual(revealedTimes.slice(0, sentEvent), notOwnerTimes, "nor does where the proof work falls among them");
     const real = work.slice(fromWork).filter((w) => w.op === "prove");
+    assert.equal(real.length, 1, "one proof, of the coin");
     assert.equal(real[0].decoy, false, "the reveal is a real proof");
     assert.equal(real[0].at, real[0].end, "no request is made while proving");
-    // The delay before the next request is a proof's either way.
-    assert.ok(
-      notOwnerProofs[0].ms > real[0].ms / 4,
-      `the decoy took ${Math.round(notOwnerProofs[0].ms)} ms, the real proof ${Math.round(real[0].ms)} ms`,
-    );
     assert.equal(node.reveals.length, 2);
   } finally {
     await done();
   }
 });
 
-test("a refused proof and a fee change leave the requests and their timing as for a key without a coin", async () => {
+test("a refused proof and a fee change ask what a reveal that goes through asks; a key without a coin has nothing proved", async () => {
   const { node, flow, work, hooks, done } = await setUp();
   const GWEI = 10n ** 9n;
   try {
@@ -494,22 +480,20 @@ test("a refused proof and a fee change leave the requests and their timing as fo
       return { outcome, events, proofs: work.slice(fromWork).filter((w) => w.op === "prove") };
     };
 
-    // The key without a coin: a decoy proved for each attempt.
+    // The key without a coin: nothing is proved, no stand-in proof either.
     hooks.prove = feeChange();
     const none = await attempt(76);
     assert.match(none.outcome.message, /holds no unspent coin/);
-    assert.deepEqual(none.proofs.map((p) => p.decoy), [true, true], "a decoy for the first attempt and for the retry");
+    assert.deepEqual(none.proofs, [], "no proof for a reveal that cannot be made");
 
     // The owner's key, with every real proof refused in the worker (its
-    // coin not under the root it is sent): the same requests at the same
-    // places among the worker's work, and each refusal takes a proof's time.
+    // coin not under the root it is sent), the fee changing during the first.
     node.foreignCommits(1);
     node.mineTo(108);
     assert.equal((await flow.summonOpen(owner)).status, "unclaimed");
     const change = feeChange();
     hooks.prove = (args) => {
       change(args);
-      if (args.decoy) return args;
       const root = Uint8Array.from(args.root);
       root[0] ^= 1;
       return { ...args, root };
@@ -517,17 +501,10 @@ test("a refused proof and a fee change leave the requests and their timing as fo
     const refused = await attempt(108);
     assert.match(refused.outcome.message, /not in the tree/);
     assert.deepEqual(refused.proofs.map((p) => p.decoy), [false, false], "the coin's own proof, twice");
-    assert.deepEqual(refused.events, none.events, "a refused proof and a retry ask the same, in the same order");
-    for (const p of refused.proofs) {
-      assert.ok(
-        p.ms > none.proofs[0].ms / 4,
-        `a refused proof took ${Math.round(p.ms)} ms, a decoy ${Math.round(none.proofs[0].ms)} ms`,
-      );
-    }
     assert.equal(node.reveals.length, 1, "only the claim from the other device");
 
     // The owner's key again, proved after the retry: up to the reveal, the
-    // same as without a coin.
+    // same requests and worker work as the refused one.
     node.foreignCommits(1);
     node.mineTo(140);
     assert.equal((await flow.summonOpen(owner)).status, "unclaimed");
@@ -536,7 +513,7 @@ test("a refused proof and a fee change leave the requests and their timing as fo
     assert.equal(made.outcome, null);
     const sentAt = made.events.findIndex((e) => e.startsWith('["eth_sendRawTransaction"'));
     assert.ok(sentAt > 0);
-    assert.deepEqual(made.events.slice(0, sentAt), none.events, "the retried reveal asks the same before it is sent");
+    assert.deepEqual(made.events.slice(0, sentAt), refused.events, "the retried reveal asks what the refused one asked before it is sent");
     assert.deepEqual(made.proofs.map((p) => p.decoy), [false, false]);
     assert.equal(node.reveals.length, 2);
     assert.ok(node.reveals[1].fee > SPEC_FEE, "the reveal carries the raised fee");
@@ -818,9 +795,10 @@ test("a reveal the endpoint took before it answered that the head moved is not p
     assert.equal(sends.length, 1, "nothing is sent again");
     assert.equal(node.reveals.length, 1, "one reveal is in a block");
     assert.equal(node.balances.get(RECIPIENT.toLowerCase()), 25n * 10n ** 16n, "the recipient is paid once");
-    assert.ok(
-      work.slice(fromWork).filter((w) => w.op === "prove").every((w, i) => i === 0 || w.decoy),
-      "the remainder is never proved",
+    assert.deepEqual(
+      work.slice(fromWork).filter((w) => w.op === "prove").map((w) => w.decoy),
+      [false],
+      "the first proof only: the remainder is never proved, and nothing stands in for it",
     );
     assert.match(flow.state.error, /no longer unspent/);
   } finally {

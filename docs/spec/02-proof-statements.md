@@ -158,8 +158,8 @@ amount `v`, the fingerprint `F`, the leaf `C`, its position and the note `N`.
 | `marker` | 32 | Transaction | `K("ghost/coin-marker/v2", r, b, salt)` (or, for a version 1 input, `K("ghost/coin-marker/v1", r, b)`) was never published before. It has a tag of its own, so it equals no `F`, `C` or tree node, and computing it from `F` or `C`, or `F` or `C` from it, needs `r` and `b` (preimage resistance, threat model A1). The commit's public salt alone does not help: without `r` and `b` nobody can compute the marker of any salt |
 | `remainder` | 32 | Transaction | A new version 2 leaf `C'` built from fresh blinding `b'` (spec 01, section 8) and a fresh random salt. It differs from `C` and from every earlier leaf, and hides `s'`, `r'`, `b'` and `v'`. Its salt is inside `remainder_note`, never a field of its own |
 | `remainder_note` | 156 | Transaction | A new ciphertext under a fresh random nonce, unreadable without `k_note`, with the fixed length of every note (spec 01, section 9). It carries the remainder's salt, so the salt is bound with it |
-| `recipient` | 20 | Transaction | Chosen by the user. The chain adds no link, but a recipient equal to the commit's sender correlates (outline, "Privacy claim": destinations can correlate) |
-| `out` | 32 | Transaction | Chosen by the user. The chain adds no link, but amounts can correlate, most of all a full reveal whose `out` is the public commit amount minus the fee (outline, "Privacy claim") |
+| `recipient` | 20 | Transaction | Chosen by the user. The chain adds no link, but a recipient equal to the commit's sender correlates (outline, "Privacy claim": destinations can correlate); the wallet pays a fresh address by default and warns otherwise (section 8) |
+| `out` | 32 | Transaction | Chosen by the user. The chain adds no link, but amounts can correlate, most of all a full reveal whose `out` is the public commit amount minus the fee (outline, "Privacy claim"); the wallet warns before a full reveal whose amount few commits share (section 8) |
 | `fee` | 32 | Node's fee formula for the block | The same for every private transaction in the block (outline, "Transactions and fees") |
 | `rule` | 32 | Transaction, must be the empty rule | The empty rule is the only rule in version 1, so every coin reveal carries the same value |
 | `binding` | 32 | Node, section 7 | A hash of the values above; it adds nothing they do not |
@@ -499,15 +499,15 @@ waited until someone else committed. That guarded only against a timing hint
 leaf barely changes that hint; it was removed on 2026-10-25 because a holder
 could not reveal without another person committing first.
 
-- **The holder chooses the cover.** The settled root covers every leaf of the
-  tree up to block `h`; that leaf count is an upper bound on the anonymity set
-  of the reveal. It is a count of commitments, not of people or of coins that
-  look like the holder's, and one party can create many of them
+- **The cover is information only.** The settled root covers every leaf of
+  the tree up to block `h`; that leaf count is an upper bound on the anonymity
+  set of the reveal. It is a count of commitments, not of people or of coins
+  that look like the holder's, and one party can create many of them
   ([privacy under attack](../research/privacy-under-attack.md)).
-  The wallet shows it and lets the holder reveal now or wait for more leaves.
-  It never forces a wait: in the founder's words, a holder who does not want
-  the coin to be traced can wait their own blocks, and one who wants to reveal
-  two blocks later can do that.
+  The wallet may show it, with the note that amounts and timing can still
+  match a reveal to its commit, and gives no advice to wait: the membership
+  proof over the settled root already hides which leaf is opened, and it
+  never forces a wait.
 - **Nobody committed since.** If no leaf of the type was added after the
   wallet's, the settled root is that of the tree ending with the leaf's own
   block. The proof still hides which of that tree's leaves is opened; what it
@@ -558,6 +558,19 @@ which the epoch root blurred to its window (threat model C17).
   below the leaf count, and the 2-block depth is about keeping the root
   canonical, not about settlement or privacy
   ([privacy under attack](../research/privacy-under-attack.md)).
+- **What the proof cannot hide: the recipient and the amount.** `recipient`
+  and `out` are public (section 3), and `fee` is the same for every reveal of
+  a block. A reveal whose recipient is the address that sent the commit puts
+  the same public address on both sides, and no proof can hide that (threat
+  model C31); the wallet therefore pays a fresh address of the holder's own
+  wallet by default and warns when the recipient is the address the commit
+  came from or the connected account. A full reveal publishes `out + fee`,
+  which is the commit's public amount `v`; when few commits of the chain have
+  that amount, the amount alone links the reveal to its commit. Before a full
+  reveal the wallet counts the commits of that amount in the block receipts
+  it has checked and, when fewer than 10 match, warns and suggests a partial
+  reveal, whose `out + fee` is not the commit's amount. Both warnings are advice:
+  they never block the reveal.
 
 ## 9. Conservation
 

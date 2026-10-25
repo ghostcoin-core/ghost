@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { formatGhost, parseGhost } from "../src/chain.mjs";
+import { formatGhost, parseAddress, parseGhost } from "../src/chain.mjs";
 import { WALLET_APPROVAL } from "../src/flow.mjs";
 
 // A typed key as the flow controller's normalKey gives it to the module: any
@@ -20,10 +20,13 @@ const source = readFileSync(new URL("../src/app.mjs", import.meta.url), "utf8");
 
 const GHOST = 10n ** 18n;
 const FEE = 10n ** 14n;
-const WALLET = "0x3a00000000000000000000000000000000091c";
+const WALLET = `0x3a${"0".repeat(34)}091c`;
+// The fresh address the stand-in wallet hands out for the payout.
+const FRESH = `0x7c${"0".repeat(34)}044d`;
+const FRESH_2 = `0x8d${"0".repeat(34)}055e`;
 const KEY = Array.from({ length: 24 }, (_, i) => `word${String.fromCharCode(97 + i)}`).join(" ");
-// The id of the payout field the page no longer has, built so this file does
-// not spell it.
+// The id of the old reveal form's payout field, built so this file does not
+// spell it.
 const PAYOUT_FIELD = ["reveal", "to"].join("-");
 
 const NOT_A_KEY = "That doesn't look like a Phantom Key. It should be 24 words.";
@@ -151,8 +154,10 @@ const settle = async (n = 4) => {
 // Starts app.mjs on a fresh stand-in page with a stand-in flow. The key holds
 // `amount`; `wallet` false starts with no wallet connected; `refuse` makes the
 // reveal fail with that raw text before anything is sent.
-// `popup` stands for popupConnector (popup-wallet.mjs).
-function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, popup = () => assert.fail("no pop-up wallet") } = {}) {
+// `popup` stands for popupConnector (popup-wallet.mjs). The wallet's fresh
+// addresses are handed out from `fresh` in turn (null: a wallet without the
+// request).
+function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, popup = () => assert.fail("no pop-up wallet"), fresh = [FRESH] } = {}) {
   const elements = new Map();
   const document = {
     getElementById(id) {
@@ -174,7 +179,7 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, popup = 
   const $ = (id) => document.getElementById(id);
   const screens = () => ["form", "confirm", "waiting", "done"].filter((s) => !$(`summon-${s}`).hidden);
   const steps = () => ["proof", "send", "confirm"].map((s) => $(`summon-step-${s}`).dataset.state || "-").join(" ");
-  const log = { opens: [], reveals: [], closes: 0, steps: [], bars: [], waitingAmount: [], connects: [], disconnects: 0 };
+  const log = { opens: [], reveals: [], closes: 0, steps: [], bars: [], waitingAmount: [], connects: [], disconnects: 0, fresh: 0 };
   let held = amount;
 
   function createFlow({ onChange }) {
@@ -218,6 +223,11 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, popup = 
         log.disconnects++;
         state.wallet = null;
         emit();
+      },
+      async newReceiveAddress() {
+        log.fresh++;
+        if (!state.wallet || fresh === null) return null;
+        return fresh[(log.fresh - 1) % fresh.length];
       },
       async summonOpen(text) {
         log.opens.push(text);
@@ -286,7 +296,7 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, popup = 
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
   const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "WALLET_APPROVAL", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
-  new Function(...names, ...more, "popupConnector", body)(
+  new Function(...names, ...more, "popupConnector", "parseAddress", body)(
     document,
     window,
     { clipboard: { writeText: async () => {} } },
@@ -303,6 +313,7 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, popup = 
     () => ({}),
     async () => {},
     popup,
+    parseAddress,
   );
   $("tab-summon").fire("click");
   return { $, log, screens, window };
@@ -346,13 +357,19 @@ test("the Summon tab starts with the paste box and a greyed Paste a key button",
   assert.match(tag("summon-error"), /class="error-line"/);
 });
 
-test("the page has no payout address field: the only inputs are the key and the amount", () => {
+test("the payout field is a plain address input under the amount; the only inputs are the key, the amount and it", () => {
   assert.ok(!html.includes(PAYOUT_FIELD), "index.html");
   assert.ok(!source.includes(PAYOUT_FIELD), "app.mjs");
   const panel = element("panel-summon").replace(/<div id="claim-container"[\s\S]*$/, "");
   const fields = [...panel.matchAll(/<(input|textarea)\b[^>]*\bid="([^"]+)"/g)].map((m) => m[2]);
-  assert.deepEqual(fields, ["summon-key", "summon-amount"]);
-  assert.doesNotMatch(panel, /0x…|To address/);
+  assert.deepEqual(fields, ["summon-key", "summon-amount", "summon-payout"]);
+  const area = element("summon-amount-area");
+  assert.ok(area.indexOf('id="summon-amount"') < area.indexOf('id="summon-payout"'), "under the amount");
+  assert.match(tag("summon-payout"), /type="text"/);
+  assert.match(area, /<label class="payout-box">\s*<span>Pay to<\/span>/);
+  for (const id of ["summon-payout-warning", "summon-amount-warning"]) assert.match(tag(id), /class="warning-line"/, id);
+  // Checked with the address parser the flow uses, on Summon only.
+  assert.match(source, /parseAddress\(\$\("summon-payout"\)\.value\)/);
 });
 
 test("the waiting screen: Summoning, a thin bar, three steps and keep this page open", () => {
@@ -371,11 +388,12 @@ test("the waiting screen: Summoning, a thin bar, three steps and keep this page 
   assert.doesNotMatch(stepOf, /Date|since|setTimeout|setInterval/);
 });
 
-test("the Done screen: the ghost icon, the amount summoned, the wallet and Done", () => {
+test("the Done screen: the ghost icon, the amount summoned, the payout address and Done", () => {
   const screen = element("summon-done");
   assert.match(screen, /<use href="#icon-ghost">/);
   assert.ok(words(screen).includes("<value> GHOST summoned"), words(screen));
-  assert.ok(words(screen).includes("Sent to your wallet <value>."), words(screen));
+  assert.ok(words(screen).includes("Sent to <value>."), words(screen));
+  assert.doesNotMatch(screen, /your wallet/);
   assert.match(element("summon-done-button"), /class="primary[^"]*"[^>]*>Done</);
   assert.ok(source.includes("GHOST is still in your key. The same key still works."));
   assert.ok(source.includes('"This key is now empty."'));
@@ -390,9 +408,9 @@ test("the error sentences are fixed in app.mjs", () => {
   assert.doesNotMatch(fn("summonErrorText"), /return [^;]*(said|err\.message)/, "never the exception's text");
 });
 
-test("the reveal is paid to the connected wallet's address, from one place", () => {
+test("the reveal is paid to the confirmed payout address, from one place", () => {
   assert.equal(source.split("flow.summonReveal(").length, 2, "one call of summonReveal");
-  assert.match(call("flow.summonReveal("), /recipient: flow\.state\.wallet\.address \}/);
+  assert.match(call("flow.summonReveal("), /recipient: c\.address \}/);
 });
 
 // --- The screens, driven through app.mjs ---
@@ -402,8 +420,8 @@ function tag(id) {
   return tags.get(id);
 }
 
-test("paste a key, summon part of it to the wallet, see the rest, then summon the rest", async () => {
-  const page = startPage();
+test("paste a key, summon part of it to a fresh address, see the rest, then summon the rest to another", async () => {
+  const page = startPage({ fresh: [FRESH, FRESH_2] });
   assert.deepEqual(page.screens(), ["form"]);
   assert.equal(page.$("summon-submit").textContent, "Paste a key");
   assert.equal(page.$("summon-submit").disabled, true);
@@ -416,9 +434,11 @@ test("paste a key, summon part of it to the wallet, see the rest, then summon th
   assert.equal(page.$("summon-submit").textContent, "Summon");
   assert.equal(page.$("summon-submit").disabled, false);
   assert.equal(page.$("summon-error").textContent, "");
+  assert.equal(page.$("summon-payout").value, FRESH, "the payout field starts with a fresh address");
+  assert.equal(page.$("summon-payout-warning").textContent, "");
 
   await summon(page, "0.5");
-  assert.deepEqual(page.log.reveals, [{ amount: "0.5", recipient: WALLET }], "paid to the connected wallet's address");
+  assert.deepEqual(page.log.reveals, [{ amount: "0.5", recipient: FRESH }], "paid to the fresh address");
   // The steps tick off as the flow reaches them.
   assert.deepEqual(page.log.steps.slice(0, 5), [
     "now - -",
@@ -431,7 +451,7 @@ test("paste a key, summon part of it to the wallet, see the rest, then summon th
   assert.equal(page.log.waitingAmount[0], "0.5");
   assert.deepEqual(page.screens(), ["done"]);
   assert.equal(page.$("summon-done-amount").textContent, "0.5");
-  assert.equal(page.$("summon-done-address").textContent, "0x3a…91c");
+  assert.equal(page.$("summon-done-address").textContent, "0x7c…44d");
   assert.equal(page.$("summon-done-rest").textContent, "1.4999 GHOST is still in your key. The same key still works.");
 
   // Done clears the key and returns to an empty Summon tab.
@@ -440,12 +460,14 @@ test("paste a key, summon part of it to the wallet, see the rest, then summon th
   assert.deepEqual(page.screens(), ["form"]);
   assert.equal(page.$("summon-key").value, "");
   assert.equal(page.$("summon-amount").value, "");
+  assert.equal(page.$("summon-payout").value, "");
   assert.equal(page.$("summon-submit").textContent, "Paste a key");
   assert.equal(page.$("summon-amount-area").hidden, true);
 
-  // The rest: Max fills what can go out after the fee, and the key is then
-  // empty.
+  // The rest: Max fills what can go out after the fee, the payout is a new
+  // fresh address, and the key is then empty.
   await paste(page, KEY);
+  assert.equal(page.$("summon-payout").value, FRESH_2);
   assert.equal(page.$("summon-in-key").textContent, "1.4999 GHOST");
   page.$("summon-max").fire("click");
   assert.equal(page.$("summon-amount").value, "1.4998");
@@ -455,7 +477,7 @@ test("paste a key, summon part of it to the wallet, see the rest, then summon th
   assert.equal(page.log.reveals.length, 1, "nothing more is proved before Confirm Summon");
   page.$("summon-confirm-button").fire("click");
   await settle(8);
-  assert.equal(page.log.reveals[1].recipient, WALLET);
+  assert.equal(page.log.reveals[1].recipient, FRESH_2);
   assert.deepEqual(page.screens(), ["done"]);
   assert.equal(page.$("summon-done-rest").textContent, "This key is now empty.");
 });
@@ -464,6 +486,8 @@ test("with no wallet connected the main button reads Connect wallet and opens th
   const page = startPage({ wallet: false });
   await paste(page, KEY);
   assert.equal(page.$("summon-submit").textContent, "Connect wallet");
+  assert.equal(page.$("summon-payout").value, "", "no wallet: the payout field is empty");
+  assert.equal(page.log.fresh, 0, "no wallet is asked for an address");
   assert.equal(page.$("wallet-button-text").textContent, "Connect wallet");
   assert.equal(page.$("wallet-panel").hidden, true);
   page.$("summon-form").fire("submit");

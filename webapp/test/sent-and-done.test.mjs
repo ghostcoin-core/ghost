@@ -237,9 +237,10 @@ test("a reorganisation that drops a reveal shown Done is said plainly, and it ca
     assert.equal(lie.sends.length, lie.from, "the reveal was sent once again, and no more");
     assert.equal(node.reveals.length, 1, "one reveal is in the chain");
     assert.equal(node.balances.get(RECIPIENT), GHOST / 4n, "the recipient is paid once");
-    assert.ok(
-      work.slice(fromWork).filter((w) => w.op === "prove").every((w, i) => i === 0 || w.decoy),
-      "the remainder is never proved",
+    assert.deepEqual(
+      work.slice(fromWork).filter((w) => w.op === "prove").map((w) => w.decoy),
+      [false],
+      "the pinned coin's proof only: the remainder is never proved, and nothing stands in for it",
     );
   } finally {
     await done();
@@ -311,7 +312,7 @@ test("an endpoint's missing receipt never shows a reveal dropped, and a dropped 
     const sends = endpoint.envelopes.length;
     await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), /no longer unspent/);
     assert.equal(endpoint.envelopes.length, sends, "nothing is sent");
-    assert.ok(work.slice(fromWork).filter((w) => w.op === "prove").every((w) => w.decoy), "the remainder is never proved");
+    assert.deepEqual(work.slice(fromWork).filter((w) => w.op === "prove"), [], "nothing is proved: not the remainder, nor a stand-in");
     assert.equal(node.reveals.length, 1);
     assert.equal(node.balances.get(RECIPIENT), GHOST / 4n, "the recipient is paid once");
 

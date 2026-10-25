@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import { toHex } from "../src/bytes.mjs";
-import { SETTLE_DEPTH, formatGhost, parseGhost } from "../src/chain.mjs";
+import { SETTLE_DEPTH, formatGhost, parseAddress, parseGhost } from "../src/chain.mjs";
 import { DEFAULT_COMMIT_ENTRY, WALLET_APPROVAL, WaitError, createFlow, settleWait } from "../src/flow.mjs";
 import { loadModule, nodeProver, openTestWallet, wasmPath } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
@@ -210,7 +210,7 @@ test("the requests before a Summon's send do not depend on the coin's block", { 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const source = readFileSync(new URL("../src/app.mjs", import.meta.url), "utf8");
 const tags = new Map([...html.matchAll(/<[a-z]+\b[^>]*\bid="([^"]+)"[^>]*>/gi)].map((m) => [m[1], m[0]]));
-const WALLET = "0x3a00000000000000000000000000000000091c";
+const WALLET = `0x3a${"0".repeat(34)}091c`;
 const KEY = Array.from({ length: 24 }, (_, i) => `word${String.fromCharCode(97 + i)}`).join(" ");
 const FEE = 10n ** 14n;
 const BLOCK = 9;
@@ -394,7 +394,7 @@ function startPage({ polls = 2 } = {}) {
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
   const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "WALLET_APPROVAL", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
-  new Function(...names, ...more, "popupConnector", body)(
+  new Function(...names, ...more, "popupConnector", "parseAddress", body)(
     document,
     new Element("window"),
     { clipboard: { writeText: async () => {} } },
@@ -411,6 +411,7 @@ function startPage({ polls = 2 } = {}) {
     () => ({}),
     async () => {},
     () => assert.fail("no pop-up wallet"),
+    parseAddress,
   );
   $("tab-summon").fire("click");
   return { $, log, screens, next };

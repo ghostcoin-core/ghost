@@ -40,8 +40,11 @@ test("the cover text states the tree's coin count, not who it hides among", () =
   assert.match(cover.text, /not a promise of anonymity/);
   assert.match(cover.text, /2 more are in newer blocks/);
   assert.doesNotMatch(cover.text, /hides|among/);
-  // The holder still chooses; the app forces no wait.
-  assert.match(cover.text, /reveal now, or wait for more coins and press Refresh\. The choice is yours\./);
+  // Information only: amounts and timing can still match, and no advice to
+  // wait.
+  assert.match(cover.text, /amounts and timing can still match your reveal to your commit\.$/);
+  assert.doesNotMatch(cover.text, /\bwait\b|Refresh|choice|easier|Fewer/i);
+  assert.doesNotMatch(source, /The choice is yours/);
 });
 
 test("a sent reveal says one block is not final settlement and not privacy", () => {
