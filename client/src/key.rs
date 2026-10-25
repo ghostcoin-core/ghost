@@ -1,14 +1,12 @@
 //! The Phantom Key: generation, formatting, entry and the checksum (spec 01,
 //! sections 5 and 6).
 //!
-//! The default key is 24 words: a 256-bit secret and an 8-bit check
+//! A Phantom Key is 24 words: a 256-bit secret and an 8-bit check
 //! ([`KeyFormat::Words`]). The same key can be shown as 21 groups of four
-//! digits: 80 secret digits and one checksum group. The digit keys issued
-//! before it still parse and derive the same values: a standard key is twelve
-//! groups of four digits, groups 1 to 11 the secret and group 12 the
-//! checksum; a long key is twenty-four groups, groups 12 and 24 checksums, the
-//! rest the secret. A [`PhantomKey`] only exists with its check correct, so
-//! nothing is ever derived from words or digits that failed it.
+//! digits: 80 secret digits and one checksum group. There is no other format:
+//! digits of any other count are refused. A [`PhantomKey`] only exists with its
+//! check correct, so nothing is ever derived from words or digits that failed
+//! it.
 
 use core::fmt;
 
@@ -18,25 +16,15 @@ use crate::hash::{self, TAG_KEY_CHECK};
 use crate::key_words::{self, SECRET_BYTES, SECRET_DIGITS};
 use crate::wipe::wipe;
 
-/// Digits in a long key, the longest format.
-const MAX_DIGITS: usize = 96;
-/// Secret digits in a long key.
-const MAX_SECRET_DIGITS: usize = 88;
 /// Digits in one group.
 const GROUP: usize = 4;
-/// Digits in one half of a key: eleven secret groups and one checksum group.
-const HALF: usize = 48;
-/// Secret digits in one half of a key.
-const HALF_SECRET: usize = 44;
+/// Digits in the digit view of a key, the checksum group included.
+const DIGITS: usize = SECRET_DIGITS + GROUP;
 
-/// The key formats. Typed words select the words format; typed digits select
-/// a format by their number.
+/// The key format. Typed words select it, and so do typed digits of its digit
+/// view; no other format exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyFormat {
-    /// Twelve groups: 44 secret digits and one checksum group.
-    Standard,
-    /// Twenty-four groups: 88 secret digits and two checksum groups.
-    Long,
     /// Twenty-four words: a 256-bit secret and an 8-bit check. Shown as digits
     /// it is twenty-one groups: 80 secret digits and one checksum group.
     Words,
@@ -47,55 +35,45 @@ impl KeyFormat {
     /// against a quantum search.
     pub const DEFAULT: Self = Self::Words;
 
-    /// The format code: `0x0C` for twelve groups, `0x18` for twenty-four,
-    /// `0x20` for words. It is the first byte of the key bytes and of every
-    /// checksum input.
+    /// The format code, `0x20`. It is the first byte of the key bytes and of
+    /// every checksum input.
     pub const fn code(self) -> u8 {
         match self {
-            Self::Standard => 0x0C,
-            Self::Long => 0x18,
             Self::Words => key_words::CODE,
         }
     }
 
-    /// The number of groups of four digits: 12, 24, or 21 for the digit view
-    /// of a words key.
+    /// The number of groups of four digits in the digit view: 21.
     pub const fn groups(self) -> usize {
         match self {
-            Self::Standard => 12,
-            Self::Long => 24,
-            Self::Words => SECRET_DIGITS / GROUP + 1,
+            Self::Words => DIGITS / GROUP,
         }
     }
 
-    /// The number of digits, checksum groups included: 48, 96 or 84.
+    /// The number of digits of the digit view, checksum group included: 84.
     pub const fn digit_count(self) -> usize {
         self.groups() * GROUP
     }
 
-    /// The number of secret digits: 44, 88 or 80.
+    /// The number of secret digits of the digit view: 80.
     pub const fn secret_digit_count(self) -> usize {
         match self {
-            Self::Standard => HALF_SECRET,
-            Self::Long => MAX_SECRET_DIGITS,
             Self::Words => SECRET_DIGITS,
         }
     }
 
-    /// The number of words, for the format written as words: 24.
+    /// The number of words: 24.
     pub const fn word_count(self) -> Option<usize> {
         match self {
             Self::Words => Some(key_words::WORDS),
-            Self::Standard | Self::Long => None,
         }
     }
 
-    /// The format with this many digits, if any.
+    /// The format with this many digits: only 84, the digit view of a words
+    /// key. The 48 and 96 digits of the old digit keys select nothing.
     pub const fn from_digit_count(digits: usize) -> Option<Self> {
         match digits {
-            48 => Some(Self::Standard),
-            84 => Some(Self::Words),
-            96 => Some(Self::Long),
+            DIGITS => Some(Self::Words),
             _ => None,
         }
     }
@@ -112,16 +90,15 @@ pub enum KeyError {
         /// Character position in the input.
         position: usize,
     },
-    /// After removing separators the input has this many digits, not 48, 84
-    /// or 96.
+    /// After removing separators the input has this many digits, not 84.
     WrongLength {
         /// Number of digits found.
         digits: usize,
     },
-    /// The checksum group with this number (12, 21 or 24) does not match the
-    /// digits before it.
+    /// The checksum group with this number, 21, does not match the digits
+    /// before it.
     ChecksumMismatch {
-        /// The group number of the failing checksum, 12, 21 or 24.
+        /// The group number of the failing checksum, 21.
         group: usize,
     },
     /// Word number `word` (counted from one) is not a word of the list. It is
@@ -142,8 +119,8 @@ pub enum KeyError {
     },
     /// The 24 words are all in the list, but their check does not match.
     WordCheckMismatch,
-    /// The 80 secret digits of a words key shown as digits are `2^256` or
-    /// more, which no words key can be.
+    /// The 80 secret digits of a key shown as digits are `2^256` or more,
+    /// which no key can be.
     SecretOutOfRange,
 }
 
@@ -156,7 +133,7 @@ impl fmt::Display for KeyError {
                 position + 1
             ),
             Self::WrongLength { digits } => {
-                write!(f, "a key has 48 or 96 digits, or 84 for a words key, not {digits}")
+                write!(f, "a key shown as digits has 84 digits, not {digits}")
             }
             Self::ChecksumMismatch { group } => {
                 write!(f, "group {group} does not match the digits before it")
@@ -179,13 +156,12 @@ impl fmt::Display for KeyError {
 
 impl std::error::Error for KeyError {}
 
-/// One checksum group: `int(S("ghost/key-check/v1", code, part, digits)) mod
+/// The check group: `int(S("ghost/key-check/v1", 0x20, 0x01, digits)) mod
 /// 10000`, with the digest read as a big-endian integer (spec 01, section 6).
 ///
-/// `part` is 1 for group 12 (or group 21 of a words key) and 2 for group 24;
-/// `digits` are the ASCII secret digits before the check group.
-fn check_group(format: KeyFormat, part: u8, digits: &[u8]) -> u16 {
-    let mut digest = hash::s(TAG_KEY_CHECK, &[&[format.code()], &[part], digits]);
+/// `digits` are the 80 ASCII secret digits before group 21.
+fn check_group(format: KeyFormat, digits: &[u8]) -> u16 {
+    let mut digest = hash::s(TAG_KEY_CHECK, &[&[format.code()], &[0x01], digits]);
     let mut value: u32 = 0;
     for &byte in digest.iter() {
         value = (value * 256 + u32::from(byte)) % 10_000;
@@ -194,12 +170,10 @@ fn check_group(format: KeyFormat, part: u8, digits: &[u8]) -> u16 {
     value as u16
 }
 
-/// The correct checksum groups for these secret digits, in order: one value
-/// for a standard key (group 12) and a words key shown as digits (group 21),
-/// two for a long key (groups 12 and 24).
+/// The correct checksum groups for these secret digits: one value, group 21.
 ///
-/// `secret_digits` are the 44, 80 or 88 ASCII secret digits without
-/// separators and without the checksum groups.
+/// `secret_digits` are the 80 ASCII secret digits without separators and
+/// without the checksum group.
 pub fn check_groups(format: KeyFormat, secret_digits: &[u8]) -> Result<Vec<u16>, KeyError> {
     if secret_digits.len() != format.secret_digit_count() {
         return Err(KeyError::WrongLength {
@@ -209,14 +183,7 @@ pub fn check_groups(format: KeyFormat, secret_digits: &[u8]) -> Result<Vec<u16>,
     if let Some(position) = secret_digits.iter().position(|d| !d.is_ascii_digit()) {
         return Err(KeyError::InvalidCharacter { position });
     }
-    Ok(match format {
-        KeyFormat::Standard => vec![check_group(format, 1, secret_digits)],
-        KeyFormat::Long => vec![
-            check_group(format, 1, &secret_digits[..HALF_SECRET]),
-            check_group(format, 2, secret_digits),
-        ],
-        KeyFormat::Words => vec![check_group(format, 1, secret_digits)],
-    })
+    Ok(vec![check_group(format, secret_digits)])
 }
 
 /// Writes a group value as four ASCII digits with leading zeros.
@@ -237,32 +204,22 @@ fn read_group(digits: &[u8]) -> u16 {
 
 /// A Phantom Key whose check is correct.
 ///
-/// It holds the digits of a digit key, or the 32 secret bytes of a words key,
-/// and nothing else. It has no `Debug`, `Display`, `Clone` or serialisation,
-/// and its bytes are overwritten with zeros when it is dropped. The library
-/// never stores it.
+/// It holds the 32 secret bytes and nothing else. It has no `Debug`,
+/// `Display`, `Clone` or serialisation, and its bytes are overwritten with
+/// zeros when it is dropped. The library never stores it.
 pub struct PhantomKey {
-    format: KeyFormat,
-    /// ASCII digits of a standard or long key, checksum groups included; only
-    /// the first `format.digit_count()` are used, the rest are zero. All zero
-    /// for a words key.
-    digits: [u8; MAX_DIGITS],
-    /// The secret of a words key; all zero for a digit key.
     secret: [u8; SECRET_BYTES],
 }
 
 impl Drop for PhantomKey {
     fn drop(&mut self) {
-        wipe(&mut self.digits);
         wipe(&mut self.secret);
     }
 }
 
 impl PhantomKey {
-    fn empty(format: KeyFormat) -> Self {
+    fn empty() -> Self {
         Self {
-            format,
-            digits: [0; MAX_DIGITS],
             secret: [0; SECRET_BYTES],
         }
     }
@@ -273,34 +230,18 @@ impl PhantomKey {
         Self::generate(KeyFormat::DEFAULT, rng)
     }
 
-    /// Generates a new key from the caller's secure random source.
-    ///
-    /// A words key takes 32 bytes from the source as its secret. For a digit
-    /// key each secret digit is drawn as spec 01, section 5 says: take one
-    /// byte from the source, discard it if it is 250 or more, otherwise use
-    /// its value modulo 10. The checksum groups are then appended.
+    /// Generates a new key from the caller's secure random source: 32 bytes
+    /// from the source are its secret. [`KeyFormat`] has no other format, so
+    /// no other kind of key can be asked for.
     pub fn generate<R: CryptoRng + ?Sized>(format: KeyFormat, rng: &mut R) -> Self {
-        let mut key = Self::empty(format);
-        if format == KeyFormat::Words {
-            rng.fill_bytes(&mut key.secret);
-            return key;
+        let mut key = Self::empty();
+        match format {
+            KeyFormat::Words => rng.fill_bytes(&mut key.secret),
         }
-        let mut byte = [0u8; 1];
-        for position in 0..format.secret_digit_count() {
-            let digit = loop {
-                rng.fill_bytes(&mut byte);
-                if byte[0] < 250 {
-                    break b'0' + byte[0] % 10;
-                }
-            };
-            key.digits[Self::secret_position(position)] = digit;
-        }
-        wipe(&mut byte);
-        key.fill_check_groups();
         key
     }
 
-    /// Parses a typed key, as words or as digits.
+    /// Parses a typed key, as words or as its digit view.
     ///
     /// Text with a letter and no ASCII digit is read as words: 24 whole words
     /// of the list, in any case, separated by any mix of spaces and hyphens. A
@@ -311,60 +252,64 @@ impl PhantomKey {
     /// Any other text is read as digits. Spaces and hyphens between the
     /// digits are allowed in any mix; any other character, including a letter
     /// or a non-ASCII digit, is rejected. After separators are removed there
-    /// must be exactly 48, 84 or 96 digits. The checksum groups are checked
-    /// before the key is returned: group 12 first, so a mistyped first half
-    /// of a long key is named before the second. 84 digits are a words key:
-    /// after group 21 is checked, the 80 secret digits must be below `2^256`.
+    /// must be exactly 84 digits: digits of any other count, such as the 48 or
+    /// 96 of the old digit keys, are refused. Group 21 is checked, then the 80
+    /// secret digits must be below `2^256`.
     pub fn parse(text: &str) -> Result<Self, KeyError> {
+        let mut key = Self::empty();
         let has_digit = text.bytes().any(|b| b.is_ascii_digit());
         if !has_digit && text.chars().any(char::is_alphabetic) {
-            let mut key = Self::empty(KeyFormat::Words);
             key_words::parse_words(text, &mut key.secret)?;
             return Ok(key);
         }
-        let mut key = Self::empty(KeyFormat::Standard);
+        let mut digits = [0u8; DIGITS];
         let mut count = 0usize;
+        let mut result = Ok(());
         for (position, ch) in text.chars().enumerate() {
             match ch {
                 ' ' | '-' => {}
                 '0'..='9' => {
-                    if count < MAX_DIGITS {
-                        key.digits[count] = ch as u8;
+                    if count < DIGITS {
+                        digits[count] = ch as u8;
                     }
                     count += 1;
                 }
-                _ => return Err(KeyError::InvalidCharacter { position }),
+                _ => {
+                    result = Err(KeyError::InvalidCharacter { position });
+                    break;
+                }
             }
         }
-        key.format =
-            KeyFormat::from_digit_count(count).ok_or(KeyError::WrongLength { digits: count })?;
-        if key.format == KeyFormat::Words {
-            let expected = check_group(KeyFormat::Words, 1, &key.digits[..SECRET_DIGITS]);
-            if read_group(&key.digits[SECRET_DIGITS..]) != expected {
-                return Err(KeyError::ChecksumMismatch {
-                    group: KeyFormat::Words.groups(),
-                });
-            }
-            key_words::from_digits(&key.digits, &mut key.secret)?;
-            wipe(&mut key.digits);
-            return Ok(key);
-        }
-        key.verify_check_groups()?;
-        Ok(key)
+        let result = result
+            .and_then(|()| {
+                KeyFormat::from_digit_count(count).ok_or(KeyError::WrongLength { digits: count })
+            })
+            .and_then(|format| {
+                if read_group(&digits[SECRET_DIGITS..]) != check_group(format, &digits[..SECRET_DIGITS]) {
+                    return Err(KeyError::ChecksumMismatch {
+                        group: format.groups(),
+                    });
+                }
+                key_words::from_digits(&digits, &mut key.secret)
+            });
+        wipe(&mut digits);
+        result.map(|()| key)
     }
 
-    /// The key's format.
+    /// The key's format, always [`KeyFormat::Words`].
     pub fn key_format(&self) -> KeyFormat {
-        self.format
+        KeyFormat::Words
     }
 
-    /// The key as groups of four digits separated by single spaces. For a
-    /// words key this is its digit view: 21 groups, the last the checksum.
+    /// The key's digit view: 21 groups of four digits separated by single
+    /// spaces, the last the checksum.
     pub fn format_groups(&self) -> FormattedKey {
-        let mut digits = [0u8; MAX_DIGITS];
-        let n = self.write_digits(&mut digits);
-        let mut text = String::with_capacity(self.format.groups() * (GROUP + 1));
-        for (index, group) in digits[..n].chunks(GROUP).enumerate() {
+        let mut digits = [0u8; DIGITS];
+        key_words::to_digits(&self.secret, &mut digits);
+        let check = check_group(KeyFormat::Words, &digits[..SECRET_DIGITS]);
+        write_group(&mut digits[SECRET_DIGITS..], check);
+        let mut text = String::with_capacity(KeyFormat::Words.groups() * (GROUP + 1));
+        for (index, group) in digits.chunks(GROUP).enumerate() {
             if index > 0 {
                 text.push(' ');
             }
@@ -377,91 +322,19 @@ impl PhantomKey {
     }
 
     /// The key as 24 words separated by single spaces, the way it is shown to
-    /// the user; `None` for a digit key, which has no words.
+    /// the user. Every key has words, so this is always `Some`.
     pub fn format_words(&self) -> Option<FormattedKey> {
-        if self.format != KeyFormat::Words {
-            return None;
-        }
         let mut text = String::with_capacity(key_words::WORDS * 9);
         key_words::write_words(&self.secret, &mut text);
         Some(FormattedKey(text))
     }
 
-    /// Writes all the ASCII digits, checksum groups included, to the start of
-    /// `out` and returns how many there are.
-    fn write_digits(&self, out: &mut [u8; MAX_DIGITS]) -> usize {
-        let n = self.format.digit_count();
-        if self.format == KeyFormat::Words {
-            key_words::to_digits(&self.secret, out);
-            let check = check_group(KeyFormat::Words, 1, &out[..SECRET_DIGITS]);
-            write_group(&mut out[SECRET_DIGITS..], check);
-        } else {
-            out[..n].copy_from_slice(&self.digits[..n]);
-        }
-        n
-    }
-
-    /// Copies what follows the format code in the key bytes to the start of
-    /// `out` and returns how many bytes there are: the ASCII secret digits of
-    /// a digit key, in order and without the checksum groups, or the 32
-    /// secret bytes of a words key (spec 01, section 7).
+    /// Copies what follows the format code in the key bytes, the 32 secret
+    /// bytes, to the start of `out` and returns how many there are (spec 01,
+    /// section 7).
     pub(crate) fn copy_key_secret(&self, out: &mut [u8]) -> usize {
-        if self.format == KeyFormat::Words {
-            out[..SECRET_BYTES].copy_from_slice(&self.secret);
-            return SECRET_BYTES;
-        }
-        self.copy_secret_digits(out)
-    }
-
-    /// Copies the ASCII secret digits of a digit key, in order and without the
-    /// checksum groups, to the start of `out` and returns how many there are.
-    fn copy_secret_digits(&self, out: &mut [u8]) -> usize {
-        let n = self.format.secret_digit_count();
-        for (position, slot) in out[..n].iter_mut().enumerate() {
-            *slot = self.digits[Self::secret_position(position)];
-        }
-        n
-    }
-
-    /// Where secret digit number `position` sits among all the digits: the
-    /// second half's secret digits come after group 12.
-    fn secret_position(position: usize) -> usize {
-        if position < HALF_SECRET {
-            position
-        } else {
-            position + GROUP
-        }
-    }
-
-    /// The correct checksum groups of a digit key and the digit offset of
-    /// each.
-    fn expected_check_groups(&self) -> [(usize, u16); 2] {
-        let mut secret = [0u8; MAX_SECRET_DIGITS];
-        let n = self.copy_secret_digits(&mut secret);
-        let first = (HALF_SECRET, check_group(self.format, 1, &secret[..HALF_SECRET]));
-        let second = match self.format {
-            KeyFormat::Long => (HALF + HALF_SECRET, check_group(self.format, 2, &secret[..n])),
-            KeyFormat::Standard | KeyFormat::Words => first,
-        };
-        wipe(&mut secret);
-        [first, second]
-    }
-
-    fn fill_check_groups(&mut self) {
-        for (offset, value) in self.expected_check_groups() {
-            write_group(&mut self.digits[offset..], value);
-        }
-    }
-
-    fn verify_check_groups(&self) -> Result<(), KeyError> {
-        for (offset, value) in self.expected_check_groups() {
-            if read_group(&self.digits[offset..]) != value {
-                return Err(KeyError::ChecksumMismatch {
-                    group: offset / GROUP + 1,
-                });
-            }
-        }
-        Ok(())
+        out[..SECRET_BYTES].copy_from_slice(&self.secret);
+        SECRET_BYTES
     }
 }
 

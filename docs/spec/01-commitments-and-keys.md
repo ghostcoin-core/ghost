@@ -29,10 +29,9 @@ specification. Section 14 holds test vectors, and
 | Hash for commitments, markers, tree nodes and anything checked inside a proof | Keccak-256, original padding | Front desk decision; [benchmark results](../benchmarks/results.md) |
 | Hash for deriving secrets from the digits, the note key and the checksum | SHA3-256 (FIPS 202) | Front desk decision; use for the checksum **Proposed** |
 | Tags | Explicit ASCII strings with a version suffix, one per use, prefixed by their length; all listed in section 4 | Front desk decision; prefix **Proposed** |
-| Phantom Key | 24 words of the 2,048-word list: a 256-bit secret and an 8-bit check, about 128 bits against a quantum search; the same key can be shown as 21 groups of four digits. The default for new keys | Founder direction, 2026-10-20 (quantum-safe, easy to write down by hand); spec 09, section 4.2 |
-| Standard Phantom Key | Twelve groups of four digits, the last a checksum: 44 secret digits, about 146 bits. Issued before the words format; still accepted | Outline ("Phantom Keys") |
-| Long Phantom Key | Twenty-four groups: groups 12 and 24 are checksums, 88 secret digits, about 292 bits. Still accepted | Outline; layout **Proposed** |
-| Checksum | Words: the first byte of a tagged SHA3-256 of the secret. Digits: the tagged SHA3-256 of the digits before it, reduced modulo 10,000 | Front desk decision (author's choice); **Proposed** |
+| Phantom Key | 24 words of the 2,048-word list: a 256-bit secret and an 8-bit check, about 128 bits against a quantum search; the same key can be shown as 21 groups of four digits. The only key format: the twelve- and twenty-four-group digit keys are refused | Founder direction, 2026-10-20 (quantum-safe, easy to write down by hand); spec 09, section 4.2; digit keys removed, front desk decision 2026-10-25 |
+| Binding | Rests on a Keccak-256 collision: 128 classical bits, 85 quantum bits ([security](../scale/security.md)), distinct from the key's 128 bits against guessing (section 5) | Front desk decision, 2026-10-25; the 320-bit digest stays a founder call |
+| Checksum | Words: the first byte of a tagged SHA3-256 of the secret. Digit view: the tagged SHA3-256 of the 80 secret digits, reduced modulo 10,000 | Front desk decision (author's choice); **Proposed** |
 | What the key holds | Only the secret digits and the checksum: no amount, tree position or extra secret | Outline ("Do not carry over") |
 | Derivation | Each secret is the tagged SHA3-256 of the key bytes, one tag per secret | Outline ("Technical starting picks"); layout **Proposed** |
 | Remainder blinding | Derived from the digits and the commitment's hop number, used once per key on any one chain (section 8) | Outline ("Coin rules"; "Do not carry over"); counter **Proposed** |
@@ -187,8 +186,10 @@ cost is again about the square root of the key space. So:
 | Key | Version 2 leaf, one or all leaves | Version 1 leaf, all leaves at once (`N` about 2^33) |
 |---|---|---|
 | 24 words (256 bits) | about 256 bits classical, 128 quantum | about 223 classical, 111 quantum |
-| Standard, 12 groups (about 146 bits) | about 146 classical, 73 quantum | about 113 classical, 56 quantum |
-| Long, 24 groups (about 292 bits) | about 292 classical, 146 quantum | about 259 classical, 129 quantum |
+
+The twelve-group digit key (about 146 bits, 73 quantum) and the
+twenty-four-group one fell short of this or doubled every format, and are no
+longer accepted (section 5).
 
 Precomputation does not help either: no table built before a commit can hold
 its salt. Salts are 128 bits drawn at random, so two leaves share one with
@@ -309,18 +310,18 @@ Notes on the table:
 
 ## 5. Phantom Key format
 
-A Phantom Key is the digits returned on commit (outline, "Phantom Keys"). A new
-key is shown and typed as 24 words; keys issued earlier as groups of four
-decimal digits separated by spaces stay valid:
+A Phantom Key is the key returned on commit (outline, "Phantom Keys"). It is
+shown and typed as 24 words, or as its digit view of 21 groups of four decimal
+digits separated by spaces; both are the same key:
 
 ```text
 abandon amount liar amount expire adjust cage candy arch gather drum bullet
 absurd math era live bid rhythm alien crouch range attend journey trip
 
-1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417
+0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812
 ```
 
-- **Words key: 24 words, the default (founder direction, 2026-10-20).**
+- **Words key: 24 words, the only format (founder direction, 2026-10-20).**
   Quantum-safe and still easy to write down by hand. The key is 264 bits: a
   256-bit secret followed by an 8-bit check (section 6), read as 24 indexes of
   11 bits each, most significant bit first, into the 2,048-word BIP-39 English
@@ -339,35 +340,32 @@ absurd math era live bid rhythm alien crouch range attend journey trip
   A value of `2^256` or more in groups 1 to 20 is refused, since no words key
   has it. Words and digits give the same secret, the same key bytes and the
   same derived values (section 7).
-- **Standard key: twelve groups.** Groups 1 to 11 are the secret: 44 digits,
-  `10^44`, about 2^146.2 equally likely values, so about 146 bits of secret
-  (outline). Group 12 is the checksum (section 6). Against a quantum search
-  this gives about 73 bits, also against all its salted (version 2) leaves at
-  once; against version 1 leaves an attacker who targets any one of billions of
-  public commitments gets it down to about 56 (section 3, "Multi-target
-  guessing"; threat model, C20). New keys are no longer issued in this
-  format by default; every key already issued still restores and derives the
-  same values.
-- **Long key: twenty-four groups (Proposed layout).** The key is two halves of
-  twelve groups. Groups 1 to 11 and 13 to 23 are the secret: 88 digits, about
-  2^292.3 values, so about 292 bits, about 146 against a quantum search (threat
-  model, C20). Group 12 is a checksum over groups 1 to 11, and group 24 a
-  checksum over all 22 secret groups, so a mistyped half is found and named
-  before the second half is typed.
-- **Format code.** Words select code `0x20`, and so do 21 digit groups; for
-  other digits the number of groups selects the format: code `0x0C` for twelve
-  groups, `0x18` for twenty-four. The code enters the checksum and every
-  derivation, so the same secret in two formats gives unrelated secrets, and
-  the first half of a long key does not pass as a standard key (vector
-  `checksum-long-first-half` in section 14).
+- **No digit keys of twelve or twenty-four groups.** The digit keys issued
+  before the words format, twelve groups (44 secret digits, about 146 bits, so
+  about 73 against a quantum search) and twenty-four groups (88 secret digits),
+  are no longer generated or accepted. The twelve-group key fell below the
+  quantum-safe target of [spec 09](09-quantum-safe-accounts.md), section 4, and
+  both doubled every format code, checksum and derivation. A new chain holds no
+  leaf under them. Typed digits of 48 or 96, or of any count other than 84, are
+  refused before anything is derived.
+- **Format code.** The words format has code `0x20`, whether typed as words or
+  as its 21 digit groups. The code enters the checksum and every derivation.
+  The codes `0x0C` and `0x18` of the old digit keys are not used again.
+- **Binding.** The key's 128 bits against a quantum search are its strength
+  against guessing. Binding, that a commitment cannot be opened to two
+  different values, is a different property and has a different level: it
+  rests on finding a Keccak-256 collision: 128 classical bits and about 85
+  quantum bits (85.3 by the `t^3 / 2^L` term of
+  [security](../scale/security.md), modeled). A longer key does not raise it.
+  A longer digest would, for example 320 bits squeezed from the same sponge
+  (a 160-bit classical collision term); that changes the proof configuration
+  and stays a founder call recorded in [security](../scale/security.md). Until
+  it is taken, binding is stated at 128 classical bits and 85 quantum bits.
 - **Generation.** Always by the app from a secure random source (outline;
-  threat model, A6). A words key takes 32 bytes from the secure source as its
-  secret, then its check. For a digit key each secret digit is drawn
-  independently and uniformly: take one byte from the secure source, discard
-  it if it is 250 or more, and otherwise use its value modulo 10. Then append
-  the checksum groups. Any other method must produce the same uniform
-  distribution over all `2^256` (or `10^44`, or `10^88`) secret values. New
-  keys are words keys unless the caller asks for another format.
+  threat model, A6). A key takes 32 bytes from the secure source as its
+  secret, then its check. Any other method must produce the same uniform
+  distribution over all `2^256` secret values. No other format can be asked
+  for.
 - **Entry.** Text with a letter and no ASCII digit is read as words; any other
   text as digits. Words are case-insensitive and separated by any mix of
   spaces and hyphens. Only whole words of the list count: a word the list does
@@ -377,15 +375,16 @@ absurd math era live bid rhythm alien crouch range attend journey trip
   must be exactly 24 words, an error of its own, and then the check must pass,
   a separate error. Digits are accepted with any mix of spaces and hyphens
   between them; any other character, including a letter or a non-ASCII digit,
-  is rejected. After separators are removed there must be exactly 48, 84 or
-  96 digits. In every case the check is verified before anything is derived.
+  is rejected. After separators are removed there must be exactly 84 digits;
+  any other count, the 48 and 96 of the old digit keys among them, is refused.
+  In every case the check is verified before anything is derived.
 - **No fifteen-word key.** A shorter fallback of fifteen words (160 bits,
   about 80 against a quantum search) was considered and is not adopted: it
   would miss the target of [spec 09](09-quantum-safe-accounts.md), section 4,
   and 24 words is already a length people write down.
-- **What the key carries.** The secret digits and the checksum, nothing else.
+- **What the key carries.** The secret and its check, nothing else.
   It holds no amount, no tree position, no extra secret and no version field
-  beyond its length (outline, "Do not carry over": the old key was about 34
+  (outline, "Do not carry over": the old key was about 34
   groups because it held these). The amount, position, index and salt of the
   current remainder are found on the chain (section 8).
 - **No passphrase variant.** There is no passphrase-protected key, which would
@@ -417,24 +416,19 @@ pass a key field 1 time in 256, so the wallet closes the gap both ways (spec
 and its seed field refuses any words that do pass it. A seed the wallet
 generates, typed into a key field, always fails the check; a words key typed into a seed field is refused as
 a Phantom Key, and the screens that ask for one or the other never share a
-field. The words key shown as digits
-carries a check group of its own, `check(0x20, 0x01, digits)` below over its
-80 secret digits, as group 21.
+field.
 
-**Digit keys.** The checksum is the last group of four digits (front desk
-decision), and for a long key also group 12. Each check group is
+**Digit view.** The key shown as digits carries a check group of its own,
+the last group of four digits, group 21 (front desk decision):
 
 ```text
-check(code, part, digits) = int(S("ghost/key-check/v1", code, part, digits)) mod 10000
+check = int(S("ghost/key-check/v1", 0x20, 0x01, digits)) mod 10000
 ```
 
-written as four digits with leading zeros. `code` is the format code as one
-byte, `part` is one byte (`0x01` for group 12 and for group 21 of a words key,
-`0x02` for group 24), `digits` are the ASCII digits of the secret groups
-before the check group (groups 1 to 11 for group 12; groups 1 to 11 and 13 to
-23 for group 24; groups 1 to 20 for group 21), and `int` reads
-the 32-byte digest as a big-endian integer. The bias from reducing a 256-bit
-integer modulo 10,000 is below 2^-240.
+written as four digits with leading zeros. `0x20` is the format code as one
+byte, `0x01` one byte, `digits` the 80 ASCII digits of groups 1 to 20, and
+`int` reads the 32-byte digest as a big-endian integer. The bias from reducing
+a 256-bit integer modulo 10,000 is below 2^-240.
 
 **Why this algorithm (Proposed).** It is a truncated standard hash, the same
 construction that BIP-39 mnemonics and Base58Check addresses use (a prefix of
@@ -448,14 +442,14 @@ digits:
   ISO/IEC 7064 MOD 97-10) guarantee to catch a single wrong digit or an
   adjacent swap, but they produce one or two check digits and miss other
   errors far more often: with two check digits, as in MOD 97-10, about 1 in
-  100 random errors passes, against 1 in 10,000 here. With twelve groups to type, group
+  100 random errors passes, against 1 in 10,000 here. With 21 groups to type, group
   swaps and multiple typos are the errors that matter, and four digits of
   check spent on a single-error guarantee would buy less.
 - **No second algorithm.** SHA3-256 is already needed for derivation
   (section 7), so the checksum adds no primitive to implement or review.
 - **No secret in the checksum.** The check is a function of the secret digits
-  and costs none of the 146 bits. It does let a guesser discard 9,999 in
-  10,000 wrong guesses offline, but the guesser still has `10^44` candidates
+  and costs none of the 256 bits. It does let a guesser discard 9,999 in
+  10,000 wrong guesses offline, but the guesser still has `2^256` candidates
   to run through, and the same guesses can be checked against the chain
   anyway.
 
@@ -483,16 +477,11 @@ hashing"). The digits are all that is needed; nothing else is stored.
 **Key bytes.** The input to every derivation is
 
 ```text
-words key:  key_bytes = 0x20 || the 32 secret bytes
-digit key:  key_bytes = code || secret digits as ASCII
+key_bytes = 0x20 || the 32 secret bytes
 ```
 
-A words key gives 33 key bytes, the same whether it was typed as words or as
-its 21 digit groups. For a digit key, `code` is the format code (`0x0C` or
-`0x18`) and the secret digits are the 44 or 88 digits of the secret groups in
-order, without the checksum groups and without separators. A standard key
-gives 45 key bytes, a long key 89. The derived-value tags below are the same
-for every format.
+A key gives 33 key bytes, the same whether it was typed as words or as its 21
+digit groups.
 
 **Derived values (Proposed layout).**
 
@@ -519,9 +508,9 @@ value, so there is no reduction step and no value to reject.
   draws it at random for each commitment (section 3) and reads it back from
   the chain on restore.
 - **No stretching.** The key is random, not chosen by a person, so a slow
-  password hash would add little: at about 146 bits an exhaustive search is out
+  password hash would add little: at 256 bits an exhaustive search is out
   of reach either way. An optional slow hash before derivation was considered
-  for the words key and is not adopted: with a 256-bit secret there is nothing
+  and is not adopted: with a 256-bit secret there is nothing
   for it to add, and it would slow restore on a phone.
 
 ## 8. Remainder and the current commitment
@@ -744,7 +733,7 @@ later scheme can be added and old commitments migrated safely (outline,
 | Commitment format version | `0x02` salted, the only version a wallet makes; `0x01` without salt, valid for leaves already on a chain | First byte of every type tag; inside `F` and `C` |
 | Type | `0x01` coin, `0x02` data | Second byte of the type tag |
 | Type tags | Version 2: `COIN` `0x02 0x01`, `DATA` `0x02 0x02`. Version 1: `COIN` `0x01 0x01`, `DATA` `0x01 0x02` | Inside `F` and `C`; the note |
-| Key format code | `0x20` words (24 words, or 21 digit groups), `0x0C` standard, `0x18` long | Implied by words or the number of groups; first byte of the key bytes and the checksum input |
+| Key format code | `0x20` words (24 words, or 21 digit groups), the only code; `0x0C` and `0x18` of the removed digit keys are not reused | First byte of the key bytes and the checksum input |
 | Note version | `0x02` with the salt, the note of a version 2 commitment and the only version a wallet writes; `0x01` without salt, valid for notes already on a chain. Each is read only with a type tag of its own version | Byte 0 of the note plaintext |
 | Scheme ID | `0x01` | Byte 1 of the note plaintext; implied by commitment format versions 1 and 2 |
 
@@ -874,13 +863,22 @@ Each has a default that this document already applies.
 1. **Checksum algorithm.** Truncated SHA3-256 catches every kind of mistake at 1
    in 10,000, but does not guarantee to catch a single wrong digit. Default:
    truncated SHA3-256 (section 6).
-2. **Long key layout.** Two checksum groups, so about 292 bits as the threat
-   model states, or one checksum group and 23 secret groups (about 305 bits)?
-   Default: two checksum groups.
+2. **Binding digest length.** Binding rests on a Keccak-256 collision, 128
+   classical and 85 quantum bits; a 320-bit digest would raise it, at the cost
+   of a change to the proof configuration. Default: the 256-bit digest, stated
+   at 85 quantum bits (section 5); the call is recorded in
+   [security](../scale/security.md).
 3. **Note scheme.** ChaCha20-Poly1305 with a random nonce, or another standard
    authenticated encryption scheme? Default: ChaCha20-Poly1305.
 4. **Coin content fingerprint.** 32 zero bytes for coins, or a fixed tagged
    constant? Default: 32 zero bytes.
+
+The digit keys of section 14 use the retired twelve-group digit format (and,
+for the `checksum-long` and `derivation-long` vectors, the retired
+twenty-four-group one: check groups `int(S("ghost/key-check/v1", code, part,
+digits)) mod 10000` and key bytes `code || secret digits as ASCII`, codes
+`0x0C` and `0x18`), kept as fixed test data only, which the client no longer
+makes or accepts (section 5).
 
 ## 14. Test vectors
 

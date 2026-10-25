@@ -4,7 +4,9 @@
 Reads every vector block in the "Test vectors" section of
 docs/spec/01-commitments-and-keys.md, recomputes the Phantom Key checksum and
 every derivation from the rules in that document, and exits nonzero on any
-mismatch. It also checks that the tag table lists exactly the tags used here,
+mismatch. It reads a words key from its digit view (code 0x20, the 80 secret
+digits and their check group) and the retired twelve- and twenty-four-group
+digit keys that the vectors keep as fixed test data. It also checks that the tag table lists exactly the tags used here,
 with the right input sizes, that the same secret under two salts gives
 unrelated fingerprints, commitments and markers, and that every note vector
 has a type tag of its note version and is the note of a commitment vector.
@@ -175,6 +177,14 @@ ALL_TAGS = {
     TAG_HOLD_BINDING,
 }
 
+# The one key format (section 5): a words key, read here from its digit view of
+# 21 groups, the 80 secret digits and the check group 21.
+FORMAT_WORDS = 0x20
+WORDS_GROUPS = 21
+WORDS_SECRET_GROUPS = 20
+SECRET_LIMIT = 1 << 256
+# The retired twelve- and twenty-four-group digit keys. The client no longer
+# makes or accepts them; the vectors of section 14 keep them as test data.
 FORMAT_12 = 0x0C
 FORMAT_24 = 0x18
 
@@ -248,11 +258,14 @@ def parse_key(text):
     if not (digits.isascii() and digits.isdigit()):
         raise ValueError(f"key has characters other than digits: {text!r}")
     groups = [digits[i : i + 4] for i in range(0, len(digits), 4)]
+    if len(digits) == 4 * WORDS_GROUPS:
+        return FORMAT_WORDS, groups[:WORDS_SECRET_GROUPS], groups[WORDS_SECRET_GROUPS:]
     if len(digits) == 48:
         return FORMAT_12, groups[:11], [groups[11]]
     if len(digits) == 96:
         return FORMAT_24, groups[:11] + groups[12:23], [groups[11], groups[23]]
-    raise ValueError(f"key must have 12 or 24 groups of four digits: {text!r}")
+    raise ValueError(f"key must have 21 groups of four digits (or 12 or 24 in a "
+                     f"retired test vector): {text!r}")
 
 
 def _check_group(fmt, part, payload_groups):
@@ -261,13 +274,33 @@ def _check_group(fmt, part, payload_groups):
 
 
 def compute_checks(fmt, payload):
+    if fmt == FORMAT_WORDS:
+        # The check group 21 over the 80 secret digits (section 6).
+        if len(payload) != WORDS_SECRET_GROUPS:
+            raise ValueError(f"a key has {WORDS_SECRET_GROUPS} secret groups, not {len(payload)}")
+        return [_check_group(fmt, 1, payload)]
     if fmt == FORMAT_12:
         return [_check_group(fmt, 1, payload[:11])]
-    return [_check_group(fmt, 1, payload[:11]), _check_group(fmt, 2, payload)]
+    if fmt == FORMAT_24:
+        return [_check_group(fmt, 1, payload[:11]), _check_group(fmt, 2, payload)]
+    raise ValueError(f"unknown key format code {fmt:02x}")
+
+
+def in_range(fmt, payload):
+    """A words key's 80 secret digits, read in decimal, are below 2^256."""
+    return fmt != FORMAT_WORDS or int("".join(payload)) < SECRET_LIMIT
 
 
 def key_bytes(fmt, payload):
-    return bytes([fmt]) + "".join(payload).encode("ascii")
+    """`0x20 || the 32 secret bytes` for a words key; `code || secret digits as
+    ASCII` for a retired digit key."""
+    if fmt == FORMAT_WORDS:
+        if not in_range(fmt, payload):
+            raise ValueError("the 80 secret digits are 2^256 or more")
+        return bytes([fmt]) + int("".join(payload)).to_bytes(32, "big")
+    if fmt in (FORMAT_12, FORMAT_24):
+        return bytes([fmt]) + "".join(payload).encode("ascii")
+    raise ValueError(f"unknown key format code {fmt:02x}")
 
 
 def valid_key_bytes(text):
@@ -491,7 +524,8 @@ def check_checksum(ch, v):
     computed = compute_checks(fmt, payload)
     ch.expect(v, "format", f"{fmt:02x}")
     ch.expect(v, "check", " ".join(computed))
-    ch.expect(v, "valid", "yes" if checks == computed else "no")
+    ok = checks == computed and in_range(fmt, payload)
+    ch.expect(v, "valid", "yes" if ok else "no")
 
 
 def check_derivation(ch, v):

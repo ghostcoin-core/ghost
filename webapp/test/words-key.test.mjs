@@ -2,8 +2,8 @@
 // the client library's parse (any case, spaces or hyphens between words,
 // whole words only, the check verified before anything is derived), a wrong
 // or swapped word is refused with a message that names at most a position
-// and holds no word of the key, and the keys issued before the words, twelve
-// digit groups, still restore.
+// and holds no word of the key, and the digit keys of twelve or twenty-four
+// groups issued before the words are refused.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -20,8 +20,8 @@ const ghost = await loadModule();
 const WORDS =
   "abandon amount liar amount expire adjust cage candy arch gather drum bullet absurd math era live bid rhythm alien crouch range attend journey trip";
 const DIGITS = "0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812";
-// Spec 01, vector coin-commit: a key of twelve digit groups, issued before
-// the words. An example only.
+// The retired twelve-group key of spec 01's vectors, refused now. An example
+// only.
 const OLD_KEY = "1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417";
 const GHOST = 10n ** 18n;
 
@@ -151,26 +151,57 @@ test("a swapped word is refused", () => {
   assert.throws(() => ghost.checkKey(digit), refusedWithout(list, /group 21/));
 });
 
-test("an old 12-group key still restores", async () => {
-  // In the module: it parses as a key of twelve groups, its version 1 coin
-  // restores without a salt, and it can still make a version 1 commit.
-  assert.deepEqual(ghost.checkKey(OLD_KEY), { format: "standard", groups: 12 });
-  assert.deepEqual(ghost.checkKey(OLD_KEY.replaceAll(" ", "-")), { format: "standard", groups: 12 });
-  assert.equal(ghost.keyDigits(OLD_KEY), OLD_KEY, "its digit view is itself");
-  const v1 = ghost.commit({ version: 1, chainId: 7n, amount: GHOST, seed: random(32), key: OLD_KEY });
-  assert.equal(toHex(v1.commitment), "0x562d92a92bb8f2b3b772b55220a5ee26f189bedc0f4bfa513205df1545029458", "spec 01, vector coin-commit");
-  const found = ghost.restore({ chainId: 7n, key: OLD_KEY, records: concat([v1.commitment, v1.payload.slice(34)]), markers: new Uint8Array(0) });
+test("an old 12- or 24-group digit key is refused", async () => {
+  // In the module: refused by its count of digits, and nothing is derived
+  // from it: no digit view, no commit, no restore.
+  const LONG_KEY = `${OLD_KEY} ${OLD_KEY}`;
+  for (const [typed, count] of [
+    [OLD_KEY, 48],
+    [OLD_KEY.replaceAll(" ", "-"), 48],
+    [LONG_KEY, 96],
+  ]) {
+    const refusal = refusedWithout([], new RegExp(`has 84 digits, not ${count}`));
+    assert.throws(() => ghost.checkKey(typed), refusal, typed);
+    assert.throws(() => ghost.keyDigits(typed), refusal);
+    assert.throws(() => ghost.commit({ version: 1, chainId: 7n, amount: GHOST, seed: random(32), key: typed }), refusal);
+    assert.throws(() => ghost.restore({ chainId: 7n, key: typed, records: new Uint8Array(0), markers: new Uint8Array(0) }), refusal);
+  }
+
+  // Through the app: Summon refuses it before anything is asked of the
+  // endpoint.
+  const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
+  const prover = nodeProver();
+  try {
+    const flow = createFlow({ prover, endpoint: node.url, networks: node.networks(), pollMs: 5, sleep: async () => node.mine() });
+    const before = node.requests.length;
+    for (const typed of [OLD_KEY, ` ${OLD_KEY.replaceAll(" ", "\n")} `, LONG_KEY]) {
+      await assert.rejects(flow.summonOpen(typed), /has 84 digits, not (48|96)/);
+    }
+    assert.equal(node.requests.length, before);
+  } finally {
+    prover.terminate();
+    await node.close();
+  }
+});
+
+test("a version 1 coin of a words key still restores", async () => {
+  // In the module: the coin-commit vector of client/tests/first_slice.rs,
+  // under the example key as its digit view; its version 1 coin restores
+  // without a salt.
+  const v1 = ghost.commit({ version: 1, chainId: 7n, amount: GHOST, seed: random(32), key: DIGITS });
+  assert.equal(toHex(v1.commitment), "0x9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c", "vector coin-commit of a words key");
+  const found = ghost.restore({ chainId: 7n, key: WORDS, records: concat([v1.commitment, v1.payload.slice(34)]), markers: new Uint8Array(0) });
   assert.equal(found.length, 1);
   assert.equal(found[0].salt, null);
   assert.equal(found[0].amount, GHOST);
 
-  // Through the app, against the stand-in: a version 1 commit of the old key
+  // Through the app, against the stand-in: a version 1 commit of the key
   // sent before the salt, then Summon with the key as it was written down.
   const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
   const prover = nodeProver();
   try {
     node.foreignCommits(2);
-    const commit = ghost.commit({ version: 1, chainId: node.chainId, amount: GHOST, seed: random(32), key: OLD_KEY });
+    const commit = ghost.commit({ version: 1, chainId: node.chainId, amount: GHOST, seed: random(32), key: DIGITS });
     const wallet = node.wallet("0x1111111111111111111111111111111111111111");
     await wallet.request({
       method: "eth_sendTransaction",
@@ -179,17 +210,17 @@ test("an old 12-group key still restores", async () => {
     node.foreignCommits(1);
     node.mineTo(44);
     const flow = createFlow({ prover, endpoint: node.url, networks: node.networks(), pollMs: 5, sleep: async () => node.mine() });
-    for (const typed of [OLD_KEY, OLD_KEY.replaceAll(" ", "-"), ` ${OLD_KEY.replaceAll(" ", "\n")} `]) {
+    for (const typed of [DIGITS, DIGITS.replaceAll(" ", "-"), ` ${DIGITS.replaceAll(" ", "\n")} `, WORDS]) {
       const s = await flow.summonOpen(typed);
-      assert.equal(s.format, "standard");
-      assert.equal(s.groups, 12);
+      assert.equal(s.format, "words");
+      assert.equal(s.groups, 21);
       assert.equal(s.status, "unclaimed");
       assert.equal(s.current.amount, GHOST);
       assert.equal(s.coins.length, 1);
     }
     // A typo in it is refused before anything is asked of the endpoint.
     const before = node.requests.length;
-    await assert.rejects(flow.summonOpen(`${OLD_KEY.slice(0, -1)}8`), /group 12 does not match/);
+    await assert.rejects(flow.summonOpen(`${DIGITS.slice(0, -1)}8`), /group 21 does not match/);
     assert.equal(node.requests.length, before);
   } finally {
     prover.terminate();

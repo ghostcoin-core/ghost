@@ -445,10 +445,10 @@ pub extern "C" fn ghost_new_key(ptr: *const u8, len: usize) -> u32 {
     })
 }
 
-/// Checks a typed key, words or digits, with its check. Input: the text.
-/// Output: the format code (1: `0x0C` twelve groups, `0x18` twenty-four,
-/// `0x20` words) and the number of groups of its digit view (1: 12, 24 or
-/// 21).
+/// Checks a typed key, words or its 21 digit groups, with its check; digits
+/// of any other count, such as the 12 or 24 groups of the old digit keys, are
+/// refused. Input: the text. Output: the format code (1: `0x20`, the only
+/// one) and the number of groups of its digit view (1: 21).
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_check_key(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
@@ -458,9 +458,8 @@ pub extern "C" fn ghost_check_key(ptr: *const u8, len: usize) -> u32 {
     })
 }
 
-/// A key's digit view: groups of four digits separated by single spaces, 21
-/// for a words key, 12 or 24 for a digit key. Input: the key text, words or
-/// digits. Output: the groups.
+/// A key's digit view: 21 groups of four digits separated by single spaces.
+/// Input: the key text, words or digits. Output: the groups.
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_key_digits(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {

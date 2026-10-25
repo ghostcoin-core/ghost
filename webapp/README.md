@@ -8,11 +8,10 @@ library, which runs in a background worker as WebAssembly.
 
 A new Phantom Key is 24 words (it can also be shown as 21 groups of digits),
 and every coin's commit carries its own random salt, so the key keeps about
-128 bits of strength even against a quantum search. Keys issued earlier as
-twelve groups of digits still open, reveal and claim; they hold a smaller,
-unsalted secret and are not called quantum-safe. You type a key as its words
-(any case, spaces or hyphens between them) or as its digits; a key whose
-check fails is refused before anything is derived from it, and a wrong word
+128 bits of strength even against a quantum search. You type a key as its words
+(any case, spaces or hyphens between them) or as its 21 groups of digits.
+Digits of any other count are refused, a key whose check fails is refused
+before anything is derived from it, and a wrong word
 is named by its position, never corrected.
 
 **Experimental.** Nothing here has been audited. Do not use it for anything
