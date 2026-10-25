@@ -138,6 +138,73 @@ test("a Summon whose coin's block never gets 2 deep gives up after the flow's po
   }
 });
 
+// The endpoint's requests from request `from` up to the reveal's send, with
+// hashes left out and block numbers counted from the tip `base` at which
+// Summon was pressed: what the endpoint can tell apart before the reveal.
+function beforeSend(node, from, base) {
+  const calls = node.requests.slice(from).map((r) => JSON.stringify([r.method, r.params]));
+  const sent = calls.findIndex((c) => c.startsWith('["eth_sendRawTransaction"'));
+  assert.ok(sent > 0, "the reveal was sent");
+  return calls.slice(0, sent).map((c) =>
+    c
+      .replace(/0x[0-9a-f]{64}/g, "0xhash")
+      .replace(/^\["eth_getBlockByNumber",\["(0x[0-9a-f]+)"/, (_, n) => {
+        const number = Number(BigInt(n));
+        return `["eth_getBlockByNumber",["${number === 0 ? "genesis" : `tip${number - base >= 0 ? "+" : ""}${number - base}`}"`;
+      }),
+  );
+}
+
+// A page whose history is the same every time: a Vanish of key `early`,
+// empty blocks to 40, then a Vanish of key `fresh` at block `young`, the
+// tip. Then `which` of the two keys is opened and summoned at once; the
+// requests from the press up to the send, the tip at the press and the
+// tips the flow proved at.
+async function summonOnePage(which) {
+  const { node, flow, chain, proofs, done } = await setUp();
+  try {
+    const keys = { early: await vanish(flow, "1") };
+    node.mineTo(40);
+    chain.mining = false;
+    keys.fresh = await vanish(flow, "1");
+    const young = node.leaves.at(-1).block;
+    assert.equal(node.tip(), young);
+    const { wait } = await flow.summonOpen(keys[which]);
+    const coinBlock = node.leaves[which === "early" ? 0 : 1].block;
+    chain.mining = true;
+    const base = node.tip();
+    const from = node.requests.length;
+    const reveal = await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
+    assert.equal(reveal.stage, "done");
+    assert.equal(node.reveals.length, 1);
+    return { young, coinBlock, wait: wait && { ...wait }, base, requests: beforeSend(node, from, base), proofs: [...proofs] };
+  } finally {
+    await done();
+  }
+}
+
+test("the requests before a Summon's send do not depend on the coin's block", { timeout: 600_000, skip: BUILT }, async () => {
+  // The same page history; one summons the coin of the block at the tip,
+  // the other a coin about 40 blocks deep.
+  const fresh = await summonOnePage("fresh");
+  const early = await summonOnePage("early");
+  assert.equal(fresh.young, early.young);
+  assert.equal(fresh.coinBlock, fresh.young, "a coin 0 blocks deep");
+  assert.ok(early.coinBlock + 32 < early.young, "a coin long settled");
+  assert.deepEqual(fresh.wait, { message: settleWait(fresh.young), from: fresh.young + SETTLE_DEPTH });
+  assert.equal(early.wait, null);
+  assert.equal(fresh.base, early.base, "Summon pressed at the same tip");
+
+  // Both wait for the page's own newest block, the Vanish the endpoint
+  // took, to be 2 deep: the tip, polls until it has moved 2 blocks, then
+  // one scan, the proof's place and the fee, the same requests in the same
+  // order, whichever coin the key holds.
+  assert.ok(fresh.requests.filter((r) => r.startsWith('["eth_blockNumber"')).length >= 3, "the tip was polled");
+  assert.deepEqual(early.requests, fresh.requests, "an old coin and a coin 0 blocks deep ask the same before the send");
+  assert.deepEqual(fresh.proofs, [{ tip: fresh.young + SETTLE_DEPTH, real: true }]);
+  assert.deepEqual(early.proofs, fresh.proofs, "each proved once, at the same tip");
+});
+
 // --- The page: app.mjs on a stand-in page with a stand-in flow ---
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");

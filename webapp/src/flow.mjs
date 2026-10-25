@@ -231,8 +231,9 @@ export function isHeadMoved(err) {
 }
 
 // The reveal cannot be made yet; the message says what it waits for.
-// `from` is the first tip at which it can be: a Summon waits for that block
-// by itself and then goes on.
+// `from` is the first tip at which it can be. A Summon does not wait for
+// that block in particular: every Summon waits the same SETTLE_DEPTH blocks
+// first (settleFirst), which covers it.
 export class WaitError extends Error {
   constructor(message, { from }) {
     super(message);
@@ -908,6 +909,10 @@ export function createFlow({
   // worker checked and keeps. One per page session; another network starts
   // it again.
   let headerChain = null;
+  // The records of the transactions this page sent that a block held: its
+  // Vanish commits, reveals and claims, each kept up to date by its recheck
+  // (a reorganisation can make one dropped). settleFirst waits on them.
+  const ownSent = [];
   const state = {
     endpoint: rpc.url,
     commitEntry,
@@ -1412,6 +1417,23 @@ export function createFlow({
     return top;
   }
 
+  // Before a Summon is scanned and proved: the tip once, then a poll every
+  // `pollMs` until the newest block holding a transaction this page sent
+  // and shows Done (a Vanish commit, a reveal or a claim, in `ownSent`) is
+  // SETTLE_DEPTH deep, then the Summon goes on with no step from the holder.
+  // The page sent each of those transactions through the endpoint, so the
+  // endpoint already knows their blocks, and the wait is the same whichever
+  // key is summoned and whatever block holds its coin: it does not tell
+  // the endpoint whether the key's coin is new or where it is. A coin this
+  // page committed or left as a remainder is then settled; one from another
+  // device whose block is not yet 2 deep fails as any reveal that cannot be
+  // made does. `stage` is shown meanwhile, only on the page.
+  async function settleFirst(stage) {
+    const top = await blockNumber();
+    const own = ownSent.filter((r) => r.stage === "done").map((r) => r.block);
+    return untilBlock(own.length === 0 ? top : Math.max(...own) + SETTLE_DEPTH, top, stage);
+  }
+
   // A receipt is the endpoint's word only. A transaction sent when the
   // endpoint's tip was block `sentAfter` can only be in a later block. It
   // counts as settled when the chain shows what it did: the coin trees as
@@ -1527,6 +1549,7 @@ export function createFlow({
     }
     record.stage = "done";
     record.dropped = null;
+    if (!ownSent.includes(record)) ownSent.push(record);
     const receipt = await receiptOf(record.txHash).catch(() => null);
     if (receipt && receipt.blockHash && receipt.blockNumber <= top) {
       const header = await headerAt(receipt.blockNumber);
@@ -1626,11 +1649,10 @@ export function createFlow({
   // failure surface, or the reveal go out; sending the reveal is what links
   // the connection to the coin.
   //
-  // The one exception is a coin whose block is not yet SETTLE_DEPTH deep
-  // (planReveal's WaitError): nothing is proved, the page polls the tip
-  // every `pollMs` (untilBlock, showing the WaitError's plain line) until
-  // that block is, then scans and goes on as above with no further step
-  // from the holder. That wait is about reorganisations, not privacy.
+  // A Summon comes here only after settleFirst, so a coin this page
+  // committed or left as a remainder is already SETTLE_DEPTH deep. A coin
+  // that is not (planReveal's WaitError: one from another device, or after a
+  // reorganisation) fails as above, its wait never shown to the endpoint.
   //
   // A send the node refuses because its head kept moving while it checked
   // the reveal (HEAD_MOVED) is the only one followed by more requests: after
@@ -1677,12 +1699,6 @@ export function createFlow({
         const { treeIndex = 0 } = keyStatus(scan.found).current;
         pinned ??= { ...(treeIndex > 0 ? { treeIndex } : {}), number: args.number, position: args.position, amount: args.amount };
       } catch (err) {
-        // The coin's block is not yet SETTLE_DEPTH deep: the page watches
-        // the blocks itself, showing the plain line, and goes on once it is.
-        if (err instanceof WaitError) {
-          await untilBlock(err.from, scan.chain.tip.number, err.message);
-          continue attempts;
-        }
         failure = err;
       }
       let proved = null;
@@ -1944,6 +1960,7 @@ export function createFlow({
       record.stage = "done";
       record.block = receipt.blockNumber;
       record.blockHash = receipt.blockHash;
+      if (!ownSent.includes(record)) ownSent.push(record);
       return receipt;
     } catch (err) {
       if (err instanceof DroppedError) {
@@ -2224,6 +2241,9 @@ export function createFlow({
           };
           emit();
         };
+        // The same wait for every key (settleFirst); while the coin's block
+        // is not yet 2 deep the page shows its plain line.
+        await settleFirst(s.wait ? s.wait.message : "waiting for the chain to move on");
         const sent = await revealAndSend({ key: s.key, kind: "partial", out, recipient: to, onSent, pinned: s.pinned });
         progress("checking the block");
         await settleSummon(s, s.lastReveal, "reveal", sent.remainder.commitment, () =>
