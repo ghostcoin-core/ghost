@@ -1,8 +1,8 @@
 // No forced wait before a reveal (spec 02, section 8): planReveal proves
-// against the root of the block 2 below the tip as soon as that block is at
-// or above the coin's block, and reports how many coins that root covers.
-// Nobody else has to commit first: the coin's own block's root is used once
-// it is 2 deep. Until then it waits with one plain line.
+// against the root of the block 2 below the tip as soon as that block's tree
+// holds a leaf added after the coin's block, reports how many coins that
+// root covers, and waits with a plain warning when nobody has committed
+// since the coin, never proving against the coin's own block root.
 //
 // Nothing is built: the prover is a stub whose chooseTreeState is a copy of
 // choose_tree_state for one candidate (client/src/tree_state.rs).
@@ -12,14 +12,14 @@ import test from "node:test";
 
 import { toHex } from "../src/bytes.mjs";
 import { SETTLE_DEPTH } from "../src/chain.mjs";
-import { LEAF_WINDOW, WaitError, leafBlock, planReveal, settleWait } from "../src/flow.mjs";
+import { ALONE_WARNING, LEAF_WINDOW, WaitError, leafBlock, planReveal } from "../src/flow.mjs";
 
 const rootOf = (count) => new Uint8Array(32).fill(count);
 
-// choose_tree_state for one candidate: a root SETTLE_DEPTH deep, at or
-// above the leaf's block, whatever its root.
-function rule({ tip, leafHeight, height }) {
-  return height + 2 <= tip && height >= leafHeight;
+// choose_tree_state for one candidate: a root SETTLE_DEPTH deep, above the
+// leaf's block, that is not that block's root.
+function rule({ tip, leafHeight, leafRoot, height, root }) {
+  return height + 2 <= tip && height > leafHeight && toHex(root) !== toHex(leafRoot);
 }
 
 function stubProver() {
@@ -66,7 +66,7 @@ const quiet = (n) => (n >= 50 ? 3 : n >= 3 ? 2 : 0);
 // A stranger commits leaf 3 at block 51, the block after the coin.
 const followed = (n) => (n >= 51 ? 4 : quiet(n));
 
-test("a coin is revealed against the root 2 blocks below the tip, the newest settled one", async () => {
+test("a coin is revealed against the root 2 blocks below the tip, right after a later commit", async () => {
   assert.equal(SETTLE_DEPTH, 2);
   const prover = stubProver();
   const plan = await planReveal(prover, scanAt(53, followed), COIN);
@@ -75,6 +75,7 @@ test("a coin is revealed against the root 2 blocks below the tip, the newest set
   assert.equal(plan.covers, 4, "the root covers the four coins in block 51's tree");
   assert.equal(plan.leaves.length, 4 * 32, "proved over exactly those leaves");
   assert.equal(plan.fee, 7n);
+  assert.notEqual(toHex(plan.root), toHex(prover.asked[0].leafRoot), "not the coin's own block root");
   assert.equal(prover.asked[0].leafHeight, 50);
 
   // Later, always the newest settled root, covering every coin by then.
@@ -84,45 +85,38 @@ test("a coin is revealed against the root 2 blocks below the tip, the newest set
   assert.equal(later.covers, 9);
 });
 
-test("a coin nobody committed after is revealed once its own block is 2 deep", async () => {
-  for (const tip of [52, 53, 60, 200]) {
-    const prover = stubProver();
-    const plan = await planReveal(prover, scanAt(tip, quiet), COIN);
-    assert.equal(plan.height, tip - 2);
-    assert.equal(toHex(plan.root), toHex(rootOf(3)), "the tree that ends with the coin's own block");
-    assert.equal(plan.covers, 3, "it covers every coin up to and with this one");
-    assert.equal(plan.leaves.length, 3 * 32);
-    assert.equal(prover.asked.length, 1);
-  }
-  // At tip 52 that is the root of the coin's own block, asked for as such.
-  const prover = stubProver();
-  await planReveal(prover, scanAt(52, quiet), COIN);
-  assert.equal(prover.asked[0].height, 50);
-  assert.equal(toHex(prover.asked[0].root), toHex(prover.asked[0].leafRoot));
-});
-
-test("a coin whose block is not yet 2 deep waits with one plain line naming the block it goes on at", async () => {
-  for (const [count, tip] of [
-    [quiet, 50],
-    [quiet, 51],
-    [followed, 51],
-  ]) {
-    await assert.rejects(planReveal(stubProver(), scanAt(tip, count), COIN), (err) => {
+test("a later commit not yet 2 blocks deep names the block from which the coin can be revealed", async () => {
+  for (const tip of [51, 52]) {
+    await assert.rejects(planReveal(stubProver(), scanAt(tip, followed), COIN), (err) => {
       assert.ok(err instanceof WaitError);
-      assert.equal(err.from, 52, "the coin's block 50, 2 deep");
-      assert.equal(err.message, settleWait(50));
-      assert.match(err.message, /block 50, is not yet 2 blocks deep; the Summon goes on by itself at block 52$/);
-      assert.equal(Object.keys(err).includes("alone"), false);
+      assert.equal(err.alone, false);
+      assert.match(err.message, /committed after this one in block 51; this coin can be revealed from block 53/);
       return true;
     });
   }
-  // A coin added in the last two blocks of a long chain, alone, too.
-  const fresh = (n) => (n >= 59 ? 3 : 2);
-  await assert.rejects(planReveal(stubProver(), scanAt(60, fresh), COIN), (err) => err instanceof WaitError && err.from === 61);
-  assert.equal((await planReveal(stubProver(), scanAt(61, fresh), COIN)).height, 59);
 });
 
-test("a coin older than the headers read is revealed, followed or not", async () => {
+test("a coin with no later leaf waits with a plain warning and never uses its own block root", async () => {
+  for (const tip of [52, 53, 60, 200]) {
+    const prover = stubProver();
+    await assert.rejects(planReveal(prover, scanAt(tip, quiet), COIN), (err) => {
+      assert.ok(err instanceof WaitError, "the app waits");
+      assert.equal(err.alone, true);
+      assert.equal(err.message, ALONE_WARNING);
+      assert.match(err.message, /^nobody has committed a coin since this one/);
+      assert.match(err.message, /ties the reveal to its commit/);
+      return true;
+    });
+    // The only settled root is the coin's own block root, and it is refused.
+    assert.equal(prover.asked.length, 1);
+    assert.equal(toHex(prover.asked[0].root), toHex(prover.asked[0].leafRoot));
+  }
+  // A coin added in the last two blocks, alone, gets the same warning.
+  const fresh = (n) => (n >= 59 ? 3 : 2);
+  await assert.rejects(planReveal(stubProver(), scanAt(60, fresh), COIN), (err) => err instanceof WaitError && err.alone);
+});
+
+test("a coin older than the headers read, followed before them, is still revealed", async () => {
   // The coin at block 5, a stranger at block 10, nothing after: at tip 100
   // the headers start at block 66.
   const old = (n) => (n >= 10 ? 4 : n >= 5 ? 3 : 2);
@@ -132,9 +126,7 @@ test("a coin older than the headers read is revealed, followed or not", async ()
   const plan = await planReveal(stubProver(), scan, COIN);
   assert.equal(plan.height, 98);
   assert.equal(plan.covers, 4);
-  // Without the stranger it is revealed too.
+  // Without the stranger it waits.
   const alone = (n) => (n >= 5 ? 3 : 2);
-  const lone = await planReveal(stubProver(), scanAt(100, alone), COIN);
-  assert.equal(lone.height, 98);
-  assert.equal(lone.covers, 3);
+  await assert.rejects(planReveal(stubProver(), scanAt(100, alone), COIN), (err) => err instanceof WaitError && err.alone);
 });

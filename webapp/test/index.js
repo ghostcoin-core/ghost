@@ -21,4 +21,3 @@ import "./midnight-violet.test.mjs";
 import "./vanish-screens.test.mjs";
 import "./summon-screens.test.mjs";
 import "./summon-confirm.test.mjs";
-import "./summon-auto-wait.test.mjs";

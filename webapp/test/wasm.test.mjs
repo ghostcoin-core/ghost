@@ -141,19 +141,14 @@ test("keys: new keys are 24 words, typed keys are checked, errors hold no word o
   assert.equal(ghost.keyDigits(VECTOR_KEY), VECTOR_KEY);
 });
 
-test("the tree-state rule takes a settled candidate at or above the leaf's block, its own root included", () => {
+test("the tree-state rule refuses the leaf's own root and an unsettled candidate", () => {
   const a = new Uint8Array(32).fill(1);
   const b = new Uint8Array(32).fill(2);
   // Two blocks deep is enough, at any height: no epoch block.
   assert.equal(ghost.chooseTreeState({ tip: 7, leafHeight: 4, leafRoot: a, height: 5, root: b }), true);
-  // A root equal to the leaf block's, or the leaf's own block, counts too:
-  // nobody else has to commit first.
-  assert.equal(ghost.chooseTreeState({ tip: 7, leafHeight: 4, leafRoot: a, height: 5, root: a }), true);
-  assert.equal(ghost.chooseTreeState({ tip: 7, leafHeight: 5, leafRoot: a, height: 5, root: a }), true);
-  // Not yet 2 deep, or below the leaf's block: wait.
+  assert.equal(ghost.chooseTreeState({ tip: 7, leafHeight: 4, leafRoot: a, height: 5, root: a }), false);
   assert.equal(ghost.chooseTreeState({ tip: 6, leafHeight: 4, leafRoot: a, height: 5, root: b }), false);
-  assert.equal(ghost.chooseTreeState({ tip: 6, leafHeight: 5, leafRoot: a, height: 5, root: a }), false);
-  assert.equal(ghost.chooseTreeState({ tip: 7, leafHeight: 6, leafRoot: a, height: 5, root: b }), false);
+  assert.equal(ghost.chooseTreeState({ tip: 7, leafHeight: 5, leafRoot: a, height: 5, root: b }), false);
 });
 
 test("a malformed envelope is refused before any proof work", () => {

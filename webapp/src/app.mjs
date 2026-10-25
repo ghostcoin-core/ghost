@@ -190,18 +190,11 @@ function summonNote(s) {
   if (summonOpening) return "Looking for your key's coin…";
   if (!s) return "";
   if (s.status === "not-found") return "No coin for this key yet. A Vanish shows here once a block holds it.";
-  if (s.current && s.wait) return SETTLING_NOTE;
+  if (s.current && s.wait && s.wait.alone) {
+    return "Your coin is the newest in the chain. So that it cannot be matched to your Vanish, it can be summoned a few blocks after someone else vanishes. Press Check again later.";
+  }
+  if (s.current && s.wait) return "Your coin can be summoned in a few blocks. Press Check again in a minute.";
   return "";
-}
-
-// The one plain line while the coin's block is not yet 2 blocks deep, on
-// the form and while a Summon waits for that block by itself.
-const SETTLING_NOTE = "Your coin's block is not yet 2 blocks deep. Summon waits for it by itself, then goes on.";
-
-// Whether the flow's progress is a Summon waiting for its coin's block
-// (flow.mjs, settleWait).
-function settling(p) {
-  return Boolean(p && /blocks deep/.test(p.stage));
 }
 
 // The Summon card: the paste box and the amount box, the confirm screen,
@@ -224,12 +217,10 @@ function renderSummon(state) {
   $("summon-in-key").textContent = coin ? `${formatGhost(s.current.amount)} GHOST` : "—";
   $("summon-note").textContent = summonNote(s);
   const pending = Boolean(s && s.lastReveal && s.lastReveal.stage === "sent");
-  $("summon-refresh").hidden = !pending;
+  $("summon-refresh").hidden = !(coin && s.wait) && !pending;
   const connected = Boolean(state.wallet);
   $("summon-submit").textContent = !coin ? "Paste a key" : connected ? "Summon" : "Connect wallet";
-  // A coin whose block is not yet 2 deep can still be summoned: the flow
-  // waits for that block itself.
-  $("summon-submit").disabled = !coin || (connected && pending);
+  $("summon-submit").disabled = !coin || (connected && Boolean(s.wait || pending));
 
   const step = screen === "waiting" ? summonStepOf(state) : 0;
   $("summon-waiting-amount").textContent = screen === "waiting" ? summonAmount : "";
@@ -364,7 +355,13 @@ function describeSummon(s) {
 // of commitments, not people; the holder decides whether to wait for more.
 function describeCover(s) {
   if (s.status !== "unclaimed" || !s.current) return null;
-  if (s.wait) return { warning: true, text: `Not yet: ${s.wait.message}.` };
+  if (s.wait && s.wait.alone) {
+    return {
+      warning: true,
+      text: `Not yet: ${s.wait.message}. Press Refresh after someone else has committed.`,
+    };
+  }
+  if (s.wait) return { warning: true, text: `Not yet: ${s.wait.message}. Press Refresh to check again.` };
   if (!s.cover) return null;
   const { height, covers, total } = s.cover;
   const more = total > covers ? ` ${total - covers} more are in newer blocks and will count once they are settled.` : "";
@@ -544,17 +541,14 @@ function render(state) {
   // A Vanish or Summon step speaks in the card: its waiting screen and its
   // error line.
   const cardOwns = errorOwner === "vanish" || errorOwner === "summon" || errorOwner === "wallet";
-  // While a Summon waits for its coin's block, the one plain line says so.
   $("progress").textContent =
-    summonSending && settling(p)
-      ? SETTLING_NOTE
-      : vanishSending || summonOpening || summonSending
-        ? ""
-        : p
-          ? `${p.stage}… ${Math.round((Date.now() - p.since) / 1000)} s`
-          : state.busy
-            ? `${state.busy}…`
-            : "";
+    vanishSending || summonOpening || summonSending
+      ? ""
+      : p
+        ? `${p.stage}… ${Math.round((Date.now() - p.since) / 1000)} s`
+        : state.busy
+          ? `${state.busy}…`
+          : "";
   $("error").textContent = cardOwns ? "" : state.error || "";
   for (const button of document.querySelectorAll("main button, #wallet-panel button, #network-panel button")) {
     if (!button.dataset.keepEnabled) button.toggleAttribute("aria-busy", Boolean(state.busy));

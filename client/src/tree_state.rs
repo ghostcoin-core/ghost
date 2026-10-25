@@ -4,16 +4,17 @@
 //! type in a canonical header whose height `h` satisfies
 //!
 //! ```text
-//! h <= tip - SETTLE_DEPTH   and   h >= h_leaf
+//! h <= tip - SETTLE_DEPTH   and   h > h_leaf
 //! ```
 //!
-//! where `h_leaf` is the block that added the wallet's leaf. Every such root
-//! contains the leaf, the root of block `h_leaf` itself included once that
-//! block is settled. The reveal is a zero-knowledge proof of membership in
-//! the whole tree under the root, so it hides which leaf is spent among all
-//! of them, not only among those added after the wallet's own. If no such
-//! header exists yet, the wallet's block is not yet `SETTLE_DEPTH` deep and
-//! the wallet waits for it; that wait is about reorganisations, not privacy.
+//! and whose root is not byte-equal to the root of block `h_leaf`, the block
+//! that added the wallet's leaf. A later header carries that same root
+//! whenever no leaf of the type was added in between, so the value test is
+//! needed as well as the height test. A reveal is possible as soon as such a
+//! header exists: there is no forced wait. If none exists yet (nobody added a
+//! leaf of the type since the wallet's block, or that block is not yet
+//! settled), the wallet waits rather than prove against its own block's
+//! root, which would tie the reveal to its commit.
 //!
 //! How much cover a root gives is the number of leaves under it; the holder
 //! may wait for more before revealing. That choice is the holder's, not this
@@ -41,12 +42,13 @@ pub struct HeaderRoot {
 /// The tree state to prove against.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TreeStateChoice {
-    /// The newest settled root at or above the wallet's block.
+    /// The newest settled root that holds a leaf added after the wallet's
+    /// block.
     Settled(HeaderRoot),
     /// The final root of the full tree that holds the leaf (spec 02,
     /// section 8, "A leaf of a full tree"), given by the caller.
     FinalRoot(HeaderRoot),
-    /// No eligible root yet: wait until the wallet's block is settled.
+    /// No eligible root yet: wait until a later leaf is added and settled.
     Wait,
 }
 
@@ -76,9 +78,8 @@ impl fmt::Debug for TreeStateChoice {
 /// the wallet's current best height. `full_tree_final_root` is the final root
 /// of the tree that holds the leaf, and the caller passes it only once that
 /// tree is full and the next tree has started; it is used when it is at least
-/// as high as the leaf's block and buried by the same depth. Only the height
-/// of `leaf_block` is read; its root is kept in the signature so callers pass
-/// the same block they always did.
+/// as high as the leaf's block and buried by the same depth. The root of
+/// `leaf_block` is never chosen as a settled root, whatever height carries it.
 pub fn choose_tree_state(
     candidates: &[HeaderRoot],
     tip: u64,
@@ -96,7 +97,11 @@ pub fn choose_tree_state(
     }
     candidates
         .iter()
-        .filter(|header| header.height <= deepest && header.height >= leaf_block.height)
+        .filter(|header| {
+            header.height <= deepest
+                && header.height > leaf_block.height
+                && header.root != leaf_block.root
+        })
         .max_by_key(|header| header.height)
         .map_or(TreeStateChoice::Wait, |header| TreeStateChoice::Settled(*header))
 }
