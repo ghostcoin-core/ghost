@@ -4,17 +4,31 @@ A small static wallet site, served from its own origin, that the web app
 opens as a pop-up for **Connect wallet**. It holds the Ghost account's
 quantum-safe key (ML-DSA-44); the web app never sees a seed, the words or
 the key. It is a reference wallet: anyone can build another against the
-same two requests.
+same three requests.
 
 **Experimental and unaudited.** Do not use it for anything of value.
 
 ## What it does
 
-- **Two requests, over `postMessage`.** `ghost_getAccount` answers the
-  address and public key of account 0; `ghost_signTransaction` takes the
-  fields of an account transaction (type 0x52) as 0x hex and answers the
-  signed envelope, its hash and sender. Turned down or closed, the answer is
-  code 4001 and nothing is signed.
+- **Three requests, over `postMessage`.** `ghost_getAccount` answers the
+  address and public key of account 0. `ghost_newReceiveAddress` (`{ id,
+  method }`, no params) answers `{ address, publicKey }` of the next account
+  never handed out (1, then 2, and so on), so an app can be paid to an
+  address that was never used. `ghost_signTransaction` takes the fields of
+  an account transaction (type 0x52) as 0x hex and answers the signed
+  envelope, its hash and sender. Its optional `from` (20 bytes of 0x hex)
+  picks the address that signs: left out, account 0; otherwise it must be
+  account 0 or an address `ghost_newReceiveAddress` issued, or the answer is
+  code -32602 naming `from`. Turned down or closed, the answer is code 4001,
+  nothing is signed and no address is issued.
+- **Issued addresses are counted, as public data.** Beside the vault, in
+  the same IndexedDB store, the record `issued` holds `{ count }`: accounts
+  1 to `count` have been handed out. It is written once the user approved
+  and before the answer, so an address is never handed out twice, also after
+  a reload. It holds no words or key. The addresses themselves are derived
+  again from the words when needed and kept only in the window's memory; a
+  `from` that is none of them is refused before any screen, or, in a window
+  that has not unlocked yet, once unlocked and before anything is signed.
 - **Origin checks both ways.** The wallet reads a message only from its
   opener on one of the web app origins in `src/config.mjs` (the hosted web
   app, `https://ghost-webapp-alpha.vercel.app`), and answers that origin
@@ -23,8 +37,10 @@ same two requests.
   window it opened. Anything else is ignored.
 - **Strict refusal, before any screen.** An unknown method, a chain id not
   in `CHAIN_IDS` (the test network, 7777001), a missing, extra or malformed
-  field, a `to` that is not 20 bytes (no contract creation), or a priority
-  fee above the fee cap is refused with an error naming the field.
+  field (params on `ghost_getAccount` or `ghost_newReceiveAddress`
+  included), a `to` or `from` that is not 20 bytes (no contract creation),
+  a `from` this wallet never issued, or a priority fee above the fee cap is
+  refused with an error naming the field.
 - **The key is never stored in the clear.** Create takes 32 bytes from
   `crypto.getRandomValues` and makes them the wallet's 24 words with the
   module's `ghost_wallet_new`. The words are encrypted with AES-256-GCM
@@ -38,8 +54,9 @@ same two requests.
 - **Mandatory backup.** On create the 24 words are shown once, and three
   of them chosen at random must be typed back before anything is stored.
   Restore from the 24 words is in the wallet, never in the web app.
-- **Approval in the pop-up.** Every request shows who asks; a signature
-  shows the amount, the maximum fee (gas limit × max fee per gas), the full
+- **Approval in the pop-up.** Every request shows who asks; a new receive
+  address says the app sees a new address and public key; a signature
+  shows the address that signs, the amount, the maximum fee (gas limit × max fee per gas), the full
   destination address and the chain id. Each needs Approve and the unlock.
 - **Locked-down page.** Every script is a local file with an SRI hash; the
   CSP is `default-src 'none'`, `script-src 'self' 'wasm-unsafe-eval'`,
@@ -59,7 +76,7 @@ browser; keep the 24 words first.
 | `style.css` | The page's few styles. |
 | `headers.json` | The headers the host serves for every file: the page's CSP plus `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`. |
 | `src/config.mjs` | The two settings: the web app origins and the chain ids. |
-| `src/wallet.mjs` | The wallet's logic: the request checks, the vault (AES-GCM, PBKDF2, HKDF, passkey PRF, IndexedDB), the backup check, the approval and the signing. No DOM. |
+| `src/wallet.mjs` | The wallet's logic: the request checks, the vault (AES-GCM, PBKDF2, HKDF, passkey PRF, IndexedDB), the issued-address count, the backup check, the approval and the signing. No DOM. |
 | `src/main.mjs` | The page's script: loads the module and gives `wallet.mjs` its screens and the browser's objects. |
 | `build.mjs` | Writes the release (below). |
 | `test/wallet.test.mjs` | The logic on the built module with stand-ins for IndexedDB, the screens, passkeys and the opener. |

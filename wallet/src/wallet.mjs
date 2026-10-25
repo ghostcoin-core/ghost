@@ -1,6 +1,6 @@
-// The pop-up wallet's logic, apart from the page: the two requests it
-// answers and their strict checks, the encrypted vault, and the order of
-// the screens. main.mjs gives it the browser's objects; the tests give
+// The pop-up wallet's logic, apart from the page: the three requests it
+// answers and their strict checks, the encrypted vault, the count of issued
+// receive addresses, and the order of the screens. main.mjs gives it the browser's objects; the tests give
 // fakes.
 //
 // The words of the wallet seed are the only secret. They are stored only
@@ -14,6 +14,7 @@ import { CHAIN_IDS } from "./config.mjs";
 
 export const GET_ACCOUNT = "ghost_getAccount";
 export const SIGN_TRANSACTION = "ghost_signTransaction";
+export const NEW_RECEIVE_ADDRESS = "ghost_newReceiveAddress";
 export const USER_REJECTED = 4001;
 const METHOD_NOT_FOUND = -32601;
 const INVALID_PARAMS = -32602;
@@ -22,6 +23,7 @@ const INTERNAL_ERROR = -32603;
 export const PBKDF2_ITERATIONS = 600_000;
 const MIN_PASSWORD = 12;
 const ACCOUNT_INDEX = 0;
+const U32_MAX = 0xffffffff;
 const HKDF_INFO = "ghost wallet vault";
 
 const encoder = new TextEncoder();
@@ -38,14 +40,15 @@ class Refused extends Error {
 const refuse = (message) => new Refused(INVALID_PARAMS, message);
 
 // The fields of ghost_signTransaction, each 0x hex, as the web app's
-// snapTransaction writes them.
+// snapTransaction writes them, and `from`, which may be left out (account 0).
 const SIGN_FIELDS = ["chainId", "genesisHash", "nonce", "maxPriorityFeePerGas", "maxFeePerGas", "gasLimit", "to", "value", "data"];
+const SIGN_OPTIONAL = ["from"];
 const U64_MAX = (1n << 64n) - 1n;
 const U256_MAX = (1n << 256n) - 1n;
 
-function exactKeys(object, keys, what) {
+function exactKeys(object, keys, what, optional = []) {
   if (!object || typeof object !== "object" || Array.isArray(object)) throw refuse(`${what} is not an object`);
-  for (const key of Object.keys(object)) if (!keys.includes(key)) throw refuse(`unknown field ${key}`);
+  for (const key of Object.keys(object)) if (!keys.includes(key) && !optional.includes(key)) throw refuse(`unknown field ${key}`);
   for (const key of keys) if (!Object.hasOwn(object, key)) throw refuse(`missing field ${key}`);
 }
 
@@ -80,11 +83,17 @@ export function checkRequest(message) {
     exactKeys(message, ["id", "method"], "the request");
     return { id: message.id, method: GET_ACCOUNT, fields: null };
   }
+  if (message.method === NEW_RECEIVE_ADDRESS) {
+    exactKeys(message, ["id", "method"], "the request");
+    return { id: message.id, method: NEW_RECEIVE_ADDRESS, fields: null };
+  }
   if (message.method !== SIGN_TRANSACTION) throw new Refused(METHOD_NOT_FOUND, `unknown method ${String(message.method)}`);
   exactKeys(message, ["id", "method", "params"], "the request");
   const p = message.params;
-  exactKeys(p, SIGN_FIELDS, "params");
+  exactKeys(p, SIGN_FIELDS, "params", SIGN_OPTIONAL);
   const fields = {
+    // The address that signs: account 0 when left out.
+    from: Object.hasOwn(p, "from") ? bytesField(p, "from", 20) : null,
     chainId: quantityField(p, "chainId", U64_MAX),
     genesis: bytesField(p, "genesisHash", 32),
     nonce: quantityField(p, "nonce", U64_MAX),
@@ -123,16 +132,16 @@ function u64(n) {
 // The wasm calls with the words as bytes, in the input layout of
 // webapp/src/wasm.mjs (walletAccount, walletSign): Ghost.call overwrites its
 // input with zeros, and the module its own copy.
-function account(ghost, words) {
-  const out = ghost.call("ghost_wallet_account", concat([u32(words.length), words, u32(ACCOUNT_INDEX)]));
+function account(ghost, words, index) {
+  const out = ghost.call("ghost_wallet_account", concat([u32(words.length), words, u32(index)]));
   return { address: out.slice(0, 20), publicKey: out.slice(20) };
 }
 
-function sign(ghost, words, f, randomness) {
+function sign(ghost, words, index, f, randomness) {
   const input = concat([
     u32(words.length),
     words,
-    u32(ACCOUNT_INDEX),
+    u32(index),
     u64(f.chainId),
     f.genesis,
     u64(f.nonce),
@@ -152,7 +161,10 @@ function sign(ghost, words, f, randomness) {
 }
 
 // The vault in IndexedDB on the wallet's origin: one record, written once
-// (add refuses to replace it), read for every request.
+// (add refuses to replace it), read for every request. Beside it, under the
+// key "issued", `{ count }`: how many receive addresses (accounts 1 to
+// count) ghost_newReceiveAddress has handed out. Public data only, replaced
+// on each new address.
 export function vaultStore(indexedDB) {
   function open() {
     return new Promise((resolve, reject) => {
@@ -180,6 +192,13 @@ export function vaultStore(indexedDB) {
   return {
     get: () => run("readonly", (s) => s.get("vault")),
     add: (record) => run("readwrite", (s) => s.add(record, "vault")),
+    async getIssued() {
+      const record = await run("readonly", (s) => s.get("issued"));
+      if (record === undefined) return 0;
+      if (!Number.isSafeInteger(record?.count) || record.count < 0 || record.count >= U32_MAX) throw new Error("the issued count is damaged");
+      return record.count;
+    },
+    putIssued: (count) => run("readwrite", (s) => s.put({ count }, "issued")),
   };
 }
 
@@ -294,7 +313,7 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
       const text = String(await ui.restoreWords()).trim().toLowerCase().split(/\s+/).join(" ");
       const words = encoder.encode(text);
       try {
-        account(ghost, words);
+        account(ghost, words, ACCOUNT_INDEX);
         return words;
       } catch {
         words.fill(0);
@@ -355,24 +374,69 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
         continue;
       }
       try {
-        return use(words);
+        // Awaited, so the words are zeroed only once `use` has finished.
+        return await use(words);
       } finally {
         words.fill(0);
       }
     }
   }
 
+  // The 0x addresses of account 0 and the issued accounts, by index, as
+  // derived while this window was unlocked: public data, kept in memory
+  // only, so a `from` can be checked before any screen.
+  const addresses = new Map();
+
+  // Derives the accounts 0 to `count` not yet known.
+  function learn(words, count) {
+    for (let index = 0; index <= count; index += 1) {
+      if (!addresses.has(index)) addresses.set(index, toHex(account(ghost, words, index).address));
+    }
+  }
+
+  // The index of `from` among accounts 0 to `count`: a number, null when it
+  // is none of them, or undefined while some are not yet known.
+  function indexOf(from, count) {
+    let complete = true;
+    for (let index = 0; index <= count; index += 1) {
+      if (!addresses.has(index)) complete = false;
+      else if (addresses.get(index) === from) return index;
+    }
+    return complete ? null : undefined;
+  }
+
+  const notIssued = () => refuse("from is not an address this wallet issued");
+
   async function answer(request, origin) {
     if (request.method === GET_ACCOUNT) {
+      const count = await store.getIssued();
       return approved({ kind: "connect", origin }, (words) => {
-        const { address, publicKey } = account(ghost, words);
+        const { address, publicKey } = account(ghost, words, ACCOUNT_INDEX);
+        learn(words, count);
+        return { address: toHex(address), publicKey: toHex(publicKey) };
+      });
+    }
+    if (request.method === NEW_RECEIVE_ADDRESS) {
+      return approved({ kind: "receive", origin }, async (words) => {
+        // Read after the approval, so a count raised meanwhile is not reused.
+        const index = (await store.getIssued()) + 1;
+        const { address, publicKey } = account(ghost, words, index);
+        // Stored before the answer: the address is never handed out twice.
+        await store.putIssued(index);
+        addresses.set(index, toHex(address));
         return { address: toHex(address), publicKey: toHex(publicKey) };
       });
     }
     const f = request.fields;
+    const count = await store.getIssued();
+    const from = f.from ? toHex(f.from) : null;
+    // Refused before any screen when every account is known; otherwise
+    // checked once unlocked, still before anything is signed.
+    if (from && indexOf(from, count) === null) throw notIssued();
     const summary = {
       kind: "sign",
       origin,
+      from: from ?? addresses.get(ACCOUNT_INDEX) ?? null,
       amount: formatGhost(f.value),
       maxFee: formatGhost(f.gasLimit * f.maxFeePerGas),
       to: toHex(f.to),
@@ -380,7 +444,14 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
       dataBytes: f.data.length,
     };
     return approved(summary, (words) => {
-      const signed = sign(ghost, words, f, random(32));
+      let index = ACCOUNT_INDEX;
+      if (from) {
+        learn(words, count);
+        index = indexOf(from, count);
+        if (index === null) throw notIssued();
+      }
+      const signed = sign(ghost, words, index, f, random(32));
+      addresses.set(index, toHex(signed.sender));
       return { sender: toHex(signed.sender), txHash: toHex(signed.txHash), envelope: toHex(signed.envelope) };
     });
   }
