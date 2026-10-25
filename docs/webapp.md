@@ -362,9 +362,12 @@ holds `treeLeaves`), each tree's leaves, notes and salts from the chain's
 start on must be exactly those the records appended to it, no record may be
 of a tree not read, and the markers must be those of the reveal records.
 Anything else is refused before the key is tried on any note. The key is
-then tried on each tree's notes, one restore per tree, and each coin found
-carries its tree index; the current coin is the unspent one in the latest
-tree, at its highest position.
+then tried on each tree's notes, one restore per tree: each restore is asked
+with its tree's index (`treeIndex`), and the module returns that index on
+each coin it finds, beside the coin's position in the tree (the page adds
+none itself). A tree of more leaves than one tree holds (2^32) is refused
+by the module, never read in part. The current coin is the unspent one in
+the latest tree, at its highest position.
 
 A coin of a full earlier tree is proven against that tree's final root,
 which every leaf of the tree shares and the header of the block that filled
@@ -629,9 +632,11 @@ app makes no data commitments.
    The worker tries the key's note key on every note and recomputes
    each found commitment (spec 01, section 8): a note carries its coin's
    salt, which goes into `F`, `C` and the marker; a coin whose salt beside
-   the leaf is not its note's is not trusted. Restore returns each found
-   coin's salt; the prover refuses a coin without one (`a coin without a
-   salt cannot be revealed`). The current coin is
+   the leaf is not its note's is not trusted. Restore is asked about one
+   coin tree at a time, by its index, and returns each found coin's tree
+   index, position and salt; more leaves than one tree holds is an error,
+   not a scan that stops part way. The prover refuses a coin without a salt
+   (`a coin without a salt cannot be revealed`). The current coin is
    the found commitment whose marker is not spent. The app asks for
    everything a reveal needs (the headers, the tree, the markers and the
    block receipts, fixed by the tip and by what the page already holds)
@@ -884,7 +889,9 @@ app makes no data commitments.
   root no header carries and a tree served twice are refused. A commit is
   followed into the full tree 0 after the tip has moved to tree 1, and to
   tree 1's first position, where a scan of both trees finds it, while one
-  whose tree 0 is just full still finds the coin that filled it. A coin of
+  whose tree 0 is just full still finds the coin that filled it. The scan
+  of a rolled-over chain asks restore with tree index 0, then 1, and the
+  key's coin reports tree 1 as the module found it. A coin of
   the full tree 0 is revealed against tree 0's final root with no wait, a
   clean device restores it spent and its remainder in tree 1, and that
   remainder is revealed against a settled root of tree 1. A note of either
@@ -920,7 +927,8 @@ app makes no data commitments.
   salted.
 - `wasm.test.mjs`: the module against the golden vectors of spec 05, the
   header's RLP and hash included, the version 2 commit and the words key; a
-  version 1 commit and a coin without a salt refused; a receipt's encoding
+  version 1 commit and a coin without a salt refused; restore naming the
+  coin tree it was asked about (tree 0 when not told); a receipt's encoding
   and the receipts root; and the receipts check of leaves, notes, salts and
   markers, with its refusals.
 - `commit-layout.test.mjs`: the version 2 commit payload (206 bytes) against

@@ -122,7 +122,7 @@ fn restored_salted_coin_reveals_with_its_salt() {
     chain.salted_commit(&other, 6_000, &mut rng);
 
     // Restore from the digits alone finds the coin and its salt.
-    let restored = restore_coins(&key(), CHAIN_ID, &chain.leaves, &chain.spent);
+    let restored = restore_coins(&key(), CHAIN_ID, 0, &chain.leaves, &chain.spent).unwrap();
     assert!(restored.discarded.is_empty());
     let Current::One(found) = restored.current else {
         panic!("one unspent salted coin");
@@ -169,7 +169,7 @@ fn restored_salted_coin_reveals_with_its_salt() {
 
     // Once included, restore finds the remainder from its note's salt alone.
     let remainder_position = chain.include(&built.reveal);
-    let restored = restore_coins(&key(), CHAIN_ID, &chain.leaves, &chain.spent);
+    let restored = restore_coins(&key(), CHAIN_ID, 0, &chain.leaves, &chain.spent).unwrap();
     assert_eq!(restored.found.len(), 2);
     let Current::One(current) = restored.current else {
         panic!("the remainder is the one unspent coin");
@@ -198,7 +198,7 @@ fn leaf_without_a_salt_beside_it_restores_from_its_note() {
     let mut chain = Chain::new();
     let position = chain.push(TreeLeaf { commitment: commit.commitment, note, salt: None });
 
-    let restored = restore_coins(&key(), CHAIN_ID, &chain.leaves, &chain.spent);
+    let restored = restore_coins(&key(), CHAIN_ID, 0, &chain.leaves, &chain.spent).unwrap();
     assert!(restored.discarded.is_empty());
     let Current::One(found) = restored.current else {
         panic!("the remainder restores");
@@ -211,7 +211,7 @@ fn leaf_without_a_salt_beside_it_restores_from_its_note() {
 
     // Spent, it is not current.
     chain.spent.push(commit.marker);
-    let restored = restore_coins(&key(), CHAIN_ID, &chain.leaves, &chain.spent);
+    let restored = restore_coins(&key(), CHAIN_ID, 0, &chain.leaves, &chain.spent).unwrap();
     assert!(matches!(restored.current, Current::None));
     assert_eq!(restored.found.len(), 1);
 }
@@ -254,7 +254,7 @@ fn version_1_note_is_discarded_on_restore() {
     for beside in [None, Some(Salt::from_bytes([9; SALT_BYTES]))] {
         let mut chain = Chain::new();
         let position = chain.push(TreeLeaf { commitment: leaf, note, salt: beside });
-        let restored = restore_coins(&key(), CHAIN_ID, &chain.leaves, &chain.spent);
+        let restored = restore_coins(&key(), CHAIN_ID, 0, &chain.leaves, &chain.spent).unwrap();
         assert!(restored.found.is_empty());
         assert!(matches!(restored.current, Current::None));
         assert_eq!(restored.discarded.len(), 1);
@@ -266,7 +266,7 @@ fn version_1_note_is_discarded_on_restore() {
     let mut chain = Chain::new();
     chain.push(TreeLeaf { commitment: leaf, note, salt: None });
     let (position, salt) = chain.salted_commit(&key(), COMMITTED, &mut rng);
-    let restored = restore_coins(&key(), CHAIN_ID, &chain.leaves, &chain.spent);
+    let restored = restore_coins(&key(), CHAIN_ID, 0, &chain.leaves, &chain.spent).unwrap();
     let Current::One(found) = restored.current else {
         panic!("the salted coin restores");
     };
@@ -278,7 +278,7 @@ fn version_1_note_is_discarded_on_restore() {
 
     // Under another key the note does not authenticate and is passed over.
     let other = PhantomKey::generate(KeyFormat::Words, &mut rng);
-    let restored = restore_coins(&other, CHAIN_ID, &chain.leaves, &chain.spent);
+    let restored = restore_coins(&other, CHAIN_ID, 0, &chain.leaves, &chain.spent).unwrap();
     assert!(restored.found.is_empty() && restored.discarded.is_empty());
 }
 
@@ -293,7 +293,7 @@ fn a_salt_beside_the_leaf_that_disagrees_is_discarded() {
     let mut other = *salt.as_bytes();
     other[0] ^= 1;
     changed[position as usize].salt = Some(Salt::from_bytes(other));
-    let restored = restore_coins(&key(), CHAIN_ID, &changed, &[]);
+    let restored = restore_coins(&key(), CHAIN_ID, 0, &changed, &[]).unwrap();
     assert!(restored.found.is_empty());
     assert!(matches!(restored.current, Current::None));
     assert_eq!(restored.discarded.len(), 1);
@@ -303,7 +303,7 @@ fn a_salt_beside_the_leaf_that_disagrees_is_discarded() {
     // A record without a salt beside it reads the salt from the note.
     let mut bare = chain.leaves.clone();
     bare[position as usize].salt = None;
-    let restored = restore_coins(&key(), CHAIN_ID, &bare, &[]);
+    let restored = restore_coins(&key(), CHAIN_ID, 0, &bare, &[]).unwrap();
     assert_eq!(restored.found.len(), 1);
     assert_eq!(restored.found[0].salt, salt);
 
@@ -312,7 +312,7 @@ fn a_salt_beside_the_leaf_that_disagrees_is_discarded() {
     let wrong = NoteContents::salted_coin(0, amount(COMMITTED), Rule::EMPTY, Salt::from_bytes(other));
     let note = encrypt_note(&key().note_key(), CHAIN_ID, &leaf, &wrong, &mut rng);
     let forged = vec![TreeLeaf { commitment: leaf, note, salt: None }];
-    let restored = restore_coins(&key(), CHAIN_ID, &forged, &[]);
+    let restored = restore_coins(&key(), CHAIN_ID, 0, &forged, &[]).unwrap();
     assert!(restored.found.is_empty());
     assert_eq!(restored.discarded[0].reason, DiscardReason::LeafMismatch);
 
@@ -330,7 +330,47 @@ fn a_salt_beside_the_leaf_that_disagrees_is_discarded() {
     };
     let note = encrypt_note(&key().note_key(), CHAIN_ID, &data.commitment, &contents, &mut rng);
     let leaves = vec![TreeLeaf { commitment: data.commitment, note, salt: Some(data.salt) }];
-    let restored = restore_coins(&key(), CHAIN_ID, &leaves, &[]);
+    let restored = restore_coins(&key(), CHAIN_ID, 0, &leaves, &[]).unwrap();
     assert!(restored.found.is_empty());
     assert_eq!(restored.discarded[0].reason, DiscardReason::NotACoin);
+}
+
+#[test]
+fn restore_in_a_second_tree_reports_the_tree_index() {
+    // Two trees, each with a coin of the key at a different position among
+    // other keys' coins, restored one tree at a time as the wallet does.
+    let mut rng = StdRng::seed_from_u64(0x2_7ee5);
+    let other = PhantomKey::generate(KeyFormat::Words, &mut rng);
+    let mut first = Chain::new();
+    let (first_position, first_salt) = first.salted_commit(&key(), COMMITTED, &mut rng);
+    first.salted_commit(&other, 5_000, &mut rng);
+    let mut second = Chain::new();
+    second.salted_commit(&other, 6_000, &mut rng);
+    second.salted_commit(&other, 7_000, &mut rng);
+    let (second_position, second_salt) = second.salted_commit(&key(), PAID, &mut rng);
+    assert_ne!(first_position, second_position);
+
+    let in_first = restore_coins(&key(), CHAIN_ID, 0, &first.leaves, &first.spent).unwrap();
+    let in_second = restore_coins(&key(), CHAIN_ID, 1, &second.leaves, &second.spent).unwrap();
+    let Current::One(a) = in_first.current else {
+        panic!("one coin in the first tree");
+    };
+    let Current::One(b) = in_second.current else {
+        panic!("one coin in the second tree");
+    };
+    assert_eq!((a.tree_index, a.position, a.salt, a.amount.wei()), (0, first_position, first_salt, COMMITTED));
+    assert_eq!((b.tree_index, b.position, b.salt, b.amount.wei()), (1, second_position, second_salt, PAID));
+    assert_eq!(in_second.found.len(), 1);
+    assert_eq!(in_second.found[0].tree_index, 1);
+
+    // The same leaves named as another tree report that tree: the index is
+    // the caller's, never guessed from the leaves.
+    let renamed = restore_coins(&key(), CHAIN_ID, 7, &second.leaves, &second.spent).unwrap();
+    assert_eq!(renamed.found[0].tree_index, 7);
+    assert_eq!(renamed.found[0].position, second_position);
+
+    // The coin as a reveal takes it still carries its position in its tree.
+    let (_, path) = root_and_path(&second.leaves, second_position);
+    let coin = b.owned(path);
+    assert_eq!((coin.position, coin.salt), (second_position, second_salt));
 }

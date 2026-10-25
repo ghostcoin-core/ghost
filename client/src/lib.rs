@@ -93,7 +93,10 @@ pub use receipts::{
     check_block_receipts, check_block_receipts_against_header, check_leaves, check_markers, receipts_root,
     AppendedLeaf, CheckedBlock, CoinRecord, ReceiptError,
 };
-pub use restore::{restore_coins, Current, DiscardReason, DiscardedNote, FoundCoin, Restored, TreeLeaf};
+pub use restore::{
+    restore_coins, Current, DiscardReason, DiscardedNote, FoundCoin, RestoreError, Restored, TreeLeaf,
+    MAX_TREE_LEAVES,
+};
 pub use reveal::{
     claim_to_new_key, full_reveal, partial_reveal, prove_reveal, BuiltReveal, OwnedCoin,
     RemainderCoin, RevealError, RevealTerms,

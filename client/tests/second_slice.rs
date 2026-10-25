@@ -287,7 +287,7 @@ fn full_reveal_proof_verifies() {
 
     // Restore then finds the zero remainder as the current coin.
     let position = chain.include(&built);
-    let restored = restore_coins(&key, CHAIN_ID, &chain.leaves, &chain.spent);
+    let restored = restore_coins(&key, CHAIN_ID, 0, &chain.leaves, &chain.spent).unwrap();
     let Current::One(current) = restored.current else {
         panic!("one unspent commitment after a full reveal");
     };
@@ -341,9 +341,9 @@ fn claim_to_new_key() {
 
     // Once included, the old key has nothing unspent and the new key has it.
     let position = chain.include(&built);
-    assert!(matches!(restore_coins(&key, CHAIN_ID, &chain.leaves, &chain.spent).current, Current::None));
+    assert!(matches!(restore_coins(&key, CHAIN_ID, 0, &chain.leaves, &chain.spent).unwrap().current, Current::None));
     let fresh = PhantomKey::parse(new_key.format_groups().as_str()).unwrap_or_else(|_| panic!("parses"));
-    let Current::One(found) = restore_coins(&fresh, CHAIN_ID, &chain.leaves, &chain.spent).current else {
+    let Current::One(found) = restore_coins(&fresh, CHAIN_ID, 0, &chain.leaves, &chain.spent).unwrap().current else {
         panic!("the new key holds the claimed coin");
     };
     assert_eq!((found.number, found.amount.wei(), found.position), (0, left, position));
@@ -363,7 +363,7 @@ fn restore_from_digits_after_three_partial_reveals_finds_current_remainder() {
     // chain's data, all of it.
     let typed = DIGITS.replace(' ', "-");
     let key = PhantomKey::parse(&typed).unwrap_or_else(|_| panic!("the typed key parses"));
-    let restored = restore_coins(&key, CHAIN_ID, &s.chain.leaves, &s.chain.spent);
+    let restored = restore_coins(&key, CHAIN_ID, 0, &s.chain.leaves, &s.chain.spent).unwrap();
 
     let Current::One(current) = restored.current else {
         panic!("exactly one unspent commitment");
@@ -391,18 +391,18 @@ fn restore_from_digits_after_three_partial_reveals_finds_current_remainder() {
 
     // Without spent markers every commitment looks unspent; with only some,
     // so do the rest.
-    let Current::Several(all) = restore_coins(&key, CHAIN_ID, &s.chain.leaves, &[]).current else {
+    let Current::Several(all) = restore_coins(&key, CHAIN_ID, 0, &s.chain.leaves, &[]).unwrap().current else {
         panic!("all four look unspent without markers");
     };
     assert_eq!(all.len(), 4);
-    let Current::Several(two) = restore_coins(&key, CHAIN_ID, &s.chain.leaves, &s.chain.spent[..2]).current
+    let Current::Several(two) = restore_coins(&key, CHAIN_ID, 0, &s.chain.leaves, &s.chain.spent[..2]).unwrap().current
     else {
         panic!("numbers 2 and 3 look unspent");
     };
     assert_eq!(two.iter().map(|coin| coin.number).collect::<Vec<_>>(), vec![2, 3]);
 
     // A wrong chain identifier finds nothing.
-    let other_chain = restore_coins(&key, CHAIN_ID + 1, &s.chain.leaves, &s.chain.spent);
+    let other_chain = restore_coins(&key, CHAIN_ID + 1, 0, &s.chain.leaves, &s.chain.spent).unwrap();
     assert!(other_chain.found.is_empty());
     assert!(matches!(other_chain.current, Current::None));
 }
@@ -413,14 +413,14 @@ fn restore_ignores_notes_for_other_keys() {
     let key = key();
 
     // The other keys' notes are passed over without a report.
-    let restored = restore_coins(&key, CHAIN_ID, &s.chain.leaves, &s.chain.spent);
+    let restored = restore_coins(&key, CHAIN_ID, 0, &s.chain.leaves, &s.chain.spent).unwrap();
     assert_eq!(restored.found.len(), 4);
     assert!(restored.found.iter().all(|coin| s.positions.contains(&coin.position)));
     assert!(restored.discarded.is_empty());
 
     // Another key finds its own commit and none of ours.
     let other = PhantomKey::parse(&s.other_digits).unwrap_or_else(|_| panic!("parses"));
-    let theirs = restore_coins(&other, CHAIN_ID, &s.chain.leaves, &s.chain.spent);
+    let theirs = restore_coins(&other, CHAIN_ID, 0, &s.chain.leaves, &s.chain.spent).unwrap();
     let Current::One(coin) = theirs.current else {
         panic!("the other key has its commit");
     };
@@ -433,7 +433,7 @@ fn restore_ignores_notes_for_other_keys() {
     let elsewhere = s.other_position as usize;
     let mut copied = s.chain.leaves.clone();
     copied[elsewhere].note = copied[current].note;
-    let restored = restore_coins(&key, CHAIN_ID, &copied, &s.chain.spent);
+    let restored = restore_coins(&key, CHAIN_ID, 0, &copied, &s.chain.spent).unwrap();
     assert!(restored.discarded.is_empty());
     assert!(matches!(restored.current, Current::One(coin) if coin.position == s.positions[3]));
 
@@ -446,7 +446,7 @@ fn restore_ignores_notes_for_other_keys() {
     moved[elsewhere].note = encrypt_note(&key.note_key(), CHAIN_ID, &moved[elsewhere].commitment, &contents, &mut rng);
     // No salt beside the leaf, so it is the commitment that fails to match.
     moved[elsewhere].salt = None;
-    let restored = restore_coins(&key, CHAIN_ID, &moved, &s.chain.spent);
+    let restored = restore_coins(&key, CHAIN_ID, 0, &moved, &s.chain.spent).unwrap();
     assert_eq!(restored.discarded.len(), 1);
     assert_eq!(restored.discarded[0].position, s.other_position);
     assert_eq!(restored.discarded[0].reason, DiscardReason::LeafMismatch);
@@ -460,7 +460,7 @@ fn restore_ignores_notes_for_other_keys() {
     let mut data = s.chain.leaves.clone();
     let contents = NoteContents { type_tag: DATA_V2, ..contents };
     data[elsewhere].note = encrypt_note(&key.note_key(), CHAIN_ID, &data[elsewhere].commitment, &contents, &mut rng);
-    let restored = restore_coins(&key, CHAIN_ID, &data, &s.chain.spent);
+    let restored = restore_coins(&key, CHAIN_ID, 0, &data, &s.chain.spent).unwrap();
     assert_eq!(restored.discarded.len(), 1);
     assert_eq!(restored.discarded[0].reason, DiscardReason::NotACoin);
 }

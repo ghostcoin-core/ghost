@@ -493,18 +493,20 @@ pub extern "C" fn ghost_commit(ptr: *const u8, len: usize) -> u32 {
     })
 }
 
-/// Restores a key's coins. Input: chain identifier (8), key text, leaf count
-/// (4) and that many leaves with their notes (32 + 156 each, from position
-/// 0), salt count (4, the leaf count) and the salt read beside each leaf (1 +
-/// 16 each: 0 and zeros for a leaf served without one), marker count (4) and
-/// that many spent markers (32 each). Output: the number found (4), then per
-/// coin: number (8), amount word (32), position (4), `C` (32), marker (32),
-/// spent (1), its salt (1 + 16: 0 and zeros for a coin found without one,
-/// which [`ghost_prove`] refuses).
+/// Restores a key's coins in one coin tree. Input: chain identifier (8), the
+/// tree's index (4), key text, leaf count (4) and that many leaves with their
+/// notes (32 + 156 each, from position 0), salt count (4, the leaf count) and
+/// the salt read beside each leaf (1 + 16 each: 0 and zeros for a leaf served
+/// without one), marker count (4) and that many spent markers (32 each).
+/// Output: the number found (4), then per coin: number (8), amount word (32),
+/// tree index (4), position (4), `C` (32), marker (32), spent (1), its salt
+/// (1 + 16: 0 and zeros for a coin found without one, which [`ghost_prove`]
+/// refuses). More leaves than one tree holds is an error.
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_restore(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
         let chain_id = input.u64()?;
+        let tree_index = input.u32()?;
         let key = key(input.text()?)?;
         let records = input.records::<LEAF_RECORD_BYTES>()?;
         let salts = input.records::<SALT_RECORD_BYTES>()?;
@@ -520,12 +522,13 @@ pub extern "C" fn ghost_restore(ptr: *const u8, len: usize) -> u32 {
             });
         }
         let spent: Vec<Marker> = input.records::<32>()?.into_iter().map(Marker::from_bytes).collect();
-        let restored = restore_coins(&key, chain_id, &leaves, &spent);
+        let restored = restore_coins(&key, chain_id, tree_index, &leaves, &spent).map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         out.extend_from_slice(&(restored.found.len() as u32).to_be_bytes());
         for coin in &restored.found {
             out.extend_from_slice(&coin.number.to_be_bytes());
             out.extend_from_slice(&coin.amount.to_bytes());
+            out.extend_from_slice(&coin.tree_index.to_be_bytes());
             out.extend_from_slice(&coin.position.to_be_bytes());
             out.extend_from_slice(coin.commitment.as_bytes());
             out.extend_from_slice(coin.marker.as_bytes());
