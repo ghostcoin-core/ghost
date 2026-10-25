@@ -318,6 +318,7 @@ fn hold_context(d: &Data, verifier: u8, challenge: [u8; 32]) -> HoldContext {
         marker_set_root: [0x6d; 32],
         verifier: [verifier; 32],
         challenge,
+        cf: d.cf,
     }
 }
 
@@ -986,6 +987,7 @@ fn data_reveal_tx(d: &Data, purpose: DataPurpose) -> DataReveal {
         party: [0x70; 32],
         fee: amount_word(FEE),
         rule: EMPTY_RULE,
+        cf: d.cf,
     }
 }
 
@@ -1245,9 +1247,9 @@ fn hold_proof_submitted_as_reveal_fails() {
 }
 
 /// PS-2, PS-15: ten proofs of holding of one commitment all verify; they
-/// share no public value beyond the tree state, the chain constants and the
-/// verifiers' choices, and none carries 16 bytes of the commitment, its
-/// fingerprint or its marker.
+/// share no public value beyond the tree state, the chain constants, the
+/// content fingerprint and the verifiers' choices, and none carries 16 bytes
+/// of the commitment, its fingerprint or its marker.
 #[cfg(feature = "unsettled-points-test")]
 #[test]
 fn hold_ten_proofs_verify_and_share_no_public_value() {
@@ -1269,7 +1271,8 @@ fn hold_ten_proofs_verify_and_share_no_public_value() {
         assert_eq!(verify_hold_unsettled_with_book(&params(), &mut book, &ctx, &proof, 1), Ok(()));
         let binding = hold_binding(&params(), &ctx).unwrap();
         assert!(bindings.insert(binding), "two proofs share a binding digest");
-        let public = [&ctx.root[..], &ctx.marker_set_root, &ctx.verifier, &ctx.challenge, &binding].concat();
+        let public =
+            [&ctx.root[..], &ctx.marker_set_root, &ctx.verifier, &ctx.challenge, &ctx.cf, &binding].concat();
         assert!(!shares_window(&public, &needles), "proof {n} publishes part of the commitment");
         assert!(!shares_window(proof.as_bytes(), &needles), "proof {n} carries part of the commitment");
         assert!(proofs.iter().all(|p| p != &proof), "two proofs are equal");

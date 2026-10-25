@@ -118,6 +118,7 @@ fn hold_context(root: [u8; 32]) -> HoldContext {
         marker_set_root: [0x6d; 32],
         verifier: [0x0a; 32],
         challenge: [0xc1; 32],
+        cf: salted_data().cf,
     }
 }
 
@@ -255,6 +256,7 @@ fn the_data_reveal_public_values_and_proof_hold_no_salt() {
         &tx.party,
         &tx.fee,
         &tx.rule,
+        &tx.cf,
         &salted_data_reveal_binding(&params(), tx),
         &params().chain_id,
         &params().domain,
@@ -364,6 +366,7 @@ fn the_hold_public_values_and_proof_hold_no_salt() {
         &ctx.marker_set_root,
         &ctx.verifier,
         &ctx.challenge,
+        &ctx.cf,
         &hold_binding(&params(), &ctx).unwrap(),
         &params().chain_id,
         &params().domain,

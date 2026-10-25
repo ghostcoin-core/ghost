@@ -69,8 +69,9 @@ pub const COIN_REVEAL_LAYOUT: [LayoutField; 15] = [
     field("remainder_note", 259, 156),
 ];
 
-/// The data reveal binding fields.
-pub const DATA_REVEAL_LAYOUT: [LayoutField; 12] = [
+/// The data reveal binding fields. `cf` is the content fingerprint of the
+/// commitment revealed, public so anyone holding the bytes can check them.
+pub const DATA_REVEAL_LAYOUT: [LayoutField; 13] = [
     field("chain_id", 0, 8),
     field("version", 8, 2),
     field("domain", 10, 32),
@@ -83,10 +84,12 @@ pub const DATA_REVEAL_LAYOUT: [LayoutField; 12] = [
     field("party", 111, 32),
     field("fee", 143, 32),
     field("rule", 175, 32),
+    field("cf", 207, 32),
 ];
 
-/// The hold binding fields.
-pub const HOLD_LAYOUT: [LayoutField; 11] = [
+/// The hold binding fields. `cf` is the content fingerprint of the
+/// commitment held.
+pub const HOLD_LAYOUT: [LayoutField; 12] = [
     field("chain_id", 0, 8),
     field("version", 8, 2),
     field("domain", 10, 32),
@@ -98,6 +101,7 @@ pub const HOLD_LAYOUT: [LayoutField; 11] = [
     field("marker_set_root", 79, 32),
     field("verifier", 111, 32),
     field("challenge", 143, 32),
+    field("cf", 175, 32),
 ];
 
 /// The three bindings, for code that treats them alike.
