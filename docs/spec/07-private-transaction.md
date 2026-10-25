@@ -44,9 +44,9 @@ question 1).
 | Hash | Keccak-256 of the type byte followed by the payload, the base client's typed-transaction hash | EIP-2718 |
 | Gas | One fixed figure `G_PRIV` per private transaction, counted in the block's gas used | Front desk decision; Reth survey, section 3 |
 | `G_PRIV` | The public calldata price for every byte of the envelope, plus the base transaction cost, plus a verification charge | **Proposed** (section 4) |
-| Fee | `G_PRIV` times the window's base-fee price, plus the tip | Front desk decision |
-| Burn and tip | The whole base-fee part is burned; the tip, one tenth of the base-fee part rounded up, goes to the block finder | Front desk decision; spec 03, section 4 |
-| Fee is current | Strict equality with the fee in force for the including block; the fee is held for a window of 4 blocks and never charges less than `G_PRIV` times any block's base fee in it | Front desk decision; window length **Proposed** (section 5) |
+| Fee | `G_PRIV` times the window's price, plus one tenth of that rounded up; the price is the base fee at the window's start plus one worst-case growth step (`FEE_STEPS = 1`, about 1.125 times it) | Front desk decision, 2026-10-25 |
+| Burn and tip | In a block with base fee `beta`, `G_PRIV * max(price, beta)` is burned and the rest of the fee is the block finder's tip; a reveal whose tip would be negative is rejected (the cover rule), so every valid reveal burns at least `G_PRIV` times the block's base fee | Front desk decision, 2026-10-25; spec 03, section 4 |
+| Fee is current | Strict equality with the fee of the including block's window or of the window before it, held for windows of 4 blocks, and the cover rule holds for the including block | Front desk decision, 2026-10-25; window length **Proposed** (section 5) |
 | Pool | One transaction per marker, first in wins; cheap checks before the proof; hard caps; per-peer budgets; deterministic order; full recheck on every block and reorganisation | Front desk decision; caps and budgets **Proposed** (section 6) |
 | Data reveal | Has no encoding in version 1; every data reveal stays rejected | Spec 04, question 1 (fail closed) |
 
@@ -88,6 +88,7 @@ and changes no state. In addition:
 | `VERIFY_GAS` | 92,300 | Gas for verifying the proof (section 4) |
 | `G_PRIV` | 21,090,372 | Gas of every private transaction: `BYTE_GAS * ENVELOPE_BYTES + BASE_TX_GAS + VERIFY_GAS` |
 | `FEE_WINDOW` | 4 | Blocks for which one fee is in force (section 5) |
+| `FEE_STEPS` | 1 | Growth steps of headroom in the window price (sections 4 and 5) |
 | `TIP_DIVISOR` | 10 | The tip is the base-fee part divided by this, rounded up |
 | `MIN_GAS_LIMIT` | 5,000 | The base client's smallest block gas limit, used in the growth bound of section 5 |
 | `POOL_MAX_COUNT` | 16 | Most private transactions a node's pool holds (section 6) |
@@ -325,25 +326,42 @@ no private transaction can be included.
 **The fee.** For an including block in window `w`:
 
 ```text
-price_w   = U_(W-1), the ceiling of section 5 started from b_ref = baseFee(block wW)
+price_w   = U_FEE_STEPS, the growth bound of section 5 started from b_ref = baseFee(block wW)
 base_part = G_PRIV * price_w
 tip       = ceil(base_part / TIP_DIVISOR)
 fee       = base_part + tip
 ```
 
+With `FEE_STEPS = 1` the price is `b_ref` plus one worst-case growth step of
+the base fee, about 1.125 times `b_ref`. The fee is one figure for the whole
+window; how it splits between the burn and the block finder depends on the
+including block's base fee `beta`, by the cover rule of section 5:
+
+```text
+burn      = G_PRIV * max(price_w, beta)
+tip_paid  = fee - burn          (a reveal for which this is negative is rejected)
+```
+
 - **Base-fee part.** `G_PRIV` times the window's price, the base fee in force
-  for private transactions. It is burned: it leaves the hidden set and is
-  credited to nobody (spec 03, section 4; decision 0001). The whole of it is
-  burned, including what it exceeds `G_PRIV` times the block's own base fee
-  by, so that the block finder gains nothing from a high window price.
-- **Tip.** A function of the window's price alone, so identical for every
-  private transaction in the block and in the window (outline, "Tips"). It is
+  for private transactions. It is the least a valid reveal burns.
+- **Burn.** `G_PRIV` times the larger of the window's price and the block's
+  base fee. It leaves the hidden set and is credited to nobody (spec 03,
+  section 4; decision 0001). It is never less than `G_PRIV` times the block's
+  base fee, and while the block's base fee is at most the price it is exactly
+  the base-fee part, so the block finder gains nothing from a high window
+  price.
+- **Tip.** The nominal tip is a function of the window's price alone, one
+  tenth of the base-fee part rounded up (front desk decision), so the fee is
+  identical for every private transaction in the window (outline, "Tips").
+  The tip paid is the fee minus the burn: the nominal tip while the block's
+  base fee is at most the price, less above it, and never more. It is the same
+  for every private transaction in the block with the same fee, and it is
   credited to the block finder's address (the header's `coinbase`) in the
-  apply step (spec 03, section 7, step 13). Default: one tenth of the base-fee
-  part, rounded up (front desk decision).
+  apply step (spec 03, section 7, step 13).
 - **Accounting.** The fee leaves the hidden set with `out`: spec 03's
   `total_out` grows by `out + fee` (spec 03, section 9). The recipient is
-  credited `out`, the finder `tip`, and `base_part` is credited to nobody.
+  credited `out`, the finder `tip_paid`, and `burn` is credited to nobody;
+  `burn + tip_paid = fee`.
 - **Range.** `fee` must be an amount word. If the formula gives a fee above
   `V_MAX` in some window, no private transaction is valid in it.
 - **Data reveals.** This formula is for the coin reveal. Where a data reveal's
@@ -351,31 +369,37 @@ fee       = base_part + tip
   04, question 1).
 
 **Worked example.** At the genesis base fee of 1 gwei (spec 05, section 10),
-`W = 4`. The script of section 12 recomputes every value.
+`FEE_STEPS = 1`. `cover_limit` is the largest base fee of an including block
+for which the cover rule of section 5 holds, `floor(fee / G_PRIV)`. The script
+of section 12 recomputes every value.
 
 ```text
 [window-genesis]
 kind = window
 b_ref = 1000000000
 g_priv = 21090372
-price = 1424017979
-base_part = 30033068911798188
-tip = 3003306891179819
-fee = 33036375802978007
+price = 1125050001
+base_part = 23727723039690372
+tip = 2372772303969038
+fee = 26100495343659410
+cover_limit = 1237555001
 ```
 
-The fee is about 0.033 GHOST, of which about 0.0300 is burned and about
-0.00300 goes to the block finder. A second window, used in section 5:
+The fee is about 0.0261 GHOST (0.0330 under the earlier 4-step ceiling). In a
+block whose base fee is at most the price, about 0.0237 is burned and about
+0.00237 goes to the block finder. The fee covers blocks with a base fee up to
+about 1.24 times `b_ref`. A second window, used in section 5:
 
 ```text
 [window-next]
 kind = window
 b_ref = 1100000000
 g_priv = 21090372
-price = 1566419776
-base_part = 33036375783996672
-tip = 3303637578399668
-fee = 36340013362396340
+price = 1237555001
+base_part = 26100495341550372
+tip = 2610049534155038
+fee = 28710544875705410
+cover_limit = 1361310501
 ```
 
 ## 5. Fee is current
@@ -383,10 +407,11 @@ fee = 36340013362396340
 The outline requires a one-time reveal to check that "the fee is current"
 ("Core protocol" 9). Here that is strict equality, as spec 03, section 7,
 step 5 has it: **the fee bound in the proof must equal the fee of the formula
-of section 4 for the including block; anything else is rejected**, before the
-proof is verified. There is no tolerance band, no "at least" and no refund:
-any of those would let the fee differ between transactions and so tell them
-apart.
+of section 4 for the including block's window or for the window before it,
+and the cover rule must hold for the including block; anything else is
+rejected**, before the proof is verified, in the pool and in blocks. There is
+no tolerance band, no "at least" and no refund: any of those would let the fee
+differ between transactions and so tell them apart.
 
 **Why a window.** A wallet proves before it knows which block will include its
 transaction, and the base fee moves every block. If the fee followed every
@@ -398,95 +423,266 @@ has the same fee.
 block, `wW`. That block's base fee is a function of its parent, block
 `wW - 1` (the base client's EIP-1559 rule), so the window's fee is known to
 every node and every header-only wallet as soon as the last block of the
-previous window exists. The price is
+previous window exists. The price is `b_ref` plus `FEE_STEPS` worst-case
+growth steps:
 
 ```text
 U_0     = b_ref
 U_(j+1) = U_j + floor(U_j / 8) + floor(U_j / 20000) + 1
-price_w = U_(W-1)
+price_w = U_FEE_STEPS = U_1
 ```
 
-**Why this never charges less than a block's base fee.** The front desk
-requires `G_PRIV * price_w >= G_PRIV * baseFee(h)` for every block `h` of the
-window. The base client sets a child's base fee from a parent with base fee
+The price is not a ceiling over the window: later blocks of the window can
+have a base fee above it. What keeps the burn at least `G_PRIV` times every
+block's base fee is the cover rule below, a validity rule, not the price.
+
+**The growth bound.** `U_j` is the most the base fee can be `j` blocks after
+`b_ref`. The base client sets a child's base fee from a parent with base fee
 `b`, gas limit `L`, target `t = floor(L / 2)` and gas used `u` as
 `b + max(1, floor((u - t) * b / t / 8))` when `u > t`, and lower or equal
 otherwise. The largest step is with a full parent, `u = L <= 2t + 1`, so
 `u - t <= t + 1` and the step is at most
 `max(1, floor(b / 8 + b / (8t)))`. With `L >= MIN_GAS_LIMIT = 5,000`,
 `t >= 2,500` and `b / (8t) <= b / 20,000`, so the step is at most
-`floor(b / 8) + floor(b / 20000) + 1`, which is the ceiling's step. The
-ceiling's step function is non-decreasing in `b`, so by induction
-`baseFee(wW + j) <= U_j <= U_(W-1)` for every `j < W`. The `1/8` is Ethereum's
-largest base-fee growth per block; the other two terms cover an odd gas limit
-and the smallest step of 1 wei.
+`floor(b / 8) + floor(b / 20000) + 1`, which is the growth step. The step
+function is non-decreasing in `b`, so by induction `baseFee(wW + j) <= U_j`
+for every `j >= 0`. The `1/8` is Ethereum's largest base-fee growth per block;
+the other two terms cover an odd gas limit and the smallest step of 1 wei.
+The bound sets the price and the availability figures below; consensus does
+not depend on it, because the cover rule checks every block's actual base fee.
 
-**The window's length (Proposed: 4 blocks).** A longer window gives a wallet
-more blocks to be included in; a shorter one charges less above the actual base
-fee, because the ceiling grows by about 12.5% per block of the window. With the
-window's fee known when the window opens and a proof made in at most the
-10-second target (decision 0003), the trade is:
+### The cover rule
+
+**Statement.** For a reveal with fee `fee`, matched to window `w` (the
+including block's window or the one before it, below), in a block with base
+fee `beta`:
+
+```text
+burn     = G_PRIV * max(price_w, beta)
+tip_paid = fee - burn
+```
+
+A reveal for which `tip_paid` would be negative, that is with
+`G_PRIV * beta > fee`, is rejected. The check needs only the block's base fee
+and the matched window's price, so it is made with the fee check, before the
+proof is verified, in the pool (section 6, step 3) and in blocks (spec 03,
+section 7, step 5). A valid reveal burns `burn` and pays `tip_paid` to the
+block finder.
+
+**The guarantee.** Every valid reveal burns at least `G_PRIV` times the
+including block's base fee: `burn = G_PRIV * max(price_w, beta) >=
+G_PRIV * beta`, and the rule rejects exactly the reveals whose fee cannot pay
+that burn. It holds by construction, in every block of the window and of the
+window after it, whatever the gas limits and loads were; there is no
+growth-bound induction in consensus.
+
+**Tip bounds.** `burn >= G_PRIV * price_w`, so `tip_paid <= fee - G_PRIV *
+price_w`, the nominal tip of section 4: the finder never receives more than
+the nominal tenth. While `beta <= price_w` the burn is the base-fee part and
+`tip_paid` is exactly the nominal tip, whatever `beta` is; above the price it
+falls by `G_PRIV` for each wei of base fee, to zero at the cover limit
+`floor(fee / G_PRIV)`. Since `fee >= 1.1 * G_PRIV * price_w`, the cover limit
+is about 1.1 times the price, about 1.24 times `b_ref`
+(`window-genesis`: 1,237,555,001 wei against a price of 1,125,050,001).
+
+**Availability.** A reveal priced for its window is valid in:
+
+- **blocks 0 and 1 of the window, at any load:** block 0's base fee is
+  `b_ref <= price_w`, and block 1's is at most `U_1 = price_w` by the growth
+  bound, so the burn is the base-fee part and the tip the nominal tip;
+- **blocks 2 and 3, unless the base fee rose more than about 1.24 times
+  `b_ref`:** sustained full blocks (12.5% a block) do that by block 2, about
+  1.266 times `b_ref`. Private-reveal load alone does not: one private
+  transaction uses `G_PRIV`, 70% of the default gas limit, so it raises the
+  base fee about 5% a block, to about 1.16 times `b_ref` after 3 blocks;
+- **the window after it** under the rule of the next subsection, while the
+  base fee stays within the cover limit.
+
+A reveal outside these is a lapsed fee: it is rejected, and the wallet proves
+again.
+
+**What each rule stops.**
+
+- **Overcharging.** The price is one growth step above `b_ref`, not the 4-step
+  ceiling of about 1.424 times `b_ref` whose extra was burned for nothing. At
+  1 gwei the fee falls from about 0.0330 to about 0.0261 GHOST.
+- **Undercharging when the base fee rises.** Above the price the burn follows
+  the block's base fee, and a block whose base fee the fee cannot cover
+  rejects the reveal, so no reveal burns less than `G_PRIV` times its block's
+  base fee.
+- **Finder gain from base-fee movement.** The finder's tip is the nominal tip
+  while `beta <= price_w` and less above it, never more. A finder that fills
+  blocks to raise the base fee lowers or voids its own tip, one that lowers the
+  base fee gains nothing, and a high window price is burned, not tipped.
+- **A stale fee after a window change.** A fee of the previous window is held
+  to the cover rule against the including block's own base fee, so a fee
+  priced for a lower base fee is never accepted below `G_PRIV` times the
+  current one.
+
+**Rejected alternatives** (front desk, 2026-10-25): keeping the 4-step ceiling
+(it burns about 42% for nothing and does not cover the previous window);
+pricing at exactly `b_ref` (valid only up to about 1.1 times `b_ref`, two
+blocks under private load); a refund or a per-block fee (fees would differ
+between reveals and tell them apart); burning `min(fee, G_PRIV * beta)` with
+no rejection (it redefines the guarantee and undercharges without bound).
+
+### Fee of the previous window
+
+A wallet proves before it knows the including block, and a window change can
+fall between the proof and the inclusion. So the fee may also be that of the
+window before the including block's:
+
+1. The node computes the fee of the including block's window `w` (section 4).
+   If the transaction's fee equals it, the matched window is `w`.
+2. Only if it does not, and `w > 0`, the node computes the fee of window
+   `w - 1` from the base fee of block `(w - 1)W`. If the transaction's fee
+   equals it, the matched window is `w - 1`. The first window, `w = 0`, has no
+   window before it, so there only the current fee matches.
+3. If neither matches, the transaction is rejected (a lapsed fee).
+4. The cover rule applies with the matched window's price and the including
+   block's base fee.
+
+When two consecutive windows have the same fee they have the same price, so it
+does not matter which one matched. A fee priced for window `w - 1` can be
+included as late as block `2W - 1 = 7` of its span, where the base fee can
+reach `U_7`, far above its price; the cover rule, not the price, keeps such a
+reveal from undercharging, and rejects it when the base fee has risen past its
+cover limit.
+
+**The window's length (Proposed: 4 blocks).** With the price at one growth
+step, the window's length no longer sets the price. It sets how long a fee is
+open and how many of those blocks depend on load. With the window's fee known
+when the window opens and a proof made in at most the 10-second target
+(decision 0003), the trade is:
 
 **Window length.**
 
-| Window (blocks) | Ceiling over b_ref | Open for (30-second blocks) |
-|---|---|---|
-| 1 | 1.000 | 30 s; the proof and its megabyte must reach a miner before the very next block, which comes within 10 s about 28% of the time |
-| 2 | 1.125 | 60 s |
-| 4 | 1.424 | 120 s |
-| 8 | 2.281 | 240 s |
-| 16 | 5.856 | 480 s |
+| Window length | Price over b_ref | Blocks valid at any load | Open for |
+|---|---|---|---|
+| 1 | 1.125 | 1 | 30 s, and 30 s more as the previous window; the proof and its megabyte must reach a miner before the very next block, which comes within 10 s about 28% of the time |
+| 2 | 1.125 | 2 | 60 s, and 60 s more as the previous window |
+| 4 | 1.125 | 2 | 120 s, and 120 s more as the previous window |
+| 8 | 1.125 | 2 | 240 s, and 240 s more as the previous window |
+| 16 | 1.125 | 2 | 480 s, and 480 s more as the previous window |
 
-Four blocks keep a reveal valid for about two minutes, several times the
-proving target, while the worst-case charge stays under one and a half times the
-base fee at the window's start. One block is too short to prove in reliably,
-and eight blocks more than double the charge. The ratio is for `b_ref` of
-1 gwei; the script recomputes it.
+"Blocks valid at any load" counts the blocks `j` of the window whose largest
+possible base fee, `U_j`, is within the cover limit; "Open for" is the window
+at 30-second blocks, and the window after it while the cover rule holds. Four
+blocks keep a reveal open for about two minutes in its own window, several
+times the proving target: two blocks at any load, and all four under
+private-reveal load alone, which reaches about 1.22 times `b_ref` by block 4.
+A longer window adds blocks that are valid only while the load stays low: at
+eight blocks, private-reveal load alone passes the cover limit by block 5. One
+block is too short to prove in reliably. The ratio and the counts are for
+`b_ref` of 1 gwei; the script recomputes them.
 
-**Worst case inside a window.** Every block of the window full at an odd gas
-limit of 30,000,001, the fastest the base fee can rise. Each base fee is the
-base client's rule applied to the one before; `G_PRIV` times each stays at or
-below the window's base-fee part.
+**Growth inside a window.** Every block of the window full at an odd gas limit
+of 30,000,001, the fastest the base fee can rise, and then a block carrying
+one private transaction and nothing else at the default gas limit. Each base
+fee is the base client's rule applied to the one before; `valid` and `tips`
+are the cover rule's verdict and the tip paid in each block for the window's
+fee (`-` for a rejected reveal).
 
 ```text
 [growth-genesis-full-blocks]
 kind = growth
 window = window-genesis
 gas_limit = 30000001
+gas_used = 30000001
 base_fees = 1000000000 1125000008 1265625018 1423828155
+valid = yes yes no no
+tips = 2372772303969038 2372772303969038 - -
+
+[growth-genesis-private-load]
+kind = growth
+window = window-genesis
+gas_limit = 30000000
+gas_used = 21090372
+base_fees = 1000000000 1050753100 1104082077 1160117665
+valid = yes yes yes yes
+tips = 2372772303969038 2372772303969038 2372772303969038 1633182225038030
 ```
 
-**A lapsed fee.** A wallet that proved in window `w` and is not included before
-window `w + 1` begins holds a proof whose bound fee is no longer in force. The
-transaction is rejected at step 5 and the wallet proves again for the new fee,
-with a new remainder blinding (spec 01, section 8). If the base fee did not
-move, the two windows have the same fee and the transaction stays valid.
+Under full blocks blocks 2 and 3 are above the cover limit of 1,237,555,001
+and reject the reveal; under private-reveal load every block accepts it, and
+block 3, above the price, pays a smaller tip.
+
+**A lapsed fee.** A wallet that proved in window `w` holds a fee that is
+accepted in window `w` and in window `w + 1`, each time subject to the cover
+rule. It lapses when neither the including block's window nor the one before
+it has that fee, or when the including block's base fee is above the fee's
+cover limit. The transaction is rejected at step 5 and the wallet proves again
+for the new fee, with a new remainder blinding (spec 01, section 8). In the
+examples `window-genesis` is followed by `window-next`; `matched` is the
+window whose fee matched (`none` for neither) and `tip` the tip paid (`-` for
+a rejected reveal).
 
 ```text
-[lapse-window-change]
-kind = lapse
-fee_proved = 33036375802978007
-fee_in_force = 36340013362396340
-valid = no
-
 [lapse-fee-unchanged]
 kind = lapse
-fee_proved = 33036375802978007
-fee_in_force = 33036375802978007
+fee_proved = 26100495343659410
+fee_current = 26100495343659410
+fee_previous = 26100495343659410
+base_fee = 1000000000
+matched = current
 valid = yes
+tip = 2372772303969038
+
+[lapse-previous-window]
+kind = lapse
+fee_proved = 26100495343659410
+fee_current = 28710544875705410
+fee_previous = 26100495343659410
+base_fee = 1150000000
+matched = previous
+valid = yes
+tip = 1846567543659410
+
+[lapse-cover-fails]
+kind = lapse
+fee_proved = 26100495343659410
+fee_current = 28710544875705410
+fee_previous = 26100495343659410
+base_fee = 1250000000
+matched = previous
+valid = no
+tip = -
+
+[lapse-two-windows]
+kind = lapse
+fee_proved = 26100495343659410
+fee_current = 28710544875705410
+fee_previous = 28710544875705410
+base_fee = 1100000000
+matched = none
+valid = no
+tip = -
 ```
 
-**Window change and reorganisation.** The fee of a window depends on block
-`wW - 1` of the canonical chain. A reorganisation that replaces that block can
-change the fee of the current window, and the pool's full recheck (section 6)
-drops every transaction whose fee no longer equals the fee for the next block.
-A node that cannot compute the fee for a block (it lacks the parent header of
-the window's first block) rejects every private transaction for that block.
+In `lapse-fee-unchanged` the base fee did not move, so the windows have the
+same fee and the current one matches. In `lapse-previous-window` the fee of
+`window-genesis` is included in `window-next` at a base fee above its price
+but within its cover limit, and pays a smaller tip. In `lapse-cover-fails` the
+same fee meets a base fee of 1,250,000,000, above its cover limit of
+1,237,555,001: the fee matched, but it cannot pay the burn, so the reveal is
+rejected. In `lapse-two-windows` two windows have passed since the proof and
+neither fee matches.
 
-**What the wallet does.** It computes the fee from headers alone, proves for
-the window of the next block, and if fewer than two blocks of that window
-remain when the proof is ready, waits for the next window's fee rather than
-race the change. These are wallet choices; the node checks only equality.
+**Window change and reorganisation.** The fee of a window depends on block
+`wW - 1` of the canonical chain, and the previous window's fee on block
+`(w - 1)W - 1`. A reorganisation that replaces either can change which fees
+are accepted, and the pool's full recheck (section 6) drops every transaction
+whose fee no longer matches, or no longer passes the cover rule, for the next
+block. A node that cannot compute a fee it needs for a block (it lacks the
+parent header of a window's first block) rejects every private transaction it
+would need that fee for.
+
+**What the wallet does.** It computes the fee from headers alone and proves
+for the window of the next block. Its fee stays acceptable through the next
+window while the base fee stays within the cover limit, so it need not wait
+out a window change; it prefers to be included early in the window, where the
+fee is valid at any load. These are wallet choices; the node checks only
+equality with one of the two fees and the cover rule.
 
 ## 6. Transaction pool
 
@@ -503,8 +699,10 @@ these hold, checked in this order and stopping at the first failure. Steps 1 to
 1. **Exact size and decoding.** Section 3, "Decoding". A transaction of the
    wrong size is refused before it is stored.
 2. **Chain and version.** `chain_id` and `version` are this node's values.
-3. **Fee in force.** `fee` equals the fee of section 4 for the next block on
-   the node's head.
+3. **Fee in force.** `fee` equals the fee of section 4 for the window of the
+   next block on the node's head or, failing that, of the window before it
+   (section 5, "Fee of the previous window"), and the cover rule (section 5)
+   holds for the next block's base fee.
 4. **Root eligible.** `root` is an eligible coin root for the next block
    (spec 05, section 5).
 5. **Marker unused.** The marker's slot is zero in the state of the head (spec
@@ -576,11 +774,13 @@ later one. A block that holds both is invalid.
 
 These are the boundary cases of the outline ("First milestone" 8) and spec 03,
 section 8, worked through with the fee of window `window-genesis` (section 4),
-`fee = 33,036,375,802,978,007` wei. Every case has the same size and shape: one
-input, the recipient and `out` fields present (zero allowed), one remainder
-commitment (zero allowed) and one note. `burned` is the base-fee part, `tip`
-the finder's tip and `minted` what the recipient is credited; all three are zero
-when no valid proof exists. The script of section 12 recomputes each.
+`fee = 26,100,495,343,659,410` wei, in the window's first block, whose base fee
+is `b_ref`. Every case has the same size and shape: one input, the recipient
+and `out` fields present (zero allowed), one remainder commitment (zero
+allowed) and one note. `burned` is the burn of the cover rule (here the
+base-fee part, since the block's base fee is below the price), `tip` the tip
+paid to the finder and `minted` what the recipient is credited; all three are
+zero when no valid proof exists. The script of section 12 recomputes each.
 
 **A full reveal.** Everything after the fee goes out: `out = v - fee`, and the
 remainder holds zero but still exists (spec 02, PS-13).
@@ -589,14 +789,15 @@ remainder holds zero but still exists (spec 02, PS-13).
 [full-reveal]
 kind = reveal
 window = window-genesis
+base_fee = 1000000000
 v = 1000000000000000000
-out = 966963624197021993
+out = 973899504656340590
 remainder = 0
-fee = 33036375802978007
+fee = 26100495343659410
 valid = yes
-burned = 30033068911798188
-tip = 3003306891179819
-minted = 966963624197021993
+burned = 23727723039690372
+tip = 2372772303969038
+minted = 973899504656340590
 ```
 
 **A zero-amount claim.** Nothing goes out; the remainder takes everything after
@@ -608,13 +809,14 @@ zero address there.
 [zero-amount-claim]
 kind = reveal
 window = window-genesis
+base_fee = 1000000000
 v = 1000000000000000000
 out = 0
-remainder = 966963624197021993
-fee = 33036375802978007
+remainder = 973899504656340590
+fee = 26100495343659410
 valid = yes
-burned = 30033068911798188
-tip = 3003306891179819
+burned = 23727723039690372
+tip = 2372772303969038
 minted = 0
 ```
 
@@ -625,13 +827,14 @@ minted = 0
 [fee-uses-whole-balance]
 kind = reveal
 window = window-genesis
-v = 33036375802978007
+base_fee = 1000000000
+v = 26100495343659410
 out = 0
 remainder = 0
-fee = 33036375802978007
+fee = 26100495343659410
 valid = yes
-burned = 30033068911798188
-tip = 3003306891179819
+burned = 23727723039690372
+tip = 2372772303969038
 minted = 0
 ```
 
@@ -644,10 +847,11 @@ it covers.
 [fee-above-balance]
 kind = reveal
 window = window-genesis
-v = 33036375802978006
+base_fee = 1000000000
+v = 26100495343659409
 out = 0
 remainder = 0
-fee = 33036375802978007
+fee = 26100495343659410
 valid = no
 burned = 0
 tip = 0
@@ -668,18 +872,18 @@ step 6, and `a` is included. Only `a`'s amount is minted, and spec 03's
 kind = competing
 window = window-genesis
 v = 1000000000000000000
-fee = 33036375802978007
+fee = 26100495343659410
 marker_a = m
 marker_b = m
 out_a = 500000000000000000
-remainder_a = 466963624197021993
+remainder_a = 473899504656340590
 out_b = 300000000000000000
-remainder_b = 666963624197021993
+remainder_b = 673899504656340590
 first = a
 included = a
 rejected = b
 minted = 500000000000000000
-total_out_change = 533036375802978007
+total_out_change = 526100495343659410
 ```
 
 ## 8. Properties
@@ -705,25 +909,34 @@ removed does not count (spec 03, section 10).
   Check: change each payload field of a valid transaction in turn; each change
   is rejected (spec 02, PS-7).
 - **PT-5. The fee is the formula's.** A transaction is valid only if its fee
-  equals the fee of section 4 for the including block. Check: the same reveal
-  with the fee one wei higher and one wei lower is rejected before the proof is
-  verified (spec 03, CR-8).
+  equals the fee of section 4 for the including block's window or, when that
+  does not match, for the window before it (none before the first window).
+  Check: the same reveal with the fee one wei higher and one wei lower is
+  rejected before the proof is verified (spec 03, CR-8), a reveal with the
+  previous window's fee is accepted, and one with the fee of the window before
+  that is rejected.
 - **PT-6. The fee is constant in a window.** Every block of a window has the
   same fee, and the fee is computable from the parent of the window's first
-  block. Check: compute the fee from headers alone for each block of a window
-  and compare with the node's value.
-- **PT-7. The fee never undercharges.** `G_PRIV` times every block's base fee
-  is at most the window's base-fee part. Check: the growth example of section 5
-  and a randomised test over gas limits from `MIN_GAS_LIMIT` upwards with every
-  block full.
-- **PT-8. A lapsed fee is rejected.** A transaction proven for one window is
-  rejected in a later window whose fee differs. Check: the lapse examples of
-  section 5.
-- **PT-9. Burn and tip.** A valid reveal burns exactly the base-fee part and
-  credits exactly the tip to the block finder, and the tip is the same for
-  every private transaction in the block. Check: the boundary examples of
-  section 7; the finder's balance grows by the tip and the public supply falls
-  by the base-fee part.
+  block, and the previous window's fee from the parent of that window's first
+  block. Check: compute both fees from headers alone for each block of a
+  window and compare with the node's values.
+- **PT-7. The fee never undercharges.** Every valid reveal burns at least
+  `G_PRIV` times the including block's base fee, `G_PRIV * max(price, beta)`,
+  and a reveal whose fee cannot pay that is rejected before the proof is
+  verified. Check: the growth examples of section 5 and a randomised test over
+  gas limits from `MIN_GAS_LIMIT` upwards, loads and base fees, for the
+  current and the previous window's fee.
+- **PT-8. A lapsed fee is rejected.** A transaction is rejected when its fee is
+  neither the including block's window's nor the previous window's, or when
+  the including block's base fee is above its cover limit. Check: the lapse
+  examples of section 5.
+- **PT-9. Burn and tip.** A valid reveal burns exactly
+  `G_PRIV * max(price, beta)` and credits the rest of the fee to the block
+  finder, which is the nominal tip while `beta` is at most the price and never
+  more; the tip is the same for every private transaction in the block with
+  the same fee. Check: the boundary examples of section 7 and the growth
+  examples of section 5; the finder's balance grows by the tip paid and the
+  public supply falls by the burn.
 - **PT-10. The user does not choose the fee.** No field, option or wallet input
   changes the fee of a valid transaction. Check: the fee field is the only fee
   field, and PT-5's test rejects every other value.
@@ -786,14 +999,17 @@ difference is listed here for the founder's review.
    `version` `0x0001` mean the coin reveal, so step 3 becomes part of
    decoding.
 4. **The fee is not the block's base fee.** Spec 03, section 7, step 5 says the
-   fee is "base fee plus the fixed private tip" for the block. Here the
-   base-fee part is `G_PRIV` times the window's price (section 4), which is at
-   least `G_PRIV` times the block's base fee and usually more; all of it is
-   burned.
+   fee is "base fee plus the fixed private tip" for the block. Here the fee is
+   per window (section 4), and the base-fee part burned in a block is
+   `G_PRIV * max(price, beta)` for the block's base fee `beta`, at least
+   `G_PRIV` times the block's base fee (section 5, "The cover rule"); the tip
+   is the rest of the fee, so it is fixed only while `beta` is at most the
+   price.
 5. **Fee field set by the node.** Spec 02, section 4 says `fee` is set by the
    node's formula for the block. Here it is a payload field that must equal the
-   formula's value, and the formula is per window; every block of a window has
-   the same value, so the bound fee is still the block's.
+   formula's value for the block's window or the window before it; every block
+   of a window has the same value, so the bound fee is still one the block
+   accepts.
 6. **Data reveal shape.** [Spec 04](04-data-commitments.md), section 6, step 1
    proposes that a data reveal be the same private type with the amount-out and
    remainder fields zero. Version 1 here has no type or purpose field, so a data
@@ -843,9 +1059,13 @@ and the pool's byte cap equal their recomputed values; that the payload table
 lists exactly the fields of section 3 in order, contiguous, at their widths,
 with no sender, signature, nonce or gas field, and adds up to the stated fixed
 size; that every field of the coin reveal binding is mapped and every payload
-field but the proof is bound; that every worked example (the window fees and
-window-length ratios, the worst-case growth, the lapses, each boundary case and
-the competing reveals) is right; that the properties are numbered PT-1 upwards
+field but the proof is bound; that every worked example (the window fees at
+`FEE_STEPS` growth steps and their cover limits, the window-length table, the
+growth under full blocks and under private-reveal load with the cover rule's
+verdict and tip in each block, the lapses for the current window, the
+previous window, no match and a failed cover rule, each boundary case and the
+competing reveals) is right; that section 5 has the subsections "The cover
+rule" and "Fee of the previous window"; that the properties are numbered PT-1 upwards
 without gaps and each names its check; and that the conflicts name spec 02,
 03 and 04. `scripts/test_check_private_transaction.py` damages each part and
 expects the check to fail.
