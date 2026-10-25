@@ -132,7 +132,7 @@ pub const PROOF_FIELD_BYTES: usize = 1_310_720;
 /// trace may have before zero-knowledge padding, the coin reveal's.
 pub const MAX_TRACE_HEIGHT: usize = 2048;
 /// The most columns a statement's trace may have, the salted coin reveal's:
-/// the version 1 coin reveal's 3,808 and the 16 carried columns of the salt.
+/// 3,808 without the salt and its 16 carried columns.
 pub const MAX_TRACE_WIDTH: usize = 3824;
 
 /// The challenge field.
@@ -679,12 +679,6 @@ fn estimate(p: &Parameters, air: &StatementAir) -> Option<SecurityEstimate> {
 /// The statements, each with its own fixed shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Statement {
-    /// S1, the one-time reveal of a version 1 coin (made without a salt).
-    CoinReveal,
-    /// S2, the one-time reveal of data (reveal or revoke).
-    DataReveal,
-    /// S3, the proof of holding.
-    Hold,
     /// S1, the one-time reveal of a salted (version 2) coin, type `0x02 0x01`:
     /// the salt is a private witness in 16 carried columns.
     SaltedCoinReveal,
@@ -697,37 +691,30 @@ pub enum Statement {
 }
 
 impl Statement {
-    pub const ALL: [Self; 6] = [
-        Self::CoinReveal,
-        Self::DataReveal,
-        Self::Hold,
-        Self::SaltedCoinReveal,
-        Self::SaltedDataReveal,
-        Self::SaltedHold,
-    ];
+    pub const ALL: [Self; 3] = [Self::SaltedCoinReveal, Self::SaltedDataReveal, Self::SaltedHold];
+
+    /// The coin reveal, [`Self::SaltedCoinReveal`], under the name of the
+    /// version 1 statement that is gone. Kept, hidden, only for the reveal
+    /// benchmark's recursion test, which reads the coin reveal's shape from
+    /// the first entry of the report; remove it with that use.
+    #[doc(hidden)]
+    #[allow(non_upper_case_globals)]
+    pub const CoinReveal: Self = Self::SaltedCoinReveal;
 
     const fn index(self) -> usize {
         match self {
-            Self::CoinReveal => 0,
-            Self::DataReveal => 1,
-            Self::Hold => 2,
-            Self::SaltedCoinReveal => 3,
-            Self::SaltedDataReveal => 4,
-            Self::SaltedHold => 5,
+            Self::SaltedCoinReveal => 0,
+            Self::SaltedDataReveal => 1,
+            Self::SaltedHold => 2,
         }
     }
 
     /// The statement's schedule, without any witness.
     pub(crate) fn schedule(self) -> Schedule {
-        use crate::data::DataFormat;
-        use crate::reveal::Format;
         match self {
-            Self::CoinReveal => crate::reveal::schedule(Format::V1),
-            Self::DataReveal => crate::data::schedule(DataFormat::V1),
-            Self::Hold => crate::hold::schedule(DataFormat::V1),
-            Self::SaltedCoinReveal => crate::reveal::schedule(Format::V2),
-            Self::SaltedDataReveal => crate::data::schedule(DataFormat::V2),
-            Self::SaltedHold => crate::hold::schedule(DataFormat::V2),
+            Self::SaltedCoinReveal => crate::reveal::schedule(),
+            Self::SaltedDataReveal => crate::data::schedule(),
+            Self::SaltedHold => crate::hold::schedule(),
         }
     }
 
@@ -959,7 +946,7 @@ pub(crate) fn serialized_len(bytes: &[u8]) -> Option<usize> {
 /// The gate's estimate for every statement, for the shipped configuration
 /// report.
 pub(crate) fn estimates() -> Result<[(Statement, SecurityEstimate); Statement::ALL.len()], ProofError> {
-    let mut out = [(Statement::CoinReveal, gate(Statement::CoinReveal)?); Statement::ALL.len()];
+    let mut out = [(Statement::SaltedCoinReveal, gate(Statement::SaltedCoinReveal)?); Statement::ALL.len()];
     for (slot, statement) in out.iter_mut().zip(Statement::ALL) {
         *slot = (statement, gate(statement)?);
     }
@@ -1023,7 +1010,7 @@ mod tests {
     /// that is not Keccak-256's, hiding off, short salts.
     #[test]
     fn gate_refuses_a_configuration_below_the_quantum_rule() {
-        let air = Statement::CoinReveal.air();
+        let air = Statement::SaltedCoinReveal.air();
         let shipped = shipped_parameters();
         assert_eq!(shipped.hash, CommitmentHash::Keccak256);
         assert_eq!((shipped.merkle_digest_bits, shipped.transcript_digest_bits), (256, 256));
@@ -1031,7 +1018,7 @@ mod tests {
         assert_eq!(shipped.salt_bits, 154);
         let est = check(&shipped, &air).expect("the shipped parameters meet the rule");
         assert!(est.conjectured_bits_half_grinding >= TARGET_CONJECTURED_BITS);
-        assert_eq!(gate(Statement::CoinReveal), Ok(est));
+        assert_eq!(gate(Statement::SaltedCoinReveal), Ok(est));
 
         let with_fri = |fri: FriShape| Parameters { fri, ..shipped };
 
@@ -1221,16 +1208,17 @@ mod tests {
     }
 
     /// The periodic tables built with the memoizing DFT are the library's, cell
-    /// for cell, for both coin reveals, at two shifts and two blowups, on the
-    /// first build (computed) and the second (remembered); and a single column
-    /// gets the library's LDE at each shift, not one remembered for another.
+    /// for cell, for the coin reveal and the data reveal, at two shifts and two
+    /// blowups, on the first build (computed) and the second (remembered); and
+    /// a single column gets the library's LDE at each shift, not one
+    /// remembered for another.
     #[test]
     fn memoized_periodic_ldes_are_the_library_ones() {
         use p3_field::Field;
         use p3_fri::build_periodic_lde_table_two_adic;
 
         let library = Radix2DitParallel::<F>::default();
-        for statement in [Statement::CoinReveal, Statement::SaltedCoinReveal] {
+        for statement in [Statement::SaltedCoinReveal, Statement::SaltedDataReveal] {
             let air = statement.air();
             let columns = air.periodic_columns();
             let log_height = air.height().trailing_zeros() as usize;

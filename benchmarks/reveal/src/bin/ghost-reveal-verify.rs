@@ -1,9 +1,10 @@
-//! Verify, natively, coin reveal proofs made in the browser worker.
+//! Verify, natively, salted coin reveal proofs made in the browser worker.
 //!
 //! Reads proof files written by the benchmark driver: one proof per line,
 //! `<label> TAB <public fields, hex> TAB <proof, hex>`, the public fields as
 //! `ghost_reveal_bench::encode_reveal` writes them. Each proof is checked with
-//! `ghost_proofs::verify_coin_reveal` and the benchmark's chain constants,
+//! `ghost_proofs::verify_salted_coin_reveal` and the benchmark's chain
+//! constants,
 //! and one JSON line is printed per proof:
 //! `{"label":"...","native_verified":true}`.
 //!

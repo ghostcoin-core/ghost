@@ -1,18 +1,18 @@
 //! The proof statements of Ghost (spec 02), with a native prover and verifier.
 //!
-//! - S1, the one-time reveal of a coin: [`prove_salted_coin_reveal`] and
-//!   [`verify_salted_coin_reveal`] for a salted (version 2) commitment, and
-//!   [`prove_coin_reveal`] and [`verify_coin_reveal`] for a version 1
-//!   commitment, made without a salt.
-//! - S2, the one-time reveal of data: [`verify_data_reveal`] and, for a
-//!   salted (version 2) data commitment, [`verify_salted_data_reveal`], which
-//!   reject every data reveal until its fee is settled.
-//! - S3, the proof of holding: [`verify_hold`], for `DATA` and for salted
-//!   `DATA_V2` commitments, which rejects every proof until the spent-marker
-//!   set is settled, and the verifier's [`ChallengeBook`].
+//! Every statement opens a salted (format version 2) commitment of spec 01,
+//! section 3, the only commitment format.
 //!
-//! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`] and
-//! [`verify_coin_reveal`], with its header in `include/ghost_proofs.h`.
+//! - S1, the one-time reveal of a coin: [`prove_salted_coin_reveal`] and
+//!   [`verify_salted_coin_reveal`].
+//! - S2, the one-time reveal of data: [`verify_salted_data_reveal`], which
+//!   rejects every data reveal until its fee is settled.
+//! - S3, the proof of holding: [`verify_hold`], for `DATA_V2` commitments,
+//!   which rejects every proof until the spent-marker set is settled, and the
+//!   verifier's [`ChallengeBook`].
+//!
+//! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`], with
+//! its header in `include/ghost_proofs.h`.
 //!
 //! S2 and S3 are written in full, and are built and verified only by the
 //! functions compiled under the `unsettled-points-test` feature, for tests.
@@ -60,8 +60,6 @@ mod reveal;
 mod schedule;
 mod stark;
 
-#[doc(hidden)]
-pub mod adversary;
 pub mod ffi;
 
 pub use amount::{
@@ -73,37 +71,39 @@ pub use binding::{
     PURPOSE_HOLD, PURPOSE_REVEAL, PURPOSE_REVOKE, PURPOSE_SPEND, STATEMENT_COIN_REVEAL, STATEMENT_DATA_REVEAL,
     STATEMENT_HOLD, STATEMENT_VERSION_1,
 };
-pub use data::{
-    DataOpening, DataPurpose, DataReveal, SaltedDataOpening, data_reveal_binding, salted_data_reveal_binding,
-    verify_data_reveal, verify_salted_data_reveal,
-};
+pub use data::{DataPurpose, DataReveal, SaltedDataOpening, salted_data_reveal_binding, verify_salted_data_reveal};
 #[cfg(feature = "unsettled-points-test")]
-pub use data::{
-    DataRevealRequest, prove_data_reveal, prove_salted_data_reveal, verify_data_reveal_unsettled,
-    verify_salted_data_reveal_unsettled,
-};
+pub use data::{DataRevealRequest, prove_salted_data_reveal, verify_salted_data_reveal_unsettled};
 #[cfg(feature = "unsettled-points-test")]
 #[doc(hidden)]
 pub use data::prove_salted_data_reveal_claiming;
 pub use hash::{
-    COIN, COIN_V2, DATA, DATA_V2, EMPTY_RULE, RATE_BYTES, SALT_BYTES, TREE_DEPTH, Tree, coin_commitment,
-    coin_commitment_v2, coin_fingerprint, coin_fingerprint_v2, coin_marker, coin_marker_v2, data_commitment,
-    data_commitment_v2, data_fingerprint, data_fingerprint_v2, data_marker, data_marker_v2, empty_leaf, keccak256,
-    merkle_root, permutations, tag_bytes, tagged, tree_node,
+    COIN_V2, DATA_V2, EMPTY_RULE, RATE_BYTES, SALT_BYTES, TREE_DEPTH, Tree, coin_commitment_v2, coin_fingerprint_v2,
+    coin_marker_v2, data_commitment_v2, data_fingerprint_v2, data_marker_v2, empty_leaf, keccak256, merkle_root,
+    permutations, tag_bytes, tagged, tree_node,
 };
-pub use hold::{ChallengeBook, HoldContext, HoldOpening, SaltedHoldOpening, hold_binding, verify_hold};
+pub use hold::{ChallengeBook, HoldContext, SaltedHoldOpening, hold_binding, verify_hold};
 #[cfg(feature = "unsettled-points-test")]
-pub use hold::{prove_hold, prove_salted_hold, verify_hold_unsettled, verify_hold_unsettled_with_book};
+pub use hold::{prove_salted_hold, verify_hold_unsettled, verify_hold_unsettled_with_book};
 #[cfg(feature = "unsettled-points-test")]
 #[doc(hidden)]
 pub use hold::prove_salted_hold_claiming;
 pub use reveal::{
-    CoinOpening, CoinRemainder, CoinReveal, NOTE_BYTES, RevealRequest, SaltedCoinOpening, SaltedCoinRemainder,
-    coin_reveal_binding, prove_coin_reveal, prove_salted_coin_reveal, salted_coin_reveal_binding,
-    verify_coin_reveal, verify_salted_coin_reveal,
+    CoinReveal, NOTE_BYTES, RevealRequest, SaltedCoinOpening, SaltedCoinRemainder, prove_salted_coin_reveal,
+    salted_coin_reveal_binding, verify_salted_coin_reveal,
 };
 #[doc(hidden)]
 pub use reveal::prove_salted_coin_reveal_claiming;
+
+/// There is no version 1 coin reveal statement any more: this verifies
+/// nothing and rejects every proof with [`ProofError::Rejected`]. Kept,
+/// hidden, only because the client crate's restore test still checks that a
+/// salted reveal does not pass as version 1; remove it with that check.
+#[doc(hidden)]
+pub fn verify_coin_reveal(params: &ChainParams, tx: &CoinReveal, proof: &Proof) -> Result<(), ProofError> {
+    let _ = (params, tx, proof);
+    Err(ProofError::Rejected)
+}
 pub use stark::{
     BATCH_POW_BITS, COLLISION_RESISTANCE_BITS, DIGEST_BITS, EXTENSION_DEGREE, LOG_BLOWUP, MAX_GRINDING_BITS,
     MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH, MIN_SALT_BITS, NUM_QUERIES, PROOF_FIELD_BYTES, QUERY_POW_BITS, SALT_BITS,
@@ -128,13 +128,10 @@ pub enum ProofError {
     UnknownType,
     /// A purpose code other than the statement's.
     UnknownPurpose,
-    /// An opening whose commitment format is not the one the type tag names:
-    /// a version 1 opening for `DATA_V2`, or a salted one for `DATA`.
-    WrongFormat,
     /// A proof of holding asked for a content fingerprint that is not the
     /// opened commitment's.
     WrongContentFingerprint,
-    /// A proof of holding for `COIN` (spec 02, section 13, item 3).
+    /// A proof of holding for `COIN_V2` (spec 02, section 13, item 3).
     HoldCoinUnsettled,
     /// Every proof of holding, until the spent-marker set and its header root
     /// are settled (spec 02, section 13, item 2).
@@ -191,7 +188,6 @@ impl fmt::Display for ProofError {
             Self::NotInTree => f.write_str("the commitment is not under the root"),
             Self::UnknownType => f.write_str("unknown type tag"),
             Self::UnknownPurpose => f.write_str("unknown purpose code"),
-            Self::WrongFormat => f.write_str("the opening is not of the format the type tag names"),
             Self::WrongContentFingerprint => {
                 f.write_str("the content fingerprint is not the one of the commitment opened")
             }

@@ -4,8 +4,8 @@
 //! time, so the code cannot drift from them: the amount and conservation
 //! vectors of spec 02, the derivation and commitment vectors of spec 01 and
 //! the tree vectors of spec 05. The example witness is the spec 01 example:
-//! a commit of 1 GHOST under the words example key, revealed against the
-//! two-leaf coin tree of spec 05.
+//! a salted commit of 1 GHOST under the words example key, revealed against
+//! the two-leaf coin tree of spec 05.
 //!
 //! Every negative test first builds a valid proof and asserts that it
 //! verifies, then changes one thing, so it cannot pass by failing for another
@@ -14,7 +14,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Mutex, MutexGuard};
 
-use ghost_proofs::adversary::prove_coin_reveal_claiming;
 use ghost_proofs::*;
 use p3_keccak::KeccakF;
 use p3_symmetric::Permutation;
@@ -84,6 +83,11 @@ fn vector(doc: &str, name: &str) -> BTreeMap<String, String> {
 fn hex32(s: &str) -> [u8; 32] {
     let bytes = hex(s);
     bytes.try_into().expect("32 bytes")
+}
+
+/// The `salt` of a salted spec 01 vector.
+fn salt_of(map: &BTreeMap<String, String>) -> [u8; SALT_BYTES] {
+    hex(&map["salt"]).try_into().expect("16 bytes")
 }
 
 fn hex(s: &str) -> Vec<u8> {
@@ -210,28 +214,33 @@ const ONE_GHOST: u128 = 1_000_000_000_000_000_000;
 const FEE: u128 = 21_000_000_000_000;
 
 struct Coin {
-    opening: CoinOpening,
-    remainder: CoinRemainder,
+    opening: SaltedCoinOpening,
+    remainder: SaltedCoinRemainder,
     request: RevealRequest,
 }
 
-/// The spec 01 example coin (1 GHOST, number 0) at position 0 of the
-/// two-leaf coin tree of spec 05, revealed with the given amounts. The
-/// remainder is number 1 of the same key.
+/// The spec 01 salted example coin (`[coin-commit-salted]`: 1 GHOST, number
+/// 0) at position 0 of the two-leaf coin tree of spec 05, revealed with the
+/// given amounts. The remainder is number 1 of the same key, under the salt
+/// of `[coin-remainder-salted]`.
 fn example_coin(v: u128, out: u128, remainder: u128, fee: u128) -> Coin {
     let key = vector(SPEC_01, "derivation-words")["key"].clone();
     let (s, r, b0, b1) = key_secrets(&key);
+    let commit = vector(SPEC_01, "coin-commit-salted");
+    let left = vector(SPEC_01, "coin-remainder-salted");
     let mut path = empty_subtrees(Tree::Coin);
-    path[0] = hex32(&vector(SPEC_01, "coin-remainder")["commitment"]);
-    let opening = CoinOpening {
+    path[0] = hex32(&left["commitment"]);
+    let opening = SaltedCoinOpening {
         s,
         r,
         b: b0,
+        salt: salt_of(&commit),
         v: amount_word(v),
         position: 0,
         path,
     };
-    let leaf = coin_commitment(&coin_fingerprint(&s, &r, &b0, &EMPTY_RULE), &opening.v);
+    let f = coin_fingerprint_v2(&s, &r, &b0, &opening.salt, &EMPTY_RULE);
+    let leaf = coin_commitment_v2(&f, &opening.v);
     let request = RevealRequest {
         root: merkle_root(Tree::Coin, &leaf, 0, &opening.path),
         recipient: [0x11; 20],
@@ -240,10 +249,11 @@ fn example_coin(v: u128, out: u128, remainder: u128, fee: u128) -> Coin {
         rule: EMPTY_RULE,
         remainder_note: [0x33; NOTE_BYTES],
     };
-    let remainder = CoinRemainder {
+    let remainder = SaltedCoinRemainder {
         s,
         r,
         b: b1,
+        salt: salt_of(&left),
         v: amount_word(remainder),
     };
     Coin {
@@ -260,21 +270,32 @@ fn partial_reveal() -> Coin {
 
 /// A valid proof of a coin, asserted to verify.
 fn valid_reveal(coin: &Coin, seed: u8) -> (CoinReveal, Proof) {
-    let (tx, proof) =
-        prove_coin_reveal(&params(), &coin.opening, &coin.remainder, &coin.request, zk(seed)).expect("honest proof");
-    assert_eq!(verify_coin_reveal(&params(), &tx, &proof), Ok(()));
+    let (tx, proof) = prove(coin, &coin.request, seed).expect("honest proof");
+    assert_eq!(verify_salted_coin_reveal(&params(), &tx, &proof), Ok(()));
     (tx, proof)
 }
 
+/// The honest prover on a coin's opening and remainder, for a request.
+fn prove(coin: &Coin, request: &RevealRequest, seed: u8) -> Result<(CoinReveal, Proof), ProofError> {
+    prove_salted_coin_reveal(&params(), &coin.opening, &coin.remainder, request, zk(seed))
+}
+
 fn rejected(tx: &CoinReveal, proof: &Proof) -> bool {
-    verify_coin_reveal(&params(), tx, proof) == Err(ProofError::Rejected)
+    verify_salted_coin_reveal(&params(), tx, proof) == Err(ProofError::Rejected)
 }
 
 /// A lying prover's proof for `claimed`, asserted not to verify.
 fn forged_fails(coin: &Coin, claimed: &CoinReveal, seed: u8) {
-    let proof = prove_coin_reveal_claiming(&params(), &coin.opening, &coin.remainder, claimed, zk(seed))
+    let proof = prove_salted_coin_reveal_claiming(&params(), &coin.opening, &coin.remainder, claimed, zk(seed))
         .expect("the lying prover still produces bytes");
-    assert_eq!(verify_coin_reveal(&params(), claimed, &proof), Err(ProofError::Rejected));
+    assert_eq!(verify_salted_coin_reveal(&params(), claimed, &proof), Err(ProofError::Rejected));
+}
+
+/// The salted remainder commitment of `remainder` with another blinding or
+/// amount, for claims a lying prover makes.
+fn remainder_commitment(remainder: &SaltedCoinRemainder) -> [u8; 32] {
+    let f = coin_fingerprint_v2(&remainder.s, &remainder.r, &remainder.b, &remainder.salt, &EMPTY_RULE);
+    coin_commitment_v2(&f, &remainder.v)
 }
 
 fn add_one(word: &[u8; 32]) -> [u8; 32] {
@@ -290,31 +311,55 @@ struct Data {
     s: [u8; 32],
     r: [u8; 32],
     b: [u8; 32],
+    salt: [u8; SALT_BYTES],
     cf: [u8; 32],
     path: [[u8; 32]; TREE_DEPTH],
     root: [u8; 32],
 }
 
-/// The spec 01 example data commitment, alone in a data tree (spec 05,
-/// `[data-tree-one-leaf]`).
+/// The spec 01 salted example data commitment (`[data-commit-salted]`),
+/// alone in a data tree (spec 05, `[data-tree-one-leaf]`).
 fn example_data() -> Data {
-    let commit = vector(SPEC_01, "data-commit");
+    let commit = vector(SPEC_01, "data-commit-salted");
     let (s, r, b, _) = key_secrets(&commit["key"]);
+    let salt = salt_of(&commit);
     let cf = hex32(&commit["content-fingerprint"]);
     let path = empty_subtrees(Tree::Data);
-    let leaf = data_commitment(&data_fingerprint(&s, &r, &b, &cf, &EMPTY_RULE));
+    let leaf = data_commitment_v2(&data_fingerprint_v2(&s, &r, &b, &salt, &cf, &EMPTY_RULE));
     assert_eq!(leaf, hex32(&commit["commitment"]));
     let root = merkle_root(Tree::Data, &leaf, 0, &path);
     assert_eq!(root, hex32(&vector(SPEC_05, "data-tree-one-leaf")["root"]));
-    Data { s, r, b, cf, path, root }
+    Data {
+        s,
+        r,
+        b,
+        salt,
+        cf,
+        path,
+        root,
+    }
 }
 
 #[cfg(feature = "unsettled-points-test")]
-fn hold_opening(d: &Data) -> HoldOpening {
-    HoldOpening {
+fn data_opening(d: &Data) -> SaltedDataOpening {
+    SaltedDataOpening {
         s: d.s,
         r: d.r,
         b: d.b,
+        salt: d.salt,
+        cf: d.cf,
+        position: 0,
+        path: d.path,
+    }
+}
+
+#[cfg(feature = "unsettled-points-test")]
+fn hold_opening(d: &Data) -> SaltedHoldOpening {
+    SaltedHoldOpening {
+        s: d.s,
+        r: d.r,
+        b: d.b,
+        salt: d.salt,
         cf: d.cf,
         rule: EMPTY_RULE,
         position: 0,
@@ -324,7 +369,7 @@ fn hold_opening(d: &Data) -> HoldOpening {
 
 fn hold_context(d: &Data, verifier: u8, challenge: [u8; 32]) -> HoldContext {
     HoldContext {
-        type_tag: DATA,
+        type_tag: DATA_V2,
         root: d.root,
         marker_set_root: [0x6d; 32],
         verifier: [verifier; 32],
@@ -422,16 +467,16 @@ fn proof_budget_holds_for_every_statement() {
     assert_eq!((MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH), (2048, 3824));
     // The salted coin reveal is the widest statement and sets the budget.
     assert_eq!(statement_trace(Statement::SaltedCoinReveal).trace_width, MAX_TRACE_WIDTH);
-    assert_eq!(statement_trace(Statement::CoinReveal).trace_width, 3808);
-    // The salted data statements: the version 1 ones and 16 salt columns.
-    for (v1, v2) in [
-        (Statement::DataReveal, Statement::SaltedDataReveal),
-        (Statement::Hold, Statement::SaltedHold),
-    ] {
-        assert_eq!(statement_trace(v1).trace_width, 3786, "{v1:?}");
-        assert_eq!(statement_trace(v2).trace_width, 3786 + SALT_BYTES, "{v2:?}");
-        assert!(Statement::ALL.contains(&v2));
+    assert_eq!(statement_trace(Statement::SaltedCoinReveal).trace_width, 3808 + SALT_BYTES);
+    // The salted data statements: 3,786 columns and 16 salt columns.
+    for statement in [Statement::SaltedDataReveal, Statement::SaltedHold] {
+        assert_eq!(statement_trace(statement).trace_width, 3786 + SALT_BYTES, "{statement:?}");
+        assert!(Statement::ALL.contains(&statement));
     }
+    assert_eq!(
+        Statement::ALL,
+        [Statement::SaltedCoinReveal, Statement::SaltedDataReveal, Statement::SaltedHold]
+    );
     let config = shipped_configuration().expect("the shipped configuration builds");
     let reported: Vec<Statement> = config.statements.iter().map(|(s, _)| *s).collect();
     assert_eq!(reported, Statement::ALL);
@@ -473,7 +518,7 @@ fn proof_length_bound_fits_field() {
 #[test]
 fn coin_reveal_proof_fits_field() {
     let _one = one_at_a_time();
-    let t = statement_trace(Statement::CoinReveal);
+    let t = statement_trace(Statement::SaltedCoinReveal);
     let bound = proof_length_bound(t.trace_height, t.trace_width);
     for (coin, seed) in [(partial_reveal(), 60), (example_coin(ONE_GHOST, ONE_GHOST - FEE, 0, FEE), 61)] {
         let (_, proof) = valid_reveal(&coin, seed);
@@ -489,17 +534,10 @@ fn coin_reveal_proof_fits_field() {
 #[test]
 fn data_reveal_proof_fits_field() {
     let _one = one_at_a_time();
-    let t = statement_trace(Statement::DataReveal);
+    let t = statement_trace(Statement::SaltedDataReveal);
     let bound = proof_length_bound(t.trace_height, t.trace_width);
     let d = example_data();
-    let opening = DataOpening {
-        s: d.s,
-        r: d.r,
-        b: d.b,
-        cf: d.cf,
-        position: 0,
-        path: d.path,
-    };
+    let opening = data_opening(&d);
     for (purpose, seed) in [(DataPurpose::Reveal, 62), (DataPurpose::Revoke, 63)] {
         let request = DataRevealRequest {
             purpose,
@@ -508,8 +546,8 @@ fn data_reveal_proof_fits_field() {
             fee: amount_word(FEE),
             rule: EMPTY_RULE,
         };
-        let (tx, proof) = prove_data_reveal(&params(), &opening, &request, zk(seed)).expect("honest proof");
-        assert_eq!(verify_data_reveal_unsettled(&params(), &tx, &proof), Ok(()));
+        let (tx, proof) = prove_salted_data_reveal(&params(), &opening, &request, zk(seed)).expect("honest proof");
+        assert_eq!(verify_salted_data_reveal_unsettled(&params(), &tx, &proof), Ok(()));
         let len = proof.as_bytes().len();
         assert!(len <= PROOF_FIELD_BYTES, "a data reveal proof of {len} bytes");
         assert!(len <= bound, "a data reveal proof of {len} bytes, over the bound {bound}");
@@ -605,26 +643,28 @@ fn conservation_vectors_from_spec_agree() {
 
 /// The native hashes against spec 01 and spec 05, which the proofs below
 /// rely on: the derivation reproduces the example key's secrets, and the
-/// fingerprint, commitment, marker and tree vectors agree.
+/// salted fingerprint, commitment, marker and tree vectors agree.
 #[test]
 fn commitment_vectors_from_spec_agree() {
     let d = vector(SPEC_01, "derivation-words");
     let (s, r, b0, b1) = key_secrets(&d["key"]);
     assert!(d["key-bytes"].starts_with("20"), "a words key");
     assert_eq!((s, r, b0, b1), (hex32(&d["s"]), hex32(&d["r"]), hex32(&d["b0"]), hex32(&d["b1"])));
-    for (name, b) in [("coin-commit", b0), ("coin-remainder", b1)] {
+    for (name, b) in [("coin-commit-salted", b0), ("coin-remainder-salted", b1)] {
         let c = vector(SPEC_01, name);
+        assert_eq!(c["key"], d["key"], "{name}");
         let v = amount_word(c["amount"].parse().unwrap());
-        let f = coin_fingerprint(&s, &r, &b, &hex32(&c["rule"]));
+        let f = coin_fingerprint_v2(&s, &r, &b, &salt_of(&c), &hex32(&c["rule"]));
         assert_eq!(f, hex32(&c["fingerprint"]), "{name}");
-        assert_eq!(coin_commitment(&f, &v), hex32(&c["commitment"]), "{name}");
-        assert_eq!(coin_marker(&r, &b), hex32(&c["marker"]), "{name}");
+        assert_eq!(coin_commitment_v2(&f, &v), hex32(&c["commitment"]), "{name}");
+        assert_eq!(coin_marker_v2(&r, &b, &salt_of(&c)), hex32(&c["marker"]), "{name}");
     }
-    let data = vector(SPEC_01, "data-commit");
+    let data = vector(SPEC_01, "data-commit-salted");
     let (ds, dr, db, _) = key_secrets(&data["key"]);
-    let f = data_fingerprint(&ds, &dr, &db, &hex32(&data["content-fingerprint"]), &EMPTY_RULE);
+    let cf = hex32(&data["content-fingerprint"]);
+    let f = data_fingerprint_v2(&ds, &dr, &db, &salt_of(&data), &cf, &EMPTY_RULE);
     assert_eq!(f, hex32(&data["fingerprint"]));
-    assert_eq!(data_marker(&dr, &db), hex32(&data["marker"]));
+    assert_eq!(data_marker_v2(&dr, &db, &salt_of(&data)), hex32(&data["marker"]));
     assert_eq!(empty_leaf(), hex32(&vector(SPEC_01, "empty-leaf")["leaf"]));
     let node = vector(SPEC_01, "coin-tree-node");
     assert_eq!(tree_node(Tree::Coin, 0, &hex32(&node["left"]), &hex32(&node["right"])), hex32(&node["node"]));
@@ -641,19 +681,27 @@ fn commitment_vectors_from_spec_agree() {
 }
 
 /// Spec 01, section 14: the salted (version 2) vectors agree with the v2
-/// fingerprint, commitment and marker the salted reveal proves, and differ
-/// from the version 1 values of the same secrets.
+/// fingerprint, commitment and marker the salted reveal proves. The vectors
+/// are picked by their kind, so other `coin-` vectors around them do not
+/// matter.
 #[test]
 fn salted_commitment_vectors_from_spec_agree() {
-    let salt = |map: &BTreeMap<String, String>| -> [u8; SALT_BYTES] {
-        hex(&map["salt"]).try_into().expect("16 bytes")
-    };
+    let salt = salt_of;
     let coins = vector_blocks(SPEC_01, "coin-");
     let salted: Vec<_> = coins
         .iter()
         .filter(|(_, c)| c.get("kind").map(String::as_str) == Some("salted-coin-commitment"))
         .collect();
-    assert_eq!(salted.len(), 4);
+    let names: Vec<&str> = salted.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "coin-commit-salted",
+            "coin-commit-salted-other",
+            "coin-remainder-salted",
+            "coin-remainder-salted-other"
+        ]
+    );
     for (name, c) in salted {
         assert_eq!((c["version"].as_str(), c["type-tag"].as_str()), ("2", "0201"), "{name}");
         let (s, r, b0, b1) = key_secrets(&c["key"]);
@@ -668,8 +716,6 @@ fn salted_commitment_vectors_from_spec_agree() {
         assert_eq!(f, hex32(&c["fingerprint"]), "{name}");
         assert_eq!(coin_commitment_v2(&f, &v), hex32(&c["commitment"]), "{name}");
         assert_eq!(coin_marker_v2(&r, &b, &salt(c)), hex32(&c["marker"]), "{name}");
-        assert_ne!(f, coin_fingerprint(&s, &r, &b, &rule), "{name}");
-        assert_ne!(coin_marker_v2(&r, &b, &salt(c)), coin_marker(&r, &b), "{name}");
     }
     let datas = vector_blocks(SPEC_01, "data-commit-salted");
     assert_eq!(datas.len(), 2);
@@ -683,6 +729,49 @@ fn salted_commitment_vectors_from_spec_agree() {
     }
 }
 
+/// Spec 05's tree vectors over spec 01's commitments hold the salted ones:
+/// the leaves of `[coin-tree-two-leaves]` and `[coin-page-two-leaves]` are
+/// the commitments of `[coin-commit-salted]` and `[coin-remainder-salted]`,
+/// those of `[data-tree-one-leaf]` the commitment of `[data-commit-salted]`,
+/// each recomputed from the example key, and every root is `merkle_root` of
+/// those leaves.
+#[test]
+fn tree_vectors_use_salted_leaves() {
+    let d = vector(SPEC_01, "derivation-words");
+    let (s, r, b0, b1) = key_secrets(&d["key"]);
+    let coins: Vec<[u8; 32]> = [("coin-commit-salted", b0), ("coin-remainder-salted", b1)]
+        .into_iter()
+        .map(|(name, b)| {
+            let c = vector(SPEC_01, name);
+            let v = amount_word(c["amount"].parse().unwrap());
+            let leaf = coin_commitment_v2(&coin_fingerprint_v2(&s, &r, &b, &salt_of(&c), &EMPTY_RULE), &v);
+            assert_eq!(leaf, hex32(&c["commitment"]), "{name}");
+            leaf
+        })
+        .collect();
+    let data = vector(SPEC_01, "data-commit-salted");
+    let (ds, dr, db, _) = key_secrets(&data["key"]);
+    let cf = hex32(&data["content-fingerprint"]);
+    let data_leaf = data_commitment_v2(&data_fingerprint_v2(&ds, &dr, &db, &salt_of(&data), &cf, &EMPTY_RULE));
+    assert_eq!(data_leaf, hex32(&data["commitment"]));
+
+    let leaves_of = |name: &str| -> Vec<[u8; 32]> {
+        vector(SPEC_05, name)["leaves"].split_whitespace().map(hex32).collect()
+    };
+    for name in ["coin-tree-two-leaves", "coin-page-two-leaves"] {
+        assert_eq!(leaves_of(name), coins, "{name}");
+        let root = hex32(&vector(SPEC_05, name)["root"]);
+        for (position, (leaf, sibling)) in [(coins[0], coins[1]), (coins[1], coins[0])].into_iter().enumerate() {
+            let mut path = empty_subtrees(Tree::Coin);
+            path[0] = sibling;
+            assert_eq!(merkle_root(Tree::Coin, &leaf, position as u32, &path), root, "{name}, leaf {position}");
+        }
+    }
+    assert_eq!(leaves_of("data-tree-one-leaf"), [data_leaf]);
+    let root = merkle_root(Tree::Data, &data_leaf, 0, &empty_subtrees(Tree::Data));
+    assert_eq!(root, hex32(&vector(SPEC_05, "data-tree-one-leaf")["root"]));
+}
+
 // ---------------------------------------------------------------------------
 // S1: the one-time reveal of a coin.
 
@@ -694,10 +783,10 @@ fn reveal_honest_proof_verifies() {
     let _one = one_at_a_time();
     let coin = partial_reveal();
     let (tx, _proof) = valid_reveal(&coin, 1);
-    let commit = vector(SPEC_01, "coin-commit");
+    let commit = vector(SPEC_01, "coin-commit-salted");
     assert_eq!(tx.root, hex32(&vector(SPEC_05, "coin-tree-two-leaves")["root"]));
     assert_eq!(tx.marker, hex32(&commit["marker"]));
-    assert_eq!(tx.remainder, hex32(&vector(SPEC_01, "coin-remainder")["commitment"]));
+    assert_eq!(tx.remainder, hex32(&vector(SPEC_01, "coin-remainder-salted")["commitment"]));
     // Nothing the reveal publishes contains 16 bytes of the commit's F or C.
     let published = [
         &tx.root[..],
@@ -708,7 +797,7 @@ fn reveal_honest_proof_verifies() {
         &tx.out,
         &tx.fee,
         &tx.rule,
-        &coin_reveal_binding(&params(), &tx),
+        &salted_coin_reveal_binding(&params(), &tx),
     ]
     .concat();
     let needles = [hex32(&commit["fingerprint"]), hex32(&commit["commitment"])];
@@ -721,8 +810,9 @@ fn reveal_full_reveal_with_zero_remainder_verifies() {
     let _one = one_at_a_time();
     let coin = example_coin(ONE_GHOST, ONE_GHOST - FEE, 0, FEE);
     let (tx, _proof) = valid_reveal(&coin, 2);
-    let (s, r, b1) = (coin.remainder.s, coin.remainder.r, coin.remainder.b);
-    assert_eq!(tx.remainder, coin_commitment(&coin_fingerprint(&s, &r, &b1, &EMPTY_RULE), &amount_word(0)));
+    let (s, r, b1, salt) = (coin.remainder.s, coin.remainder.r, coin.remainder.b, coin.remainder.salt);
+    let f = coin_fingerprint_v2(&s, &r, &b1, &salt, &EMPTY_RULE);
+    assert_eq!(tx.remainder, coin_commitment_v2(&f, &amount_word(0)));
     assert_eq!(amount_value(&tx.out), Some(ONE_GHOST - FEE));
 }
 
@@ -737,12 +827,13 @@ fn reveal_wrong_amount_fails() {
     }
     let mut request = coin.request.clone();
     request.out = add_one(&request.out);
-    let refused = prove_coin_reveal(&params(), &coin.opening, &coin.remainder, &request, zk(4));
+    let refused = prove(&coin, &request, 4);
     assert_eq!(refused.unwrap_err(), ProofError::ConservationFails);
     // The lying prover makes a proof that verifies when its claim is true, so
     // its failures here and below come from the lie, not from the harness.
-    let truthful = prove_coin_reveal_claiming(&params(), &coin.opening, &coin.remainder, &tx, zk(12)).unwrap();
-    assert_eq!(verify_coin_reveal(&params(), &tx, &truthful), Ok(()));
+    let truthful =
+        prove_salted_coin_reveal_claiming(&params(), &coin.opening, &coin.remainder, &tx, zk(12)).unwrap();
+    assert_eq!(verify_salted_coin_reveal(&params(), &tx, &truthful), Ok(()));
     forged_fails(&coin, &CoinReveal { out: add_one(&tx.out), ..tx.clone() }, 5);
 }
 
@@ -753,9 +844,10 @@ fn reveal_wrong_marker_fails() {
     let _one = one_at_a_time();
     let coin = partial_reveal();
     let (tx, proof) = valid_reveal(&coin, 6);
-    let (r, b) = (coin.opening.r, coin.opening.b);
-    let other_blinding = coin_marker(&r, &coin.remainder.b);
-    for marker in [other_blinding, data_marker(&r, &b), [0; 32]] {
+    let (r, b, salt) = (coin.opening.r, coin.opening.b, coin.opening.salt);
+    let other_blinding = coin_marker_v2(&r, &coin.remainder.b, &salt);
+    let other_salt = coin_marker_v2(&r, &b, &coin.remainder.salt);
+    for marker in [other_blinding, other_salt, data_marker_v2(&r, &b, &salt), [0; 32]] {
         assert!(rejected(&CoinReveal { marker, ..tx.clone() }, &proof));
     }
     forged_fails(&coin, &CoinReveal { marker: other_blinding, ..tx.clone() }, 7);
@@ -768,13 +860,11 @@ fn reveal_wrong_marker_fails() {
 fn reveal_reused_blinding_refused() {
     let _one = one_at_a_time();
     let coin = partial_reveal();
-    let reused = CoinRemainder {
-        s: coin.remainder.s,
-        r: coin.remainder.r,
+    let reused = SaltedCoinRemainder {
         b: coin.opening.b,
-        v: coin.remainder.v,
+        ..coin.remainder
     };
-    let refused = prove_coin_reveal(&params(), &coin.opening, &reused, &coin.request, zk(8));
+    let refused = prove_salted_coin_reveal(&params(), &coin.opening, &reused, &coin.request, zk(8));
     assert_eq!(refused.unwrap_err(), ProofError::ReusedBlinding);
 
     let (first, _) = valid_reveal(&coin, 9);
@@ -819,12 +909,19 @@ fn reveal_wrong_remainder_fails() {
     let _one = one_at_a_time();
     let coin = partial_reveal();
     let (tx, proof) = valid_reveal(&coin, 15);
-    let (s, r) = (coin.remainder.s, coin.remainder.r);
-    // A remainder of the same amount under another blinding, and one of
-    // another type tag.
-    let other = coin_commitment(&coin_fingerprint(&s, &r, &[0x99; 32], &EMPTY_RULE), &coin.remainder.v);
-    let as_data = data_commitment(&data_fingerprint(&s, &r, &coin.remainder.b, &[0; 32], &EMPTY_RULE));
-    for remainder in [other, as_data] {
+    let (s, r, b, salt) = (coin.remainder.s, coin.remainder.r, coin.remainder.b, coin.remainder.salt);
+    // A remainder of the same amount under another blinding, one under
+    // another salt, and one of another type tag.
+    let other = remainder_commitment(&SaltedCoinRemainder {
+        b: [0x99; 32],
+        ..coin.remainder
+    });
+    let other_salt = remainder_commitment(&SaltedCoinRemainder {
+        salt: [0x99; SALT_BYTES],
+        ..coin.remainder
+    });
+    let as_data = data_commitment_v2(&data_fingerprint_v2(&s, &r, &b, &salt, &[0; 32], &EMPTY_RULE));
+    for remainder in [other, other_salt, as_data] {
         assert!(rejected(&CoinReveal { remainder, ..tx.clone() }, &proof));
     }
     forged_fails(&coin, &CoinReveal { remainder: other, ..tx.clone() }, 16);
@@ -866,7 +963,7 @@ fn reveal_wrong_chain_fails() {
         },
     ];
     for other in others {
-        assert_eq!(verify_coin_reveal(&other, &tx, &proof), Err(ProofError::Rejected));
+        assert_eq!(verify_salted_coin_reveal(&other, &tx, &proof), Err(ProofError::Rejected));
     }
 }
 
@@ -884,7 +981,7 @@ fn reveal_wrong_root_fails() {
     }
     let mut request = coin.request.clone();
     request.root = empty_coin;
-    let refused = prove_coin_reveal(&params(), &coin.opening, &coin.remainder, &request, zk(21));
+    let refused = prove(&coin, &request, 21);
     assert_eq!(refused.unwrap_err(), ProofError::NotInTree);
     forged_fails(&coin, &CoinReveal { root: empty_coin, ..tx.clone() }, 22);
 }
@@ -901,17 +998,14 @@ fn reveal_field_wrap_unprovable() {
     let wrap_64: u128 = spec["remainder"].parse().unwrap();
     for (v, out, rem) in [(10, 20, wrap_64), (10, 20, BABY_BEAR_MODULUS - 10)] {
         let coin = example_coin(v, out, rem, 0);
-        let refused = prove_coin_reveal(&params(), &coin.opening, &coin.remainder, &coin.request, zk(24));
+        let refused = prove(&coin, &coin.request, 24);
         assert_eq!(refused.unwrap_err(), ProofError::ConservationFails);
     }
     let coin = example_coin(10, 20, BABY_BEAR_MODULUS - 10, 0);
     let claimed = CoinReveal {
         root: coin.request.root,
-        marker: coin_marker(&coin.opening.r, &coin.opening.b),
-        remainder: coin_commitment(
-            &coin_fingerprint(&coin.remainder.s, &coin.remainder.r, &coin.remainder.b, &EMPTY_RULE),
-            &coin.remainder.v,
-        ),
+        marker: coin_marker_v2(&coin.opening.r, &coin.opening.b, &coin.opening.salt),
+        remainder: remainder_commitment(&coin.remainder),
         remainder_note: coin.request.remainder_note,
         recipient: coin.request.recipient,
         out: coin.request.out,
@@ -933,34 +1027,29 @@ fn reveal_overflow_amount_rejected() {
     let top_bit = hex32(&vector(SPEC_02, "amount-top-bit")["word"]);
     for word in [two_to_96, top_bit] {
         let wrong_out = CoinReveal { out: word, ..tx.clone() };
-        assert_eq!(verify_coin_reveal(&params(), &wrong_out, &proof), Err(ProofError::AmountOutOfRange));
+        assert_eq!(verify_salted_coin_reveal(&params(), &wrong_out, &proof), Err(ProofError::AmountOutOfRange));
         let wrong_fee = CoinReveal { fee: word, ..tx.clone() };
-        assert_eq!(verify_coin_reveal(&params(), &wrong_fee, &proof), Err(ProofError::AmountOutOfRange));
+        assert_eq!(verify_salted_coin_reveal(&params(), &wrong_fee, &proof), Err(ProofError::AmountOutOfRange));
         let mut request = coin.request.clone();
         request.out = word;
-        let refused = prove_coin_reveal(&params(), &coin.opening, &coin.remainder, &request, zk(27));
+        let refused = prove(&coin, &request, 27);
         assert_eq!(refused.unwrap_err(), ProofError::AmountOutOfRange);
-        let big_remainder = CoinRemainder {
-            s: coin.remainder.s,
-            r: coin.remainder.r,
-            b: coin.remainder.b,
+        let big_remainder = SaltedCoinRemainder {
             v: word,
+            ..coin.remainder
         };
-        let refused = prove_coin_reveal(&params(), &coin.opening, &big_remainder, &coin.request, zk(27));
+        let refused = prove_salted_coin_reveal(&params(), &coin.opening, &big_remainder, &coin.request, zk(27));
         assert_eq!(refused.unwrap_err(), ProofError::AmountOutOfRange);
     }
     let wrap = vector(SPEC_02, "conservation-wrap-at-two-to-96");
     let [v, out, rem]: [u128; 3] = ["v", "out", "remainder"].map(|k| wrap[k].parse().unwrap());
     let coin = example_coin(v, out, rem, 0);
-    let refused = prove_coin_reveal(&params(), &coin.opening, &coin.remainder, &coin.request, zk(28));
+    let refused = prove(&coin, &coin.request, 28);
     assert_eq!(refused.unwrap_err(), ProofError::ConservationFails);
     let claimed = CoinReveal {
         root: coin.request.root,
-        marker: coin_marker(&coin.opening.r, &coin.opening.b),
-        remainder: coin_commitment(
-            &coin_fingerprint(&coin.remainder.s, &coin.remainder.r, &coin.remainder.b, &EMPTY_RULE),
-            &coin.remainder.v,
-        ),
+        marker: coin_marker_v2(&coin.opening.r, &coin.opening.b, &coin.opening.salt),
+        remainder: remainder_commitment(&coin.remainder),
         remainder_note: coin.request.remainder_note,
         recipient: coin.request.recipient,
         out: coin.request.out,
@@ -979,12 +1068,12 @@ fn reveal_nonempty_rule_rejected() {
     let mut rule = EMPTY_RULE;
     rule[31] = 1;
     assert_eq!(
-        verify_coin_reveal(&params(), &CoinReveal { rule, ..tx.clone() }, &proof),
+        verify_salted_coin_reveal(&params(), &CoinReveal { rule, ..tx.clone() }, &proof),
         Err(ProofError::RuleNotEmpty)
     );
     let mut request = coin.request.clone();
     request.rule = rule;
-    let refused = prove_coin_reveal(&params(), &coin.opening, &coin.remainder, &request, zk(31));
+    let refused = prove(&coin, &request, 31);
     assert_eq!(refused.unwrap_err(), ProofError::RuleNotEmpty);
 }
 
@@ -995,7 +1084,7 @@ fn data_reveal_tx(d: &Data, purpose: DataPurpose) -> DataReveal {
     DataReveal {
         purpose,
         root: d.root,
-        marker: data_marker(&d.r, &d.b),
+        marker: data_marker_v2(&d.r, &d.b, &d.salt),
         party: [0x70; 32],
         fee: amount_word(FEE),
         rule: EMPTY_RULE,
@@ -1011,7 +1100,7 @@ fn data_reveal_shipped_verifier_rejects_until_fee_settled() {
     let d = example_data();
     for purpose in [DataPurpose::Reveal, DataPurpose::Revoke] {
         for proof in [Proof::from_bytes(Vec::new()), Proof::from_bytes(vec![0xa5; 4096])] {
-            let result = verify_data_reveal(&params(), &data_reveal_tx(&d, purpose), &proof);
+            let result = verify_salted_data_reveal(&params(), &data_reveal_tx(&d, purpose), &proof);
             assert_eq!(result, Err(ProofError::DataFeeUnsettled));
         }
     }
@@ -1030,17 +1119,10 @@ fn data_reveal_shipped_verifier_rejects_until_fee_settled() {
             fee: amount_word(FEE),
             rule: EMPTY_RULE,
         };
-        let opening = DataOpening {
-            s: d.s,
-            r: d.r,
-            b: d.b,
-            cf: d.cf,
-            position: 0,
-            path: d.path,
-        };
-        let (tx, proof) = prove_data_reveal(&params(), &opening, &request, zk(40)).expect("honest proof");
-        assert_eq!(verify_data_reveal_unsettled(&params(), &tx, &proof), Ok(()));
-        assert_eq!(verify_data_reveal(&params(), &tx, &proof), Err(ProofError::DataFeeUnsettled));
+        let (tx, proof) =
+            prove_salted_data_reveal(&params(), &data_opening(&d), &request, zk(40)).expect("honest proof");
+        assert_eq!(verify_salted_data_reveal_unsettled(&params(), &tx, &proof), Ok(()));
+        assert_eq!(verify_salted_data_reveal(&params(), &tx, &proof), Err(ProofError::DataFeeUnsettled));
     }
 }
 
@@ -1051,14 +1133,7 @@ fn data_reveal_shipped_verifier_rejects_until_fee_settled() {
 fn data_reveal_as_revocation_fails() {
     let _one = one_at_a_time();
     let d = example_data();
-    let opening = DataOpening {
-        s: d.s,
-        r: d.r,
-        b: d.b,
-        cf: d.cf,
-        position: 0,
-        path: d.path,
-    };
+    let opening = data_opening(&d);
     for (purpose, swapped, seed) in [
         (DataPurpose::Reveal, DataPurpose::Revoke, 41),
         (DataPurpose::Revoke, DataPurpose::Reveal, 42),
@@ -1070,11 +1145,14 @@ fn data_reveal_as_revocation_fails() {
             fee: amount_word(FEE),
             rule: EMPTY_RULE,
         };
-        let (tx, proof) = prove_data_reveal(&params(), &opening, &request, zk(seed)).expect("honest proof");
-        assert_eq!(tx.marker, hex32(&vector(SPEC_01, "data-commit")["marker"]));
-        assert_eq!(verify_data_reveal_unsettled(&params(), &tx, &proof), Ok(()));
+        let (tx, proof) = prove_salted_data_reveal(&params(), &opening, &request, zk(seed)).expect("honest proof");
+        assert_eq!(tx.marker, hex32(&vector(SPEC_01, "data-commit-salted")["marker"]));
+        assert_eq!(verify_salted_data_reveal_unsettled(&params(), &tx, &proof), Ok(()));
         let resubmitted = DataReveal { purpose: swapped, ..tx };
-        assert_eq!(verify_data_reveal_unsettled(&params(), &resubmitted, &proof), Err(ProofError::Rejected));
+        assert_eq!(
+            verify_salted_data_reveal_unsettled(&params(), &resubmitted, &proof),
+            Err(ProofError::Rejected)
+        );
     }
 }
 
@@ -1087,7 +1165,7 @@ fn data_reveal_as_revocation_fails() {
 fn hold_shipped_verifier_rejects_every_proof() {
     let d = example_data();
     let mut coin_ctx = hold_context(&d, 1, [0x0c; 32]);
-    coin_ctx.type_tag = COIN;
+    coin_ctx.type_tag = COIN_V2;
     for ctx in [hold_context(&d, 1, [0x0c; 32]), coin_ctx] {
         for proof in [Proof::from_bytes(Vec::new()), Proof::from_bytes(vec![0xa5; 4096])] {
             assert_eq!(verify_hold(&params(), &ctx, &proof), Err(ProofError::HoldUnsettled));
@@ -1097,50 +1175,46 @@ fn hold_shipped_verifier_rejects_every_proof() {
     {
         let _one = one_at_a_time();
         let ctx = hold_context(&d, 1, [0x0c; 32]);
-        let proof = prove_hold(&params(), &hold_opening(&d), &ctx, zk(50)).expect("honest proof");
+        let proof = prove_salted_hold(&params(), &hold_opening(&d), &ctx, zk(50)).expect("honest proof");
         assert_eq!(verify_hold_unsettled(&params(), &ctx, &proof), Ok(()));
         assert_eq!(verify_hold(&params(), &ctx, &proof), Err(ProofError::HoldUnsettled));
     }
 }
 
-/// PS-20: a proof of holding for `COIN` is rejected, by the public functions
-/// and by the test-only path, while `DATA` passes the same check.
+/// PS-20: a proof of holding for `COIN_V2` is rejected, by the public
+/// functions and by the test-only path, while `DATA_V2` passes the same
+/// check; the version 1 type tags are unknown.
 #[test]
 fn hold_coin_rejected() {
     let d = example_data();
     let data_ctx = hold_context(&d, 1, [0x0c; 32]);
+    assert_eq!(data_ctx.type_tag, DATA_V2);
     assert_eq!(data_ctx.check(), Ok(()));
     assert!(hold_binding(&params(), &data_ctx).is_ok());
-    // A salted data commitment's type passes the same check.
-    let salted_ctx = HoldContext {
-        type_tag: DATA_V2,
-        ..data_ctx.clone()
-    };
-    assert_eq!(salted_ctx.check(), Ok(()));
-    assert!(hold_binding(&params(), &salted_ctx).is_ok());
     let coin_ctx = HoldContext {
-        type_tag: COIN,
+        type_tag: COIN_V2,
         ..data_ctx.clone()
     };
     assert_eq!(coin_ctx.check(), Err(ProofError::HoldCoinUnsettled));
     assert_eq!(hold_binding(&params(), &coin_ctx), Err(ProofError::HoldCoinUnsettled));
     assert!(verify_hold(&params(), &coin_ctx, &Proof::from_bytes(Vec::new())).is_err());
-    for unknown in [[0x01, 0x03], [0x02, 0x01], [0x00, 0x00]] {
+    for unknown in [[0x01, 0x01], [0x01, 0x02], [0x01, 0x03], [0x02, 0x03], [0x00, 0x00]] {
         let ctx = HoldContext {
             type_tag: unknown,
             ..data_ctx.clone()
         };
-        assert_eq!(ctx.check(), Err(ProofError::UnknownType));
+        assert_eq!(ctx.check(), Err(ProofError::UnknownType), "{unknown:?}");
+        assert_eq!(hold_binding(&params(), &ctx), Err(ProofError::UnknownType), "{unknown:?}");
     }
     #[cfg(feature = "unsettled-points-test")]
     {
         let _one = one_at_a_time();
         let opening = hold_opening(&d);
         assert_eq!(
-            prove_hold(&params(), &opening, &coin_ctx, zk(51)).unwrap_err(),
+            prove_salted_hold(&params(), &opening, &coin_ctx, zk(51)).unwrap_err(),
             ProofError::HoldCoinUnsettled
         );
-        let proof = prove_hold(&params(), &opening, &data_ctx, zk(52)).expect("honest proof");
+        let proof = prove_salted_hold(&params(), &opening, &data_ctx, zk(52)).expect("honest proof");
         assert_eq!(verify_hold_unsettled(&params(), &data_ctx, &proof), Ok(()));
         assert_eq!(verify_hold_unsettled(&params(), &coin_ctx, &proof), Err(ProofError::HoldCoinUnsettled));
     }
@@ -1156,7 +1230,7 @@ fn hold_stale_challenge_fails() {
     let mut book = ChallengeBook::new(300);
     let challenge = book.issue([0xc1; 32], 0).unwrap();
     let ctx = hold_context(&d, 1, challenge);
-    let proof = prove_hold(&params(), &hold_opening(&d), &ctx, zk(53)).expect("honest proof");
+    let proof = prove_salted_hold(&params(), &hold_opening(&d), &ctx, zk(53)).expect("honest proof");
     assert_eq!(verify_hold_unsettled(&params(), &ctx, &proof), Ok(()));
     assert_eq!(book.check(&challenge, 299), Ok(()));
 
@@ -1185,7 +1259,7 @@ fn hold_challenge_accepted_once() {
     let challenge = book.issue([0xc3; 32], 0).unwrap();
     assert_eq!(book.issue([0xc3; 32], 1), Err(ProofError::ChallengeAlreadyIssued));
     let ctx = hold_context(&d, 1, challenge);
-    let proof = prove_hold(&params(), &hold_opening(&d), &ctx, zk(54)).expect("honest proof");
+    let proof = prove_salted_hold(&params(), &hold_opening(&d), &ctx, zk(54)).expect("honest proof");
     assert_eq!(verify_hold_unsettled_with_book(&params(), &mut book, &ctx, &proof, 10), Ok(()));
     assert_eq!(
         verify_hold_unsettled_with_book(&params(), &mut book, &ctx, &proof, 11),
@@ -1193,7 +1267,7 @@ fn hold_challenge_accepted_once() {
     );
 
     let never_issued = hold_context(&d, 1, [0xc4; 32]);
-    let proof = prove_hold(&params(), &hold_opening(&d), &never_issued, zk(55)).expect("honest proof");
+    let proof = prove_salted_hold(&params(), &hold_opening(&d), &never_issued, zk(55)).expect("honest proof");
     assert_eq!(verify_hold_unsettled(&params(), &never_issued, &proof), Ok(()));
     assert_eq!(
         verify_hold_unsettled_with_book(&params(), &mut book, &never_issued, &proof, 12),
@@ -1209,7 +1283,7 @@ fn hold_wrong_verifier_fails() {
     let _one = one_at_a_time();
     let d = example_data();
     let ctx = hold_context(&d, 0x0a, [0xc5; 32]);
-    let proof = prove_hold(&params(), &hold_opening(&d), &ctx, zk(56)).expect("honest proof");
+    let proof = prove_salted_hold(&params(), &hold_opening(&d), &ctx, zk(56)).expect("honest proof");
     assert_eq!(verify_hold_unsettled(&params(), &ctx, &proof), Ok(()));
     let other_verifier = HoldContext {
         verifier: [0x0b; 32],
@@ -1236,18 +1310,18 @@ fn hold_proof_submitted_as_reveal_fails() {
     let _one = one_at_a_time();
     let d = example_data();
     let ctx = hold_context(&d, 0x0a, [0xc6; 32]);
-    let proof = prove_hold(&params(), &hold_opening(&d), &ctx, zk(57)).expect("honest proof");
+    let proof = prove_salted_hold(&params(), &hold_opening(&d), &ctx, zk(57)).expect("honest proof");
     assert_eq!(verify_hold_unsettled(&params(), &ctx, &proof), Ok(()));
     for purpose in [DataPurpose::Reveal, DataPurpose::Revoke] {
         let as_data = DataReveal {
             party: ctx.verifier,
             ..data_reveal_tx(&d, purpose)
         };
-        assert_eq!(verify_data_reveal_unsettled(&params(), &as_data, &proof), Err(ProofError::Rejected));
+        assert_eq!(verify_salted_data_reveal_unsettled(&params(), &as_data, &proof), Err(ProofError::Rejected));
     }
     let as_coin = CoinReveal {
         root: d.root,
-        marker: data_marker(&d.r, &d.b),
+        marker: data_marker_v2(&d.r, &d.b, &d.salt),
         remainder: [0; 32],
         remainder_note: [0; NOTE_BYTES],
         recipient: [0x0a; 20],
@@ -1255,7 +1329,7 @@ fn hold_proof_submitted_as_reveal_fails() {
         fee: amount_word(0),
         rule: EMPTY_RULE,
     };
-    assert!(verify_coin_reveal(&params(), &as_coin, &proof).is_err());
+    assert!(verify_salted_coin_reveal(&params(), &as_coin, &proof).is_err());
 }
 
 /// PS-2, PS-15: ten proofs of holding of one commitment all verify; they
@@ -1267,7 +1341,7 @@ fn hold_proof_submitted_as_reveal_fails() {
 fn hold_ten_proofs_verify_and_share_no_public_value() {
     let _one = one_at_a_time();
     let d = example_data();
-    let commit = vector(SPEC_01, "data-commit");
+    let commit = vector(SPEC_01, "data-commit-salted");
     let needles = [
         hex32(&commit["commitment"]),
         hex32(&commit["fingerprint"]),
@@ -1279,7 +1353,7 @@ fn hold_ten_proofs_verify_and_share_no_public_value() {
     for n in 0..10u8 {
         let challenge = book.issue([0xd0 + n; 32], 0).unwrap();
         let ctx = hold_context(&d, 0x0a + n % 2, challenge);
-        let proof = prove_hold(&params(), &hold_opening(&d), &ctx, zk(60 + n)).expect("honest proof");
+        let proof = prove_salted_hold(&params(), &hold_opening(&d), &ctx, zk(60 + n)).expect("honest proof");
         assert_eq!(verify_hold_unsettled_with_book(&params(), &mut book, &ctx, &proof, 1), Ok(()));
         let binding = hold_binding(&params(), &ctx).unwrap();
         assert!(bindings.insert(binding), "two proofs share a binding digest");

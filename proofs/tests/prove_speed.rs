@@ -1,5 +1,5 @@
-//! Native proving time of the coin reveal, both formats, against a
-//! regression budget (docs/benchmarks/reveal-parameters.md).
+//! Native proving time of the salted coin reveal against a regression budget
+//! (docs/benchmarks/reveal-parameters.md).
 //!
 //! The budget, [`MEDIAN_BUDGET_MS`], is a coarse regression guard, loose on
 //! purpose: it must hold on the GitHub-hosted x86_64 CI runner (median about
@@ -98,32 +98,6 @@ fn median_ms(name: &str, prove: impl Fn(u8) -> bool) -> f64 {
         every.join("; ")
     );
     median
-}
-
-#[test]
-fn coin_reveal_within_budget() {
-    let _guard = one_at_a_time();
-    let opening = CoinOpening {
-        s: [1; 32],
-        r: [2; 32],
-        b: [3; 32],
-        v: amount_word(1_000_000),
-        position: 5,
-        path: path(),
-    };
-    let leaf = coin_commitment(&coin_fingerprint(&opening.s, &opening.r, &opening.b, &EMPTY_RULE), &opening.v);
-    let request = request(&leaf, opening.position, &opening.path);
-    let remainder = CoinRemainder {
-        s: [1; 32],
-        r: [2; 32],
-        b: [4; 32],
-        v: amount_word(1_000_000 - 600_000 - 21),
-    };
-    let median = median_ms("coin reveal", |seed| {
-        let (tx, proof) = prove_coin_reveal(&params(), &opening, &remainder, &request, zk(seed)).expect("honest proof");
-        verify_coin_reveal(&params(), &tx, &proof).is_ok()
-    });
-    assert!(median <= MEDIAN_BUDGET_MS, "coin reveal: median {median:.1} ms over the budget");
 }
 
 #[test]

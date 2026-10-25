@@ -1,16 +1,17 @@
-//! The real coin reveal prover (statement S1 of `ghost-proofs`) for a browser
-//! background worker, and what a native verifier needs to check the proofs it
-//! makes.
+//! The real coin reveal prover (statement S1 of `ghost-proofs`, the salted
+//! coin reveal) for a browser background worker, and what a native verifier
+//! needs to check the proofs it makes.
 //!
-//! The prover is `ghost_proofs::prove_coin_reveal`, unchanged, in the shipped
-//! configuration of decision 0003. This crate only adds:
+//! The prover is `ghost_proofs::prove_salted_coin_reveal`, unchanged, in the
+//! shipped configuration of decision 0003. This crate only adds:
 //!
-//! - [`Session`]: a valid witness drawn from a seed, the way the benchmark
-//!   plan asks (a random leaf position, pseudo-random sibling hashes and the
-//!   consistent root, the plan's fixed amounts). It is built before timing.
+//! - [`Session`]: a valid witness of a salted (version 2) coin drawn from a
+//!   seed, the way the benchmark plan asks (a random leaf position,
+//!   pseudo-random sibling hashes, salts and the consistent root, the plan's
+//!   fixed amounts). It is built before timing.
 //! - [`encode_reveal`] and [`decode_reveal`]: the public fields of a coin
 //!   reveal as bytes, so a proof made in the browser can be carried out of it
-//!   and verified natively with `ghost_proofs::verify_coin_reveal`.
+//!   and verified natively with `ghost_proofs::verify_salted_coin_reveal`.
 //! - [`record_fields`]: the configuration fields of a result record, as JSON.
 //! - On `wasm32` only, plain exported functions the worker calls through
 //!   `WebAssembly.instantiate`, with no bindings generator.
@@ -19,9 +20,10 @@
 //! `crypto.getRandomValues` in the worker); it is never seeded here.
 
 use ghost_proofs::{
-    ChainParams, CoinOpening, CoinRemainder, CoinReveal, EMPTY_RULE, NOTE_BYTES, PROTOCOL_VERSION_1, Proof,
-    ProofError, RevealRequest, TREE_DEPTH, Tree, amount_word, coin_commitment, coin_fingerprint, keccak256,
-    merkle_root, prove_coin_reveal, shipped_configuration, verify_coin_reveal,
+    ChainParams, CoinReveal, EMPTY_RULE, NOTE_BYTES, PROTOCOL_VERSION_1, Proof, ProofError, RevealRequest,
+    SALT_BYTES, SaltedCoinOpening, SaltedCoinRemainder, TREE_DEPTH, Tree, amount_word, coin_commitment_v2,
+    coin_fingerprint_v2, keccak256, merkle_root, prove_salted_coin_reveal, shipped_configuration,
+    verify_salted_coin_reveal,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -65,13 +67,18 @@ fn draw(seed: u32, label: &str, i: u32) -> [u8; 32] {
     keccak256(&msg)
 }
 
+/// A pseudo-random salt from the witness seed, as [`draw`] makes bytes.
+fn draw_salt(seed: u32, label: &str) -> [u8; SALT_BYTES] {
+    draw(seed, label, 0)[..SALT_BYTES].try_into().expect("salt bytes")
+}
+
 /// A valid witness and request for one session. Holds secrets, so it
 /// implements no `Debug`.
 pub struct Session {
     pub seed: u32,
     pub same_key: bool,
-    opening: CoinOpening,
-    remainder: CoinRemainder,
+    opening: SaltedCoinOpening,
+    remainder: SaltedCoinRemainder,
     request: RevealRequest,
 }
 
@@ -85,10 +92,11 @@ impl Session {
             *sibling = draw(seed, "sibling", level as u32);
         }
         let position = u32::from_le_bytes(draw(seed, "position", 0)[..4].try_into().expect("4 bytes"));
-        let opening = CoinOpening {
+        let opening = SaltedCoinOpening {
             s: draw(seed, "s", 0),
             r: draw(seed, "r", 0),
             b: draw(seed, "b", 0),
+            salt: draw_salt(seed, "salt"),
             v: amount_word(AMOUNT_IN),
             position,
             path,
@@ -98,13 +106,15 @@ impl Session {
         } else {
             (draw(seed, "s'", 0), draw(seed, "r'", 0))
         };
-        let remainder = CoinRemainder {
+        let remainder = SaltedCoinRemainder {
             s: s2,
             r: r2,
             b: draw(seed, "b'", 0),
+            salt: draw_salt(seed, "salt'"),
             v: amount_word(AMOUNT_IN - AMOUNT_OUT - FEE),
         };
-        let leaf = coin_commitment(&coin_fingerprint(&opening.s, &opening.r, &opening.b, &EMPTY_RULE), &opening.v);
+        let fingerprint = coin_fingerprint_v2(&opening.s, &opening.r, &opening.b, &opening.salt, &EMPTY_RULE);
+        let leaf = coin_commitment_v2(&fingerprint, &opening.v);
         let mut note = [0u8; NOTE_BYTES];
         for (i, chunk) in note.chunks_mut(32).enumerate() {
             chunk.copy_from_slice(&draw(seed, "note", i as u32)[..chunk.len()]);
@@ -123,13 +133,13 @@ impl Session {
     /// Prove the reveal: the real prover, checks and trace generation
     /// included. `zk_randomness` must be 32 fresh bytes from a secure source.
     pub fn prove(&self, zk_randomness: [u8; 32]) -> Result<(CoinReveal, Proof), ProofError> {
-        prove_coin_reveal(&bench_params(), &self.opening, &self.remainder, &self.request, zk_randomness)
+        prove_salted_coin_reveal(&bench_params(), &self.opening, &self.remainder, &self.request, zk_randomness)
     }
 }
 
-/// Verify a coin reveal with the benchmark's chain constants.
+/// Verify a salted coin reveal with the benchmark's chain constants.
 pub fn verify(tx: &CoinReveal, proof: &Proof) -> Result<(), ProofError> {
-    verify_coin_reveal(&bench_params(), tx, proof)
+    verify_salted_coin_reveal(&bench_params(), tx, proof)
 }
 
 /// The public fields of a coin reveal as bytes: root, marker, remainder,
@@ -183,7 +193,7 @@ pub fn record_fields(session: &Session) -> Result<String, ProofError> {
     let (_, est) = c.statements[0];
     let mut o = String::from("{");
     json_str(&mut o, "statement", "coin-reveal");
-    json_str(&mut o, "prover", "ghost-proofs prove_coin_reveal (real statement S1)");
+    json_str(&mut o, "prover", "ghost-proofs prove_salted_coin_reveal (real statement S1, salted)");
     json_str(&mut o, "library", "Plonky3");
     json_str(&mut o, "library_repository", "https://github.com/Plonky3/Plonky3");
     json_str(&mut o, "library_revision", PLONKY3_REVISION);

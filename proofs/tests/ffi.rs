@@ -1,10 +1,10 @@
 //! Known-answer tests of the C interface to the coin reveal verifier.
 //!
-//! One honest proof of each commitment format is made by the crate's own
-//! prover and serialized in the documented layout; every negative case
-//! changes one thing about it and calls the `extern "C"` function, as a node
-//! would. The header's constants
-//! are read from `include/ghost_proofs.h` and checked against the crate's.
+//! One honest proof of a salted (version 2) coin reveal is made by the
+//! crate's own prover and serialized in the documented layout; every negative
+//! case changes one thing about it and calls the `extern "C"` function, as a
+//! node would. The header's constants are read from `include/ghost_proofs.h`
+//! and checked against the crate's.
 
 use std::collections::BTreeMap;
 use std::ptr;
@@ -37,56 +37,10 @@ struct Fixture {
     proof: Vec<u8>,
 }
 
-/// One honest reveal: a coin of 1,000,000 at position 5 of a coin tree whose
-/// other leaves are empty but one, revealed for 600,000 and a fee of 21.
+/// One honest reveal of a salted (version 2) coin of 1,000,000 at position 5
+/// of a coin tree whose other leaves are empty but one, revealed for 600,000
+/// and a fee of 21.
 fn fixture() -> &'static Fixture {
-    static FIXTURE: OnceLock<Fixture> = OnceLock::new();
-    FIXTURE.get_or_init(|| {
-        let mut path = [[0u8; 32]; TREE_DEPTH];
-        let mut empty = empty_leaf();
-        for (level, sibling) in path.iter_mut().enumerate() {
-            *sibling = empty;
-            empty = tree_node(Tree::Coin, level as u8, &empty, &empty);
-        }
-        path[0] = [9; 32];
-        let _one = one_at_a_time();
-        let opening = CoinOpening {
-            s: [1; 32],
-            r: [2; 32],
-            b: [3; 32],
-            v: amount_word(1_000_000),
-            position: 5,
-            path,
-        };
-        let leaf = coin_commitment(&coin_fingerprint(&opening.s, &opening.r, &opening.b, &EMPTY_RULE), &opening.v);
-        let request = RevealRequest {
-            root: merkle_root(Tree::Coin, &leaf, opening.position, &opening.path),
-            recipient: [0x11; 20],
-            out: amount_word(600_000),
-            fee: amount_word(21),
-            rule: EMPTY_RULE,
-            remainder_note: [0x33; NOTE_BYTES],
-        };
-        let remainder = CoinRemainder {
-            s: [1; 32],
-            r: [2; 32],
-            b: [4; 32],
-            v: amount_word(1_000_000 - 600_000 - 21),
-        };
-        // Test-only zero-knowledge randomness.
-        let (tx, proof) = prove_coin_reveal(&params(), &opening, &remainder, &request, [0x5a; 32]).expect("honest proof");
-        assert_eq!(verify_coin_reveal(&params(), &tx, &proof), Ok(()));
-        Fixture {
-            params: chain_params_to_bytes(&params()).to_vec(),
-            statement: coin_reveal_to_bytes(&tx).to_vec(),
-            proof: proof.into_bytes(),
-        }
-    })
-}
-
-/// The same reveal of a salted (version 2) coin: the statement has the same
-/// layout and names no format.
-fn salted_fixture() -> &'static Fixture {
     static FIXTURE: OnceLock<Fixture> = OnceLock::new();
     FIXTURE.get_or_init(|| {
         let mut path = [[0u8; 32]; TREE_DEPTH];
@@ -225,41 +179,25 @@ fn the_layout_is_the_documented_one() {
     assert_eq!(chain_params_from_bytes(&bytes), p);
 }
 
-#[test]
-fn a_valid_proof_is_accepted() {
-    let f = fixture();
-    assert!(f.proof.len() <= PROOF_MAX_BYTES, "proof of {} bytes", f.proof.len());
-    assert_eq!(call(&f.params, &f.statement, &f.proof), GHOST_PROOFS_ACCEPTED);
-    assert_eq!(verify_coin_reveal_bytes(&f.params, &f.statement, &f.proof), GHOST_PROOFS_ACCEPTED);
-}
-
-/// A salted reveal is accepted through the same function and layout; the
-/// version 1 one above still is.
+/// A salted reveal is accepted through the C function and the safe core, and
+/// the native verifier agrees.
 #[test]
 fn a_valid_salted_proof_is_accepted() {
-    let f = salted_fixture();
+    let f = fixture();
     assert_eq!(f.statement.len(), COIN_REVEAL_BYTES);
     assert!(f.proof.len() <= PROOF_MAX_BYTES, "proof of {} bytes", f.proof.len());
     assert_eq!(call(&f.params, &f.statement, &f.proof), GHOST_PROOFS_ACCEPTED);
     assert_eq!(verify_coin_reveal_bytes(&f.params, &f.statement, &f.proof), GHOST_PROOFS_ACCEPTED);
-    let mut field = f.proof.clone();
-    field.resize(PROOF_MAX_BYTES, 0);
-    assert_eq!(call(&f.params, &f.statement, &field), GHOST_PROOFS_ACCEPTED);
-    // Each proof passes only its own format.
     let tx = coin_reveal_from_bytes(f.statement.as_slice().try_into().unwrap());
     let proof = Proof::from_bytes(f.proof.clone());
-    assert_eq!(verify_coin_reveal(&params(), &tx, &proof), Err(ProofError::Rejected));
-    let v1 = fixture();
-    let tx = coin_reveal_from_bytes(v1.statement.as_slice().try_into().unwrap());
-    let proof = Proof::from_bytes(v1.proof.clone());
-    assert_eq!(verify_salted_coin_reveal(&params(), &tx, &proof), Err(ProofError::Rejected));
+    assert_eq!(verify_salted_coin_reveal(&params(), &tx, &proof), Ok(()));
 }
 
-/// A salted proof fails both formats once anything about it changes, and a
-/// proof of one statement does not pass for the other's statement.
+/// A salted proof is rejected once anything about it changes: a statement
+/// field, a proof byte or a chain parameter.
 #[test]
 fn a_changed_salted_reveal_is_rejected() {
-    let f = salted_fixture();
+    let f = fixture();
     for (name, offset, width) in STATEMENT_FIELDS {
         let mut statement = f.statement.clone();
         statement[offset + width - 1] ^= 1;
@@ -275,9 +213,6 @@ fn a_changed_salted_reveal_is_rejected() {
     let mut p = f.params.clone();
     p[0] ^= 1;
     assert_eq!(call(&p, &f.statement, &f.proof), GHOST_PROOFS_REJECTED);
-    let v1 = fixture();
-    assert_eq!(call(&f.params, &v1.statement, &f.proof), GHOST_PROOFS_REJECTED);
-    assert_eq!(call(&v1.params, &f.statement, &v1.proof), GHOST_PROOFS_REJECTED);
 }
 
 #[test]
@@ -346,7 +281,7 @@ fn a_non_empty_rule_or_out_of_range_amount_is_rejected() {
             let tx = coin_reveal_from_bytes(statement.as_slice().try_into().unwrap());
             let proof = Proof::from_bytes(f.proof.clone());
             assert_eq!(
-                verify_coin_reveal(&params(), &tx, &proof),
+                verify_salted_coin_reveal(&params(), &tx, &proof),
                 Err(ProofError::AmountOutOfRange)
             );
             assert_eq!(call(&f.params, &statement, &f.proof), GHOST_PROOFS_REJECTED);

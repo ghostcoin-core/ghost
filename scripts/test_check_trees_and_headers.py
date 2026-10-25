@@ -199,17 +199,18 @@ class CheckerTest(unittest.TestCase):
     # -- vectors -----------------------------------------------------------
 
     def test_tree_root_vector(self):
-        text = self.damaged("root = d754c9e4e70031e9902edfaa8065469577da43c8c0300cc342e169531ba2a6f7\n",
-                            "root = d754c9e4e70031e9902edfaa8065469577da43c8c0300cc342e169531ba2a6f8\n")
+        text = self.damaged("root = caa746ecf6160767cdf1cdffb8c1aa5628cce4e6037cac1b90e5978ae65cc5e8\n",
+                            "root = caa746ecf6160767cdf1cdffb8c1aa5628cce4e6037cac1b90e5978ae65cc5e9\n")
         self.assert_gap(text, "vector data-tree-one-leaf: root is")
         text = self.damaged("root = dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a\n",
                             "root = dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237b\n")
         self.assert_gap(text, "vector data-tree-header-example: root is")
 
     def test_tree_leaves_are_spec_01_commitments(self):
-        # The leaves of the two-leaf coin tree are spec 01's coin-commit and
-        # coin-remainder, made with its words example key.
-        old_leaf = "9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c"
+        # The leaves of the two-leaf coin tree are spec 01's salted
+        # coin-commit-salted and coin-remainder-salted, made with its words
+        # example key.
+        old_leaf = "1525d1f6caa2f9314988542a3dcb7ab5a76a9ba5dd3fef97a1ecf72ddeb516bc"
         self.assertNotIn(old_leaf[:-1] + "d", self.spec01)
         spec01 = self.spec01.replace(old_leaf, old_leaf[:-1] + "d")
         self.assert_gap(self.text, "vector coin-tree-two-leaves: leaves are not the commitments",
@@ -217,7 +218,7 @@ class CheckerTest(unittest.TestCase):
         self.assert_gap(self.text, "vector coin-page-two-leaves: leaves are not the commitments",
                         spec01=spec01)
         data = self.in_block("data-tree-one-leaf",
-                             "leaves = 5bc2c9ef3f27a49943b7885eb8babf9be3dda232a41894f3ca5a09b0129340c1",
+                             "leaves = 523c415b17bb5c6b2270b71193a2737273d1be5aa519cd253155323aaad97e3f",
                              "leaves = 39c4e1e8edca6f366db5125e1bc9484063fa9f35da539638207f03732d913b06")
         self.assert_gap(data, "vector data-tree-one-leaf: leaves are not the commitments")
         self.assert_gap(self.text, "no test vectors found in spec 01", spec01="no vectors")
@@ -225,12 +226,12 @@ class CheckerTest(unittest.TestCase):
     def test_spec_01_leaves_need_a_words_key(self):
         # A twelve-group digit key in spec 01 is refused like the client refuses it.
         words = "0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812"
-        self.assertIn(f"key = {words}\nindex = 1\namount = 700000000000000000", self.spec01)
+        head = "[coin-remainder-salted]\nkind = salted-coin-commitment\nversion = 2\n"
+        self.assertIn(f"{head}key = {words}\nindex = 1\n", self.spec01)
         spec01 = self.spec01.replace(
-            f"key = {words}\nindex = 1\namount = 700000000000000000",
-            "key = 1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417\n"
-            "index = 1\namount = 700000000000000000", 1)
-        self.assert_gap(self.text, "spec 01 vector coin-remainder is not made with a words key",
+            f"{head}key = {words}\nindex = 1\n",
+            f"{head}key = 1111 2222 3333 4444 5555 6666 7777 8888 9999 0000 1234 0417\nindex = 1\n", 1)
+        self.assert_gap(self.text, "spec 01 vector coin-remainder-salted is not made with a words key",
                         spec01=spec01)
 
     def test_empty_tree_vector(self):
@@ -243,7 +244,7 @@ class CheckerTest(unittest.TestCase):
                         "no empty-tree vector for the data tree")
 
     def test_page_vector(self):
-        self.assert_gap(self.damaged("page-root = 69e1", "page-root = 79e1"),
+        self.assert_gap(self.damaged("page-root = 8001", "page-root = 9001"),
                         "vector coin-page-two-leaves: page-root")
         self.assert_gap(self.damaged("empty-page-root = b50a", "empty-page-root = c50a"),
                         "vector coin-page-two-leaves: empty-page-root")

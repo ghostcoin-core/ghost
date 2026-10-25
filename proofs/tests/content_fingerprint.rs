@@ -1,7 +1,7 @@
 #![cfg(feature = "unsettled-points-test")]
 //! The content fingerprint is a public input of the data reveal (S2) and the
-//! proof of holding (S3), in both data commitment formats (spec 02, sections
-//! 5 and 6; spec 04, question 8).
+//! proof of holding (S3) of a salted data commitment (spec 02, sections 5 and
+//! 6; spec 04, question 8).
 //!
 //! A proof made for one content verifies only with that content's
 //! fingerprint: the same proof with another `cf` fails, and a prover that
@@ -67,19 +67,9 @@ fn path() -> [[u8; 32]; TREE_DEPTH] {
     path
 }
 
-/// The format of a data commitment, for tests that run over both.
-#[derive(Clone, Copy, Debug)]
-enum Format {
-    V1,
-    V2,
-}
-
-const FORMATS: [Format; 2] = [Format::V1, Format::V2];
-
-/// The secrets of one data commitment of `content`, alone at position 0 of a
-/// data tree.
+/// The secrets of one salted data commitment of `content`, alone at position
+/// 0 of a data tree.
 struct Commitment {
-    format: Format,
     s: [u8; 32],
     r: [u8; 32],
     b: [u8; 32],
@@ -87,9 +77,8 @@ struct Commitment {
 }
 
 impl Commitment {
-    fn of(format: Format, content: &[u8]) -> Self {
+    fn of(content: &[u8]) -> Self {
         Self {
-            format,
             s: [1; 32],
             r: [2; 32],
             b: [3; 32],
@@ -102,12 +91,7 @@ impl Commitment {
     }
 
     fn root(&self) -> [u8; 32] {
-        let leaf = match self.format {
-            Format::V1 => data_commitment(&data_fingerprint(&self.s, &self.r, &self.b, &self.cf, &EMPTY_RULE)),
-            Format::V2 => {
-                data_commitment_v2(&data_fingerprint_v2(&self.s, &self.r, &self.b, &SALT, &self.cf, &EMPTY_RULE))
-            }
-        };
+        let leaf = data_commitment_v2(&data_fingerprint_v2(&self.s, &self.r, &self.b, &SALT, &self.cf, &EMPTY_RULE));
         merkle_root(Tree::Data, &leaf, 0, &path())
     }
 
@@ -119,32 +103,12 @@ impl Commitment {
             fee: FEE,
             rule: EMPTY_RULE,
         };
-        match self.format {
-            Format::V1 => prove_data_reveal(&params(), &self.data_opening(), &request, zk(seed)),
-            Format::V2 => prove_salted_data_reveal(&params(), &self.salted_data_opening(), &request, zk(seed)),
-        }
-    }
-
-    fn verify_reveal(&self, tx: &DataReveal, proof: &Proof) -> Result<(), ProofError> {
-        match self.format {
-            Format::V1 => verify_data_reveal_unsettled(&params(), tx, proof),
-            Format::V2 => verify_salted_data_reveal_unsettled(&params(), tx, proof),
-        }
-    }
-
-    fn reveal_binding(&self, tx: &DataReveal) -> [u8; 32] {
-        match self.format {
-            Format::V1 => data_reveal_binding(&params(), tx),
-            Format::V2 => salted_data_reveal_binding(&params(), tx),
-        }
+        prove_salted_data_reveal(&params(), &self.data_opening(), &request, zk(seed))
     }
 
     fn hold_context(&self, root: [u8; 32], cf: [u8; 32]) -> HoldContext {
         HoldContext {
-            type_tag: match self.format {
-                Format::V1 => DATA,
-                Format::V2 => DATA_V2,
-            },
+            type_tag: DATA_V2,
             root,
             marker_set_root: [0x6d; 32],
             verifier: [0x0a; 32],
@@ -154,24 +118,10 @@ impl Commitment {
     }
 
     fn hold(&self, ctx: &HoldContext, seed: u8) -> Result<Proof, ProofError> {
-        match self.format {
-            Format::V1 => prove_hold(&params(), &self.hold_opening(), ctx, zk(seed)),
-            Format::V2 => prove_salted_hold(&params(), &self.salted_hold_opening(), ctx, zk(seed)),
-        }
+        prove_salted_hold(&params(), &self.hold_opening(), ctx, zk(seed))
     }
 
-    fn data_opening(&self) -> DataOpening {
-        DataOpening {
-            s: self.s,
-            r: self.r,
-            b: self.b,
-            cf: self.cf,
-            position: 0,
-            path: path(),
-        }
-    }
-
-    fn salted_data_opening(&self) -> SaltedDataOpening {
+    fn data_opening(&self) -> SaltedDataOpening {
         SaltedDataOpening {
             s: self.s,
             r: self.r,
@@ -183,19 +133,7 @@ impl Commitment {
         }
     }
 
-    fn hold_opening(&self) -> HoldOpening {
-        HoldOpening {
-            s: self.s,
-            r: self.r,
-            b: self.b,
-            cf: self.cf,
-            rule: EMPTY_RULE,
-            position: 0,
-            path: path(),
-        }
-    }
-
-    fn salted_hold_opening(&self) -> SaltedHoldOpening {
+    fn hold_opening(&self) -> SaltedHoldOpening {
         SaltedHoldOpening {
             s: self.s,
             r: self.r,
@@ -207,6 +145,10 @@ impl Commitment {
             path: path(),
         }
     }
+}
+
+fn verify_reveal(tx: &DataReveal, proof: &Proof) -> Result<(), ProofError> {
+    verify_salted_data_reveal_unsettled(&params(), tx, proof)
 }
 
 /// A lying prover's proof does not verify. In a release build the prover
@@ -239,107 +181,93 @@ fn the_fingerprint_is_computed_from_the_bytes() {
 }
 
 /// A data reveal carries its commitment's content fingerprint, checkable
-/// against the revealed bytes, and verifies only for that fingerprint, in
-/// both commitment formats.
+/// against the revealed bytes, and verifies only for that fingerprint.
 #[test]
 fn data_reveal_rejects_other_fingerprint() {
     let _one = one_at_a_time();
     let other_cf = content_fingerprint(OTHER_CONTENT);
-    for (n, format) in FORMATS.into_iter().enumerate() {
-        let n = n as u8;
-        let c = Commitment::of(format, CONTENT);
-        let root = c.root();
-        let (tx, proof) = c.reveal(root, 10 + n).expect("honest proof");
-        assert_eq!(c.verify_reveal(&tx, &proof), Ok(()), "{format:?}");
-        // The revealed bytes check against the reveal; other bytes do not.
-        assert_eq!(tx.cf, content_fingerprint(CONTENT), "{format:?}");
-        assert_ne!(tx.cf, other_cf, "{format:?}");
+    let c = Commitment::of(CONTENT);
+    let root = c.root();
+    let (tx, proof) = c.reveal(root, 10).expect("honest proof");
+    assert_eq!(verify_reveal(&tx, &proof), Ok(()));
+    // The revealed bytes check against the reveal; other bytes do not.
+    assert_eq!(tx.cf, content_fingerprint(CONTENT));
+    assert_ne!(tx.cf, other_cf);
 
-        // The same proof with another fingerprint fails, and the binding
-        // digest differs.
-        let other = DataReveal {
-            cf: other_cf,
-            ..tx.clone()
-        };
-        assert_ne!(c.reveal_binding(&other), c.reveal_binding(&tx), "{format:?}");
-        assert_eq!(c.verify_reveal(&other, &proof), Err(ProofError::Rejected), "{format:?}");
-        let mut flipped = tx.clone();
-        flipped.cf[31] ^= 1;
-        assert_eq!(c.verify_reveal(&flipped, &proof), Err(ProofError::Rejected), "{format:?}");
-
-        // The honest prover does not open the commitment as another content:
-        // that is another commitment, not the leaf under the root.
-        let refused = c.with_cf(other_cf).reveal(root, 20 + n);
-        assert_eq!(refused.err(), Some(ProofError::NotInTree), "{format:?}");
-
-        // A reveal of another content's commitment verifies for its own
-        // fingerprint only.
-        let o = Commitment::of(format, OTHER_CONTENT);
-        let (other_tx, other_proof) = o.reveal(o.root(), 30 + n).expect("honest proof");
-        assert_eq!(o.verify_reveal(&other_tx, &other_proof), Ok(()), "{format:?}");
-        assert_eq!(other_tx.cf, other_cf, "{format:?}");
-        let as_first = DataReveal {
-            cf: tx.cf,
-            ..other_tx
-        };
-        assert_eq!(o.verify_reveal(&as_first, &other_proof), Err(ProofError::Rejected), "{format:?}");
-    }
-
-    // A salted prover that opens the commitment but claims another
-    // fingerprint makes no proof that verifies.
-    let c = Commitment::of(Format::V2, CONTENT);
-    let (tx, _) = c.reveal(c.root(), 40).expect("honest proof");
-    let claimed = DataReveal {
+    // The same proof with another fingerprint fails, and the binding digest
+    // differs.
+    let other = DataReveal {
         cf: other_cf,
-        ..tx
+        ..tx.clone()
     };
+    assert_ne!(salted_data_reveal_binding(&params(), &other), salted_data_reveal_binding(&params(), &tx));
+    assert_eq!(verify_reveal(&other, &proof), Err(ProofError::Rejected));
+    let mut flipped = tx.clone();
+    flipped.cf[31] ^= 1;
+    assert_eq!(verify_reveal(&flipped, &proof), Err(ProofError::Rejected));
+
+    // The honest prover does not open the commitment as another content: that
+    // is another commitment, not the leaf under the root.
+    let refused = c.with_cf(other_cf).reveal(root, 20);
+    assert_eq!(refused.err(), Some(ProofError::NotInTree));
+
+    // A reveal of another content's commitment verifies for its own
+    // fingerprint only.
+    let o = Commitment::of(OTHER_CONTENT);
+    let (other_tx, other_proof) = o.reveal(o.root(), 30).expect("honest proof");
+    assert_eq!(verify_reveal(&other_tx, &other_proof), Ok(()));
+    assert_eq!(other_tx.cf, other_cf);
+    let as_first = DataReveal {
+        cf: tx.cf,
+        ..other_tx
+    };
+    assert_eq!(verify_reveal(&as_first, &other_proof), Err(ProofError::Rejected));
+
+    // A prover that opens the commitment but claims another fingerprint makes
+    // no proof that verifies.
+    let claimed = DataReveal { cf: other_cf, ..tx };
     lying_proof_fails(
-        || prove_salted_data_reveal_claiming(&params(), &c.salted_data_opening(), &claimed, zk(41)),
-        |proof| verify_salted_data_reveal_unsettled(&params(), &claimed, proof),
+        || prove_salted_data_reveal_claiming(&params(), &c.data_opening(), &claimed, zk(41)),
+        |proof| verify_reveal(&claimed, proof),
     );
 }
 
 /// A proof of holding is bound to the content fingerprint it was made for,
-/// next to the challenge, in both commitment formats.
+/// next to the challenge.
 #[test]
 fn hold_rejects_other_fingerprint() {
     let _one = one_at_a_time();
     let other_cf = content_fingerprint(OTHER_CONTENT);
-    for (n, format) in FORMATS.into_iter().enumerate() {
-        let n = n as u8;
-        let c = Commitment::of(format, CONTENT);
-        let root = c.root();
-        let ctx = c.hold_context(root, content_fingerprint(CONTENT));
-        let proof = c.hold(&ctx, 50 + n).expect("honest proof");
-        assert_eq!(verify_hold_unsettled(&params(), &ctx, &proof), Ok(()), "{format:?}");
-        // The shipped verifier still rejects every proof of holding.
-        assert_eq!(verify_hold(&params(), &ctx, &proof), Err(ProofError::HoldUnsettled));
+    let c = Commitment::of(CONTENT);
+    let root = c.root();
+    let ctx = c.hold_context(root, content_fingerprint(CONTENT));
+    let proof = c.hold(&ctx, 50).expect("honest proof");
+    assert_eq!(verify_hold_unsettled(&params(), &ctx, &proof), Ok(()));
+    // The shipped verifier still rejects every proof of holding.
+    assert_eq!(verify_hold(&params(), &ctx, &proof), Err(ProofError::HoldUnsettled));
 
-        // The same proof for another fingerprint fails, and the binding
-        // digest differs.
-        let other = HoldContext {
-            cf: other_cf,
-            ..ctx.clone()
-        };
-        assert_ne!(hold_binding(&params(), &other), hold_binding(&params(), &ctx), "{format:?}");
-        assert_eq!(verify_hold_unsettled(&params(), &other, &proof), Err(ProofError::Rejected), "{format:?}");
-        let mut flipped = ctx.clone();
-        flipped.cf[0] ^= 1;
-        assert_eq!(verify_hold_unsettled(&params(), &flipped, &proof), Err(ProofError::Rejected), "{format:?}");
+    // The same proof for another fingerprint fails, and the binding digest
+    // differs.
+    let other = HoldContext {
+        cf: other_cf,
+        ..ctx.clone()
+    };
+    assert_ne!(hold_binding(&params(), &other), hold_binding(&params(), &ctx));
+    assert_eq!(verify_hold_unsettled(&params(), &other, &proof), Err(ProofError::Rejected));
+    let mut flipped = ctx.clone();
+    flipped.cf[0] ^= 1;
+    assert_eq!(verify_hold_unsettled(&params(), &flipped, &proof), Err(ProofError::Rejected));
 
-        // The honest prover refuses a context asking about another content.
-        assert_eq!(c.hold(&other, 60 + n).err(), Some(ProofError::WrongContentFingerprint), "{format:?}");
-        // An opening claiming the asked fingerprint is another commitment,
-        // not the leaf under the root.
-        assert_eq!(c.with_cf(other_cf).hold(&other, 62 + n).err(), Some(ProofError::NotInTree), "{format:?}");
-    }
+    // The honest prover refuses a context asking about another content.
+    assert_eq!(c.hold(&other, 60).err(), Some(ProofError::WrongContentFingerprint));
+    // An opening claiming the asked fingerprint is another commitment, not the
+    // leaf under the root.
+    assert_eq!(c.with_cf(other_cf).hold(&other, 62).err(), Some(ProofError::NotInTree));
 
-    // A salted prover that opens the commitment but answers for another
-    // fingerprint makes no proof that verifies.
-    let c = Commitment::of(Format::V2, CONTENT);
-    let other = c.hold_context(c.root(), other_cf);
+    // A prover that opens the commitment but answers for another fingerprint
+    // makes no proof that verifies.
     lying_proof_fails(
-        || prove_salted_hold_claiming(&params(), &c.salted_hold_opening(), &other, zk(70)),
+        || prove_salted_hold_claiming(&params(), &c.hold_opening(), &other, zk(70)),
         |proof| verify_hold_unsettled(&params(), &other, proof),
     );
 }
