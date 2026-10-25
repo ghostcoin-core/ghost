@@ -51,9 +51,27 @@ function rejectedInWallet(err) {
   return Boolean(err) && (err.name === "WalletRejected" || err.code === 4001);
 }
 
+// A Vanish below the smallest the page sends (flow.minVanish): `min` wei.
+class VanishTooSmall extends Error {
+  constructor(min) {
+    super("the amount is below the smallest Vanish");
+    this.name = "VanishTooSmall";
+    this.min = min;
+  }
+}
+
+// `wei` rounded up to 4 decimals of GHOST, as text.
+function ghostUp(wei) {
+  const unit = 10n ** 14n;
+  return formatGhost(((wei + unit - 1n) / unit) * unit);
+}
+
 // The card's error line for a Vanish step that failed: a fixed sentence
 // chosen by what failed, never the exception's own text.
 function vanishErrorText(err, step) {
+  if (err instanceof VanishTooSmall) {
+    return `Vanish at least ${ghostUp(err.min)} GHOST: a smaller coin could not pay the Summon fee later.`;
+  }
   const said = String((err && err.message) || "");
   if (/^enter an amount|largest amount a coin can hold/.test(said)) return "Enter an amount of GHOST, for example 1.5.";
   if (/less than the amount/.test(said)) return "Your balance is too low for this amount and the network fee.";
@@ -259,6 +277,17 @@ function amountWarning(s, out) {
   );
 }
 
+// The remainder warning for a Summon of `out`: only a partial Summon whose
+// remainder, what the key keeps after `out` and the network fee, is under
+// the smallest coin the page would Vanish (the flow's smallestCoin, a few
+// network fees). A full Summon leaves nothing and shows none. Advice only.
+function remainderWarning(s, out) {
+  if (!s || !s.current || out === null || s.fee == null || s.smallestCoin == null) return "";
+  const rest = s.current.amount - out - s.fee;
+  if (rest <= 0n || rest >= s.smallestCoin) return "";
+  return "What stays in this key is too small to Summon again: its network fee could cost all of it. Summon a little less, or Max.";
+}
+
 // Fills the payout field for the connected wallet `w` with a fresh address
 // of that wallet, or with its own address when it has none to give (the
 // same-address warning then shows). The answer is dropped if the user typed
@@ -306,7 +335,8 @@ function renderSummon(state) {
   }
   const onForm = coin && screen === "form";
   $("summon-payout-warning").textContent = onForm ? payoutWarning($("summon-payout").value, state) : "";
-  $("summon-amount-warning").textContent = onForm ? amountWarning(s, amountOf($("summon-amount").value)) : "";
+  const typed = onForm ? amountOf($("summon-amount").value) : null;
+  $("summon-amount-warning").textContent = onForm ? [amountWarning(s, typed), remainderWarning(s, typed)].filter(Boolean).join(" ") : "";
   $("summon-in-key").textContent = coin ? `${formatGhost(s.current.amount)} GHOST` : "—";
   $("summon-note").textContent = summonNote(s);
   const pending = Boolean(s && s.lastReveal && s.lastReveal.stage === "sent");
@@ -729,6 +759,10 @@ $("vanish-form").addEventListener(
     if (w.balance !== null && amount > maxVanish(w.balance)) {
       throw new Error("the wallet holds less than the amount and the most the gas can cost");
     }
+    // A coin under a few Summon fees may never be summoned: the protocol
+    // takes it, the page does not send it.
+    const min = await flow.minVanish();
+    if (amount > 0n && amount < min) throw new VanishTooSmall(min);
     vanishShowAgain = false;
     await flow.vanishStart($("vanish-amount").value);
     // The tab was left while the key was made: it goes at once.
@@ -923,7 +957,7 @@ $("summon-form").addEventListener("submit", (event) => {
       shown: formatGhost(out),
       address: to,
       wallet: flow.state.wallet.address,
-      warnings: [payoutWarning(to, flow.state), amountWarning(s, out)].filter(Boolean),
+      warnings: [payoutWarning(to, flow.state), amountWarning(s, out), remainderWarning(s, out)].filter(Boolean),
     };
   }
   render(flow.state);

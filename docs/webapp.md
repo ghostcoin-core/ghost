@@ -115,8 +115,13 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
      it, open Summon and paste your key." and the button "Done", which
      drops the key from memory and returns to an empty Vanish tab.
 
-  An error (the balance too low, the network refusing the commit) is one
-  plain red line in the card, a fixed sentence chosen by what failed and
+  An amount under `MIN_VANISH_FEES` (4) Summon fees for the next block,
+  computed by the flow's `minVanish` from the endpoint's tip header alone (no
+  header chain, `chain.mjs` `minVanishFor`), is refused before a key is made
+  with "Vanish at least *X* GHOST: a smaller coin could not pay the Summon fee
+  later.", *X* rounded up to 4 decimals; the protocol itself takes 1 wei
+  (spec 07, section 5, "The smallest Vanish"). An error (the balance too low,
+  the network refusing the commit) is one plain red line in the card, a fixed sentence chosen by what failed and
   never the error's own text; a failed send returns to the check screen.
   The key leaves the page's memory on Done, when the Summon tab is chosen
   and when the page is closed (`pagehide`): the grid is emptied and the
@@ -165,6 +170,12 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
     request, as `amountMatches`. Fewer than 10, and the line says how many
     and suggests a partial Summon, less than Max. A partial Summon shows no
     amount warning.
+
+  A partial Summon whose remainder (what the key keeps after the amount and
+  the network fee) is above 0 but under `MIN_VANISH_FEES` network fees (the
+  flow's `smallestCoin`) shows one more caution line, on the form and the
+  confirm screen, that what stays is too small to Summon again; a full
+  Summon leaves nothing and shows none, and the line never blocks.
   1. **Confirm.** Pressing Summon proves and sends nothing: the card shows
      "Summon *amount* GHOST to *short address*" (the amount as typed and
      the payout address, the full address as the screen's title and in
