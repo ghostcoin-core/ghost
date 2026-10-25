@@ -199,8 +199,8 @@ class CheckerTest(unittest.TestCase):
     # -- vectors -----------------------------------------------------------
 
     def test_tree_root_vector(self):
-        text = self.damaged("root = caa746ecf6160767cdf1cdffb8c1aa5628cce4e6037cac1b90e5978ae65cc5e8\n",
-                            "root = caa746ecf6160767cdf1cdffb8c1aa5628cce4e6037cac1b90e5978ae65cc5e9\n")
+        text = self.damaged("root = f06603ac6e6f5a0ccac7e2e90aff6e8d9aa4c28b66df5690668e990fb582a77a\n",
+                            "root = f06603ac6e6f5a0ccac7e2e90aff6e8d9aa4c28b66df5690668e990fb582a77b\n")
         self.assert_gap(text, "vector data-tree-one-leaf: root is")
         text = self.damaged("root = dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a\n",
                             "root = dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237b\n")
@@ -218,7 +218,7 @@ class CheckerTest(unittest.TestCase):
         self.assert_gap(self.text, "vector coin-page-two-leaves: leaves are not the commitments",
                         spec01=spec01)
         data = self.in_block("data-tree-one-leaf",
-                             "leaves = 523c415b17bb5c6b2270b71193a2737273d1be5aa519cd253155323aaad97e3f",
+                             "leaves = cb3181bcb1a051e9b2e9eb947f4dfe6aa30b70f37f1518153de92b15d5049e44",
                              "leaves = 39c4e1e8edca6f366db5125e1bc9484063fa9f35da539638207f03732d913b06")
         self.assert_gap(data, "vector data-tree-one-leaf: leaves are not the commitments")
         self.assert_gap(self.text, "no test vectors found in spec 01", spec01="no vectors")

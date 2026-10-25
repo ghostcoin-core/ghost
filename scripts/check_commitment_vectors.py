@@ -201,7 +201,7 @@ TAG_LAYOUTS = {
     TAG_COIN_FINGERPRINT_V2: (32, 32, 32, SALT_LENGTH, 2, 32, 32),
     TAG_COIN_COMMITMENT: (2, 32, 32),
     TAG_DATA_FINGERPRINT_V2: (32, 32, 32, SALT_LENGTH, 2, 32, 32),
-    TAG_DATA_COMMITMENT: (2, 32),
+    TAG_DATA_COMMITMENT: (2, 32, 32),
     TAG_COIN_MARKER_V2: (32, 32, SALT_LENGTH),
     TAG_DATA_MARKER_V2: (32, 32, SALT_LENGTH),
     TAG_COIN_TREE_NODE: (1, 32, 32),
@@ -215,6 +215,9 @@ SCHEME_ID = 0x01
 NOTE_PLAINTEXT_LENGTH = 128
 V_MAX = (1 << 96) - 1
 ZERO32 = bytes(32)
+# The fee reserve of a data commitment in wei (spec 04, section 3, "The fee
+# reserve"): 2.5 x 10^17 wei, 0.25 GHOST, in the outer hash of every data leaf.
+DATA_RESERVE = 250_000_000_000_000_000
 
 
 def _tag_prefix(tag):
@@ -347,7 +350,10 @@ def data_fingerprint(s, r, b, cf, rule, salt=None, version=VERSION_2):
 
 
 def data_commitment(fingerprint, version=VERSION_2):
-    return keccak_tagged(TAG_DATA_COMMITMENT, type_tag("DATA", version), fingerprint)
+    """`K(data-commitment, DATA, DATA_RESERVE, F_d)`: the node binds the fee
+    reserve into the outer hash, as a 32-byte big-endian amount word."""
+    return keccak_tagged(TAG_DATA_COMMITMENT, type_tag("DATA", version),
+                         DATA_RESERVE.to_bytes(32, "big"), fingerprint)
 
 
 def marker(type_name, r, b, salt=None, version=VERSION_2):

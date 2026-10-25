@@ -155,11 +155,13 @@ range-check and conserve, or a public one whose tiers set commitments apart.
 version 1 is being removed, so the reserve re-sets data format version 2 (type
 tag `0x02 0x02`, tags `v2`) rather than adding a version 3, on one condition:
 no recorded network or fixture holds a version 2 data leaf made without the
-reserve. The implementation work checks the condition (the salted data vectors
-of [spec 01](01-commitments-and-keys.md), section 14, are computed without the
-reserve and are among the fixtures to check). If one does, the reserve is
-data format version 3 instead (type tag `0x03 0x02`, tags `v3`), and the coin
-keeps version 2. `DATA_RESERVE` belongs to the version: changing it later is a
+reserve. The condition holds (checked 2026-10-25): the repository records no
+proof or network fixtures, its test chain configuration holds no tree leaves,
+and the only version 2 data leaves were the salted data vectors of
+[spec 01](01-commitments-and-keys.md), section 14, and of
+[spec 05](05-trees-and-headers.md), and values built inside tests, all now
+recomputed with the reserve. So data format version 2 carries the reserve and
+there is no data format version 3; the coin keeps version 2 unchanged. `DATA_RESERVE` belongs to the version: changing it later is a
 new version, and existing leaves keep the reserve of theirs.
 
 **Worked example: the commit.** Start from `total_in = 0` and

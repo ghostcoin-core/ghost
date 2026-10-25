@@ -14,9 +14,15 @@
 //! fails. Anyone holding the revealed bytes computes
 //! `K(content-fingerprint, length, content)` and compares it with `cf`.
 //!
+//! The outer hash `C` takes the fee reserve `DATA_RESERVE` (spec 04, section
+//! 3, "The fee reserve") as a constant amount word after the type tag: the
+//! node burned it at commit, so it is no private input, and the statement
+//! has no remainder and no new public input. A leaf made with another
+//! reserve, or without one, does not open.
+//!
 //! **Not settled: the fee of a data reveal** (spec 02, section 13, item 1).
-//! No constraint ties `fee` to anything inside a data commitment, because a
-//! data commitment holds no value. So the public [`verify_salted_data_reveal`]
+//! The node-side settlement out of the reserve (`fee <= DATA_RESERVE`, spec
+//! 04, section 6) is not shipped yet. So the public [`verify_salted_data_reveal`]
 //! rejects every data reveal with [`ProofError::DataFeeUnsettled`]. The
 //! statement itself is built and checked only by the functions compiled under
 //! the `unsettled-points-test` feature, for tests; they do not settle the
@@ -27,7 +33,7 @@
 //!
 //! ```text
 //! F_d     K(data-fingerprint, s, r, b, salt, DATA, cf, rule)  2 blocks, cf public
-//! C       K(data-commitment, DATA, F_d)                       1
+//! C       K(data-commitment, DATA, DATA_RESERVE, F_d)         1, reserve constant
 //! N0..N31 K(data-tree-node, level, left, right)               32, N31 = root
 //! M       K(data-marker, r, b, salt)                          1, = marker
 //! B       K(data-reveal-binding, fields)                      2, = binding
@@ -44,8 +50,8 @@ use crate::binding::{
     digest,
 };
 use crate::hash::{
-    DATA_V2, SALT_BYTES, TAG_DATA_COMMITMENT, TAG_DATA_FINGERPRINT_V2, TAG_DATA_MARKER_V2, TAG_DATA_REVEAL_BINDING,
-    TAG_DATA_TREE_NODE, TREE_DEPTH,
+    DATA_RESERVE_WORD, DATA_V2, SALT_BYTES, TAG_DATA_COMMITMENT, TAG_DATA_FINGERPRINT_V2, TAG_DATA_MARKER_V2,
+    TAG_DATA_REVEAL_BINDING, TAG_DATA_TREE_NODE, TREE_DEPTH,
 };
 use crate::schedule::{HashBuilder, Schedule, ScheduleBuilder};
 #[cfg(feature = "unsettled-points-test")]
@@ -232,7 +238,12 @@ pub(crate) fn push_data_opening(
         RuleSource::Private => fingerprint.free(32, w.map(|w| &w.rule.expect("a private rule")[..])),
     };
     sb.push(fingerprint);
-    sb.push(HashBuilder::new(TAG_DATA_COMMITMENT).constant(&DATA_V2).prev());
+    sb.push(
+        HashBuilder::new(TAG_DATA_COMMITMENT)
+            .constant(&DATA_V2)
+            .constant(&DATA_RESERVE_WORD)
+            .prev(),
+    );
     for level in 0..TREE_DEPTH {
         let mut node = HashBuilder::new(TAG_DATA_TREE_NODE)
             .constant(&[level as u8])

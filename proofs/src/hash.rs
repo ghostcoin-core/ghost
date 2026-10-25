@@ -25,6 +25,15 @@ pub const DATA_V2: [u8; 2] = [0x02, 0x02];
 /// Length of the salt of a version 2 commitment (spec 01, section 3).
 pub const SALT_BYTES: usize = 16;
 
+/// The fee reserve of a data commitment in wei, 2.5 x 10^17 (0.25 GHOST): a
+/// protocol constant the node burns at commit and binds into the outer hash
+/// of every data leaf (spec 04, section 3, "The fee reserve").
+pub const DATA_RESERVE: u128 = 250_000_000_000_000_000;
+
+/// [`DATA_RESERVE`] as a 32-byte big-endian amount word, the format of a
+/// coin's `v`: the word the data commitment's outer hash takes.
+pub const DATA_RESERVE_WORD: [u8; 32] = crate::amount::amount_word(DATA_RESERVE);
+
 /// The empty rule, the only rule version 1 accepts.
 pub const EMPTY_RULE: [u8; 32] = [0; 32];
 
@@ -237,9 +246,10 @@ pub fn data_fingerprint_v2(
     tagged(TAG_DATA_FINGERPRINT_V2, &[s, r, b, salt, &DATA_V2, cf, rule])
 }
 
-/// `C = K("ghost/data-commitment/v1", DATA_V2, F_d)`.
+/// `C = K("ghost/data-commitment/v1", DATA_V2, DATA_RESERVE, F_d)`, the
+/// reserve as its amount word.
 pub fn data_commitment_v2(fingerprint: &[u8; 32]) -> [u8; 32] {
-    tagged(TAG_DATA_COMMITMENT, &[&DATA_V2, fingerprint])
+    tagged(TAG_DATA_COMMITMENT, &[&DATA_V2, &DATA_RESERVE_WORD, fingerprint])
 }
 
 /// `m = K("ghost/coin-marker/v2", r, b, salt)`.
@@ -309,7 +319,8 @@ mod tests {
     #[test]
     fn tag_lengths_give_the_spec_input_sizes() {
         assert_eq!(tag_bytes(TAG_COIN_COMMITMENT).len() + 2 + 64, 91);
-        assert_eq!(tag_bytes(TAG_DATA_COMMITMENT).len() + 2 + 32, 59);
+        assert_eq!(tag_bytes(TAG_DATA_COMMITMENT).len() + 2 + 32 + 32, 91);
+        assert_eq!(permutations(91), 1);
         assert_eq!(tag_bytes(TAG_COIN_TREE_NODE).len() + 1 + 64, 89);
         assert_eq!(tag_bytes(TAG_EMPTY_LEAF).len(), 20);
         assert_eq!(tag_bytes(TAG_COIN_FINGERPRINT_V2).len() + 32 * 5 + SALT_BYTES + 2, 204);
