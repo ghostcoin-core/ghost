@@ -91,8 +91,12 @@ const ui = {
     if (summary.kind === "connect") {
       $("approve-title").textContent = "Share your account address";
       row(list, "The app sees", "your account address and public key, never your words or key");
+    } else if (summary.kind === "receive") {
+      $("approve-title").textContent = "Share a new receive address";
+      row(list, "The app sees", "a new account address and its public key, never your words or key");
     } else {
       $("approve-title").textContent = "Sign a transaction";
+      row(list, "From", summary.from ?? "your first account (unlock to sign with it)");
       row(list, "Amount", `${summary.amount} GHOST`);
       row(list, "Maximum fee", `${summary.maxFee} GHOST`);
       row(list, "To", summary.to);

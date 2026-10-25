@@ -1,8 +1,9 @@
 // The pop-up wallet's logic (wallet/src/wallet.mjs) on the built module,
 // with stand-ins for IndexedDB, the screens, passkeys and the opener: the
 // backup check before use, the encrypted vault, the password and passkey
-// unlock, the account and signatures against the module's own, reject,
-// origin checks, and every refusal before any screen.
+// unlock, the account and signatures against the module's own, the issued
+// receive addresses and signing from them, reject, origin checks, and every
+// refusal before any screen.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -39,6 +40,8 @@ const PARAMS = {
 };
 const SIGN = { id: 2, method: "ghost_signTransaction", params: PARAMS };
 const ACCOUNT = { id: 1, method: "ghost_getAccount" };
+const RECEIVE = { id: 4, method: "ghost_newReceiveAddress" };
+const signFrom = (from, id = 2) => ({ id, method: "ghost_signTransaction", params: { ...PARAMS, from } });
 
 // A wallet with fresh stand-ins; `ask(message)` posts it as the opener on
 // APP and resolves with the reply.
@@ -183,6 +186,7 @@ test("an approved signature is the module's for the same words, fields and rando
   assert.deepEqual(summary, {
     kind: "sign",
     origin: APP,
+    from: account.address,
     amount: "1",
     maxFee: formatGhost(0x1df78n * 0xb2d05e00n),
     to: PARAMS.to,
@@ -265,7 +269,13 @@ test("every malformed request is refused, naming the field, before any screen", 
     ["ghost_getAccount", -32602, /not an object/],
     [{ id: 7, method: "ghost_signTransaction" }, -32602, /missing field params/],
     [sign(null), -32602, /params is not an object/],
-    [sign({ ...PARAMS, from: PARAMS.to }), -32602, /unknown field from/],
+    [{ id: 7, method: "ghost_newReceiveAddress", params: {} }, -32602, /unknown field params/],
+    [{ id: 7, method: "ghost_newReceiveAddress", extra: 1 }, -32602, /unknown field extra/],
+    [{ method: "ghost_newReceiveAddress" }, -32602, /^id /],
+    [sign({ ...PARAMS, sender: PARAMS.to }), -32602, /unknown field sender/],
+    [sign({ ...PARAMS, from: null }), -32602, /from is not 20 bytes of 0x hex/],
+    [sign({ ...PARAMS, from: "0x12" }), -32602, /from is not 20 bytes of 0x hex/],
+    [sign({ ...PARAMS, from: `0x${"11".repeat(32)}` }), -32602, /from is not 20 bytes of 0x hex/],
     [sign({ ...PARAMS, chainId: "0x1" }), -32602, /chainId 1 is not a network/],
     [sign({ ...PARAMS, chainId: "0x76aae8" }), -32602, /chainId 7777000 is not a network/],
     [sign({ ...PARAMS, chainId: 7777001 }), -32602, /chainId is not a 0x quantity/],
@@ -302,6 +312,178 @@ test("every malformed request is refused, naming the field, before any screen", 
   // The well-formed request still passes the same check.
   assert.equal(checkRequest(SIGN).fields.chainId, 7777001n);
   assert.equal(checkRequest({ ...SIGN, params: { ...PARAMS, maxPriorityFeePerGas: PARAMS.maxFeePerGas } }).id, 2);
+});
+
+test("ghost_newReceiveAddress answers the next account address and asks for approval", async () => {
+  const { ask, ui, idb, random } = setUp();
+  const account = (await ask(ACCOUNT)).result;
+  const words = ghost.walletNew(random.log[0]);
+
+  // Only { id, method }: anything more is refused before any screen.
+  const shown = ui.log.length;
+  for (const [message, said] of [
+    [{ ...RECEIVE, params: {} }, /unknown field params/],
+    [{ ...RECEIVE, params: [] }, /unknown field params/],
+    [{ ...RECEIVE, extra: 1 }, /unknown field extra/],
+    [{ method: RECEIVE.method }, /^id /],
+  ]) {
+    const reply = await ask(message);
+    assert.equal(reply.error?.code, -32602, JSON.stringify(message));
+    assert.match(reply.error.message, said);
+    assert.equal(reply.result, undefined);
+  }
+  assert.equal(ui.log.length, shown, "no screen for a refused request");
+  assert.ok(!idb.data.has("issued"));
+
+  const first = await ask(RECEIVE);
+  assert.deepEqual(ui.log.slice(shown), ["approve"]);
+  assert.deepEqual(ui.approvals.at(-1), { kind: "receive", origin: APP });
+  const one = ghost.walletAccount(words, 1);
+  assert.deepEqual(first, { id: 4, result: { address: toHex(one.address), publicKey: toHex(one.publicKey) } });
+  assert.deepEqual(idb.data.get("issued"), { count: 1 });
+
+  const second = await ask({ ...RECEIVE, id: 5 });
+  assert.deepEqual(ui.log.slice(shown), ["approve", "approve"]);
+  const two = ghost.walletAccount(words, 2);
+  assert.deepEqual(second, { id: 5, result: { address: toHex(two.address), publicKey: toHex(two.publicKey) } });
+  assert.deepEqual(idb.data.get("issued"), { count: 2 });
+
+  assert.equal(new Set([account.address, first.result.address, second.result.address]).size, 3);
+  assert.equal(new Set([account.publicKey, first.result.publicKey, second.result.publicKey]).size, 3);
+  // The record holds the count and nothing else.
+  assert.deepEqual(Object.keys(idb.data.get("issued")), ["count"]);
+  // The vault was not written over.
+  assert.deepEqual(Object.keys(idb.data.get("vault")).sort(), ["ciphertext", "iterations", "iv", "kind", "salt", "version"]);
+});
+
+test("the issued counter survives a reload and never repeats an address", async () => {
+  const before = setUp();
+  const seen = [(await before.ask(ACCOUNT)).result.address];
+  seen.push((await before.ask(RECEIVE)).result.address);
+  seen.push((await before.ask({ ...RECEIVE, id: 5 })).result.address);
+  const words = ghost.walletNew(before.random.log[0]);
+
+  // A new window over the same IndexedDB: the same vault, no setup.
+  const after = setUp({ idb: before.idb });
+  assert.equal(await vaultStore(before.idb).getIssued(), 2);
+  const third = await after.ask(RECEIVE);
+  assert.deepEqual(after.ui.log, ["approve"]);
+  const three = ghost.walletAccount(words, 3);
+  assert.equal(third.result.address, toHex(three.address));
+  assert.equal(third.result.publicKey, toHex(three.publicKey));
+  assert.ok(!seen.includes(third.result.address), "an address handed out again");
+  assert.deepEqual(before.idb.data.get("issued"), { count: 3 });
+
+  // Public data only: one whole number, no string or byte array.
+  const record = before.idb.data.get("issued");
+  assert.deepEqual(Object.keys(record), ["count"]);
+  assert.ok(Number.isSafeInteger(record.count));
+  const { strings, bytes } = leaves(record);
+  assert.deepEqual(strings, []);
+  assert.deepEqual(bytes, []);
+  const text = JSON.stringify(record);
+  for (const w of words.split(" ")) assert.ok(!text.includes(w), "the record holds a word");
+});
+
+test("signing from an issued address names it on the approval screen and verifies", async () => {
+  const { ask, ui, idb, random } = setUp();
+  const account = (await ask(ACCOUNT)).result;
+  const issued = (await ask(RECEIVE)).result;
+  const words = ghost.walletNew(random.log[0]);
+  const fields = checkRequest(SIGN).fields;
+
+  const reply = await ask(signFrom(issued.address));
+  const summary = ui.approvals.at(-1);
+  assert.equal(summary.kind, "sign");
+  assert.equal(summary.from, issued.address);
+  assert.equal(summary.to, PARAMS.to);
+  const expected = ghost.walletSign({ words, index: 1, ...fields, seed: random.log.at(-1) });
+  assert.deepEqual(reply.result, { sender: toHex(expected.sender), txHash: toHex(expected.txHash), envelope: toHex(expected.envelope) });
+  const verified = ghost.accountTxVerify({ chainId: 7777001n, genesis: fields.genesis, envelope: fromHex(reply.result.envelope) });
+  assert.equal(toHex(verified.sender), issued.address);
+  assert.equal(reply.result.sender, issued.address);
+  assert.notEqual(reply.result.sender, account.address);
+  assert.equal(toHex(verified.txHash), reply.result.txHash);
+
+  // `from` set to account 0 signs for it.
+  const zero = await ask(signFrom(account.address, 3));
+  assert.equal(ui.approvals.at(-1).from, account.address);
+  assert.equal(zero.result.sender, account.address);
+
+  // No `from`: account 0, named on the screen.
+  const plain = await ask(SIGN);
+  assert.equal(ui.approvals.at(-1).from, account.address);
+  assert.equal(plain.result.sender, account.address);
+  const plainVerified = ghost.accountTxVerify({ chainId: 7777001n, genesis: fields.genesis, envelope: fromHex(plain.result.envelope) });
+  assert.equal(toHex(plainVerified.sender), account.address);
+
+  // After a reload the issued address still signs; it is checked once unlocked.
+  const after = setUp({ idb });
+  const again = await after.ask(signFrom(issued.address));
+  assert.equal(after.ui.approvals[0].from, issued.address);
+  assert.equal(again.result.sender, issued.address);
+});
+
+test("signing from an address the wallet never issued is refused", async () => {
+  const { ask, ui, idb, spy, random } = setUp();
+  await ask(ACCOUNT);
+  await ask(RECEIVE);
+  await ask({ ...RECEIVE, id: 5 });
+  const words = ghost.walletNew(random.log[0]);
+  const five = toHex(ghost.walletAccount(words, 5).address);
+  const three = toHex(ghost.walletAccount(words, 3).address);
+
+  const shown = ui.log.length;
+  const calls = spy.calls.length;
+  for (const from of [five, three, PARAMS.to]) {
+    const reply = await ask(signFrom(from, 9));
+    assert.equal(reply.id, 9);
+    assert.equal(reply.error?.code, -32602);
+    assert.match(reply.error.message, /^from is not an address this wallet issued/);
+    assert.equal(reply.result, undefined);
+  }
+  assert.equal(ui.log.length, shown, "no approval screen");
+  assert.equal(spy.calls.length, calls, "the module was not called");
+  assert.deepEqual(idb.data.get("issued"), { count: 2 });
+
+  // In a new window the addresses are not known before the unlock: the
+  // address is checked then, and still nothing is signed.
+  const after = setUp({ idb });
+  const reply = await after.ask(signFrom(five));
+  assert.equal(reply.error?.code, -32602);
+  assert.match(reply.error.message, /^from is not an address this wallet issued/);
+  assert.ok(!after.spy.calls.includes("ghost_wallet_sign"));
+  // Known now: refused before any screen.
+  const shownAfter = after.ui.log.length;
+  assert.equal((await after.ask(signFrom(five, 3))).error?.code, -32602);
+  assert.equal(after.ui.log.length, shownAfter);
+});
+
+test("rejecting ghost_newReceiveAddress answers 4001 and issues nothing", async () => {
+  const { ask, ui, idb, random } = setUp();
+  await ask(ACCOUNT);
+  const words = ghost.walletNew(random.log[0]);
+  ui.approve = async (summary) => {
+    ui.log.push("approve");
+    ui.approvals.push(summary);
+    return null;
+  };
+  const reply = await ask(RECEIVE);
+  assert.equal(reply.id, 4);
+  assert.equal(reply.error?.code, 4001);
+  assert.equal(reply.result, undefined);
+  assert.equal(ui.approvals.at(-1).kind, "receive");
+  assert.ok(!idb.data.has("issued"));
+  assert.equal(await vaultStore(idb).getIssued(), 0);
+
+  // The next approved ask still gets account 1.
+  ui.approve = async (summary) => {
+    ui.approvals.push(summary);
+    return { password: PASSWORD };
+  };
+  const next = await ask({ ...RECEIVE, id: 5 });
+  assert.equal(next.result.address, toHex(ghost.walletAccount(words, 1).address));
+  assert.deepEqual(idb.data.get("issued"), { count: 1 });
 });
 
 test("restore from the 24 words gives the same account; words that fail the check are refused", async () => {

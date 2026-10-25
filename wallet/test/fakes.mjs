@@ -60,7 +60,7 @@ export function spySubtle() {
 }
 
 // IndexedDB with one database, enough for vaultStore: open with an upgrade
-// the first time, and get and add in a transaction. `data` is what it holds.
+// the first time, and get, add and put in a transaction. `data` is what it holds.
 export function fakeIndexedDB() {
   const data = new Map();
   const stores = new Set();
@@ -96,6 +96,12 @@ export function fakeIndexedDB() {
                 request(() => {
                   assert.equal(mode, "readwrite");
                   if (data.has(key)) throw new Error("ConstraintError: the key is taken");
+                  data.set(key, structuredClone(value));
+                  return key;
+                }),
+              put: (value, key) =>
+                request(() => {
+                  assert.equal(mode, "readwrite");
                   data.set(key, structuredClone(value));
                   return key;
                 }),
