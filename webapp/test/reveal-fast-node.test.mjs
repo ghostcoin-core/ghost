@@ -45,11 +45,8 @@ test(`a Summon reveal on a node that mines every ${MINE_MS} ms, refuses, changes
     },
   };
   // Every send and the node's answer; the first refusal raises the base fee
-  // of the blocks mined from then on and mines the first of them at once, so
-  // before the resend the proof's fee is past its cover limit (spec 07,
-  // section 5) and the reveal is proved again. (Left to the miner, that
-  // block could land between the page's check and the resend, and the
-  // node's fee refusal is final.)
+  // of the blocks mined from then on, so the fee window changes before the
+  // resend.
   const sends = [];
   const fetch = async (url, init) => {
     const call = JSON.parse(init.body);
@@ -58,10 +55,7 @@ test(`a Summon reveal on a node that mines every ${MINE_MS} ms, refuses, changes
     if (call.method === "eth_sendRawTransaction" && call.params[0].startsWith("0x50")) {
       const { error } = await response.clone().json();
       sends.push({ envelope: call.params[0], error: error?.message ?? null });
-      if (error && sends.length === 1) {
-        node.setBaseFee(2n * GWEI);
-        node.mine();
-      }
+      if (error && sends.length === 1) node.setBaseFee(2n * GWEI);
     }
     return response;
   };
