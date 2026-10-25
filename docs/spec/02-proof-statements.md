@@ -483,7 +483,11 @@ section 4). A reveal is possible as soon as the leaf's own block is 2 deep,
 about one minute at 30-second blocks, whether or not anyone else has added a
 leaf since. While it is not, the wallet says so in one plain line, keeps
 watching the chain itself and goes on with the reveal once it is, with no
-step from the holder. The 2-block depth keeps the root on the canonical chain
+step from the holder. What it waits for is not the coin's block but the
+newest block holding a transaction the wallet itself sent and saw included
+(its commits, reveals and claims), which its endpoint already knows: every
+reveal waits the same whichever key it is of, so the requests before it is
+sent do not show whether the coin is new or which block holds it. The 2-block depth keeps the root on the canonical chain
 through the shortest reorganisations; it is not about privacy. A reveal whose
 root is reorganised away is refused by the node, spends nothing, and can be
 proved again.
