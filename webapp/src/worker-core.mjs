@@ -31,10 +31,9 @@ const OPS = {
     return { digits: ghost.keyDigits(key) };
   },
 
-  // A version 2 commit, its salt drawn from the secure random seed. Only a
-  // test asks for version 1.
-  commit(ghost, { chainId, amount, key, version }) {
-    return ghost.commit({ chainId, amount, seed: random(32), key, version });
+  // A version 2 commit, its salt drawn from the secure random seed.
+  commit(ghost, { chainId, amount, key }) {
+    return ghost.commit({ chainId, amount, seed: random(32), key });
   },
 
   treeCheck(ghost, args) {

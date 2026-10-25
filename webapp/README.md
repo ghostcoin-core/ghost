@@ -182,9 +182,9 @@ node --test --test-timeout=1200000 webapp/test/words-key.test.mjs webapp/test/sa
 ```
 
 The last three cover the words key (new keys, typed keys, a swapped word
-refused, an old 12-group key restoring) and the salted coin (the 206-byte
-commit of version 2, the salt read back beside the leaf, a salted coin
-revealed and claimed, a version 1 coin still revealing).
+refused, an old 12- or 24-group key refused, a coin restoring from its words
+or its digit view) and the salted coin (the 206-byte commit of version 2,
+the salt read back beside the leaf, a salted coin revealed and claimed).
 
 `webapp/test/header-chain.test.mjs` checks the page's header chain: chains
 with seals that are not valid or with a wrong difficulty refused with no

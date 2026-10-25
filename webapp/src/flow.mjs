@@ -73,8 +73,8 @@ export const LEAVES_PER_TREE = 2 ** 32;
 // The coin tree logs of a block's receipts (client/src/receipts.rs, after
 // ghost-node docs/private-transactions.md, "Receipts"): the coin tree
 // account as address; a commit log has the topic K("ghost/commit-receipt/v1")
-// and the tree index (4), position (4), leaf (32), `v` (32) and note, then the
-// salt of a version 2 commit; a reveal log has K("ghost/reveal-receipt/v1")
+// and the tree index (4), position (4), leaf (32), `v` (32), note and the
+// commit's salt (16); a reveal log has K("ghost/reveal-receipt/v1")
 // and the marker as topics and the tree index, position, remainder (32),
 // note, recipient (20) and amount out (32). The scan of a chain whose coin
 // tree has rolled over reads them here (checkTreesAgainstReceipts).
@@ -337,9 +337,8 @@ export async function fetchTree(rpc, prover, anchor, treeIndex = 0, { treeDepth 
 // Coin tree `treeIndex` as of `anchor`, read but not yet checked against a
 // root, in the node's shape: the page roots as an array, then every page in
 // order as `{ kind, treeIndex, page, filled, entries: [{ leaf, note, salt? }] }`.
-// `salt` is the 16-byte salt a version 2 commit published beside its leaf;
-// the node leaves it out for a version 1 commit and for a reveal's
-// remainder. Every page but the last is full and the last holds 1 to 4,096
+// `salt` is the 16-byte salt a commit published beside its leaf; the node
+// leaves it out for a reveal's remainder. Every page but the last is full and the last holds 1 to 4,096
 // leaves, and each page is the one asked for (its kind, tree index and page
 // number), so no page is missing, repeated or out of order. Anything else, a
 // salt that is not 16 bytes of hex among it, is refused, never guessed at.
@@ -538,10 +537,10 @@ async function askRuleForDecoy(prover, scan) {
   });
 }
 
-// Data bytes of a commit log (tree index, position, leaf, `v`, note), a
-// version 2 commit log's adding the salt, and a reveal log (tree index,
-// position, remainder, note, recipient, out).
-const COMMIT_LOG_BYTES = 4 + 4 + 32 + 32 + NOTE_BYTES;
+// Data bytes of a commit log (tree index, position, leaf, `v`, note, salt)
+// and of a reveal log (tree index, position, remainder, note, recipient,
+// out).
+const COMMIT_LOG_BYTES = 4 + 4 + 32 + 32 + NOTE_BYTES + SALT_BYTES;
 const REVEAL_LOG_BYTES = 4 + 4 + 32 + NOTE_BYTES + 20 + 32;
 
 // The coin tree logs of a block's receipts (eth_getBlockReceipts, each
@@ -561,8 +560,8 @@ function coinLogsOf(list) {
 }
 
 // The leaf a coin tree log appended, `{ treeIndex, position, leaf, note,
-// salt, marker, v }` (`salt` null but for a version 2 commit, `marker` null
-// but for a reveal, `v` the committed amount of a commit, null for a
+// salt, marker, v }` (`salt` null but for a commit, `marker` null but for a
+// reveal, `v` the committed amount of a commit, null for a
 // reveal), read exactly as client/src/receipts.rs reads it. `topics`
 // are the hex first topics of a commit and a reveal log. A log that is not
 // exactly a commit or a reveal log is refused.
@@ -576,9 +575,8 @@ export function coinRecord(log, topics) {
   };
   if (first === topics.commit) {
     if (log.topics.length !== 1) throw new Error("a commit log does not have exactly one topic");
-    const salted = data.length === COMMIT_LOG_BYTES + SALT_BYTES;
-    if (data.length !== COMMIT_LOG_BYTES && !salted) throw new Error("a commit log's data is not its length");
-    const salt = salted ? data.slice(COMMIT_LOG_BYTES) : null;
+    if (data.length !== COMMIT_LOG_BYTES) throw new Error("a commit log's data is not its length");
+    const salt = data.slice(COMMIT_LOG_BYTES - SALT_BYTES);
     const v = BigInt(toHex(data.slice(40, 72)));
     return { ...head(), note: data.slice(72, 72 + NOTE_BYTES), salt, marker: null, v };
   }
@@ -1627,9 +1625,8 @@ export function createFlow({
       number: current.number,
       amount: current.amount,
       position: current.position,
-      // The coin's salt as restore found it (null for a version 1 coin): the
-      // prover opens the coin with it, and a salted coin's remainder is
-      // salted too.
+      // The coin's salt as restore found it: the prover opens the coin with
+      // it and salts the remainder too; it refuses a coin without one.
       salt: current.salt ?? null,
       leaves: plan.leaves,
       key,

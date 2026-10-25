@@ -23,6 +23,7 @@ import { wasmPath } from "./env.mjs";
 
 export const GHOST = 10n ** 18n;
 const NOTE_BYTES = 156;
+const SALT_BYTES = 16;
 // The coin tree account and the topics of its commit and reveal logs.
 const COIN_TREE_ACCOUNT = "0x67686f7374000000000000000000000000000001";
 const COMMIT_TAG = "ghost/commit-receipt/v1";
@@ -140,28 +141,30 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
     return number;
   }
   const tip = () => blocks.length - 1;
-  // A block that appends `leaf` (with an all-zero note): a commit's log, or
-  // with `reveal` ({ marker, recipient, out }) a reveal's, whose marker it
-  // spends.
-  const commit = (leaf, reveal = null) => {
+  // A block that appends `leaf` (with an all-zero note): a commit's log,
+  // which ends with the coin's 16-byte salt, or with `reveal`
+  // ({ marker, recipient, out }) a reveal's, whose marker it spends.
+  const commit = (leaf, { reveal = null, salt = null } = {}) => {
     const position = leaves.length;
-    leaves.push(leaf);
+    leaves.push({ leaf, salt: reveal ? null : salt });
     const head = [u32(0), u32(position), leaf];
     const note = new Uint8Array(NOTE_BYTES);
     const log = reveal
       ? { topics: [revealTopic, reveal.marker], data: toHex(concat([...head, note, fromHex(reveal.recipient, 20), word(reveal.out)])) }
-      : { topics: [commitTopic], data: toHex(concat([...head, word(GHOST), note])) };
+      : { topics: [commitTopic], data: toHex(concat([...head, word(GHOST), note, salt])) };
     if (reveal) spent.push({ marker: reveal.marker, block: blocks.length });
     return mine([log]);
   };
+  const saltOf = (...parts) => sha256("salt", ...parts).slice(0, SALT_BYTES);
 
   mine();
-  commit(sha256("stranger", "0"));
-  commit(sha256("stranger", "1"));
-  commit(sha256("coin"));
+  commit(sha256("stranger", "0"), { salt: saltOf("stranger", "0") });
+  commit(sha256("stranger", "1"), { salt: saltOf("stranger", "1") });
   // A salted coin, as the app commits one; restore reads its salt.
-  coins.push({ position: COIN_POSITION, number: 0n, amount: GHOST, spent: false, salt: sha256("salt").slice(0, 16) });
-  commit(sha256("stranger", "2"));
+  const coinSalt = saltOf();
+  commit(sha256("coin"), { salt: coinSalt });
+  coins.push({ position: COIN_POSITION, number: 0n, amount: GHOST, spent: false, salt: coinSalt });
+  commit(sha256("stranger", "2"), { salt: saltOf("stranger", "2") });
   while (tip() < 120) mine();
 
   const blockByHash = (hash) => {
@@ -192,9 +195,9 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
     if (coin.spent) throw new Error("marker already spent");
     coin.spent = true;
     const position = leaves.length;
-    const number = commit(proof.remainder.commitment, { marker: proof.marker, recipient: proof.recipient, out: proof.out });
+    const number = commit(proof.remainder.commitment, { reveal: { marker: proof.marker, recipient: proof.recipient, out: proof.out } });
     // A salted coin's remainder is salted, its salt read from its note.
-    coins.push({ position, number: proof.number + 1n, amount: proof.remainder.amount, spent: false, salt: sha256("salt", String(proof.n)).slice(0, 16) });
+    coins.push({ position, number: proof.number + 1n, amount: proof.remainder.amount, spent: false, salt: saltOf(String(proof.n)) });
     balances.set(proof.recipient, (balances.get(proof.recipient) ?? 0n) + proof.out);
     reveals.push({ proof: proof.n, block: number, hash: proof.txHash, fee: proof.fee });
     receipts.set(proof.txHash, { transactionHash: proof.txHash, blockNumber: q(number), blockHash: blocks[number].json.hash, status: "0x1" });
@@ -219,7 +222,12 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
         const markers = spent.filter((s) => s.block <= block.number).map((s) => s.marker);
         return { count: q(markers.length), markers };
       }
-      const entries = leaves.slice(0, block.leafCount).map((leaf) => ({ leaf: toHex(leaf), note: toHex(new Uint8Array(NOTE_BYTES)) }));
+      // A commit's salt is served beside its leaf; a reveal's remainder has none.
+      const entries = leaves.slice(0, block.leafCount).map(({ leaf, salt }) => ({
+        leaf: toHex(leaf),
+        note: toHex(new Uint8Array(NOTE_BYTES)),
+        ...(salt ? { salt: toHex(salt) } : {}),
+      }));
       return { kind, treeIndex: "0x0", page: "0x0", filled: q(entries.length), entries };
     },
   };

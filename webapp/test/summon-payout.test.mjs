@@ -395,11 +395,14 @@ test("the cover text gives no advice to wait, and the page proves no decoy", () 
 test("coinRecord reads a commit's amount v, and none for a reveal", () => {
   const topics = { commit: toHex(new Uint8Array(32).fill(1)), reveal: toHex(new Uint8Array(32).fill(2)) };
   const v = 123n * GHOST + 7n;
-  const data = new Uint8Array(4 + 4 + 32 + 32 + 156);
+  // A version 2 commit log: head, amount, note and the coin's 16-byte salt.
+  const data = new Uint8Array(4 + 4 + 32 + 32 + 156 + 16);
   const word = BigInt.asUintN(256, v).toString(16).padStart(64, "0");
   for (let i = 0; i < 32; i++) data[40 + i] = parseInt(word.slice(2 * i, 2 * i + 2), 16);
+  data.fill(9, data.length - 16);
   const commit = coinRecord({ succeeded: true, topics: [new Uint8Array(32).fill(1)], data }, topics);
   assert.equal(commit.v, v);
+  assert.equal(toHex(commit.salt), toHex(new Uint8Array(16).fill(9)));
   const reveal = coinRecord(
     { succeeded: true, topics: [new Uint8Array(32).fill(2), new Uint8Array(32).fill(3)], data: new Uint8Array(4 + 4 + 32 + 156 + 20 + 32) },
     topics,

@@ -301,17 +301,21 @@ test("the flow follows a commit into a later tree, and finds a coin in either tr
   });
 });
 
-// Two leaves per tree: leaf i is 32 bytes of i + 1 and its note 156 bytes of
-// i + 50; a record is what a receipt's coin tree log appended.
+// Two leaves per tree: leaf i is 32 bytes of i + 1, its note 156 bytes of
+// i + 50 and, beside a commit's leaf, its salt 16 bytes of i + 100; leaf 2
+// is a reveal's remainder, with no salt beside it. A record is what a
+// receipt's coin tree log appended.
+const REMAINDER = 2;
 const leafOf = (i) => new Uint8Array(32).fill(i + 1);
 const noteOf = (i) => new Uint8Array(156).fill(i + 50);
+const saltOf = (i) => (i === REMAINDER ? null : new Uint8Array(16).fill(i + 100));
 const treeOfLeaves = (treeIndex, list) => ({
   treeIndex,
   count: list.length,
   records: concat(list.flatMap((i) => [leafOf(i), noteOf(i)])),
-  salts: list.map(() => null),
+  salts: list.map(saltOf),
 });
-const record = (treeIndex, position, i, marker = null) => ({ treeIndex, position, leaf: leafOf(i), note: noteOf(i), salt: null, marker });
+const record = (treeIndex, position, i, marker = null) => ({ treeIndex, position, leaf: leafOf(i), note: noteOf(i), salt: saltOf(i), marker });
 const MARKER = new Uint8Array(32).fill(0xaa);
 
 test("checkTreesAgainstReceipts checks every tree, the rollover and the markers against the receipts' records", () => {

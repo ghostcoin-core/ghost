@@ -3,9 +3,7 @@
 // three typed words, the digit view is a display option beside the words,
 // the commit is version 2 with its salt, the salt read beside the leaf goes
 // to the prover for the reveal and the claim (whose remainders are salted
-// too), the stand-in verifies each proof as the node does, salted first then
-// version 1, and a coin of version 1, made before the salt with a words key,
-// still reveals and claims.
+// too), and the stand-in verifies each proof as the node does, as salted.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -17,10 +15,6 @@ import { startFakeNode } from "./support/fake-node.mjs";
 
 const GHOST = 10n ** 18n;
 const RECIPIENT = "0x2222222222222222222222222222222222222222";
-// The example words key of spec 01, section 5, as its digit view. An example
-// only.
-const VECTOR_KEY = "0000 0001 7807 3186 0627 7000 4496 0722 5683 7659 2200 7423 2963 7303 1997 5454 7598 3699 7944 0671 6812";
-const random = (n) => crypto.getRandomValues(new Uint8Array(n));
 
 const wordsOf = (key, positions) => positions.map((p) => key.split(" ")[p - 1]);
 
@@ -193,67 +187,6 @@ test("a salted coin is revealed and claimed", async () => {
     assert.ok(proofs().every((a) => !a.decoy));
     assertNothingOfKey(node, key);
     assertNothingOfKey(node, newKey);
-  } finally {
-    await done();
-  }
-});
-
-test("a version 1 coin still reveals", async () => {
-  const { ghost, node, flow, proofs, done } = await setUp();
-  try {
-    // A coin made before the salt: a version 1 commit of a words key, which
-    // the node still takes. (The app never sends one.)
-    const commit = ghost.commit({ version: 1, chainId: node.chainId, amount: GHOST, seed: random(32), key: VECTOR_KEY });
-    assert.equal(commit.payload.length, 190);
-    const wallet = node.wallet("0x1111111111111111111111111111111111111111");
-    await wallet.request({
-      method: "eth_sendTransaction",
-      params: [{ from: "0x1111111111111111111111111111111111111111", to: DEFAULT_COMMIT_ENTRY, value: "0xde0b6b3a7640000", data: toHex(commit.payload) }],
-    });
-    const position = node.leaves.length - 1;
-    assert.equal(node.leaves[position].salt, null, "no salt beside a version 1 leaf");
-    node.foreignCommits(1);
-    node.mineTo(44);
-
-    let s = await flow.summonOpen(VECTOR_KEY);
-    assert.equal(s.format, "words");
-    assert.equal(s.groups, 21);
-    assert.equal(s.status, "unclaimed");
-    assert.equal(s.current.position, position);
-
-    // A reveal that cannot be made: nothing is proved for it.
-    const proved = proofs().length;
-    await assert.rejects(flow.summonReveal({ amount: "5", recipient: RECIPIENT }), /at most/);
-    assert.equal(proofs().length, proved, "no proof, no stand-in proof either");
-
-    // The reveal: no salt goes to the prover, and the stand-in verifies the
-    // proof as version 1 once the salted check fails.
-    await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
-    const made = proofs().filter((a) => !a.decoy);
-    assert.equal(made.length, 1);
-    assert.equal(made[0].salt, null);
-    assert.equal(node.reveals.length, 1);
-    assert.equal(node.balances.get(RECIPIENT), GHOST / 4n);
-    s = flow.state.summon;
-    assert.equal(s.status, "unclaimed");
-    assert.equal(s.current.number, 1n);
-    // Its remainder is version 1 too.
-    const records = concat(node.leaves.flatMap((l) => [l.commitment, l.note]));
-    const found = ghost.restore({ chainId: node.chainId, key: VECTOR_KEY, records, markers: new Uint8Array(0) });
-    assert.deepEqual(found.map((c) => c.salt), [null, null]);
-
-    // And it claims to a new key of 24 words.
-    node.foreignCommits(1);
-    node.mineTo(76);
-    const newKey = await flow.claimStart();
-    const claimed = await flow.claimCheck(wordsOf(newKey, flow.claimSaved()));
-    assert.equal(claimed.ok, true);
-    assert.equal(proofs().filter((a) => !a.decoy).at(-1).salt, null);
-    assert.equal(node.reveals.length, 2);
-    assert.equal(flow.state.summon.status, "claimed");
-    s = await flow.summonOpen(newKey);
-    assert.equal(s.status, "unclaimed");
-    assert.equal(s.current.amount, claimed.amount);
   } finally {
     await done();
   }

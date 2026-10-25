@@ -2,7 +2,7 @@
 // docs/trees-and-headers.md, "Wallet tree pages"): `ghost_getPageRoots`
 // answers a plain array of page roots, and `ghost_getTreePage` a page as
 // `{ kind, treeIndex, page, filled, entries: [{ leaf, note, salt? }] }`,
-// `salt` only beside a version 2 commit's leaf. fetchTree
+// `salt` beside a commit's leaf, none beside a reveal's remainder. fetchTree
 // is fed that JSON exactly, with the real tree check of the built module,
 // and refuses anything else.
 
@@ -146,8 +146,8 @@ test("fetchTree reads the optional salt beside a leaf and refuses one that is no
   const page = docsPage();
   page.entries[1] = { ...page.entries[1], salt: SALT };
   const tree = await fetchTree(endpoint(docsPageRoots(), [page]), prover, anchor());
-  // A version 1 leaf (or a remainder) has none; a version 2 commit's leaf
-  // has its salt. The records stay leaf and note, 188 bytes each.
+  // A reveal's remainder has none; a commit's leaf has its salt. The records
+  // stay leaf and note, 188 bytes each.
   assert.deepEqual(tree.salts.map((s) => (s === null ? null : toHex(s))), [null, SALT]);
   assert.equal(tree.records.length, 2 * 188);
   assert.equal(toHex(tree.records), toHex(concat([LEAF_A, NOTE_A, LEAF_B, NOTE_B].map((h) => fromHex(h)))));

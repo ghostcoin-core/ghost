@@ -1,8 +1,8 @@
 // The per-coin salt: the commit the app sends is version 2, 206 bytes, a
 // fresh salt in the clear beside F; the node keeps it with the leaf and
 // serves it as `salt`; the app reads it with the leaf and hands it to
-// restore, which finds each coin with its salt (none for version 1) and
-// refuses a coin whose salt beside the leaf is not the one in its note.
+// restore, which finds each coin with its salt and refuses a coin whose salt
+// beside the leaf is not the one in its note.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -137,19 +137,21 @@ test("restore reads the salt beside the leaf", async () => {
     assert.equal(asked.salts.length, asked.records.length / 188, "one salt (or none) per leaf");
     assert.equal(toHex(asked.salts[position]), toHex(served), "handed to restore beside its leaf");
 
-    // An endpoint that serves another salt beside the leaf: restore does not
-    // trust the coin.
+    // An endpoint that serves another salt beside the leaf: the salt is not
+    // the one the commit's receipt holds, so the scan is refused before the
+    // key is tried, and restore (which would not trust the coin either) is
+    // not asked.
     node.dishonest.salt = (at, real) => {
       if (at !== position) return real;
       const altered = Uint8Array.from(real);
       altered[0] ^= 1;
       return altered;
     };
-    s = await flow.summonOpen(key);
-    assert.equal(s.status, "not-found");
+    const before = restored.length;
+    await assert.rejects(flow.summonOpen(key), new RegExp(`the salt at position ${position} differs from its receipt`));
+    assert.equal(restored.length, before);
     // One that is not 16 bytes: the page is refused, nothing is restored.
     node.dishonest.salt = (at, real) => (at === position ? "0x1234" : real);
-    const before = restored.length;
     await assert.rejects(flow.summonOpen(key), /malformed: a salt is not 16 bytes/);
     assert.equal(restored.length, before);
     node.dishonest.salt = null;

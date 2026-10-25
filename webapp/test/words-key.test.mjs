@@ -163,7 +163,7 @@ test("an old 12- or 24-group digit key is refused", async () => {
     const refusal = refusedWithout([], new RegExp(`has 84 digits, not ${count}`));
     assert.throws(() => ghost.checkKey(typed), refusal, typed);
     assert.throws(() => ghost.keyDigits(typed), refusal);
-    assert.throws(() => ghost.commit({ version: 1, chainId: 7n, amount: GHOST, seed: random(32), key: typed }), refusal);
+    assert.throws(() => ghost.commit({ chainId: 7n, amount: GHOST, seed: random(32), key: typed }), refusal);
     assert.throws(() => ghost.restore({ chainId: 7n, key: typed, records: new Uint8Array(0), markers: new Uint8Array(0) }), refusal);
   }
 
@@ -184,24 +184,23 @@ test("an old 12- or 24-group digit key is refused", async () => {
   }
 });
 
-test("a version 1 coin of a words key still restores", async () => {
-  // In the module: the coin-commit vector of client/tests/first_slice.rs,
-  // under the example key as its digit view; its version 1 coin restores
-  // without a salt.
-  const v1 = ghost.commit({ version: 1, chainId: 7n, amount: GHOST, seed: random(32), key: DIGITS });
-  assert.equal(toHex(v1.commitment), "0x9cadb00df6812a83ff2525fbaef0b634a020d600dc3bf3315efc3b20bfdb876c", "vector coin-commit of a words key");
-  const found = ghost.restore({ chainId: 7n, key: WORDS, records: concat([v1.commitment, v1.payload.slice(34)]), markers: new Uint8Array(0) });
+test("a coin of a words key restores from its words or its digit view", async () => {
+  // In the module: a coin committed under the example key's digit view
+  // restores under its words, with its salt.
+  const made = ghost.commit({ chainId: 7n, amount: GHOST, seed: random(32), key: DIGITS });
+  const found = ghost.restore({ chainId: 7n, key: WORDS, records: concat([made.commitment, made.payload.slice(50)]), markers: new Uint8Array(0) });
   assert.equal(found.length, 1);
-  assert.equal(found[0].salt, null);
+  assert.equal(toHex(found[0].salt), toHex(made.payload.slice(34, 50)));
+  assert.equal(toHex(found[0].commitment), toHex(made.commitment));
   assert.equal(found[0].amount, GHOST);
 
-  // Through the app, against the stand-in: a version 1 commit of the key
-  // sent before the salt, then Summon with the key as it was written down.
+  // Through the app, against the stand-in: a commit of the key, then Summon
+  // with the key as it was written down.
   const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY });
   const prover = nodeProver();
   try {
     node.foreignCommits(2);
-    const commit = ghost.commit({ version: 1, chainId: node.chainId, amount: GHOST, seed: random(32), key: DIGITS });
+    const commit = ghost.commit({ chainId: node.chainId, amount: GHOST, seed: random(32), key: DIGITS });
     const wallet = node.wallet("0x1111111111111111111111111111111111111111");
     await wallet.request({
       method: "eth_sendTransaction",
