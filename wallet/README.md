@@ -32,8 +32,8 @@ another against the same four requests.
   record `accounts` beside the vault holds `{ rescueFrom }`, and accounts
   below that index are scheme `0x0001` (`rescueKey: false`), from it up
   `0x0003`. A wallet created or restored stores `{ rescueFrom: 0 }` with its
-  vault. A vault stored before rescue keys gets `{ rescueFrom: issued count
-  + 1 }` on its first request: its existing accounts keep working as
+  vault. A vault stored before rescue keys gets the issued count plus one
+  as `rescueFrom` on its first request: its existing accounts keep working as
   `0x0001`, and every account it issues after is `0x0003`. Restoring the 24
   words on a new device derives `0x0003` accounts only: an old `0x0001`
   address is not derived again there, and can be spent only from the device
