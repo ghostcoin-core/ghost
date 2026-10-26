@@ -96,10 +96,13 @@ export const COMMIT_DATA_BYTES = 2 + 32 + SALT_BYTES + NOTE_BYTES;
 export const SAVE_CHECK_GROUPS = 3;
 export const KEY_WORDS = 24;
 // What an account transaction adds to the intrinsic gas of a type 0x02
-// transaction, which eth_estimateGas counts: 16 gas for each of the 2 + 1,312
-// + 2,420 bytes of scheme, public key and signature, and 3,000 for the
-// ML-DSA-44 check (ghost-node params/ghost/accounttx.go).
-export const ACCOUNT_EXTRA_GAS = 62_744n;
+// transaction, which eth_estimateGas counts: 16 gas for each byte of scheme,
+// public key and signature, and 3,000 for the ML-DSA-44 check (ghost-node
+// params/ghost/accounttx.go). Counted for a rescue-key account (scheme
+// 0x0003, the wallet's default): 2 + 1,344 + 2,420 bytes, 63,256 gas. That
+// also covers a scheme 0x0001 account (2 + 1,312 + 2,420 bytes, 62,744 gas);
+// unused gas is not charged.
+export const ACCOUNT_EXTRA_GAS = 63_256n;
 // Local bounds on what the endpoint's answers can make the wallet sign, so
 // a dishonest endpoint cannot turn a commit into a large fee: the gas limit
 // of a commit, the priority fee per gas, and the most a commit's gas can

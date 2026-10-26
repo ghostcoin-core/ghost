@@ -315,9 +315,32 @@ export class Ghost {
     return { address: out.take(20), publicKey: out.rest() };
   }
 
+  // Rescue-key account `index` (scheme 0x0003) of a wallet seed: its address
+  // and its 1,344-byte public key (the ML-DSA-44 key, then the SLH-DSA key).
+  walletRescueAccount(words, index) {
+    const out = new Output(this.call("ghost_wallet_rescue_account", new Input().text(words).u32(index).build()));
+    return { address: out.take(20), publicKey: out.rest() };
+  }
+
   // An account transaction (type 0x52) signed with account `index`; `to`
   // null is a contract creation. Returns its hash, sender and envelope.
   walletSign(a) {
+    return this.signWith("ghost_wallet_sign", a);
+  }
+
+  // As walletSign, with rescue-key account `index`: scheme 0x0003, signed
+  // with its ML-DSA-44 key.
+  walletSignRescueKey(a) {
+    return this.signWith("ghost_wallet_sign_rescue_key", a);
+  }
+
+  // As walletSign, with rescue-key account `index`: scheme 0x0004, signed
+  // with its SLH-DSA key alone.
+  walletSignRescue(a) {
+    return this.signWith("ghost_wallet_sign_rescue", a);
+  }
+
+  signWith(name, a) {
     const input = new Input()
       .text(a.words)
       .u32(a.index)
@@ -330,7 +353,7 @@ export class Ghost {
     if (a.to === null) input.u8(0);
     else input.u8(1).bytes(a.to, 20);
     input.bytes(word(a.value)).u32(a.data.length).bytes(a.data).bytes(a.seed, 32);
-    const out = new Output(this.call("ghost_wallet_sign", input.build()));
+    const out = new Output(this.call(name, input.build()));
     return { txHash: out.take(32), sender: out.take(20), envelope: out.rest() };
   }
 

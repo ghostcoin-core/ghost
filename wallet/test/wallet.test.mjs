@@ -96,15 +96,19 @@ test("create: the 24 words, then three typed back, before the wallet is stored o
   // Nothing was stored, locked or approved until the check matched.
   assert.ok(ui.log.indexOf("chooseLock") > 5);
   assert.ok(ui.log.indexOf("approve") > ui.log.indexOf("chooseLock"));
-  assert.equal(idb.data.size, 1);
+  // The vault and the "accounts" record.
+  assert.equal(idb.data.size, 2);
 
   // The words come from the 32 random bytes through the module.
   const words = ghost.walletNew(random.log[0]);
   assert.equal(ui.words.join(" "), words);
   assert.equal(ui.words.length, 24);
   // The account is the module's account 0 of those words.
-  const expected = ghost.walletAccount(words, 0);
-  assert.deepEqual(reply, { id: 1, result: { address: toHex(expected.address), publicKey: toHex(expected.publicKey) } });
+  const expected = ghost.walletRescueAccount(words, 0);
+  assert.deepEqual(reply, {
+    id: 1,
+    result: { address: toHex(expected.address), publicKey: toHex(expected.publicKey), scheme: "0x0003", rescueKey: true },
+  });
   assert.equal(ui.approvals[0].kind, "connect");
   assert.equal(ui.approvals[0].origin, APP);
 });
@@ -160,7 +164,7 @@ test("a wrong password does not unlock; nothing is signed until the right one", 
   };
   const reply = await ask(SIGN);
   assert.deepEqual(ui.errors, ["Wrong password.", "Wrong password."]);
-  assert.equal(spy.calls.filter((c) => c === "ghost_wallet_sign").length, 1, "signed once, after the right password");
+  assert.equal(spy.calls.filter((c) => c === "ghost_wallet_sign_rescue_key").length, 1, "signed once, after the right password");
   assert.ok(reply.result.envelope);
 
   // A wrong password then Reject: code 4001 and no signature.
@@ -171,7 +175,7 @@ test("a wrong password does not unlock; nothing is signed until the right one", 
   const rejected = await again.ask(SIGN);
   assert.equal(rejected.error.code, 4001);
   assert.equal(rejected.result, undefined);
-  assert.ok(!again.spy.calls.includes("ghost_wallet_sign"));
+  assert.ok(!again.spy.calls.includes("ghost_wallet_sign_rescue_key"));
 });
 
 test("an approved signature is the module's for the same words, fields and randomness, and verifies", async () => {
@@ -187,6 +191,8 @@ test("an approved signature is the module's for the same words, fields and rando
     kind: "sign",
     origin: APP,
     from: account.address,
+    scheme: "0x0003",
+    rescueKey: true,
     amount: "1",
     maxFee: formatGhost(0x1df78n * 0xb2d05e00n),
     to: PARAMS.to,
@@ -199,8 +205,13 @@ test("an approved signature is the module's for the same words, fields and rando
   const fields = checkRequest(SIGN).fields;
   const randomness = random.log.at(-1);
   assert.equal(randomness.length, 32);
-  const expected = ghost.walletSign({ words, index: 0, ...fields, seed: randomness });
-  assert.deepEqual(reply.result, { sender: toHex(expected.sender), txHash: toHex(expected.txHash), envelope: toHex(expected.envelope) });
+  const expected = ghost.walletSignRescueKey({ words, index: 0, ...fields, seed: randomness });
+  assert.deepEqual(reply.result, {
+    sender: toHex(expected.sender),
+    txHash: toHex(expected.txHash),
+    envelope: toHex(expected.envelope),
+    scheme: "0x0003",
+  });
   assert.equal(reply.result.sender, account.address);
 
   const verified = ghost.accountTxVerify({ chainId: 7777001n, genesis: fields.genesis, envelope: fromHex(reply.result.envelope) });
@@ -223,7 +234,7 @@ test("Reject signs nothing and answers 4001", async () => {
   const reply = await ask(SIGN);
   assert.deepEqual(reply.error.code, 4001);
   assert.equal(reply.id, 2);
-  assert.ok(!spy.calls.includes("ghost_wallet_sign"));
+  assert.ok(!spy.calls.includes("ghost_wallet_sign_rescue_key"));
   // Rejecting the connection gives no account either.
   const fresh = setUp({ ui: scriptedUi({ approve: () => null }) });
   const connect = await fresh.ask(ACCOUNT);
@@ -338,14 +349,20 @@ test("ghost_newReceiveAddress answers the next account address and asks for appr
   const first = await ask(RECEIVE);
   assert.deepEqual(ui.log.slice(shown), ["approve"]);
   assert.deepEqual(ui.approvals.at(-1), { kind: "receive", origin: APP });
-  const one = ghost.walletAccount(words, 1);
-  assert.deepEqual(first, { id: 4, result: { address: toHex(one.address), publicKey: toHex(one.publicKey) } });
+  const one = ghost.walletRescueAccount(words, 1);
+  assert.deepEqual(first, {
+    id: 4,
+    result: { address: toHex(one.address), publicKey: toHex(one.publicKey), scheme: "0x0003", rescueKey: true },
+  });
   assert.deepEqual(idb.data.get("issued"), { count: 1 });
 
   const second = await ask({ ...RECEIVE, id: 5 });
   assert.deepEqual(ui.log.slice(shown), ["approve", "approve"]);
-  const two = ghost.walletAccount(words, 2);
-  assert.deepEqual(second, { id: 5, result: { address: toHex(two.address), publicKey: toHex(two.publicKey) } });
+  const two = ghost.walletRescueAccount(words, 2);
+  assert.deepEqual(second, {
+    id: 5,
+    result: { address: toHex(two.address), publicKey: toHex(two.publicKey), scheme: "0x0003", rescueKey: true },
+  });
   assert.deepEqual(idb.data.get("issued"), { count: 2 });
 
   assert.equal(new Set([account.address, first.result.address, second.result.address]).size, 3);
@@ -368,7 +385,7 @@ test("the issued counter survives a reload and never repeats an address", async 
   assert.equal(await vaultStore(before.idb).getIssued(), 2);
   const third = await after.ask(RECEIVE);
   assert.deepEqual(after.ui.log, ["approve"]);
-  const three = ghost.walletAccount(words, 3);
+  const three = ghost.walletRescueAccount(words, 3);
   assert.equal(third.result.address, toHex(three.address));
   assert.equal(third.result.publicKey, toHex(three.publicKey));
   assert.ok(!seen.includes(third.result.address), "an address handed out again");
@@ -397,8 +414,13 @@ test("signing from an issued address names it on the approval screen and verifie
   assert.equal(summary.kind, "sign");
   assert.equal(summary.from, issued.address);
   assert.equal(summary.to, PARAMS.to);
-  const expected = ghost.walletSign({ words, index: 1, ...fields, seed: random.log.at(-1) });
-  assert.deepEqual(reply.result, { sender: toHex(expected.sender), txHash: toHex(expected.txHash), envelope: toHex(expected.envelope) });
+  const expected = ghost.walletSignRescueKey({ words, index: 1, ...fields, seed: random.log.at(-1) });
+  assert.deepEqual(reply.result, {
+    sender: toHex(expected.sender),
+    txHash: toHex(expected.txHash),
+    envelope: toHex(expected.envelope),
+    scheme: "0x0003",
+  });
   const verified = ghost.accountTxVerify({ chainId: 7777001n, genesis: fields.genesis, envelope: fromHex(reply.result.envelope) });
   assert.equal(toHex(verified.sender), issued.address);
   assert.equal(reply.result.sender, issued.address);
@@ -430,8 +452,8 @@ test("signing from an address the wallet never issued is refused", async () => {
   await ask(RECEIVE);
   await ask({ ...RECEIVE, id: 5 });
   const words = ghost.walletNew(random.log[0]);
-  const five = toHex(ghost.walletAccount(words, 5).address);
-  const three = toHex(ghost.walletAccount(words, 3).address);
+  const five = toHex(ghost.walletRescueAccount(words, 5).address);
+  const three = toHex(ghost.walletRescueAccount(words, 3).address);
 
   const shown = ui.log.length;
   const calls = spy.calls.length;
@@ -452,7 +474,7 @@ test("signing from an address the wallet never issued is refused", async () => {
   const reply = await after.ask(signFrom(five));
   assert.equal(reply.error?.code, -32602);
   assert.match(reply.error.message, /^from is not an address this wallet issued/);
-  assert.ok(!after.spy.calls.includes("ghost_wallet_sign"));
+  assert.ok(!after.spy.calls.includes("ghost_wallet_sign_rescue_key"));
   // Known now: refused before any screen.
   const shownAfter = after.ui.log.length;
   assert.equal((await after.ask(signFrom(five, 3))).error?.code, -32602);
@@ -482,7 +504,7 @@ test("rejecting ghost_newReceiveAddress answers 4001 and issues nothing", async 
     return { password: PASSWORD };
   };
   const next = await ask({ ...RECEIVE, id: 5 });
-  assert.equal(next.result.address, toHex(ghost.walletAccount(words, 1).address));
+  assert.equal(next.result.address, toHex(ghost.walletRescueAccount(words, 1).address));
   assert.deepEqual(idb.data.get("issued"), { count: 1 });
 });
 
@@ -498,7 +520,7 @@ test("restore from the 24 words gives the same account; words that fail the chec
   assert.equal(ui.errors.length, 2);
   for (const e of ui.errors) assert.match(e, /not the 24 words/);
   assert.ok(!ui.log.includes("showWords"), "restored words are not shown");
-  const expected = ghost.walletAccount(words, 0);
+  const expected = ghost.walletRescueAccount(words, 0);
   assert.equal(reply.result.address, toHex(expected.address));
   assert.equal(reply.result.publicKey, toHex(expected.publicKey));
 });
@@ -513,7 +535,7 @@ test("a passkey's PRF output protects the vault through HKDF; another passkey se
   assert.deepEqual(Object.keys(record).sort(), ["ciphertext", "credentialId", "iv", "kind", "salt", "version"]);
   assert.equal(record.kind, "passkey");
   const words = ghost.walletNew(random.log[0]);
-  assert.equal(account.address, toHex(ghost.walletAccount(words, 0).address));
+  assert.equal(account.address, toHex(ghost.walletRescueAccount(words, 0).address));
   const signed = await ask(SIGN);
   assert.equal(signed.result.sender, account.address);
 
@@ -521,11 +543,11 @@ test("a passkey's PRF output protects the vault through HKDF; another passkey se
   passkeys.secret.fill(8);
   let tries = 0;
   ui.approve = async () => (++tries === 1 ? {} : null);
-  const before = spy.calls.filter((c) => c === "ghost_wallet_sign").length;
+  const before = spy.calls.filter((c) => c === "ghost_wallet_sign_rescue_key").length;
   const reply = await ask({ ...SIGN, id: 3 });
   assert.equal(reply.error.code, 4001);
   assert.match(ui.errors.at(-1), /passkey did not unlock/);
-  assert.equal(spy.calls.filter((c) => c === "ghost_wallet_sign").length, before);
+  assert.equal(spy.calls.filter((c) => c === "ghost_wallet_sign_rescue_key").length, before);
 
   // An authenticator without PRF cannot protect a wallet; a password then can.
   const locks = [{ kind: "passkey" }, { kind: "password", password: PASSWORD, again: PASSWORD }];

@@ -88,7 +88,7 @@ function fakePage({ ui = scriptedUi(), block = false } = {}) {
 }
 
 const connector = (page) => popupConnector({ win: page, origin: WALLET, pollMs: 5 });
-const signs = (page) => page.spy.calls.filter((c) => c === "ghost_wallet_sign").length;
+const signs = (page) => page.spy.calls.filter((c) => c === "ghost_wallet_sign_rescue_key").length;
 
 test("connect and sign through the pop-up: the account and a signature the module verifies", async () => {
   const page = fakePage();

@@ -296,7 +296,7 @@ network, `http://127.0.0.1:8545`. The app sends only these requests:
 | `eth_getBalance` | the wallet's address, `"latest"` | The account's balance |
 | `eth_getTransactionCount` | the wallet's address, `"pending"` | The account's next nonce |
 | `eth_maxPriorityFeePerGas` | none | The priority fee of the commit |
-| `eth_estimateGas` | the commit as a call from the wallet's address | The commit's gas, without the account transaction's extra 62,744 |
+| `eth_estimateGas` | the commit as a call from the wallet's address | The commit's gas, without the account transaction's extra 63,256 |
 | `eth_getTransactionReceipt` | a transaction hash | `null` until the transaction is in a block |
 
 The page and marker requests follow [spec 05](spec/05-trees-and-headers.md),
@@ -597,8 +597,23 @@ opened, and asks exactly two things:
 
 | Request | Parameters | Answer |
 |---|---|---|
-| `ghost_getAccount` | none | `{ address, publicKey }`, 0x hex |
-| `ghost_signTransaction` | `{ chainId, genesisHash, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data }`, 0x hex (quantities without leading zeros, `to` null for a contract creation) | `{ sender, txHash, envelope }`, 0x hex |
+| `ghost_getAccount` | none | `{ address, publicKey, scheme, rescueKey }`: `address` and `publicKey` 0x hex, `scheme` `"0x0001"` or `"0x0003"`, `rescueKey` a boolean |
+| `ghost_signTransaction` | `{ chainId, genesisHash, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data }`, 0x hex (quantities without leading zeros, `to` null for a contract creation), and `from` optional (account 0) | `{ sender, txHash, envelope, scheme }`, 0x hex, `scheme` as above |
+| `ghost_rescue` (the connector does not send it) | `{ chainId, genesisHash, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, balance }`, 0x hex, `balance` the account's balance in wei as read from the node, and `from` optional (account 0); the destination is typed by the user in the wallet, never taken from the request | `{ sender, txHash, envelope, scheme: "0x0004" }`, 0x hex |
+
+The connector reads only `address`, `sender`, `txHash` and `envelope`; the
+`scheme` and `rescueKey` fields change nothing for it. New accounts of the
+pop-up wallet are rescue-key accounts (spec 09, section 5, scheme `0x0003`,
+a 1,344-byte public key), signed with ML-DSA-44; accounts a wallet issued
+before rescue keys stay scheme `0x0001` and answer `rescueKey: false`.
+`ghost_rescue` signs a scheme `0x0004` transaction with the account's
+SLH-DSA key alone, moving `balance - gasLimit * maxFeePerGas` to the typed
+destination with empty data; it is refused for a scheme `0x0001` account,
+for a request that carries `to`, `value` or `data`, and for a balance that
+does not cover `gasLimit * maxFeePerGas`. The module's
+`ghost_wallet_rescue_account`, `ghost_wallet_sign_rescue_key` (0x0003) and
+`ghost_wallet_sign_rescue` (0x0004) do this work; `ghost_wallet_account` and
+`ghost_wallet_sign` stay scheme `0x0001`.
 
 It calls no other signing method. A request the user turns down, or a
 wallet window closed before it answers (code 4001), becomes "the
@@ -641,8 +656,11 @@ for the network (see Headers), and the base fee is read from the tip the
 page's header chain adopted. The nonce is `eth_getTransactionCount` of the
 pending block, the priority fee `eth_maxPriorityFeePerGas` held at 2 gwei at
 most, the fee cap twice the next block's base fee plus the priority fee, and
-the gas limit `eth_estimateGas` plus 62,744, the gas the node adds for the
-scheme, key and signature bytes and the check. Those answers come from the
+the gas limit `eth_estimateGas` plus 63,256, the gas the node adds for the
+scheme, key and signature bytes and the check of a rescue-key account
+(scheme `0x0003`, 16 x (2 + 1,344 + 2,420) + 3,000), the wallet's default;
+for a scheme `0x0001` account the node adds 62,744, and the unused 512 gas
+is not charged. Those answers come from the
 endpoint, so the app bounds what they can make it sign: it refuses a gas
 limit above 500,000 and a commit whose gas could cost more than 0.01 GHOST
 (`maxCommitFee`, a setting of the flow controller). A commit the balance
