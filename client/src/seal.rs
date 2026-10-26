@@ -5,8 +5,8 @@
 //! followed by the 8-byte nonce to a value that, read big-endian, is at most
 //! `(2^256 - 1) // difficulty`, and the header's `mixDigest` is all zero.
 //! The seal hash is Keccak-256 of the header's RLP with `mixDigest` and
-//! `nonce` set to zero, so it covers every other field, both tree roots and
-//! `dataMarkerRoot` included (spec 05, section 4, "Seal coverage").
+//! `nonce` set to zero, so it covers every other field, both tree roots
+//! included (spec 05, section 4, "Seal coverage").
 //!
 //! The caller supplies the header's RLP bytes (spec 05, section 10), the
 //! difficulty it requires of the header, and the key: the hash of the
@@ -26,7 +26,7 @@ pub const EPOCH_BLOCKS: u64 = 8192;
 pub const EPOCH_LAG: u64 = 256;
 
 /// Number of fields in a header (spec 05, section 10).
-const HEADER_FIELDS: usize = 19;
+const HEADER_FIELDS: usize = 18;
 const PARENT_HASH: usize = 0;
 const DIFFICULTY: usize = 7;
 const NUMBER: usize = 8;
@@ -62,7 +62,6 @@ const FIELDS: [Field; HEADER_FIELDS] = [
     Field::Int(32),    // baseFee
     Field::Fixed(32),  // coinTreeRoot
     Field::Fixed(32),  // dataTreeRoot
-    Field::Fixed(32),  // dataMarkerRoot
 ];
 
 /// Why a header's bytes do not decode (spec 05, section 10, "Decoding").
@@ -96,7 +95,7 @@ impl fmt::Display for SealError {
         let text = match self {
             Self::Header(HeaderError::NonCanonicalRlp) => "the header is not canonical RLP",
             Self::Header(HeaderError::TrailingBytes) => "bytes follow the header",
-            Self::Header(HeaderError::ItemCount) => "the header does not have 19 fields",
+            Self::Header(HeaderError::ItemCount) => "the header does not have 18 fields",
             Self::Header(HeaderError::FieldSize) => "a header field has the wrong size",
             Self::Header(HeaderError::NonCanonicalInteger) => "a header integer is not canonical",
             Self::Header(HeaderError::IntegerRange) => "a header integer is out of range",
