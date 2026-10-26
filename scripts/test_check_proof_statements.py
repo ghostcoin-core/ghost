@@ -188,6 +188,33 @@ class CheckerTest(unittest.TestCase):
         text = self.damaged(row, row + "| 415 | 32 | `cf` | Content fingerprint |\n")
         self.assert_gap(text, "binding ghost/coin-reveal-binding/v1: binds 'cf'")
 
+    def test_data_commitment_hash_includes_the_reserve(self):
+        leaf = 'K("ghost/data-commitment/v1", DATA, DATA_RESERVE, F_d)'
+        bare = 'K("ghost/data-commitment/v1", DATA, F_d)'
+        for heading, end, n in (("## 5. Statement S2", "## 6.", "S2"),
+                                ("## 6. Statement S3", "## 7.", "S3")):
+            with self.subTest(statement=n):
+                start = self.text.index(heading)
+                stop = self.text.index(end, start)
+                body = self.text[start:stop]
+                self.assertIn(leaf, body)
+                # The reserve left out of the statement's data leaf.
+                text = self.text[:start] + body.replace(leaf, bare) + self.text[stop:]
+                errors = self.errors(text)
+                self.assertIn(f"{n} does not open the data leaf with DATA_RESERVE", errors)
+                self.assertTrue(any("data leaf hash without DATA_RESERVE" in e for e in errors),
+                                errors)
+                # The reserve gone from the statement's section altogether.
+                text = (self.text[:start] + body.replace("DATA_RESERVE", "the reserve")
+                        + self.text[stop:])
+                self.assert_gap(text, f"{n} does not open the data leaf with DATA_RESERVE")
+        # The shared opening of section 3 without the reserve is a gap too.
+        start = self.text.index("## 3. What every statement shares")
+        at = self.text.index(leaf, start)
+        text = self.text[:at] + bare + self.text[at + len(leaf):]
+        self.assertEqual(self.errors(text),
+                         [f"data leaf hash without DATA_RESERVE: {bare}"])
+
     def test_unknown_tag(self):
         text = self.damaged("`ghost/hold-binding/v1`.", "`ghost/hold-binding/v1`. See `ghost/made-up/v1`.")
         self.assert_gap(text, "tag ghost/made-up/v1 is not in the tag table")

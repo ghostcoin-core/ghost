@@ -24,7 +24,10 @@ Python standard library only. It checks that:
   7. every named adversarial vector has exactly one entry, the entries are
      numbered AV-1 upwards, and each states the expected result and cites a
      property;
-  8. the amount and conservation vectors are right.
+  8. the amount and conservation vectors are right;
+  9. the data statements S2 and S3 open the data leaf with the fee reserve,
+     `K("ghost/data-commitment/v1", DATA, DATA_RESERVE, F_d)`, and no data
+     leaf hash anywhere in the document leaves the reserve out.
 
 Usage:
     python3 scripts/check_proof_statements.py [SPEC_MD]
@@ -72,7 +75,14 @@ PRIVATE_SECRETS = ("s", "r", "b", "salt", "position", "path")
 SALTED_TAGS = ("ghost/coin-fingerprint/v2", "ghost/data-fingerprint/v2",
                "ghost/coin-marker/v2", "ghost/data-marker/v2")
 
-REQUIRED_AMOUNT_VECTORS = ("amount-v-max", "amount-two-to-96")
+# The data leaf with its fee reserve (spec 04, section 3, "The fee reserve"):
+# a constant of the data statements, not an input and not a binding field.
+DATA_RESERVE = "DATA_RESERVE"
+DATA_LEAF = 'K("ghost/data-commitment/v1", DATA, DATA_RESERVE, F_d)'
+DATA_STATEMENTS = (2, 3)
+DATA_LEAF_RE = re.compile(r'K\("ghost/data-commitment/v1",([^)]*)\)')
+
+REQUIRED_AMOUNT_VECTORS =("amount-v-max", "amount-two-to-96")
 REQUIRED_CONSERVATION_VECTORS = ("conservation-full-reveal", "conservation-field-wrap",
                                  "conservation-wrap-at-two-to-96")
 
@@ -217,6 +227,7 @@ class Checker:
         self.check_sections()
         self.check_layouts()
         self.check_statements()
+        self.check_data_reserve()
         self.check_tags()
         self.check_properties()
         self.check_vectors()
@@ -350,6 +361,20 @@ class Checker:
                 if field in pub and pub[field] != str(width):
                     self.fail(f"{where}: '{field}' is {pub[field]} bytes in the public inputs "
                               f"and {width} in {tags[0]}")
+
+    def check_data_reserve(self):
+        for name, lines in self.secs.items():
+            m = STATEMENT_RE.match("## " + name)
+            if not m or int(m.group(1)) not in DATA_STATEMENTS:
+                continue
+            body = " ".join(" ".join(lines).split())
+            if DATA_RESERVE not in body or DATA_LEAF not in body:
+                self.fail(f"S{m.group(1)} does not open the data leaf with {DATA_RESERVE}")
+        flat = " ".join(self.text.split())
+        for args in DATA_LEAF_RE.findall(flat):
+            if DATA_RESERVE not in args:
+                self.fail(f"data leaf hash without {DATA_RESERVE}: "
+                          f'K("ghost/data-commitment/v1",{args})')
 
     def check_tags(self):
         known = set()

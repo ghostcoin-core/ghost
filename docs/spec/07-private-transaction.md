@@ -29,8 +29,10 @@ a worked example. Section 12 names the script that checks this document.
 It does not change what the proof proves (spec 02), the node's order of checks
 on a reveal (spec 03, section 7), the eligible roots or the marker sets
 (spec 05). It writes no node code, no circuit and no proof-system choice beyond
-decision 0003. It does not settle the fee of a data reveal (spec 04,
-question 1).
+decision 0003. The fee of a data reveal is settled by spec 04 (section 6,
+"Fee settlement at reveal and revoke"): it is the coin reveal's fee of
+section 4, paid out of the data commitment's reserve. This document does not
+fix the data reveal's encoding.
 
 ## 1. Decisions at a glance
 
@@ -48,7 +50,7 @@ question 1).
 | Burn and tip | In a block with base fee `beta`, `G_PRIV * max(price, beta)` is burned and the rest of the fee is the block finder's tip; a reveal whose tip would be negative is rejected (the cover rule), so every valid reveal burns at least `G_PRIV` times the block's base fee | Front desk decision, 2026-10-25; spec 03, section 4 |
 | Fee is current | Strict equality with the fee of the including block's window or of the window before it, held for windows of 4 blocks, and the cover rule holds for the including block | Front desk decision, 2026-10-25; window length **Proposed** (section 5) |
 | Pool | One transaction per marker, first in wins; cheap checks before the proof; hard caps; per-peer budgets; deterministic order; full recheck on every block and reorganisation | Front desk decision; caps and budgets **Proposed** (section 6) |
-| Data reveal | Has no encoding in version 1; every data reveal stays rejected | Spec 04, question 1 (fail closed) |
+| Data reveal | Its fee field and fee rule are the coin reveal's: the window fee of section 4, paid out of the reserve `DATA_RESERVE`, with `fee <= DATA_RESERVE`. It has no encoding in version 1, so every data reveal stays rejected | Spec 04, sections 3 and 6 (fee); encoding fail closed (section 9, item 2) |
 
 ## 2. Conventions and parameters
 
@@ -282,9 +284,12 @@ and the note bytes, so that wallets can check notes and marker status against
 `receiptsRoot` (spec 05, section 8, item 5; review 01, F3 and F4).
 
 **Data reveals.** Version 1 has no field for a type tag or a purpose, so it
-cannot carry a data reveal. A data reveal has no encoding and is rejected,
-which is already the outcome of spec 04, section 6, step 6 until the founder
-settles spec 04, question 1. The proof field is already sized for it: a data
+cannot carry a data reveal. A data reveal has no encoding and is rejected
+until the transaction-format work fixes one (section 9, item 2). Its fee is
+already settled (spec 04, section 6): it carries the coin reveal's `fee`
+field, at the same position and size, bound in its binding digest the same
+way, and follows the coin reveal's fee rule (section 4, "Data reveals"). The
+proof field is already sized for it: a data
 reveal proof fits `PROOF_BYTES` (section 3, "Proof field"), and any later
 encoding of data reveals must give them exactly `ENVELOPE_BYTES` and the same
 1,310,720-byte proof field: one size for every private transaction is a hard
@@ -364,9 +369,17 @@ tip_paid  = fee - burn          (a reveal for which this is negative is rejected
   `burn + tip_paid = fee`.
 - **Range.** `fee` must be an amount word. If the formula gives a fee above
   `V_MAX` in some window, no private transaction is valid in it.
-- **Data reveals.** This formula is for the coin reveal. Where a data reveal's
-  fee comes from stays unsettled, and every data reveal stays rejected (spec
-  04, question 1).
+- **Data reveals.** A data reveal or revocation pays the same window fee as a
+  coin reveal in the same window, under the same cover rule (section 5),
+  paid out of the reserve `DATA_RESERVE` its commit burned
+  (250,000,000,000,000,000 wei, spec 04, section 3, "The fee reserve"). The
+  node adds one check before the proof: `fee <= DATA_RESERVE`; a data reveal
+  whose window fee exceeds the reserve is rejected and waits for the base fee
+  to fall. In the apply step `total_out` grows by `DATA_RESERVE`, the burn and
+  the tip split the fee as for a coin, and `DATA_RESERVE - fee` is forfeited,
+  credited to nobody (spec 04, section 6, "Fee settlement at reveal and
+  revoke"). At `window-genesis` below, the reserve is about 9.58 times the
+  fee.
 
 **Worked example.** At the genesis base fee of 1 gwei (spec 05, section 10),
 `FEE_STEPS = 1`. `cover_limit` is the largest base fee of an including block
@@ -1002,8 +1015,12 @@ Each point rejects until the founder or a later specification settles it.
    and the prover refuses a statement over the budget. A change of width is a
    new `version`, never an edit of version 1. The item keeps its number so
    that the items below keep theirs.
-2. **Fee of a data reveal.** Unsettled (spec 04, question 1). Version 1 has no
-   data reveal; every data reveal is rejected.
+2. **Fee of a data reveal.** Settled by spec 04 (section 3, "The fee reserve";
+   section 6, "Fee settlement at reveal and revoke"; question 1): the coin
+   reveal's fee field and window fee, paid out of `DATA_RESERVE`, with
+   `fee <= DATA_RESERVE` (section 4, "Data reveals"). The data reveal's
+   encoding is still for the transaction-format work: version 1 has no data
+   reveal, and every data reveal is rejected until it does.
 3. **Receipt layout.** The receipt's fields beyond its type and cumulative gas
    used are for the transaction-format work on receipts (spec 05, section 12,
    item 5 limits its logs). Until fixed, no block with a private transaction is
@@ -1046,9 +1063,10 @@ difference is listed here for the founder's review.
 6. **Data reveal shape.** [Spec 04](04-data-commitments.md), section 6, step 1
    proposes that a data reveal be the same private type with the amount-out and
    remainder fields zero. Version 1 here has no type or purpose field, so a data
-   reveal has no encoding; the outcome (every data reveal rejected) is the same
-   as spec 04's default until question 1 is settled, and any later layout must
-   have the same size.
+   reveal has no encoding, and every data reveal is rejected until the
+   transaction-format work fixes one. Spec 04 settles its fee (section 4,
+   "Data reveals"), and any later layout must carry the coin reveal's `fee`
+   field and have the same size.
 7. **Public input size.** Decision 0003 counts 164 bytes of public inputs next
    to the proof. The payload carries 346 bytes besides the proof, because it
    also carries the note and fixed-width amount words.
@@ -1098,7 +1116,8 @@ growth under full blocks and under private-reveal load with the cover rule's
 verdict and tip in each block, the lapses for the current window, the
 previous window, no match and a failed cover rule, each boundary case and the
 competing reveals) is right; that section 5 has the subsections "The cover
-rule" and "Fee of the previous window"; that the properties are numbered PT-1 upwards
+rule" and "Fee of the previous window"; that section 4 states the data reveal
+fee rule (the window fee, `DATA_RESERVE` and `fee <= DATA_RESERVE`); that the properties are numbered PT-1 upwards
 without gaps and each names its check; and that the conflicts name spec 02,
 03 and 04. `scripts/test_check_private_transaction.py` damages each part and
 expects the check to fail.
