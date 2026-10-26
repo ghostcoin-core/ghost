@@ -49,6 +49,16 @@ pub const TAG_EMPTY_LEAF: &str = "ghost/empty-leaf/v1";
 pub const TAG_COIN_REVEAL_BINDING: &str = "ghost/coin-reveal-binding/v1";
 pub const TAG_DATA_REVEAL_BINDING: &str = "ghost/data-reveal-binding/v1";
 pub const TAG_HOLD_BINDING: &str = "ghost/hold-binding/v1";
+pub const TAG_DATA_MARKER_SET_LEAF: &str = "ghost/data-marker-set-leaf/v1";
+pub const TAG_DATA_MARKER_SET_NODE: &str = "ghost/data-marker-set-node/v1";
+
+/// Depth of the data marker-set tree (spec 05, section 6): 2^40 positions,
+/// 40 sibling hashes per path.
+pub const MARKER_SET_DEPTH: usize = 40;
+
+/// Width of a marker-set `nextIndex` and of a position in the `absence`
+/// witness: a 40-bit big-endian integer.
+pub const MARKER_SET_INDEX_BYTES: usize = 5;
 
 /// One tree per commitment type, each with its own node tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -287,6 +297,40 @@ pub fn merkle_root(tree: Tree, leaf: &[u8; 32], position: u32, path: &[[u8; 32];
     current
 }
 
+/// A leaf of the data marker-set tree (spec 05, section 6):
+/// `K("ghost/data-marker-set-leaf/v1", value, nextValue, nextIndex)`, 99
+/// input bytes.
+pub fn marker_set_leaf(
+    value: &[u8; 32],
+    next_value: &[u8; 32],
+    next_index: &[u8; MARKER_SET_INDEX_BYTES],
+) -> [u8; 32] {
+    tagged(TAG_DATA_MARKER_SET_LEAF, &[value, next_value, next_index])
+}
+
+/// An inner node of the data marker-set tree at `level` (0 just above the
+/// leaves, 39 for the root): `K("ghost/data-marker-set-node/v1", level,
+/// left, right)`, 95 input bytes.
+pub fn marker_set_node(level: u8, left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    tagged(TAG_DATA_MARKER_SET_NODE, &[&[level], left, right])
+}
+
+/// The marker-set root over a leaf hash at `position` with its 40 siblings,
+/// from level 0 up. Bit `l` of the position says whether the node at level
+/// `l - 1` (the leaf for `l = 0`) is a right child; bits above 39 are not
+/// read.
+pub fn marker_set_root(leaf: &[u8; 32], position: u64, siblings: &[[u8; 32]; MARKER_SET_DEPTH]) -> [u8; 32] {
+    let mut current = *leaf;
+    for (level, sibling) in siblings.iter().enumerate() {
+        current = if position >> level & 1 == 1 {
+            marker_set_node(level as u8, sibling, &current)
+        } else {
+            marker_set_node(level as u8, &current, sibling)
+        };
+    }
+    current
+}
+
 #[cfg(test)]
 mod tests {
     use p3_keccak::Keccak256Hash;
@@ -328,5 +372,8 @@ mod tests {
         assert_eq!(tag_bytes(TAG_COIN_MARKER_V2).len() + 64 + SALT_BYTES, 101);
         assert_eq!(tag_bytes(TAG_DATA_MARKER_V2).len() + 64 + SALT_BYTES, 101);
         assert_eq!((permutations(204), permutations(101)), (2, 1));
+        assert_eq!(tag_bytes(TAG_DATA_MARKER_SET_LEAF).len() + 64 + MARKER_SET_INDEX_BYTES, 99);
+        assert_eq!(tag_bytes(TAG_DATA_MARKER_SET_NODE).len() + 1 + 64, 95);
+        assert_eq!((permutations(99), permutations(95)), (1, 1));
     }
 }

@@ -368,12 +368,15 @@ The public fields and binding layouts are those of version 1.
 | Figure | Value |
 |---|---|
 | Trace, version 1 data reveal and proof of holding | 1,024 rows by 3,786 columns, unchanged |
-| Trace, salted data reveal and proof of holding | 1,024 rows by **3,802 columns** |
+| Trace, salted data reveal | 1,024 rows by **3,802 columns** |
+| Trace, salted proof of holding | **2,048 rows** (79 permutations: the low leaf of the absence witness and its 40 nodes up to `marker_set_root` added) by **3,802 columns** |
 | `MAX_TRACE_WIDTH` | 3,824 columns, unchanged: the salted coin reveal stays the widest statement |
 | Proof field, `PROOF_BYTES` | 1,310,720 bytes, unchanged |
 
 The widths are measured from the shipped configuration's report in
-`proofs/tests/salted_data.rs`. No parameter changes; the conjectured bits
+`proofs/tests/salted_data.rs`; the salted proof of holding's 2,048 rows
+follow from its schedule (1,896 rows padded to a power of two) and were not
+re-measured. No parameter changes; the conjectured bits
 with grinding counted at half stay at least 128 for both, and their proof
 length bound is below the budget trace's 1,056,723 bytes.
 

@@ -351,6 +351,18 @@ fn data_opening(d: &Data) -> SaltedDataOpening {
     }
 }
 
+/// Example spent markers of a data marker set the example commitment's marker
+/// is not in.
+#[cfg(feature = "unsettled-points-test")]
+const SPENT_MARKERS: [[u8; 32]; 3] = [[0x22; 32], [0x99; 32], [0xdd; 32]];
+
+/// The absence witness of the example commitment's marker in the set of
+/// [`SPENT_MARKERS`], and that set's root.
+#[cfg(feature = "unsettled-points-test")]
+fn absence(d: &Data) -> (AbsenceWitness, [u8; 32]) {
+    test_absence_witness(&SPENT_MARKERS, &data_marker_v2(&d.r, &d.b, &d.salt))
+}
+
 #[cfg(feature = "unsettled-points-test")]
 fn hold_opening(d: &Data) -> SaltedHoldOpening {
     SaltedHoldOpening {
@@ -362,14 +374,19 @@ fn hold_opening(d: &Data) -> SaltedHoldOpening {
         rule: EMPTY_RULE,
         position: 0,
         path: d.path,
+        absence: absence(d).0,
     }
 }
 
 fn hold_context(d: &Data, verifier: u8, challenge: [u8; 32]) -> HoldContext {
+    #[cfg(feature = "unsettled-points-test")]
+    let marker_set_root = absence(d).1;
+    #[cfg(not(feature = "unsettled-points-test"))]
+    let marker_set_root = [0x6d; 32];
     HoldContext {
         type_tag: DATA_V2,
         root: d.root,
-        marker_set_root: [0x6d; 32],
+        marker_set_root,
         verifier: [verifier; 32],
         challenge,
         cf: d.cf,
@@ -1316,7 +1333,10 @@ fn hold_proof_submitted_as_reveal_fails() {
             party: ctx.verifier,
             ..data_reveal_tx(&d, purpose)
         };
-        assert_eq!(verify_salted_data_reveal(&params(), &as_data, &proof), Err(ProofError::Rejected));
+        // The proof of holding's trace (2,048 rows, the marker-set opening
+        // included) is not the data reveal's height (1,024 rows), so the
+        // verifier refuses its shape before any constraint.
+        assert_eq!(verify_salted_data_reveal(&params(), &as_data, &proof), Err(ProofError::MalformedProof));
     }
     let as_coin = CoinReveal {
         root: d.root,

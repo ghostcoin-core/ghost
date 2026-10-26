@@ -45,6 +45,9 @@ fn params() -> ChainParams {
 const CONTENT: &[u8] = b"Ghost example data";
 const OTHER_CONTENT: &[u8] = b"Ghost example datb";
 const SALT: [u8; SALT_BYTES] = [0x5e; SALT_BYTES];
+/// Example spent markers of a data marker set the commitment's marker is not
+/// in.
+const SPENT_MARKERS: [[u8; 32]; 3] = [[0x22; 32], [0x99; 32], [0xdd; 32]];
 const FEE: [u8; 32] = {
     let mut fee = [0u8; 32];
     fee[31] = 21;
@@ -110,7 +113,7 @@ impl Commitment {
         HoldContext {
             type_tag: DATA_V2,
             root,
-            marker_set_root: [0x6d; 32],
+            marker_set_root: self.absence().1,
             verifier: [0x0a; 32],
             challenge: [0xc1; 32],
             cf,
@@ -143,7 +146,14 @@ impl Commitment {
             rule: EMPTY_RULE,
             position: 0,
             path: path(),
+            absence: self.absence().0,
         }
+    }
+
+    /// The absence witness of the commitment's marker in the set of
+    /// [`SPENT_MARKERS`], and that set's root.
+    fn absence(&self) -> (AbsenceWitness, [u8; 32]) {
+        test_absence_witness(&SPENT_MARKERS, &data_marker_v2(&self.r, &self.b, &SALT))
     }
 }
 
