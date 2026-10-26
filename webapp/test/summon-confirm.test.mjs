@@ -216,7 +216,8 @@ function startPage({ hold = false, fresh = FRESH } = {}) {
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
   const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "WALLET_APPROVAL", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
-  new Function(...names, ...more, "parseAddress", body)(
+  const local = ["createHeaderStore", "INSTALL_LINES", "INSTALL_SITE", "probeLocalNode", "systemOf"];
+  new Function(...names, ...more, "parseAddress", ...local, body)(
     document,
     window,
     { clipboard: { writeText: async () => {} } },
@@ -233,6 +234,13 @@ function startPage({ hold = false, fresh = FRESH } = {}) {
     () => ({}),
     async () => {},
     parseAddress,
+    // No header store, and a look for a local node that finds none without
+    // reaching the network.
+    () => null,
+    { Linux: "" },
+    "",
+    async () => false,
+    () => "Linux",
   );
   $("tab-summon").fire("click");
   return { $, log, screens, window, release, state: () => state };

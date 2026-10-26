@@ -28,3 +28,4 @@ import "./summon-screens.test.mjs";
 import "./summon-confirm.test.mjs";
 import "./summon-auto-wait.test.mjs";
 import "./summon-payout.test.mjs";
+import "./local-node-probe.test.mjs";

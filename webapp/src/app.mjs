@@ -7,6 +7,7 @@ import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, WALLET_APPROVAL, createFlow, norm
 // header.mjs, which build.sh ships, holds header-store.mjs's code.
 import { createHeaderStore } from "./header.mjs";
 import { downloadKeyImage } from "./keyimage.mjs";
+import { INSTALL_LINES, INSTALL_SITE, probeLocalNode, systemOf } from "./local-node.mjs";
 import { browserProver } from "./prover.mjs";
 import { popupConnector } from "./popup-wallet.mjs";
 import { DEFAULT_ENDPOINT } from "./rpc.mjs";
@@ -23,6 +24,10 @@ const SEAL_TRUST =
 // neither final settlement nor privacy, and the text says so.
 const IN_A_BLOCK =
   "Marked Done when a block holds it. One block is not final: each block after it makes it harder to undo, and blocks add no privacy.";
+
+// What the one look for a Ghost node on this computer found: null until it
+// answers, then "found" or "none" (see findLocalNode).
+let localNode = null;
 
 // The headers this page checked are kept in its own IndexedDB (public
 // header fields only), so a later visit checks only the seals above them.
@@ -628,6 +633,15 @@ function renderVanish(v, approving) {
   $("vanish-error").textContent = vanishError || (wrong ? WRONG_WORDS : "");
 }
 
+// The Network panel's local node lines, while the endpoint is the default:
+// "Connected to your Ghost node" once a node answered, the Run a node block
+// once none did, neither before the look ends.
+function renderLocalNode(state) {
+  const atDefault = state.endpoint === DEFAULT_ENDPOINT;
+  $("local-node-found").hidden = !(atDefault && localNode === "found");
+  $("local-node-run").hidden = !(atDefault && localNode === "none");
+}
+
 function render(state) {
   renderWallet(state.wallet);
 
@@ -658,6 +672,7 @@ function render(state) {
     $("claim-start").disabled = Boolean((c && c.stage !== "done" && c.stage !== "dropped") || s.wait);
   }
 
+  renderLocalNode(state);
   $("chain-status").textContent = state.chainRefused ? `No confirmations: ${state.chainRefused}.` : "";
   $("network-button").classList.toggle("attention", Boolean(state.chainRefused));
 
@@ -1140,4 +1155,35 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closePanels();
 });
 
+// The Run a node block: the install line for the visitor's system, as fixed
+// text with one Copy button, and the install site. Copying a public line
+// needs no error: a refused clipboard leaves the line to be selected.
+const INSTALL_SYSTEM = systemOf(navigator.userAgent);
+$("local-node-system").textContent = INSTALL_SYSTEM;
+$("local-node-line").textContent = INSTALL_LINES[INSTALL_SYSTEM];
+$("local-node-site").href = INSTALL_SITE;
+$("local-node-copy").addEventListener("click", () => {
+  Promise.resolve()
+    .then(() => navigator.clipboard.writeText(INSTALL_LINES[INSTALL_SYSTEM]))
+    .then(
+      () => {
+        $("local-node-copy").textContent = "Copied";
+      },
+      () => {},
+    );
+});
+
+// One look for a Ghost node on this computer, on page load and only while
+// the endpoint is still the default: a node that answers is simply that
+// endpoint, so nothing is set or stored. A failed look is silent: no error
+// line, no message, no second try.
+function findLocalNode() {
+  if (flow.state.endpoint !== DEFAULT_ENDPOINT) return;
+  probeLocalNode(fetch, DEFAULT_ENDPOINT).then((found) => {
+    localNode = found ? "found" : "none";
+    renderLocalNode(flow.state);
+  });
+}
+
 render(flow.state);
+findLocalNode();

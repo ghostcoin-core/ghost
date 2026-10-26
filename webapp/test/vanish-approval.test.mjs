@@ -284,7 +284,8 @@ function startPage(make) {
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
   const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "WALLET_APPROVAL", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
-  new Function(...names, ...more, body)(
+  const local = ["createHeaderStore", "INSTALL_LINES", "INSTALL_SITE", "probeLocalNode", "systemOf"];
+  new Function(...names, ...more, ...local, body)(
     document,
     window,
     { clipboard: { writeText: async () => {} } },
@@ -300,6 +301,13 @@ function startPage(make) {
     "http://127.0.0.1:8545",
     () => ({}),
     async () => {},
+    // No header store, and a look for a local node that finds none without
+    // reaching the network.
+    () => null,
+    { Linux: "" },
+    "",
+    async () => false,
+    () => "Linux",
   );
   return { $, visible, flow, ids: () => [...elements.keys()] };
 }
