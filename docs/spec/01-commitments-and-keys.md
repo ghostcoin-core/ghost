@@ -234,6 +234,7 @@ the tag as well as the inputs.
 | `ghost/reveal-secret/v1` | SHA3-256 | Reveal secret `r` (section 7) | key bytes | 23 + key bytes | not in a proof |
 | `ghost/blinding/v1` | SHA3-256 | Blinding `b_i` of the key's commitment number `i` (section 8) | key bytes, `i` as 8 bytes | 26 + key bytes | not in a proof |
 | `ghost/note-key/v1` | SHA3-256 | Note key `k_note` (section 9) | key bytes | 18 + key bytes | not in a proof |
+| `ghost/note-tag/v1` | SHA3-256 | Note lookup tag `tag_i` of the key's commitment number `i`, the first 3 bytes of its note's nonce (sections 8 and 9) | `k_note`, `i` as 8 bytes | 58 | not in a proof |
 | `ghost/data-key/v1` | SHA3-256 | Data key `k_data` ([spec 04](04-data-commitments.md), section 4) | key bytes | 18 + key bytes | not in a proof |
 | `ghost/coin-fingerprint/v2` | Keccak-256 | Coin fingerprint `F` (section 3) | `s`, `r`, `b`, `salt`, `COIN`, `cf`, `rule` | 204 | 2 |
 | `ghost/coin-commitment/v1` | Keccak-256 | Coin commitment `C`, the coin-tree leaf (section 3) | `COIN`, `F`, `v` | 91 | 1 |
@@ -273,6 +274,11 @@ Notes on the table:
 - **Binding digests.** The three binding tags are reserved here so that the
   table is complete; their input layouts belong to the proof statements, and
   this document gives no vectors for them.
+- **Note tag.** `ghost/note-tag/v1` takes `k_note`, not the key bytes, and
+  only the first 3 bytes of its output are used: they open the nonce of the
+  note of commitment number `i` (section 9), so a wallet reads only the note
+  buckets its own tags fall in (section 8). Whoever holds `k_note` can read
+  the key's notes already, so the tag shows them nothing more.
 - **SHAKE256** is not used in version 1. Every derived value is 32 bytes, which
   SHA3-256 gives directly.
 - **Cost.** With the tag strings in the input, the opening of a coin
@@ -467,10 +473,13 @@ r      = S("ghost/reveal-secret/v1", key_bytes)
 b_i    = S("ghost/blinding/v1",      key_bytes, i as 8 bytes)
 k_note = S("ghost/note-key/v1",      key_bytes)
 k_data = S("ghost/data-key/v1",      key_bytes)
+tag_i  = the first 3 bytes of S("ghost/note-tag/v1", k_note, i as 8 bytes)
 ```
 
-Each is 32 bytes and used as is. Keccak-256 inside the proof takes any 32-byte
-value, so there is no reduction step and no value to reject.
+Each is 32 bytes and used as is, except the note lookup tag `tag_i`, which is
+the first 3 bytes of its digest and is derived from `k_note` (sections 8 and
+9). Keccak-256 inside the proof takes any 32-byte value, so there is no
+reduction step and no value to reject.
 
 - **Separate tags.** No derived value can be computed from another: each is a
   one-way function of the key bytes under its own tag. In particular `k_data`
@@ -573,7 +582,43 @@ C41):
    burned (milestone 1 review).
 7. The next number to use is one more than the current remainder's `i`.
 
-Every note ciphertext uses a fresh random nonce, every marker is a hash of a
+**The bucket path (front desk decision).** A large tree makes steps 2 and 3 slow: every
+note of the tree, downloaded and tried. Every note's nonce therefore starts
+with its lookup tag `tag_i` (sections 7 and 9), which only the key can
+compute, and a wallet may read only the buckets its own tags fall in. A
+bucket is the set of notes of one tree whose tag starts with the same `m`
+bits, `m = bucket_bits(n) = clamp(floor(log2(n / 4096)), 0, 24)` for a tree of
+`n` leaves at the anchor ([spec 05](05-trees-and-headers.md), section 8). So
+an expected bucket holds at least 4,096 notes, `m = 0` (the whole tree) below
+8,192 notes, and `m = 24`, every bit of the tag, at most. In place of steps 2
+and 3:
+
+1. Compute `m` from the tree's leaf count at the anchor, and `tag_0` to
+   `tag_15`.
+2. Ask for the buckets of the first `m` bits of those 16 tags in one request:
+   always 16 numbers, even when the wallet expects fewer, so the request does
+   not show how many hops the key made. Each distinct prefix is read once,
+   in this batch and every later one.
+3. Try `k_note` on every note of the buckets read, then continue with steps 4
+   to 7 on the notes that decrypt, with the positions the buckets gave.
+4. If number 15 was found, do the same for `tag_16` to `tag_31`, and so on,
+   16 numbers a batch. Numbers have no gaps (above), so a batch whose last
+   number is not found is the last batch.
+
+A bucket read shows an endpoint `m` bits of a key-derived hash, among at least
+4,096 expected other notes, 16 at a time; not a leaf, an amount or a position.
+It returns notes by a hint, not completeness: an endpoint can withhold a note,
+and the wallet then shows less, never more. The full scan of steps 2 and 3
+remains, and is the fallback whenever a bucket result is in doubt. A bucket
+result is unchecked like any page result until its notes are checked against
+the block receipts (step 5); proving that a returned leaf sits at its
+position is not specified yet. A note whose nonce does not start with its tag
+still decrypts (section 9), but no bucket read returns it; only the full scan
+finds it.
+
+Every note ciphertext uses a nonce whose 9 bytes after the tag are fresh and
+random, and the tag is a one-way function of `k_note` that differs with every
+number, every marker is a hash of a
 different `b_i` and a different salt, and no request names a
 single value, so restore publishes and
 requests nothing that ties the sequence together (outline, "First milestone" 4).
@@ -592,10 +637,22 @@ note key serves every note of a key, so restore tries one key per note.
 
 **Encryption (Proposed).** ChaCha20-Poly1305 as defined in RFC 8439, a
 standard authenticated encryption scheme with a 256-bit key (outline,
-"Foundation": standard encryption). The nonce is 12 bytes from a secure random
-source, new for every note. A key writes few notes, so the chance of a nonce
-repeating under one note key is negligible (about 2^-57 even for a million
-notes under one key).
+"Foundation": standard encryption). The nonce is 12 bytes: the 3-byte tag then
+9 random bytes,
+
+```text
+nonce = tag_i (3 bytes) || 9 bytes from a secure random source
+tag_i = the first 3 bytes of S("ghost/note-tag/v1", k_note, i as 8 bytes)
+```
+
+where `i` is the commitment number the note carries (section 7). The 9 random
+bytes are new for every note. A nonce can repeat only under the same note
+key, the same `i` and the same 9 random bytes, about 2^-72 for any two notes
+of one number, and a key writes few notes of one number (a retry, section 8).
+The nonce is an input of the cipher, so the tag is authenticated: a note whose
+tag was changed fails to decrypt. A reader takes the nonce as it is and never
+checks its content, so a note whose nonce is 12 random bytes still decrypts;
+only the bucket reads of section 8 pass it by.
 The scheme uses only symmetric primitives, so the note is not a quantum
 weakness beyond the square-root search on its 256-bit key (threat model, C2).
 
@@ -633,11 +690,16 @@ type tag; a note with any other type tag is rejected, never read with a
 guessed layout.
 
 **On the chain: 156 bytes, fixed.**
-`nonce (12 bytes) || ciphertext (128 bytes) || tag (16 bytes)`. Every note has this one length, coin or data, so its length is not a
+`nonce (12 bytes) || ciphertext (128 bytes) || tag (16 bytes)`, the nonce
+being the 3-byte lookup tag then 9 random bytes. Every note has this one length, coin or data, so its length is not a
 fingerprint (threat model, C18); the commit and reveal checks reject any other
 length ([spec 03](03-coin-rules.md), section 6, step 5).
 
-**What it gives away.** Without the digits, nothing beyond its fixed length.
+**What it gives away.** Without the digits, nothing beyond its fixed length
+and a 3-byte tag that, without `k_note`, looks like any other random bytes.
+Two notes of different numbers of one key have unrelated tags. Two notes of
+one number, a retry on another branch, share their tag, as about one pair in
+2^24 of unrelated notes does by chance.
 Anyone shown the digits can read every note of the key (threat model, T6).
 
 **The salt and the note.** A commitment can be opened only with its salt, so
@@ -931,6 +993,63 @@ b1 = e4f33eac55470fc11d63503efa6184c858922c3586e77b7d53c3af2b36732557
 b2 = c55cf5f0cfacf72c5e0942a7f4e7c59a3c433bff8db6a95f96d478803547c9f9
 note-key = 08f3c586fe83f60374f0551ad5a25ddab61fd4fc70ab71572c0aae3b042c82ab
 data-key = 8656f5cbfdecd73bb29f88309564a1610be34a6e12db2e6152778df15dc7cca3
+```
+
+### Note tag and bucket vectors
+
+The lookup tag of the example key's numbers 0 and 1 (sections 7 and 9):
+`digest` is `S("ghost/note-tag/v1", k_note, i as 8 bytes)` under the note key
+derived from `key-bytes` (that of `[derivation-words]`), and `tag`, its first
+3 bytes, opens the nonce of the note of number `i`. Their kind is `note-tag`.
+The bucket rule `m = bucket_bits(n)` of section 8 for a tree of `notes`
+leaves gives `bits`, from the whole tree below 8,192 notes to the clamp at 24
+bits; 3,650,000,000 notes is a year at 10 million a day (modeled). Their kind
+is `bucket-rule`.
+
+```text
+[note-tag-index-0]
+kind = note-tag
+key-bytes = 20000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+index = 0
+digest = 4d6c0036df8cbb4595ae939dc0d92fd1e8d30901c5e18bd61fd1e65b821c9302
+tag = 4d6c00
+
+[note-tag-index-1]
+kind = note-tag
+key-bytes = 20000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+index = 1
+digest = 7c28b74f53a13af0b4648282ffd672efc9cfb00b13953a74e553d6c1f3446786
+tag = 7c28b7
+
+[bucket-rule-0]
+kind = bucket-rule
+notes = 0
+bits = 0
+
+[bucket-rule-1]
+kind = bucket-rule
+notes = 8191
+bits = 0
+
+[bucket-rule-2]
+kind = bucket-rule
+notes = 8192
+bits = 1
+
+[bucket-rule-3]
+kind = bucket-rule
+notes = 1048576
+bits = 8
+
+[bucket-rule-4]
+kind = bucket-rule
+notes = 3650000000
+bits = 19
+
+[bucket-rule-5]
+kind = bucket-rule
+notes = 1099511627776
+bits = 24
 ```
 
 ### Salted commitment vectors

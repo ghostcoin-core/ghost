@@ -22,6 +22,9 @@
 //! - [`hash`]: the tagged Keccak-256 and SHA3-256 of sections 2 and 4.
 //! - [`note`]: the encrypted note, ChaCha20-Poly1305 under the note key
 //!   (section 9).
+//! - [`note_tag`]: the key-derived lookup tag at the start of every note's
+//!   nonce, the bucket rule, and restore from the note buckets of the key's
+//!   own tags (sections 8 and 9; spec 05, section 8).
 //! - [`reveal`]: a partial reveal, a full reveal and a claim to a new key,
 //!   proved by the proofs crate (section 8; spec 02, section 4).
 //! - [`restore`]: finding the key's current coin from the digits and the
@@ -68,6 +71,7 @@ pub mod header_chain;
 pub mod key;
 mod key_words;
 pub mod note;
+pub mod note_tag;
 pub mod randomx;
 pub mod receipts;
 pub mod restore;
@@ -99,7 +103,7 @@ pub use receipts::{
     AppendedLeaf, CheckedBlock, CoinRecord, ReceiptError,
 };
 pub use restore::{
-    restore_coins, Current, DiscardReason, DiscardedNote, FoundCoin, RestoreError, Restored, TreeLeaf,
+    restore_coins, restore_coins_at, Current, DiscardReason, DiscardedNote, FoundCoin, RestoreError, Restored, TreeLeaf,
     MAX_TREE_LEAVES,
 };
 pub use reveal::{

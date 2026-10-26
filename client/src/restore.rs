@@ -18,6 +18,10 @@
 //!    markers. The current coin is the found commitment whose marker is
 //!    unspent; the next number to use is one above its number.
 //!
+//! [`restore_coins_at`] does the same over leaves given with their positions,
+//! for a wallet that read only the note buckets of its own lookup tags
+//! ([`crate::note_tag`]) rather than the whole tree.
+//!
 //! Whether the notes and markers have been checked against the block receipts
 //! is the caller's to track (spec 05, section 8, item 5): until they are, the
 //! result is unchecked.
@@ -187,15 +191,50 @@ fn restore_limited(
     spent: &[Marker],
     max_leaves: u64,
 ) -> Result<Restored, RestoreError> {
-    if !u64::try_from(leaves.len()).is_ok_and(|count| count <= max_leaves) {
+    if !u64::try_from(leaves.len()).is_ok_and(|count| count <= max_leaves.min(MAX_TREE_LEAVES)) {
         return Err(RestoreError::TooManyLeaves);
     }
+    // At most `MAX_TREE_LEAVES` leaves, so every one has a `u32` position.
+    Ok(restore_pairs(key, chain_id, tree_index, (0..=u32::MAX).zip(leaves), spent))
+}
+
+/// Restores the key's coins from leaves of one coin tree, each given with its
+/// position, and the coin spent markers. `tree_index` is the index of that
+/// tree; each coin found carries it, and each coin found and note discarded
+/// carries the position given with its leaf. Coins and discarded notes come
+/// back in the order of `leaves`. More than [`MAX_TREE_LEAVES`] pairs is
+/// [`RestoreError::TooManyLeaves`].
+///
+/// This is the restore of a wallet that read only some of the tree, such as
+/// the note buckets of its own lookup tags ([`crate::note_tag`]).
+pub fn restore_coins_at(
+    key: &PhantomKey,
+    chain_id: u64,
+    tree_index: u32,
+    leaves: &[(u32, TreeLeaf)],
+    spent: &[Marker],
+) -> Result<Restored, RestoreError> {
+    if !u64::try_from(leaves.len()).is_ok_and(|count| count <= MAX_TREE_LEAVES) {
+        return Err(RestoreError::TooManyLeaves);
+    }
+    let pairs = leaves.iter().map(|(position, leaf)| (*position, leaf));
+    Ok(restore_pairs(key, chain_id, tree_index, pairs, spent))
+}
+
+/// The restore of [`restore_coins`] and [`restore_coins_at`], over leaves
+/// with their positions, in the order given.
+fn restore_pairs<'a>(
+    key: &PhantomKey,
+    chain_id: u64,
+    tree_index: u32,
+    leaves: impl IntoIterator<Item = (u32, &'a TreeLeaf)>,
+    spent: &[Marker],
+) -> Restored {
     let note_key = key.note_key();
     let spent: BTreeSet<[u8; 32]> = spent.iter().map(|marker| *marker.as_bytes()).collect();
     let mut found = Vec::new();
     let mut discarded = Vec::new();
-    for (index, leaf) in leaves.iter().enumerate() {
-        let position = u32::try_from(index).map_err(|_| RestoreError::TooManyLeaves)?;
+    for (position, leaf) in leaves {
         let contents = match decrypt_note(&note_key, chain_id, &leaf.commitment, &leaf.note) {
             Ok(contents) => contents,
             Err(NoteError::Unauthentic) => continue,
@@ -251,11 +290,11 @@ fn restore_limited(
         1 => Current::One(unspent.remove(0)),
         _ => Current::Several(unspent),
     };
-    Ok(Restored {
+    Restored {
         current,
         found,
         discarded,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -336,5 +375,32 @@ mod tests {
         // own position.
         let theirs = restore_coins(&other, CHAIN_ID, 3, &leaves, &[]).unwrap();
         assert_eq!((theirs.found[0].tree_index, theirs.found[0].position), (3, 0));
+    }
+
+    #[test]
+    fn restore_at_takes_the_position_given_with_each_leaf() {
+        let mut rng = StdRng::seed_from_u64(0xa7);
+        let key = PhantomKey::generate(KeyFormat::Words, &mut rng);
+        let mut bad = coin_leaf(&key, 2_000, &mut rng);
+        bad.salt = Some(Salt::from_bytes([9; 16]));
+        let pairs: Vec<(u32, TreeLeaf)> = vec![
+            (70_000, filler(1)),
+            (90_001, coin_leaf(&key, 1_000, &mut rng)),
+            (123_456, bad),
+        ];
+        let restored = restore_coins_at(&key, CHAIN_ID, 5, &pairs, &[]).unwrap();
+        let Current::One(found) = restored.current else {
+            panic!("the key's one coin");
+        };
+        assert_eq!((found.tree_index, found.position), (5, 90_001));
+        assert_eq!(restored.discarded.len(), 1);
+        assert_eq!(restored.discarded[0].position, 123_456);
+        assert_eq!(restored.discarded[0].reason, DiscardReason::LeafMismatch);
+
+        // The same leaves as a slice restore at positions 0 upwards.
+        let leaves: Vec<TreeLeaf> = pairs.into_iter().map(|(_, leaf)| leaf).collect();
+        let whole = restore_coins(&key, CHAIN_ID, 5, &leaves, &[]).unwrap();
+        assert_eq!(whole.found[0].position, 1);
+        assert_eq!(whole.discarded[0].position, 2);
     }
 }
