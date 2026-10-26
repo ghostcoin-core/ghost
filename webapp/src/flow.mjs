@@ -58,6 +58,7 @@ import {
   settledHeight,
 } from "./chain.mjs";
 import { HEADER_FIELDS, NETWORKS, networkOf, readHeader, rlpList, rlpString } from "./header.mjs";
+import { blockOfPosition, checkRecord, createBlockSets, findRecord } from "./receipts-at.mjs";
 import { DEFAULT_ENDPOINT, SERVER_ERROR, createRpc } from "./rpc.mjs";
 import { WalletRejected, WalletSignFailed, isWalletRejection } from "./wallet-connect.mjs";
 
@@ -968,6 +969,10 @@ export function createFlow({
   // (-32601) in this flow: a later scan restores from their pages without
   // asking again.
   const bucketless = new Set();
+  // The blocks each coin's own receipts are asked for with (receipts-at.mjs):
+  // its block and decoys drawn once per coin, so a repeat scan asks the same
+  // ones. Block numbers only, kept in memory for the page session.
+  const blockSets = createBlockSets({ random });
   const state = {
     endpoint: rpc.url,
     commitEntry,
@@ -1329,55 +1334,15 @@ export function createFlow({
     return { hc, chainId, settled, low, headers, at, tip, genesis };
   }
 
-  // Checks a scan's tree against the block receipts and takes its spent
-  // markers from them (spec 05, section 8, item 5 and "Marker status"). The
-  // endpoint is never asked for a marker list: no header root covers one, and
-  // the checked receipts already hold every marker. The blocks are those of the
-  // page's header chain from its start (genesis, or the pinned header) to
-  // the tip, each the parent of the next. The receipts of each block the
-  // worker does not hold yet are asked for by its hash, one block after
-  // another in chain order, whatever the key; a block's receipts are fixed by
-  // its header's receiptsRoot, so each block is asked for once per page
-  // session and a later scan asks only for the blocks added since. The
-  // worker checks each block's receipts against the receiptsRoot of the
-  // header the page's chain holds for that hash, then the leaves, notes and
-  // salts from the start's leaf count (placed by its coin root among the
-  // prefix roots of the leaves, 0 at genesis) to the tip against the leaves
-  // and notes the receipts appended. The spent markers are those of the
-  // reveal logs of those checked receipts, of the blocks from the start up
-  // to `markerAnchor`, in block and log order (heldMarkers); they are still
-  // handed to the worker's check as its marker list, a guard that they are
-  // exactly what it holds. Any mismatch is refused. A chain from a pinned
-  // start holds no receipt before the pin, so a spend before it is not among
-  // the markers.
-  //
-  // `trees` are the scan's coin trees (readTrees) and `placeOf` gives the
-  // tree index and leaf count of each of their prefix roots. The worker's
-  // check covers coin tree 0 alone and rolls over only at 2^32 leaves, so
-  // once the tree has rolled over the same checks are made here, over every
-  // tree, from the coin tree logs of the receipts the worker has just checked
-  // against their receiptsRoot (checkTreesAgainstReceipts).
-  //
-  // Returns `{ commitsByAmount, spent }`: how many commits of each amount
-  // those checked receipts hold (commitAmounts), which a Summon's amount
-  // warning reads, and the spent markers, 32 bytes each.
-  async function checkReceipts(chain, trees, placeOf, markerAnchor) {
-    const { hc, tip } = chain;
-    progress("checking the coin tree against the block receipts");
-    const blocks = await chainRange(hc.startHeight, tip.number, hc);
-    if (blocks.length === 0 || blocks.some((block) => !block)) {
-      throw receiptsRefused("the page's chain does not hold every block from its start to the tip");
-    }
-    for (let i = 1; i < blocks.length; i += 1) {
-      if (toHex(blocks[i].parentHash) !== toHex(blocks[i - 1].hash)) {
-        throw receiptsRefused(`block ${hc.startHeight + i} of the page's chain does not follow the one before`);
-      }
-    }
-    if (toHex(blocks.at(-1).hash) !== toHex(tip.hash)) throw receiptsRefused("the page's chain does not end at the tip read");
-    const start = placeOf.get(toHex(blocks[0].coinTreeRoot));
-    if (start === undefined) {
-      throw receiptsRefused(`the start of the page's chain, block ${hc.startHeight}, cannot be placed in the endpoint's coin tree`);
-    }
+  // Holds the receipts of `blocks` (headers of the page's chain `hc`, in
+  // block order): those of each block the worker does not hold yet are asked
+  // for by the block's hash, one after another in block order, checked by the
+  // worker against the receiptsRoot of the header the chain holds for that
+  // hash (receiptsAdd) and kept for the page session, the hash in
+  // `hc.receipts` and the block's coin tree logs in `hc.coinLogs`. A block
+  // already held is not asked for again. Anything the endpoint does not
+  // return, returns malformed or returns against the header is refused.
+  async function holdReceipts(hc, blocks) {
     const missing = blocks.filter((block) => !hc.receipts.has(toHex(block.hash)));
     for (let i = 0; i < missing.length; i += CHAIN_BATCH) {
       const part = missing.slice(i, i + CHAIN_BATCH);
@@ -1410,6 +1375,59 @@ export function createFlow({
         hc.coinLogs.set(toHex(block.hash), logs[j]);
       });
     }
+  }
+
+  // Checks a scan's tree against the block receipts and takes its spent
+  // markers from them (spec 05, section 8, item 5 and "Marker status"). The
+  // endpoint is never asked for a marker list: no header root covers one, and
+  // the checked receipts already hold every marker. The blocks are those of the
+  // page's header chain from its start (genesis, or the pinned header) to
+  // the tip, each the parent of the next. The receipts of each block the
+  // worker does not hold yet are asked for by its hash, one block after
+  // another in chain order, whatever the key; a block's receipts are fixed by
+  // its header's receiptsRoot, so each block is asked for once per page
+  // session and a later scan asks only for the blocks added since. The
+  // worker checks each block's receipts against the receiptsRoot of the
+  // header the page's chain holds for that hash, then the leaves, notes and
+  // salts from the start's leaf count (placed by its coin root among the
+  // prefix roots of the leaves, 0 at genesis) to the tip against the leaves
+  // and notes the receipts appended. The spent markers are those of the
+  // reveal logs of those checked receipts, of the blocks from the start up
+  // to `markerAnchor`, in block and log order (heldMarkers); they are still
+  // handed to the worker's check as its marker list, a guard that they are
+  // exactly what it holds. Any mismatch is refused. A chain from a pinned
+  // start holds no receipt before the pin, so a spend before it is not among
+  // the markers.
+  //
+  // `trees` are the scan's coin trees (readTrees) and `placeOf` gives the
+  // tree index and leaf count of each of their prefix roots. The worker's
+  // check covers coin tree 0 alone and rolls over only at 2^32 leaves, so
+  // once the tree has rolled over the same checks are made here, over every
+  // tree, from the coin tree logs of the receipts the worker has just checked
+  // against their receiptsRoot (checkTreesAgainstReceipts).
+  //
+  // Returns `{ commitsByAmount, spent, blocks }`: how many commits of each
+  // amount those checked receipts hold (commitAmounts), which a Summon's
+  // amount warning reads, the spent markers, 32 bytes each, and the headers
+  // of the chain's blocks from its start to the tip.
+  async function checkReceipts(chain, trees, placeOf, markerAnchor) {
+    const { hc, tip } = chain;
+    progress("checking the coin tree against the block receipts");
+    const blocks = await chainRange(hc.startHeight, tip.number, hc);
+    if (blocks.length === 0 || blocks.some((block) => !block)) {
+      throw receiptsRefused("the page's chain does not hold every block from its start to the tip");
+    }
+    for (let i = 1; i < blocks.length; i += 1) {
+      if (toHex(blocks[i].parentHash) !== toHex(blocks[i - 1].hash)) {
+        throw receiptsRefused(`block ${hc.startHeight + i} of the page's chain does not follow the one before`);
+      }
+    }
+    if (toHex(blocks.at(-1).hash) !== toHex(tip.hash)) throw receiptsRefused("the page's chain does not end at the tip read");
+    const start = placeOf.get(toHex(blocks[0].coinTreeRoot));
+    if (start === undefined) {
+      throw receiptsRefused(`the start of the page's chain, block ${hc.startHeight}, cannot be placed in the endpoint's coin tree`);
+    }
+    await holdReceipts(hc, blocks);
     const markerBlocks = markerAnchor.number - hc.startHeight + 1;
     if (markerBlocks < 1) throw receiptsRefused(`the markers were read at block ${markerAnchor.number}, below the chain's start`);
     const fromGenesis = hc.startHeight === 0;
@@ -1435,7 +1453,7 @@ export function createFlow({
       } catch (err) {
         throw receiptsRefused(err.message);
       }
-      return { commitsByAmount: commitAmounts(hc, blocks), spent };
+      return { commitsByAmount: commitAmounts(hc, blocks), spent, blocks };
     }
     const topics = await coinLogTopics();
     try {
@@ -1444,7 +1462,7 @@ export function createFlow({
     } catch (err) {
       throw receiptsRefused(err.message);
     }
-    return { commitsByAmount: commitAmounts(hc, blocks), spent };
+    return { commitsByAmount: commitAmounts(hc, blocks), spent, blocks };
   }
 
   // How many commits of each amount `v` the coin tree logs of `blocks`' receipts
@@ -1464,6 +1482,61 @@ export function createFlow({
       throw receiptsRefused(err.message);
     }
     return counts;
+  }
+
+  // Checks the key's highest-numbered coin restore found (every earlier
+  // number is spent by construction) against the receipts of its own block
+  // (spec 05, section 8, item 5 and "Marker status query"): every block of
+  // the page's chain from its start to the tip (`blocks`, checkReceipts) is
+  // placed among the prefix roots (`placeOf`), the coin's block is the first
+  // whose place is past the coin's position (blockOfPosition), and its
+  // receipts are asked for with those of decoys, RECEIPT_BLOCKS blocks of the
+  // chain in all, the same ones on every scan of the coin (blockSets), by
+  // holdReceipts. The one coin tree record of those receipts at the coin's
+  // tree index and position must hold the tree's leaf, note and salt there.
+  // A key with no coin asks for its own fixed blocks with no real one among
+  // them; so does a coin older than the chain's start, which no receipt of
+  // the chain covers, under its own id. Blocks already held are not asked
+  // for again, so a scan that has just checked every block's receipts sends
+  // nothing here. A record that is missing, repeated or different is
+  // refused.
+  async function checkHighestCoin(chain, trees, placeOf, blocks, found) {
+    const { hc, tip } = chain;
+    const places = blocks.map((block) => {
+      const place = placeOf.get(toHex(block.coinTreeRoot));
+      if (place === undefined) throw receiptsRefused(`block ${block.number} of the page's chain cannot be placed in the endpoint's coin tree`);
+      return place;
+    });
+    const coin = found.reduce((best, c) => (best === null || BigInt(c.number) > BigInt(best.number) ? c : best), null);
+    let id = `${chain.chainId}:none`;
+    let real = null;
+    if (coin) {
+      const treeIndex = coin.treeIndex ?? 0;
+      id = `${chain.chainId}:${treeIndex}:${coin.position}`;
+      const start = places[0];
+      if (treeIndex > start.treeIndex || (treeIndex === start.treeIndex && coin.position >= start.count)) {
+        const at = blockOfPosition(places, treeIndex, coin.position);
+        if (at === null) throw receiptsRefused(`no block of the page's chain holds position ${coin.position} of coin tree ${treeIndex}`);
+        real = { treeIndex, position: coin.position, block: blocks[at] };
+      }
+    }
+    const numbers = blockSets.blocksFor(id, { first: hc.startHeight, last: tip.number, real: real && real.block.number });
+    await holdReceipts(hc, numbers.map((n) => blocks[n - hc.startHeight]));
+    if (real === null) return;
+    const { treeIndex, position, block } = real;
+    try {
+      const tree = trees.find((t) => t.treeIndex === treeIndex);
+      if (!tree || position >= tree.count) throw new Error(`the leaf at position ${position} of coin tree ${treeIndex} is missing`);
+      const at = position * (32 + NOTE_BYTES);
+      const records = hc.coinLogs.get(toHex(block.hash)).map((log) => coinRecord(log, topicsHere()));
+      checkRecord(findRecord(records, treeIndex, position), {
+        leaf: tree.records.slice(at, at + 32),
+        note: tree.records.slice(at + 32, at + 32 + NOTE_BYTES),
+        salt: tree.salts[position] ?? null,
+      });
+    } catch (err) {
+      throw receiptsRefused(err.message);
+    }
   }
 
   // Everything the endpoint is asked for a key is asked before the key is
@@ -1525,7 +1598,7 @@ export function createFlow({
       return place;
     });
     const rootCounts = places.map((place) => (place.treeIndex === tree.treeIndex ? place.count : 0));
-    const { commitsByAmount, spent } = await checkReceipts(chain, trees, placeOf, markerAnchor);
+    const { commitsByAmount, spent, blocks } = await checkReceipts(chain, trees, placeOf, markerAnchor);
     const settledAt = chain.settled === null ? null : chain.settled - chain.low;
     const settledPlace = settledAt === null ? null : places[settledAt];
     const settledLeaves = settledPlace === null ? tree.leaves : trees[settledPlace.treeIndex].leaves.slice(0, settledPlace.count * 32);
@@ -1535,7 +1608,9 @@ export function createFlow({
     // the pages; by the full page scan when the endpoint does not serve
     // buckets (remembered for it), refuses a bucket read, or serves a bucket
     // that is malformed or disagrees with the pages. Either way the scan's
-    // coins come wholly from one restore, never partly from each.
+    // coins come wholly from one restore, never partly from each. Then the
+    // highest-numbered coin found is checked against the receipts of its own
+    // block, asked for with decoys (checkHighestCoin).
     let found = null;
     if (!bucketless.has(rpc.url)) {
       try {
@@ -1558,6 +1633,7 @@ export function createFlow({
         found.push(...restored.found);
       }
     }
+    await checkHighestCoin(chain, trees, placeOf, blocks, found);
     return { chain, trees, tree, rootHeaders, rootCounts, prefixRoots, settledAt, settledLeaves, fee, found, commitsByAmount };
   }
 
