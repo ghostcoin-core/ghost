@@ -5,8 +5,11 @@
 //! This crate implements specification 01 (`docs/spec/01-commitments-and-keys.md`):
 //!
 //! - [`account`]: the wallet seed and its 24 words, the quantum-safe account
-//!   keys it derives, the account address and the signed account transaction
-//!   (spec 09, sections 5, 6 and 9).
+//!   keys it derives (plain ML-DSA-44 and rescue-key accounts), the account
+//!   address and the signed account transaction (spec 09, sections 5, 6
+//!   and 9).
+//! - [`slh_dsa`]: SLH-DSA-SHAKE-128s (FIPS 205), the rescue key of a
+//!   rescue-key account (spec 09, section 5.1).
 //! - [`key`]: generating, formatting and parsing a Phantom Key, 24 words that
 //!   can also be shown as 21 digit groups, with its check (sections 5 and 6).
 //! - [`derive`]: every secret derived from the digits: the key bytes, `s`,
@@ -70,13 +73,15 @@ pub mod receipts;
 pub mod restore;
 pub mod reveal;
 pub mod seal;
+pub mod slh_dsa;
 pub mod tree_state;
 mod wipe;
 pub mod wordlist;
 
 pub use account::{
-    account_address, AccountKey, AccountTx, AccountTxError, SeedError, SeedWords, SignedAccountTx,
-    VerifiedAccountTx, WalletSeed,
+    account_address, AccountKey, AccountTx, AccountTxError, RescueAccountKey, SeedError, SeedWords, SignedAccountTx,
+    VerifiedAccountTx, WalletSeed, RESCUE_PUBLIC_KEY_BYTES, SCHEME_RESCUE, SCHEME_RESCUE_KEY,
+    SLH_DSA_SIGNATURE_BYTES,
 };
 pub use commit::{
     check_data_commit_value, salted_commit_data, Amount, CoinCommit, Commitment, CommitError, Content,

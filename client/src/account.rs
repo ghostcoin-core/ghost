@@ -17,6 +17,25 @@
 //! envelope            = 0x52 || rlp([... the eleven fields ..., signature])
 //! ```
 //!
+//! A rescue-key account (scheme `0x0003`, spec 09, sections 5.1, 5.2 and 9)
+//! carries an SLH-DSA-SHAKE-128s key next to its ML-DSA-44 key, both derived
+//! from one SHAKE256 output, and is moved with either:
+//!
+//! ```text
+//! out                 = X("ghost/wallet-account/v1", 80, seed, 0x0003, i as 4 bytes)
+//! (sk, mldsa_pk)      = ML-DSA-44.KeyGen_internal(out[0..32])
+//! (slh_sk, slhdsa_pk) = slh_keygen_internal(SK.seed = out[32..48], SK.prf = out[48..64],
+//!                                           PK.seed = out[64..80])
+//! public_key          = mldsa_pk || slhdsa_pk                     1,344 bytes
+//! sender              = first 20 bytes of K("ghost/account-address/v1", 0x0003, public_key)
+//! scheme 0x0003       : ML-DSA-44.Sign(sk, sighash, ctx), 2,420 bytes
+//! scheme 0x0004       : SLH-DSA.Sign(slh_sk, sighash, ctx), 7,856 bytes (the rescue)
+//! ```
+//!
+//! Both schemes carry the whole 1,344-byte key and their own scheme ID in
+//! `unsigned`, and both have the sender derived with `0x0003`: one account,
+//! one nonce. The rescue never touches the ML-DSA half.
+//!
 //! A wallet seed and a Phantom Key never derive each other (spec 09,
 //! section 9): the seed is 32 random bytes shown as 24 words, and the only
 //! tag it is hashed under is `ghost/wallet-account/v1`. Both are 24 words of
@@ -26,11 +45,13 @@
 //!
 //! # Secrets
 //!
-//! [`WalletSeed`], [`SeedWords`] and [`AccountKey`] have no `Debug`,
-//! `Display`, `Clone` or serialisation, and overwrite their bytes with zeros
-//! when dropped (the ML-DSA key through the `zeroize` feature of `ml-dsa`).
-//! Signing is hedged: 32 fresh bytes from the caller's generator are mixed
-//! with the key, as FIPS 204 makes the default.
+//! [`WalletSeed`], [`SeedWords`], [`AccountKey`] and [`RescueAccountKey`]
+//! have no `Debug`, `Display`, `Clone` or serialisation, and overwrite their
+//! bytes with zeros when dropped (the ML-DSA key through the `zeroize`
+//! feature of `ml-dsa`, the SLH-DSA key by [`crate::slh_dsa`]). Signing is
+//! hedged: 32 fresh bytes from the caller's generator are mixed with the
+//! ML-DSA key, as FIPS 204 makes the default, and 16 fresh bytes are the
+//! SLH-DSA `opt_rand` (FIPS 205, section 10.2.1).
 
 use core::fmt;
 
@@ -40,17 +61,34 @@ use sha2::{Digest, Sha256};
 
 use crate::hash::{k, x};
 use crate::key_words;
+use crate::slh_dsa;
 use crate::wipe::wipe;
 use crate::wordlist::{WORD_COUNT, WORDLIST};
 
 /// EIP-2718 type byte of the account transaction in the node.
 pub const ACCOUNT_TX_TYPE: u8 = 0x52;
-/// Scheme ID of ML-DSA-44 (FIPS 204), pure mode: the wallet's only scheme.
+/// Scheme ID of ML-DSA-44 (FIPS 204), pure mode: a plain account, with no
+/// rescue key.
 pub const SCHEME_ML_DSA_44: u16 = 0x0001;
+/// Scheme ID of a rescue-key account signed with ML-DSA-44 (spec 09,
+/// section 5.1).
+pub const SCHEME_RESCUE_KEY: u16 = 0x0003;
+/// Scheme ID of the rescue transaction of a rescue-key account, signed with
+/// SLH-DSA-SHAKE-128s (spec 09, section 5.2). It never enters an address.
+pub const SCHEME_RESCUE: u16 = 0x0004;
 /// ML-DSA-44 public key length.
 pub const PUBLIC_KEY_BYTES: usize = 1312;
 /// ML-DSA-44 signature length.
 pub const SIGNATURE_BYTES: usize = 2420;
+/// The public key of a rescue-key account: the ML-DSA-44 key, then the
+/// SLH-DSA-SHAKE-128s key.
+pub const RESCUE_PUBLIC_KEY_BYTES: usize = PUBLIC_KEY_BYTES + slh_dsa::PUBLIC_KEY_BYTES;
+/// SLH-DSA-SHAKE-128s signature length.
+pub const SLH_DSA_SIGNATURE_BYTES: usize = slh_dsa::SIGNATURE_BYTES;
+/// Bytes of the SHAKE256 output a rescue-key account derives from.
+pub const RESCUE_KEY_SEED_BYTES: usize = 80;
+
+const _: () = assert!(RESCUE_PUBLIC_KEY_BYTES == 1344 && SLH_DSA_SIGNATURE_BYTES == 7856);
 /// The ML-DSA context string of a transaction signature.
 pub const TX_CONTEXT: &[u8] = b"ghost/tx/v1";
 /// Hash tag of the account address (Keccak-256).
@@ -78,10 +116,17 @@ pub const fn scheme_bytes(scheme: u16) -> [u8; 2] {
     scheme.to_be_bytes()
 }
 
+/// The scheme ID an address is derived with (spec 09, section 6):
+/// `0x0003` for a rescue transaction (`0x0004`), the scheme itself otherwise.
+pub const fn account_scheme(scheme: u16) -> u16 {
+    if scheme == SCHEME_RESCUE { SCHEME_RESCUE_KEY } else { scheme }
+}
+
 /// The account address of a scheme and a public key: the first 20 bytes of
-/// `K("ghost/account-address/v1", scheme, public_key)`. It checks nothing.
+/// `K("ghost/account-address/v1", account_scheme(scheme), public_key)`, so
+/// `0x0003` and `0x0004` name one account. It checks nothing.
 pub fn account_address(scheme: u16, public_key: &[u8]) -> [u8; 20] {
-    let h = k(TAG_ACCOUNT_ADDRESS, &[&scheme_bytes(scheme), public_key]);
+    let h = k(TAG_ACCOUNT_ADDRESS, &[&scheme_bytes(account_scheme(scheme)), public_key]);
     h[..20].try_into().expect("20 bytes")
 }
 
@@ -238,6 +283,32 @@ impl WalletSeed {
             signing,
         }
     }
+
+    /// Account `index`'s rescue-key account (scheme `0x0003`): an ML-DSA-44
+    /// key and an SLH-DSA-SHAKE-128s rescue key from one SHAKE256 output
+    /// (spec 09, section 9).
+    pub fn rescue_account(&self, index: u32) -> RescueAccountKey {
+        let mut out = rescue_account_key_seed(&self.0, index);
+        let mut ml_seed: [u8; 32] = out[..32].try_into().expect("32 bytes");
+        let signing = ExpandedSigningKey::<MlDsa44>::from_seed(&ml_seed.into());
+        wipe(&mut ml_seed);
+        let rescue = slh_dsa::SigningKey::from_seeds(
+            out[32..48].try_into().expect("16 bytes"),
+            out[48..64].try_into().expect("16 bytes"),
+            out[64..80].try_into().expect("16 bytes"),
+        );
+        wipe(&mut out);
+        let mut public_key = [0u8; RESCUE_PUBLIC_KEY_BYTES];
+        public_key[..PUBLIC_KEY_BYTES].copy_from_slice(&signing.verifying_key().encode());
+        public_key[PUBLIC_KEY_BYTES..].copy_from_slice(&rescue.public_key());
+        RescueAccountKey {
+            index,
+            address: account_address(SCHEME_RESCUE_KEY, &public_key),
+            public_key,
+            signing,
+            rescue,
+        }
+    }
 }
 
 impl Drop for WalletSeed {
@@ -251,6 +322,14 @@ impl Drop for WalletSeed {
 /// algorithm 6). It is a secret: the caller wipes it.
 pub fn account_key_seed(seed: &[u8; SEED_BYTES], scheme: u16, index: u32) -> [u8; 32] {
     x::<32>(TAG_WALLET_ACCOUNT, &[seed, &scheme_bytes(scheme), &index.to_be_bytes()])
+}
+
+/// `X("ghost/wallet-account/v1", 80, seed, 0x0003, i)`, the one output a
+/// rescue-key account derives from: bytes 0..32 are the ML-DSA-44 `key_seed`,
+/// bytes 32..80 are the SLH-DSA `SK.seed`, `SK.prf` and `PK.seed` (FIPS 205,
+/// algorithm 18). It is a secret: the caller wipes it.
+pub fn rescue_account_key_seed(seed: &[u8; SEED_BYTES], index: u32) -> [u8; RESCUE_KEY_SEED_BYTES] {
+    x::<RESCUE_KEY_SEED_BYTES>(TAG_WALLET_ACCOUNT, &[seed, &scheme_bytes(SCHEME_RESCUE_KEY), &index.to_be_bytes()])
 }
 
 fn checksum(seed: &[u8; SEED_BYTES]) -> u8 {
@@ -354,6 +433,89 @@ impl AccountKey {
     }
 }
 
+/// One rescue-key account of a wallet (scheme `0x0003`, spec 09,
+/// section 5.1): its ML-DSA-44 key, its SLH-DSA-SHAKE-128s rescue key, the
+/// 1,344-byte public key and the address.
+pub struct RescueAccountKey {
+    index: u32,
+    address: [u8; 20],
+    public_key: [u8; RESCUE_PUBLIC_KEY_BYTES],
+    signing: ExpandedSigningKey<MlDsa44>,
+    rescue: slh_dsa::SigningKey,
+}
+
+impl RescueAccountKey {
+    /// The account index the key was derived at.
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// The account address, derived with `0x0003` (spec 09, section 5.1).
+    pub fn address(&self) -> &[u8; 20] {
+        &self.address
+    }
+
+    /// `mldsa_pk || slhdsa_pk`, 1,344 bytes.
+    pub fn public_key(&self) -> &[u8; RESCUE_PUBLIC_KEY_BYTES] {
+        &self.public_key
+    }
+
+    /// The ML-DSA-44 half of the public key, 1,312 bytes.
+    pub fn ml_dsa_public_key(&self) -> &[u8; PUBLIC_KEY_BYTES] {
+        self.public_key[..PUBLIC_KEY_BYTES].try_into().expect("1,312 bytes")
+    }
+
+    /// The SLH-DSA half of the public key, `PK.seed || PK.root`.
+    pub fn slh_dsa_public_key(&self) -> &[u8; slh_dsa::PUBLIC_KEY_BYTES] {
+        self.public_key[PUBLIC_KEY_BYTES..].try_into().expect("32 bytes")
+    }
+
+    /// Signs `tx` on the normal path: scheme `0x0003`, hedged ML-DSA-44 with
+    /// the context `ghost/tx/v1`, a 2,420-byte signature.
+    pub fn sign<R: CryptoRng + ?Sized>(&self, tx: &AccountTx, genesis: &[u8; 32], rng: &mut R) -> SignedAccountTx {
+        let sighash = signature_hash(genesis, &tx.unsigned_hash(SCHEME_RESCUE_KEY, &self.public_key));
+        let signature: [u8; SIGNATURE_BYTES] = self
+            .signing
+            .sign_randomized(&sighash, TX_CONTEXT, rng)
+            .expect("the context is shorter than 256 bytes and the generator cannot fail")
+            .encode()
+            .into();
+        self.finish(tx, SCHEME_RESCUE_KEY, sighash, &signature)
+    }
+
+    /// Signs `tx` as the rescue transaction: scheme `0x0004`, hedged
+    /// SLH-DSA-SHAKE-128s with the context `ghost/tx/v1`, a 7,856-byte
+    /// signature. Nothing here uses the ML-DSA key: the rescue works with
+    /// ML-DSA broken.
+    pub fn sign_rescue<R: CryptoRng + ?Sized>(&self, tx: &AccountTx, genesis: &[u8; 32], rng: &mut R) -> SignedAccountTx {
+        let sighash = signature_hash(genesis, &tx.unsigned_hash(SCHEME_RESCUE, &self.public_key));
+        let signature = self.rescue.sign(&sighash, TX_CONTEXT, rng).expect("the context is shorter than 256 bytes");
+        self.finish(tx, SCHEME_RESCUE, sighash, &signature[..])
+    }
+
+    fn finish(&self, tx: &AccountTx, scheme: u16, sighash: [u8; 32], signature: &[u8]) -> SignedAccountTx {
+        let envelope = tx.envelope(scheme, &self.public_key, signature);
+        SignedAccountTx {
+            hash: crate::hash::keccak256(&envelope),
+            sighash,
+            sender: self.address,
+            envelope,
+        }
+    }
+}
+
+/// Whether `signature` is the rescue signature (scheme `0x0004`) of
+/// `sighash` by a 1,344-byte rescue-key `public_key`: SLH-DSA-SHAKE-128s
+/// against its last 32 bytes only, with the context `ghost/tx/v1` (spec 09,
+/// section 6, step 6). A key or signature of the wrong length is not valid.
+pub fn rescue_signature_verifies(public_key: &[u8], sighash: &[u8; 32], signature: &[u8]) -> bool {
+    if public_key.len() != RESCUE_PUBLIC_KEY_BYTES {
+        return false;
+    }
+    let slhdsa_pk = public_key[PUBLIC_KEY_BYTES..].try_into().expect("32 bytes");
+    slh_dsa::verify(slhdsa_pk, sighash, TX_CONTEXT, signature)
+}
+
 /// One entry of an EIP-2930 access list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessListEntry {
@@ -451,7 +613,7 @@ pub enum AccountTxError {
     Type,
     /// The RLP is not the canonical twelve-item list.
     Encoding(&'static str),
-    /// A scheme other than ML-DSA-44.
+    /// A scheme other than `0x0001`, `0x0003` and `0x0004`.
     Scheme(u16),
     /// A key or signature of the wrong length.
     Length,
@@ -544,10 +706,15 @@ pub fn verify_envelope(envelope: &[u8], chain_id: u64, genesis: &[u8; 32]) -> Re
     r.end().map_err(|_| Encoding("the list does not have exactly twelve items"))?;
 
     let scheme = u16::from_be_bytes(scheme);
-    if scheme != SCHEME_ML_DSA_44 {
-        return Err(AccountTxError::Scheme(scheme));
-    }
-    if public_key.len() != PUBLIC_KEY_BYTES || signature.len() != SIGNATURE_BYTES {
+    // Spec 09, section 6, step 3 (the stand-in node sets no
+    // `ML_RESCUE_HEIGHT`, so 0x0003 is accepted at every height).
+    let (key_len, sig_len) = match scheme {
+        SCHEME_ML_DSA_44 => (PUBLIC_KEY_BYTES, SIGNATURE_BYTES),
+        SCHEME_RESCUE_KEY => (RESCUE_PUBLIC_KEY_BYTES, SIGNATURE_BYTES),
+        SCHEME_RESCUE => (RESCUE_PUBLIC_KEY_BYTES, SLH_DSA_SIGNATURE_BYTES),
+        _ => return Err(AccountTxError::Scheme(scheme)),
+    };
+    if public_key.len() != key_len || signature.len() != sig_len {
         return Err(AccountTxError::Length);
     }
     if tx_chain_id != chain_id {
@@ -564,12 +731,17 @@ pub fn verify_envelope(envelope: &[u8], chain_id: u64, genesis: &[u8; 32]) -> Re
         data,
         access_list,
     };
+    // Step 5: 0x0004 derives the sender with 0x0003.
     let sender = account_address(scheme, public_key);
-    let pk = VerifyingKey::<MlDsa44>::decode(&EncodedVerifyingKey::<MlDsa44>::try_from(public_key).expect("length checked"));
-    let sig = Signature::<MlDsa44>::decode(&EncodedSignature::<MlDsa44>::try_from(signature).expect("length checked"))
-        .ok_or(AccountTxError::Signature)?;
     let sighash = signature_hash(genesis, &tx.unsigned_hash(scheme, public_key));
-    if !pk.verify_with_context(&sighash, TX_CONTEXT, &sig) {
+    // Step 6: ML-DSA-44 against the first 1,312 bytes of the key, or for a
+    // rescue SLH-DSA against the last 32.
+    let valid = if scheme == SCHEME_RESCUE {
+        rescue_signature_verifies(public_key, &sighash, signature)
+    } else {
+        ml_dsa_signature_verifies(&public_key[..PUBLIC_KEY_BYTES], &sighash, signature)
+    };
+    if !valid {
         return Err(AccountTxError::Signature);
     }
     // The envelope re-encodes to itself: one transaction, one encoding.
@@ -577,6 +749,17 @@ pub fn verify_envelope(envelope: &[u8], chain_id: u64, genesis: &[u8; 32]) -> Re
         return Err(Encoding("not the canonical encoding"));
     }
     Ok(VerifiedAccountTx { tx, scheme, sender, hash: crate::hash::keccak256(envelope) })
+}
+
+/// ML-DSA-44 verification of `signature` over `sighash` with the context
+/// `ghost/tx/v1`, against a 1,312-byte key; lengths already checked.
+fn ml_dsa_signature_verifies(public_key: &[u8], sighash: &[u8; 32], signature: &[u8]) -> bool {
+    let pk = VerifyingKey::<MlDsa44>::decode(&EncodedVerifyingKey::<MlDsa44>::try_from(public_key).expect("length checked"));
+    let Some(sig) = Signature::<MlDsa44>::decode(&EncodedSignature::<MlDsa44>::try_from(signature).expect("length checked"))
+    else {
+        return false;
+    };
+    pk.verify_with_context(sighash, TX_CONTEXT, &sig)
 }
 
 /// The few RLP rules the account transaction needs: byte strings, unsigned
