@@ -1,7 +1,8 @@
 """Tests for check_trees_and_headers.py: it passes on the specification and
 fails when a section, a parameter, a table, the header layout, the genesis
-list, a tree, rollover, marker-set or header vector, the encoder's output, a requirement,
-the recovery test, a conflict or a tag is damaged. It also checks that the
+list, a tree, rollover, marker-set, witness-extension, marker-query or header vector, the
+encoder's output, a requirement, the restore reads of section 8 and their cost, the
+recovery test, a conflict or a tag is damaged. It also checks that the
 separately written encoder agrees with the checker's own RLP code and stays
 separate from it."""
 
@@ -260,6 +261,197 @@ class CheckerTest(unittest.TestCase):
         self.assert_gap(text, "the witness is accepted for reject-equal")
         text = self.in_block("marker-set-absence", "reject-above-next = eeee", "reject-above-next = 8888")
         self.assert_gap(text, "the witness is accepted for reject-above-next")
+
+    # -- witness extension and marker status query ------------------------
+
+    def without(self, start, end, phrase):
+        """The text with every `phrase` between start and end replaced, also
+        where it wraps across lines."""
+        body = self.text[start:end]
+        pattern = r"\s+".join(re.escape(part) for part in phrase.split())
+        flat = re.sub(pattern, "x", body, flags=re.I)
+        self.assertNotEqual(flat, body, f"'{phrase}' is not in the span")
+        return self.text[:start] + flat + self.text[end:]
+
+    def subsection_span(self, title):
+        start = self.text.index(f"\n### {title}\n")
+        end = min(i for i in (self.text.find("\n### ", start + 1), self.text.find("\n## ", start + 1))
+                  if i > 0)
+        return start, end
+
+    def assert_subsection_words(self, title):
+        start, end = self.subsection_span(title)
+        self.assert_gap(self.text[:start] + f"\n### Other {title}\n" + self.text[start + len(title) + 6:],
+                        f"has no subsection '{title}'")
+        for phrase in checker.RESTORE_SUBSECTIONS[title]:
+            with self.subTest(phrase=phrase):
+                self.assert_gap(self.without(start, end, phrase),
+                                f"subsection '{title}' does not mention '{phrase}'")
+
+    def test_witness_extension_vectors_required(self):
+        for name in checker.WITNESS_EXTENSION_VECTORS:
+            with self.subTest(name=name):
+                self.assert_gap(self.damaged(f"[{name}]\n", f"[renamed-{name}]\n"), f"no vector {name}")
+        same, new = checker.WITNESS_EXTENSION_VECTORS
+        # The page read whole: the witness before and after are recomputed
+        # from its leaves and must hash to their header roots.
+        text = self.in_block(same, "c4961615", "c4961616")
+        self.assert_gap(text, f"vector {same}: witness-after differs from the witness recomputed")
+        self.assert_gap(text, f"vector {same}: witness-after does not hash to the header root")
+        text = self.in_block(same, "f4845eed", "f4845eee")
+        self.assert_gap(text, f"vector {same}: witness-before differs from the witness at count-before")
+        self.assert_gap(text, f"vector {same}: witness-before does not hash to header-root-before")
+        self.assert_gap(self.in_block(same, "c2c2c2c2", "c3c2c2c2"),
+                        f"vector {same}: page-roots: the root of page 0 is not the root of the page "
+                        "read whole")
+        self.assert_gap(self.in_block(same, "count-after = 3", "count-after = 4"),
+                        f"vector {same}: leaves-before and leaves-after are not page 0")
+        self.assert_gap(self.in_block(same, "pages-read = 0", "pages-read = 0 1"),
+                        f"vector {same}: pages-read is not 1 distinct pages")
+        # A full page: the stored in-page siblings are final and climb to the
+        # page's root in the tail.
+        text = self.in_block(new, "in-page-siblings = d0d0", "in-page-siblings = d1d0")
+        self.assert_gap(text, f"vector {new}: witness-before does not start with the in-page siblings")
+        self.assert_gap(text, f"vector {new}: page-roots: the root of page 0 is not the root climbed")
+        self.assert_gap(self.in_block(new, "count-before = 4096", "count-before = 4095"),
+                        f"vector {new}: page 0 is not full at count-before")
+        # The tail starts at the scan start rounded down to 65,536 pages.
+        self.assert_gap(self.in_block(new, "scan-start = 1", "scan-start = 65537"),
+                        f"vector {new}: tail-start is 0, expected the scan start 65537 rounded down "
+                        "to a multiple of 65536 pages")
+        text = self.in_block(new, "stored-page-roots =\n", f"stored-page-roots = {'e1' * 32}\n")
+        self.assert_gap(text, f"vector {new}: stored-page-roots holds 1 roots, expected the 0 below "
+                              "the tail")
+        # The section 8 text of the tail read.
+        self.assert_subsection_words("Reading the tail of the page roots")
+
+    def test_witness_extension_rejects_a_wrong_tail(self):
+        same, new = checker.WITNESS_EXTENSION_VECTORS
+        # One opaque root of the tail changed.
+        text = self.in_block(new, "e2" * 32, "e3" * 32)
+        self.assert_gap(text, f"vector {new}: the page-root tail does not hash to the header root")
+        self.assert_gap(text, f"vector {new}: witness-after differs from the witness recomputed")
+        # The root of the leaf's own page changed in the tail.
+        text = self.in_block(new, "page-roots = 2716", "page-roots = 3716")
+        self.assert_gap(text, f"vector {new}: the page-root tail does not hash to the header root")
+        self.assert_gap(text, f"vector {new}: page-roots: the root of page 0 is not the root climbed")
+        # A tail that stops before the last page, or one page too many.
+        self.assert_gap(self.in_block(new, " " + "e2" * 32 + "\n", "\n"),
+                        f"vector {new}: the page-root list holds 2 pages, the tree at count-after "
+                        "10000 has 3")
+        self.assert_gap(self.in_block(new, "count-after = 10000", "count-after = 13000"),
+                        f"vector {new}: the page-root list holds 3 pages, the tree at count-after "
+                        "13000 has 4")
+        # A header root the tail does not hash to.
+        for name, root in ((same, "ad00a34b"), (new, "c81d94ca")):
+            with self.subTest(name=name):
+                text = self.in_block(name, f"header-root = {root}", "header-root = 0" + root[1:])
+                self.assert_gap(text, f"vector {name}: the page-root tail does not hash to the header root")
+                self.assert_gap(text, f"vector {name}: witness-after does not hash to the header root")
+        # The checker's own code: a witness from leaves and page roots climbs
+        # to the tree root, and a wrong page root does not.
+        rng = random.Random(3)
+        tag, depth = checker.TAG_COIN_NODE, 2
+        leaves = [bytes(rng.randrange(256) for _ in range(32)) for _ in range(11)]
+        pages = [leaves[i:i + 4] for i in range(0, len(leaves), 4)]
+        roots = [checker.page_root(tag, page, depth) for page in pages]
+        root = checker.tree_root(tag, leaves)
+        for position, leaf in enumerate(leaves):
+            path = checker.witness(tag, pages[position // 4], roots, position, depth)
+            self.assertEqual(checker.fold(tag, leaf, position, path), root)
+            wrong = list(roots)
+            wrong[(position // 4 + 1) % len(roots)] = bytes(32)
+            path = checker.witness(tag, pages[position // 4], wrong, position, depth)
+            self.assertNotEqual(checker.fold(tag, leaf, position, path), root)
+
+    def test_marker_query_rules_required(self):
+        one = "marker-query-one-real"
+        # The section 8 text: 64 markers, one real, 63 decoys, spent needs a
+        # receipt, not spent is unauthenticated, and its consequence.
+        self.assert_subsection_words("Marker status query")
+        for start, end in (("**Marker status.**", "\n\n"),
+                           ("4. **Marker page integrity.**", "5. **Indexed logs.**")):
+            with self.subTest(start=start):
+                at = self.text.index(start)
+                text = self.without(at, self.text.index(end, at), "unchecked, not reported spent")
+                self.assert_gap(text, "give 'unchecked, not reported spent' for a 64-marker query")
+        # Spent needs a receipt of its block; not spent leaves the real marker
+        # unchecked.
+        self.assert_gap(self.in_block(one, "answers = not-spent", "answers = spent-1"),
+                        f"vector {one}: the answer spent-1 for 5a5972a2ed527a3d3e8a844c7dc51475add0d52f8"
+                        "aba4cd1a17a277216cdeec2 has no receipt")
+        answers = ["not-spent"] * 64
+        old = "answers = " + " ".join(answers)
+        answers[37] = "spent-1"
+        new = "answers = " + " ".join(answers)
+        text = self.in_block(one, old, new)
+        self.assert_gap(text, f"vector {one}: the answer spent-1 for {'88' * 32} has no receipt")
+        self.assert_gap(text, f"vector {one}: status is unchecked-not-reported-spent, the answer for the "
+                              "real marker gives rejected")
+        text = self.in_block(one, old, new + f"\nreceipt-markers-1 = {'c340c4a3' * 8} {'88' * 32}")
+        self.assert_gap(text, f"vector {one}: status is unchecked-not-reported-spent, the answer for the "
+                              "real marker gives spent")
+        self.assertFalse(any("has no receipt" in e for e in self.errors(text)))
+        self.assert_gap(self.in_block(one, "status = unchecked-not-reported-spent", "status = spent"),
+                        f"vector {one}: status is spent, the answer for the real marker gives "
+                        "unchecked-not-reported-spent")
+        # A decoy is never a marker from the chain, and the real one is in the query.
+        spent = "c340c4a3020d70f72ed289d4e5fcc0c41cd41224d69bea229f0f8a6ecbb77e3b"
+        first = "5a5972a2ed527a3d3e8a844c7dc51475add0d52f8aba4cd1a17a277216cdeec2"
+        self.assert_gap(self.in_block(one, f"markers = {first}", f"markers = {spent}"),
+                        f"vector {one}: decoy {spent} is a spent marker of a marker-set vector")
+        self.assert_gap(self.in_block(one, "real = 8888", "real = 7888"),
+                        f"vector {one}: real is not one of the markers")
+        for name in checker.MARKER_QUERY_VECTORS:
+            with self.subTest(name=name):
+                self.assert_gap(self.damaged(f"[{name}]\n", f"[renamed-{name}]\n"), f"no vector {name}")
+
+    def test_marker_query_rejects_a_wrong_count(self):
+        one, short = checker.MARKER_QUERY_VECTORS
+        last = "b0c48d43efdf1668e8e3f912e3369b062ad00f37d33b188a421f83e211dd247c"
+        # 63 markers, a repeated marker or a short one is refused.
+        self.assert_gap(self.in_block(one, f" {last}\n", "\n"),
+                        f"vector {one}: valid is yes, a query of 63 markers gives marker-count")
+        self.assert_gap(self.in_block(one, f" {last}\n", f" {last} {'77' * 32}\n"),
+                        f"vector {one}: valid is yes, a query of 65 markers gives marker-count")
+        self.assert_gap(self.in_block(one, "dd6cfc2b9c78af075d55b674e57682ae6a2682d1cac99225fd99152388078586",
+                                      "5a5972a2ed527a3d3e8a844c7dc51475add0d52f8aba4cd1a17a277216cdeec2"),
+                        f"vector {one}: valid is yes, a query of 64 markers gives duplicate-marker")
+        self.assert_gap(self.in_block(one, "markers = 5a59", "markers = 5a5"),
+                        f"vector {one}: valid is yes, a query of 64 markers gives marker-size")
+        # The 63-marker vector is rejected for its count, and only then.
+        self.assert_gap(self.in_block(short, "valid = no", "valid = yes"),
+                        f"vector {short}: valid is yes, a query of 63 markers gives marker-count")
+        self.assert_gap(self.in_block(short, "reject = marker-count", "reject = duplicate-marker"),
+                        f"vector {short}: rejected as marker-count, the vector says duplicate-marker")
+        tail = "f4a0b1e4e19cd07083b733855f0c9a099b62adc016fc2369b11d99fd346fc014\n"
+        self.assert_gap(self.in_block(short, tail, tail[:-1] + f" {last}\n"),
+                        f"vector {short}: valid is no, a query of 64 markers gives yes")
+        markers = [f"{i:064x}" for i in range(1, 65)]
+        self.assertIsNone(checker.query_reject(markers))
+        self.assertEqual(checker.query_reject(markers[:63]), "marker-count")
+        self.assertEqual(checker.query_reject(markers + ["ff" * 32]), "marker-count")
+        self.assertEqual(checker.query_reject(markers[:63] + markers[:1]), "duplicate-marker")
+        self.assertEqual(checker.query_reject(markers[:63] + ["ff" * 31]), "marker-size")
+
+    def test_forbidden_rule_names_the_new_reads(self):
+        spans = (("the 'Forbidden.' paragraph", "**Forbidden.**", "\n\n"),
+                 ("TH-19", "- **TH-19.", "- **TH-20."))
+        for label, start, end in spans:
+            at = self.text.index(start)
+            stop = self.text.index(end, at)
+            for read in checker.ALLOWED_READS:
+                with self.subTest(label=label, read=read):
+                    self.assert_gap(self.without(at, stop, read), f"{label} does not name the {read}")
+            with self.subTest(label=label, read="exactly 64 distinct"):
+                self.assert_gap(self.without(at, stop, "exactly 64 distinct"),
+                                f"{label} does not refuse a status query that is not exactly 64")
+        # The bucket sentences stay.
+        self.assertIn("a bucket read by tag prefix", " ".join(self.text.split()))
+        self.assertIn("`bucket_bits(n)` bits, 16 tags a batch", " ".join(self.text.split()))
+
+    def test_restore_cost_names_the_missed_ceilings(self):
+        self.assert_subsection_words("Cost against the restore ceilings")
 
     def test_base_fee_required(self):
         text = self.damaged("| `baseFee` | integer below 2^256 | base, required |",
