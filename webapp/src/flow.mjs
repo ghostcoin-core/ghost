@@ -7,14 +7,14 @@
 // - the chosen node endpoint, by JSON-RPC: headers, which the worker's header
 //   chain adopts only once their difficulty and proof-of-work seal check,
 //   from the start this build pins for the network; the coin tree in whole
-//   pages, the spent markers in whole pages, the block receipts of every
-//   block of the page's header chain (eth_getBlockReceipts by block hash),
-//   transaction receipts, and the reveal transaction. No request names a
-//   key, a commitment, a position or a marker; the reveal itself carries
-//   only public fields. Every leaf, note, salt and spent marker a scan reads
-//   is checked against the block receipts, and those against the
-//   receiptsRoot of the headers the page's chain holds, before the key is
-//   tried on a note;
+//   pages, the block receipts of every block of the page's header chain
+//   (eth_getBlockReceipts by block hash), transaction receipts, and the
+//   reveal transaction. No request names a key, a commitment, a position or
+//   a marker; the reveal itself carries only public fields. Every leaf, note
+//   and salt a scan reads is checked against the block receipts, the spent
+//   markers are taken from those receipts' reveal logs, and the receipts are
+//   checked against the receiptsRoot of the headers the page's chain holds,
+//   before the key is tried on a note;
 // - the background worker (prover.mjs), which holds the WebAssembly module
 //   and receives a key's words (or their 21 digit groups) for the length of
 //   one request;
@@ -183,14 +183,15 @@ function powFailed(detail) {
   return new ChainRefused(`${POW_FAILED} (${detail}), ${NO_CONFIRMATIONS}`);
 }
 
-// What the page says when the endpoint's coin tree or spent markers do not
-// match the block receipts of the page's header chain: a leaf, note, salt or
-// marker the receipts do not show, a missing, repeated or reordered page, a
-// receipts root that differs, a block whose receipts cannot be fetched, or a
-// start the page cannot place in the tree. Uncertain means refused: the scan
-// stops before the key is tried on any note, so nothing the endpoint sees
-// afterwards depends on the key.
-export const RECEIPTS_FAILED = "the endpoint's coin tree or spent markers do not match the block receipts";
+// What the page says when the endpoint's coin tree does not match the block
+// receipts of the page's header chain: a leaf, note or salt the receipts do
+// not show, a missing, repeated or reordered page, a receipts root that
+// differs, a malformed coin tree log, a block whose receipts cannot be
+// fetched, or a start the page cannot place in the tree. The spent markers
+// come from those receipts, not from the endpoint. Uncertain means refused:
+// the scan stops before the key is tried on any note, so nothing the endpoint
+// sees afterwards depends on the key.
+export const RECEIPTS_FAILED = "the endpoint's coin tree does not match the block receipts";
 const KEY_UNUSED = "so the app takes nothing from it and uses the key for nothing";
 
 function receiptsRefused(detail) {
@@ -595,6 +596,20 @@ export function coinRecord(log, topics) {
   throw new Error("a coin tree log's first topic is neither a commit nor a reveal");
 }
 
+// The spent markers the receipts of a scan's chain hold: the `marker` of
+// every reveal record of the first `markerBlocks` of `blockRecords` (one list
+// per block in chain order, coinRecord), in block and log order, 32 bytes
+// each in one Uint8Array. Spec 05, section 8, "Marker status": a wallet takes
+// marker status only from these, never from a list the endpoint serves.
+export function heldMarkers(blockRecords, markerBlocks) {
+  const markers = blockRecords
+    .slice(0, markerBlocks)
+    .flat()
+    .filter((record) => record.marker)
+    .map((record) => record.marker);
+  return concat(markers);
+}
+
 // Checks every coin tree of a scan whose tree has rolled over (`trees`, as
 // fetchTrees reads them, tree k at index k) and its spent markers against the
 // coin tree records of the receipts of the page's chain from its start to the
@@ -651,11 +666,9 @@ export function checkTreesAgainstReceipts({ trees, blockRecords, start, treeLeav
     if (tree.treeIndex < start.treeIndex || expected[tree.treeIndex] === tree.count) continue;
     throw new Error(`the leaf at position ${expected[tree.treeIndex]} of coin tree ${tree.treeIndex} is not in the receipts`);
   }
-  const held = blockRecords
-    .slice(0, markerBlocks)
-    .flat()
-    .filter((record) => record.marker)
-    .map((record) => toHex(record.marker));
+  const held = [];
+  const heldBytes = heldMarkers(blockRecords, markerBlocks);
+  for (let i = 0; i < heldBytes.length; i += 32) held.push(toHex(heldBytes.slice(i, i + 32)));
   const listed = [];
   for (let i = 0; i < markers.length; i += 32) listed.push(toHex(markers.slice(i, i + 32)));
   if (!fromGenesis && listed.length < held.length) throw new Error(`spent marker ${listed.length} is missing`);
@@ -1282,9 +1295,14 @@ export function createFlow({
   // (client/src/hash.rs: Keccak-256 of the tag's length byte and the tag),
   // asked of the worker once per page session.
   let logTopics = null;
-  // The same topics hashed in the page (commitAmounts).
+  // The same topics hashed in the page (commitAmounts, the spent markers of
+  // checkReceipts).
   let logTopicsHere = null;
   const tagBytes = (tag) => concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]);
+  function topicsHere() {
+    logTopicsHere ??= { commit: toHex(keccak256(tagBytes(COMMIT_RECEIPT_TAG))), reveal: toHex(keccak256(tagBytes(REVEAL_RECEIPT_TAG))) };
+    return logTopicsHere;
+  }
   async function coinLogTopics() {
     const topic = async (tag) => toHex((await prover.request("keccak256", { bytes: tagBytes(tag) })).hash);
     logTopics ??= { commit: await topic(COMMIT_RECEIPT_TAG), reveal: await topic(REVEAL_RECEIPT_TAG) };
@@ -1311,22 +1329,10 @@ export function createFlow({
     return { hc, chainId, settled, low, headers, at, tip, genesis };
   }
 
-  // Every spent coin marker as of `anchor`, in whole marker pages. No header
-  // root covers them (spec 05, section 8), so the scan checks them against
-  // the reveal receipts of the blocks up to `anchor` before they are used.
-  async function fetchSpent(anchor) {
-    const markers = [];
-    for (let p = 0; ; p += 1) {
-      const page = await rpc.call("ghost_getTreePage", ["coin-markers", "0x0", toQuantity(p), toHex(anchor.hash)]);
-      const count = Number(quantity(page.count));
-      if (count > PAGE_LEAVES || page.markers.length !== count) throw new Error(`marker page ${p} is malformed`);
-      for (const marker of page.markers) markers.push(fromHex(marker, 32));
-      if (count < PAGE_LEAVES) return concat(markers);
-    }
-  }
-
-  // Checks a scan's tree and markers against the block receipts (spec 05,
-  // section 8, item 5 and "Marker status"). The blocks are those of the
+  // Checks a scan's tree against the block receipts and takes its spent
+  // markers from them (spec 05, section 8, item 5 and "Marker status"). The
+  // endpoint is never asked for a marker list: no header root covers one, and
+  // the checked receipts already hold every marker. The blocks are those of the
   // page's header chain from its start (genesis, or the pinned header) to
   // the tip, each the parent of the next. The receipts of each block the
   // worker does not hold yet are asked for by its hash, one block after
@@ -1337,9 +1343,13 @@ export function createFlow({
   // header the page's chain holds for that hash, then the leaves, notes and
   // salts from the start's leaf count (placed by its coin root among the
   // prefix roots of the leaves, 0 at genesis) to the tip against the leaves
-  // and notes the receipts appended, and the markers against the reveal
-  // receipts of the blocks up to the block they were read at. Any mismatch
-  // is refused.
+  // and notes the receipts appended. The spent markers are those of the
+  // reveal logs of those checked receipts, of the blocks from the start up
+  // to `markerAnchor`, in block and log order (heldMarkers); they are still
+  // handed to the worker's check as its marker list, a guard that they are
+  // exactly what it holds. Any mismatch is refused. A chain from a pinned
+  // start holds no receipt before the pin, so a spend before it is not among
+  // the markers.
   //
   // `trees` are the scan's coin trees (readTrees) and `placeOf` gives the
   // tree index and leaf count of each of their prefix roots. The worker's
@@ -1348,9 +1358,10 @@ export function createFlow({
   // tree, from the coin tree logs of the receipts the worker has just checked
   // against their receiptsRoot (checkTreesAgainstReceipts).
   //
-  // Returns how many commits of each amount those checked receipts hold
-  // (commitAmounts), which a Summon's amount warning reads.
-  async function checkReceipts(chain, trees, spent, placeOf, markerAnchor) {
+  // Returns `{ commitsByAmount, spent }`: how many commits of each amount
+  // those checked receipts hold (commitAmounts), which a Summon's amount
+  // warning reads, and the spent markers, 32 bytes each.
+  async function checkReceipts(chain, trees, placeOf, markerAnchor) {
     const { hc, tip } = chain;
     progress("checking the coin tree against the block receipts");
     const blocks = await chainRange(hc.startHeight, tip.number, hc);
@@ -1402,6 +1413,13 @@ export function createFlow({
     const markerBlocks = markerAnchor.number - hc.startHeight + 1;
     if (markerBlocks < 1) throw receiptsRefused(`the markers were read at block ${markerAnchor.number}, below the chain's start`);
     const fromGenesis = hc.startHeight === 0;
+    let spent;
+    try {
+      const blockRecords = blocks.map((block) => hc.coinLogs.get(toHex(block.hash)).map((log) => coinRecord(log, topicsHere())));
+      spent = heldMarkers(blockRecords, markerBlocks);
+    } catch (err) {
+      throw receiptsRefused(err.message);
+    }
     if (trees.length === 1) {
       const [tree] = trees;
       try {
@@ -1417,7 +1435,7 @@ export function createFlow({
       } catch (err) {
         throw receiptsRefused(err.message);
       }
-      return commitAmounts(hc, blocks);
+      return { commitsByAmount: commitAmounts(hc, blocks), spent };
     }
     const topics = await coinLogTopics();
     try {
@@ -1426,7 +1444,7 @@ export function createFlow({
     } catch (err) {
       throw receiptsRefused(err.message);
     }
-    return commitAmounts(hc, blocks);
+    return { commitsByAmount: commitAmounts(hc, blocks), spent };
   }
 
   // How many commits of each amount `v` the coin tree logs of `blocks`' receipts
@@ -1434,12 +1452,11 @@ export function createFlow({
   // has just checked against each block's receiptsRoot, so this asks nothing
   // of the endpoint or the worker: the topics are hashed here (keccak256).
   function commitAmounts(hc, blocks) {
-    logTopicsHere ??= { commit: toHex(keccak256(tagBytes(COMMIT_RECEIPT_TAG))), reveal: toHex(keccak256(tagBytes(REVEAL_RECEIPT_TAG))) };
     const counts = new Map();
     try {
       for (const block of blocks) {
         for (const log of hc.coinLogs.get(toHex(block.hash))) {
-          const { v } = coinRecord(log, logTopicsHere);
+          const { v } = coinRecord(log, topicsHere());
           if (v !== null) counts.set(v, (counts.get(v) ?? 0) + 1);
         }
       }
@@ -1450,19 +1467,20 @@ export function createFlow({
   }
 
   // Everything the endpoint is asked for a key is asked before the key is
-  // tried on a note: the headers, the tree, the markers and the block
-  // receipts, all fixed by the tip and by what the page already holds, never
-  // by the key. The page roots and leaves are checked against the tip's coin
-  // root; no header root covers the notes, salts and markers, so the leaves,
-  // notes and salts from the chain's start on, and the markers, are checked
-  // against the block receipts (checkReceipts). An endpoint that altered,
-  // dropped, reordered, hid or invented any of them is refused there, before
-  // restore, so nothing it sees depends on the key; on every path after
-  // restore, found or not, the requests are the same too.
+  // tried on a note: the headers, the tree and the block receipts, in that
+  // order, all fixed by the tip and by what the page already holds, never by
+  // the key. The page roots and leaves are checked against the tip's coin
+  // root; no header root covers the notes and salts, so the leaves, notes and
+  // salts from the chain's start on are checked against the block receipts
+  // (checkReceipts). An endpoint that altered, dropped, reordered, hid or
+  // invented any of them is refused there, before restore, so nothing it sees
+  // depends on the key; on every path after restore, found or not, the
+  // requests are the same too.
   //
-  // The markers are those as of the tip (CONFIRMATIONS blocks, the tip's own
-  // included), so a key shows claimed as soon as a block holds its coin's
-  // spend.
+  // The spent markers are taken from those checked receipts, never from the
+  // endpoint: those of the reveals of the blocks up to the marker anchor
+  // (CONFIRMATIONS blocks below the tip, the tip's own included), so a key
+  // shows claimed as soon as a block holds its coin's spend.
   //
   // The work in the worker is the same whatever the key finds too: the leaf
   // count of each header read, from the roots of every prefix of the
@@ -1488,7 +1506,6 @@ export function createFlow({
     const trees = await readTrees(chain.tip);
     const tree = trees.at(-1);
     const markerAnchor = chain.at(Math.max(0, chain.tip.number - (CONFIRMATIONS - 1)));
-    const spent = await fetchSpent(markerAnchor);
     const fee = (await feeForNextBlock(chain.tip, async (n) => chain.at(n))).fee;
     let prefixRoots = null;
     const placeOf = new Map();
@@ -1508,7 +1525,7 @@ export function createFlow({
       return place;
     });
     const rootCounts = places.map((place) => (place.treeIndex === tree.treeIndex ? place.count : 0));
-    const commitsByAmount = await checkReceipts(chain, trees, spent, placeOf, markerAnchor);
+    const { commitsByAmount, spent } = await checkReceipts(chain, trees, placeOf, markerAnchor);
     const settledAt = chain.settled === null ? null : chain.settled - chain.low;
     const settledPlace = settledAt === null ? null : places[settledAt];
     const settledLeaves = settledPlace === null ? tree.leaves : trees[settledPlace.treeIndex].leaves.slice(0, settledPlace.count * 32);

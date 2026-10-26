@@ -12,6 +12,7 @@ import "./commit-layout.test.mjs";
 import "./tree-shape.test.mjs";
 import "./earlier-trees.test.mjs";
 import "./note-buckets.test.mjs";
+import "./spent-from-receipts.test.mjs";
 import "./stand-in.test.mjs";
 import "./flow.test.mjs";
 import "./wallet-connect.test.mjs";

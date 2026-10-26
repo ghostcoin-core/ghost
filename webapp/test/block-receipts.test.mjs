@@ -1,11 +1,12 @@
-// The app checks every leaf, note, salt and spent marker a scan reads
-// against the block receipts of the page's header chain, and every block's
-// receipts against the receiptsRoot of the header that chain holds, before
-// the key is tried on any note. Against the stand-in (support/fake-node.mjs,
+// The app checks every leaf, note and salt a scan reads against the block
+// receipts of the page's header chain, and every block's receipts against
+// the receiptsRoot of the header that chain holds, before the key is tried
+// on any note; the spent markers it takes from those receipts
+// (spent-from-receipts.test.mjs). Against the stand-in (support/fake-node.mjs,
 // which serves real receipts in the node's log layout), with the real module
 // in a worker: an honest scan passes; an altered note or salt, a dropped or
-// reordered page, a hidden or invented spent marker, a receipts root that
-// differs and a block whose receipts cannot be fetched are each refused
+// reordered page, a receipts root that differs and a block whose receipts
+// cannot be fetched are each refused
 // before restore, marker lookup, proving or any reveal; and the endpoint
 // sees the same requests whether the leaf it tampered with is the key's or
 // another's.
@@ -18,7 +19,6 @@ import { DEFAULT_COMMIT_ENTRY, RECEIPTS_FAILED, createFlow } from "../src/flow.m
 import { loadModule, nodeProver, openTestWallet } from "./support/env.mjs";
 import { startFakeNode } from "./support/fake-node.mjs";
 
-const RECIPIENT = "0x2222222222222222222222222222222222222222";
 // The worker steps that use the key: restore (trial decryption and the
 // marker lookup), the tree-state rule for its coin and the proof.
 const KEY_STEPS = new Set(["restore", "chooseTreeState", "prove"]);
@@ -232,47 +232,6 @@ test("a dropped, repeated or reordered page is refused before restore", async ()
     node.dishonest.page = null;
     assert.deepEqual((await openOnFreshPage(node, key)).outcome, { status: "not-found" }, "the honest pages pass");
   } finally {
-    await node.close();
-  }
-});
-
-test("a hidden or invented spent marker is refused before restore", async () => {
-  const { node, key } = await chainWithCoin();
-  const { flow, close } = freshFlow(node);
-  try {
-    // A partial reveal spends the key's coin's marker.
-    assert.equal((await flow.summonOpen(key)).status, "unclaimed");
-    await flow.summonReveal({ amount: "0.25", recipient: RECIPIENT });
-    assert.equal(node.spent.length, 1);
-    const marker = toHex(node.spent[0].marker);
-    const honest = await openOnFreshPage(node, key);
-    assert.deepEqual(honest.outcome, { status: "unclaimed" }, "the remainder is the key's coin");
-
-    // Hidden: the spent coin would look unspent.
-    node.dishonest.markers = (list) => list.filter((m) => m !== marker);
-    const hidden = await openOnFreshPage(node, key);
-    refusedBeforeKey(hidden, /spent marker 0 is missing/);
-    // Invented: a marker no reveal receipt holds.
-    node.dishonest.markers = (list) => [...list, `0x${"5e".repeat(32)}`];
-    refusedBeforeKey(await openOnFreshPage(node, key), /spent marker 1 is not in the receipts/);
-    // Another in place of the real one.
-    node.dishonest.markers = (list) => list.map(() => `0x${"5e".repeat(32)}`);
-    refusedBeforeKey(await openOnFreshPage(node, key), /spent marker 0 differs from its receipt/);
-    node.dishonest.markers = null;
-    assert.deepEqual(
-      withRestoreProbe(hidden.requests, honest.requests),
-      honest.requests,
-      "a hidden marker changes nothing the endpoint is asked before restore",
-    );
-
-    // The page that revealed refuses a hidden marker on its next scan too,
-    // with the receipts it already holds.
-    node.dishonest.markers = (list) => list.filter((m) => m !== marker);
-    await assert.rejects(flow.summonRefresh(), /spent marker 0 is missing/);
-    assert.equal(flow.state.summon.status, "refused");
-    assert.equal(flow.state.summon.current, null, "the coin shown before is cleared");
-  } finally {
-    close();
     await node.close();
   }
 });
