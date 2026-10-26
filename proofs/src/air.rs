@@ -29,6 +29,11 @@
 //!    own selector, and every node block is checked.
 //! 5. A digest with a public destination equals those public bytes.
 //! 6. Carried columns never change; conservation holds on their limbs.
+//! 7. The ordering test of an absence witness (S3 only), on the last row of
+//!    the marker's permutation, whose `BITS` nothing else reads: the marker
+//!    (that row's digest) against the low leaf's `value` and `nextValue` (the
+//!    next row's block bytes). The witness of the two subtractions sits in
+//!    that row's `BITS`, so the test adds no column and no row.
 
 use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
@@ -45,9 +50,63 @@ use p3_uni_stark::SubAirBuilder;
 
 use crate::amount::{AMOUNT_LIMBS, limb_bytes};
 use crate::hash::RATE_BYTES;
-use crate::schedule::{Assignment, Execution, PermSpec, Schedule, Src};
+use crate::schedule::{Assignment, Execution, Ordering, PermSpec, Schedule, Src};
 
 pub(crate) type F = BabyBear;
+
+// The ordering witness in the `BITS` of the marker row, as bit offsets. The
+// marker's 32 digest bytes come first, in the byte layout of a block, so
+// limb `j` of the digest is bytes `2j` (low) and `2j + 1` (high) of them.
+// Then, for `value < marker` and for `marker < nextValue`, 32 difference
+// bytes and 32 borrow bits each, and last the `zero_next` flag: 833 of the
+// 1,088 bits.
+const ORD_MARKER: usize = 0;
+const ORD_LOW_DIFF: usize = ORD_MARKER + 256;
+const ORD_LOW_BORROW: usize = ORD_LOW_DIFF + 256;
+const ORD_HIGH_DIFF: usize = ORD_LOW_BORROW + 32;
+const ORD_HIGH_BORROW: usize = ORD_HIGH_DIFF + 256;
+const ORD_ZERO_NEXT: usize = ORD_HIGH_BORROW + 32;
+const _: () = assert!(ORD_ZERO_NEXT < NUM_BITS && ORD_LOW_DIFF % 8 == 0 && ORD_HIGH_DIFF % 8 == 0);
+
+/// `a - b` over 32-byte big-endian integers, byte 31 first: the difference
+/// bytes and the borrow out of each byte. The borrow out of byte 0 is 1
+/// exactly when `a < b`.
+fn subtract(a: &[u8], b: &[u8]) -> ([u8; 32], [bool; 32]) {
+    let mut diff = [0u8; 32];
+    let mut borrow = [false; 32];
+    let mut borrow_in = 0i32;
+    for i in (0..32).rev() {
+        let d = i32::from(a[i]) - i32::from(b[i]) - borrow_in;
+        borrow[i] = d < 0;
+        diff[i] = d.rem_euclid(256) as u8;
+        borrow_in = i32::from(borrow[i]);
+    }
+    (diff, borrow)
+}
+
+/// The constraints of `a - b` over 32 big-endian bytes under `sel`:
+/// `a_i - b_i - borrow_in(i) + 256 * borrow_out(i) = d_i` from byte 31 up,
+/// `borrow_in(31) = 0` and `borrow_in(i) = borrow_out(i + 1)`. The borrows
+/// and the bits of each `d_i` are `BITS` cells, boolean on every row, so
+/// every `d_i` is in `[0, 255]` and every term is far below the field size:
+/// the equations hold over the integers and fix the borrows. Returns the
+/// borrow out of byte 0, which is 1 exactly when `a < b`.
+fn assert_subtraction<AB: AirBuilder<F = F>>(
+    builder: &mut AB,
+    sel: &AB::Expr,
+    a: &[AB::Expr],
+    b: &[AB::Expr],
+    diff: &[AB::Expr],
+    borrow: &[AB::Var],
+) -> AB::Expr {
+    let radix = AB::Expr::from(F::from_u32(256));
+    for i in (0..32).rev() {
+        let borrow_in = if i == 31 { AB::Expr::ZERO } else { borrow[i + 1].into() };
+        let lhs = a[i].clone() - b[i].clone() - borrow_in + radix.clone() * borrow[i].into();
+        builder.assert_zero(sel.clone() * (lhs - diff[i].clone()));
+    }
+    borrow[0].into()
+}
 
 /// Rate limbs of the state (136 bytes).
 const RATE_LIMBS: usize = RATE_BYTES / 2;
@@ -119,6 +178,9 @@ pub(crate) struct StatementAir {
     links: Vec<(usize, usize)>,
     outputs: Vec<(usize, usize)>,
     checks: Vec<PermCheck>,
+    /// The ordering test: its selector, the marker's last permutation, and
+    /// the offsets of `value` and `nextValue` in the next block.
+    ordering: Option<(usize, usize, Ordering)>,
 }
 
 impl StatementAir {
@@ -210,6 +272,25 @@ impl StatementAir {
         }
         let links = link_cols.into_iter().map(|(at, col)| (col, at)).collect();
 
+        // 7. The ordering test reads the marker row's `BITS` and the next
+        // row's block, so that row must be one no other check uses: the last
+        // row of the marker's hash, with no public output, followed by the
+        // first block of the low leaf, which links nothing to it.
+        let ordering = schedule.ordering.map(|ord| {
+            let next = schedule.first_perm(ord.marker + 1);
+            assert!(next > 0 && next < perms.len(), "the low leaf follows the marker");
+            let (marker, leaf) = (&perms[next - 1], &perms[next]);
+            assert!(leaf.first && marker.output.is_none(), "the marker row is free");
+            assert!(leaf.prev_at.is_none() && leaf.node_at.is_none(), "the marker row is free");
+            for at in [ord.value_at, ord.next_at] {
+                assert!(at + 32 <= RATE_BYTES, "the low leaf's values lie in its first block");
+                assert!(leaf.bytes[at..at + 32].iter().all(|src| *src == Src::Free));
+            }
+            let selector = column(&mut periodic);
+            periodic[selector][last_row(next - 1)] = F::ONE;
+            (selector, next - 1, ord)
+        });
+
         Self {
             schedule,
             perms,
@@ -223,6 +304,7 @@ impl StatementAir {
             links,
             outputs,
             checks,
+            ordering,
         }
     }
 
@@ -231,7 +313,20 @@ impl StatementAir {
     }
 
     /// The trace for an assignment and its execution.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn generate_trace(&self, ex: &Execution, a: &Assignment) -> RowMajorMatrix<F> {
+        self.generate_trace_with(ex, a, None)
+    }
+
+    /// [`Self::generate_trace`], with the ordering test's `zero_next` flag
+    /// set to `zero_next` when given instead of derived from `nextValue`, so
+    /// tests can show a forged flag is caught.
+    pub(crate) fn generate_trace_with(
+        &self,
+        ex: &Execution,
+        a: &Assignment,
+        zero_next: Option<bool>,
+    ) -> RowMajorMatrix<F> {
         assert_eq!(ex.inputs.len(), self.perms.len());
         let width = self.width();
         let mut inputs = ex.inputs.clone();
@@ -258,6 +353,25 @@ impl StatementAir {
             if !perm.first {
                 set_bits(last_row(p - 1), &ex.prev_rate[p]);
             }
+        }
+        if let Some((_, perm, ord)) = self.ordering {
+            let marker = &ex.digests[ord.marker];
+            let leaf = &ex.blocks[perm + 1];
+            let value = &leaf[ord.value_at..ord.value_at + 32];
+            let next = &leaf[ord.next_at..ord.next_at + 32];
+            let (low_diff, low_borrow) = subtract(value, marker);
+            let (high_diff, high_borrow) = subtract(marker, next);
+            let mut bytes = [0u8; RATE_BYTES];
+            bytes[ORD_MARKER / 8..ORD_MARKER / 8 + 32].copy_from_slice(marker);
+            bytes[ORD_LOW_DIFF / 8..ORD_LOW_DIFF / 8 + 32].copy_from_slice(&low_diff);
+            bytes[ORD_HIGH_DIFF / 8..ORD_HIGH_DIFF / 8 + 32].copy_from_slice(&high_diff);
+            let mut set_bit = |bit: usize, on: bool| bytes[bit / 8] |= u8::from(on) << (bit % 8);
+            for i in 0..32 {
+                set_bit(ORD_LOW_BORROW + i, low_borrow[i]);
+                set_bit(ORD_HIGH_BORROW + i, high_borrow[i]);
+            }
+            set_bit(ORD_ZERO_NEXT, zero_next.unwrap_or(next.iter().all(|&b| b == 0)));
+            set_bits(last_row(perm), &bytes);
         }
         for (p, perm) in self.perms.iter().enumerate() {
             if perm.node_at.is_some() && ex.dirs[p] {
@@ -429,6 +543,55 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
                 let right = e(local[CARRY + cons.v + j]) + c(1 << 16) * carry(j + 1);
                 builder.when_first_row().assert_eq(left, right);
             }
+        }
+
+        // 7. The ordering test of the absence witness, on the marker row:
+        // `value < marker` and (`marker < nextValue` or `nextValue = 0`).
+        if let Some((selector, _, ord)) = self.ordering {
+            let sel = s(selector);
+            // The marker: this row's digest, its 16 limbs decomposed into the
+            // 32 bytes at `ORD_MARKER`, big-endian byte `i` the digest's byte `i`.
+            let marker: Vec<AB::Expr> = (0..32).map(|i| bytes_l[ORD_MARKER / 8 + i].clone()).collect();
+            for j in 0..DIGEST_LIMBS {
+                builder.assert_zero(sel.clone() * (e(out(kl, j)) - limb(&bytes_l, ORD_MARKER / 8, j)));
+            }
+            let value: Vec<AB::Expr> = (0..32).map(|i| byte(bits_n, ord.value_at + i)).collect();
+            let next_value: Vec<AB::Expr> = (0..32).map(|i| byte(bits_n, ord.next_at + i)).collect();
+            let diff = |at: usize| -> Vec<AB::Expr> { (0..32).map(|i| bytes_l[at / 8 + i].clone()).collect() };
+
+            // `value < marker`: the subtraction borrows out of byte 0. Equal
+            // values give no borrow, so the test is strict.
+            let low = assert_subtraction(
+                builder,
+                &sel,
+                &value,
+                &marker,
+                &diff(ORD_LOW_DIFF),
+                &bits_l[ORD_LOW_BORROW..ORD_LOW_BORROW + 32],
+            );
+            builder.assert_zero(sel.clone() * (AB::Expr::ONE - low));
+
+            // `marker < nextValue`, unless `zero_next`. The flag is boolean
+            // (a `BITS` cell) and set only if every byte of `nextValue` is
+            // zero: the bytes are in `[0, 255]`, so their sum, at most 8,160,
+            // is zero only when each is. So the flag needs no equality with
+            // `nextValue = 0`: a prover who sets it shows `nextValue = 0`,
+            // the case the spec accepts without the comparison, and one who
+            // clears it must show `marker < nextValue`, which is enough on
+            // its own (and impossible when `nextValue = 0`). Either way the
+            // test holds.
+            let high = assert_subtraction(
+                builder,
+                &sel,
+                &marker,
+                &next_value,
+                &diff(ORD_HIGH_DIFF),
+                &bits_l[ORD_HIGH_BORROW..ORD_HIGH_BORROW + 32],
+            );
+            let zero_next = e(bits_l[ORD_ZERO_NEXT]);
+            let next_sum = next_value.iter().cloned().fold(AB::Expr::ZERO, |acc, x| acc + x);
+            builder.assert_zero(sel.clone() * zero_next.clone() * next_sum);
+            builder.assert_zero(sel * (AB::Expr::ONE - zero_next) * (AB::Expr::ONE - high));
         }
     }
 }

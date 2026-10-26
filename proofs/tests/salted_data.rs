@@ -489,8 +489,8 @@ fn a_salted_proof_of_holding_verifies_with_the_salt() {
         fields[f.offset..f.offset + f.width].copy_from_slice(value);
     }
     assert_eq!(binding, tagged("ghost/hold-binding/v1", &[&fields]));
-    // The shipped verifier still rejects every proof of holding.
-    assert_eq!(verify_hold(&params(), &ctx, proof), Err(ProofError::HoldUnsettled));
+    // The shipped verifier accepts it.
+    assert_eq!(verify_hold(&params(), &ctx, proof), Ok(()));
     // The proof is bound to the verifier's choices.
     let other_verifier = HoldContext {
         verifier: [0x0b; 32],

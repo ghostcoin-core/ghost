@@ -911,10 +911,21 @@ fn public_field(public: &[u8]) -> Vec<F> {
 /// Prove an assignment of a statement. The caller has already checked the
 /// witness; nothing here does.
 pub(crate) fn prove(statement: Statement, a: &Assignment, zk_seed: [u8; 32]) -> Result<Vec<u8>, ProofError> {
+    prove_with(statement, a, zk_seed, None)
+}
+
+/// [`prove`], with the ordering test's `zero_next` flag forced when given
+/// (see [`StatementAir::generate_trace_with`]), for tests of a lying prover.
+pub(crate) fn prove_with(
+    statement: Statement,
+    a: &Assignment,
+    zk_seed: [u8; 32],
+    zero_next: Option<bool>,
+) -> Result<Vec<u8>, ProofError> {
     gate(statement)?;
     let air = statement.air();
     let ex = execute(&statement.schedule(), a);
-    let trace = air.generate_trace(&ex, a);
+    let trace = air.generate_trace_with(&ex, a, zero_next);
     let config = stark_config(zk_seed)?;
     let proof = p3_uni_stark::prove(&config, &air, trace, &public_field(&a.public)).map_err(|_| ProofError::Proving)?;
     postcard::to_allocvec(&proof).map_err(|_| ProofError::Proving)

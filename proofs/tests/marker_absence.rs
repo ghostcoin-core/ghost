@@ -7,8 +7,8 @@
 //! 11, read at compile time by name. The S3 trace opens the low leaf under
 //! the root: an honest proof verifies with the test-only verifier, and a
 //! proof made with a changed sibling, or checked under another set's root,
-//! does not. The ordering of the marker against the low leaf is not in the
-//! circuit yet, so the shipped verifier still rejects every proof of holding.
+//! does not. With the ordering test of part 2 (`marker_ordering.rs`), the
+//! shipped verifier accepts the honest proof.
 //!
 //! The S3 prover exists only under the `unsettled-points-test` feature, so
 //! the file is built with it. Every negative test starts from the honest
@@ -383,19 +383,13 @@ fn s3_prover_refuses_a_low_leaf_that_is_not_under_the_root() {
 }
 
 #[test]
-fn shipped_verify_hold_still_rejects_every_proof_until_part_two() {
+fn shipped_verify_hold_verifies_an_honest_proof_and_refuses_the_rest() {
     let _one = one_at_a_time();
     let (_, root) = three_marker_set();
     let ctx = context(root);
     let proof = honest_hold();
-    assert_eq!(verify_hold_unsettled(&params(), &ctx, proof), Ok(()));
-    assert_eq!(verify_hold(&params(), &ctx, proof), Err(ProofError::HoldUnsettled));
+    assert_eq!(verify_hold(&params(), &ctx, proof), Ok(()));
     for other in [Proof::from_bytes(Vec::new()), Proof::from_bytes(vec![0xa5; 4096])] {
-        assert_eq!(verify_hold(&params(), &ctx, &other), Err(ProofError::HoldUnsettled));
+        assert!(verify_hold(&params(), &ctx, &other).is_err());
     }
-    assert!(
-        ProofError::HoldUnsettled
-            .to_string()
-            .contains("the ordering of constraint 4 is not yet in the circuit")
-    );
 }

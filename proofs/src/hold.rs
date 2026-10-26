@@ -13,27 +13,24 @@
 //! shows"): it names no particular commitment, so it is no capability for a
 //! particular resource.
 //!
-//! **Constraint 4, the absence of the marker from the data spent-marker set,
-//! is only half in the circuit.** The set is the indexed tree of depth 40 of
-//! spec 05, section 6, and the private [`AbsenceWitness`] names its low leaf.
-//! The trace opens that leaf under the public `marker_set_root`: the leaf hash
-//! `L` and the 40 node hashes `S0..S39` up to the root. The ordering of
-//! constraint 4 is not yet in the circuit: no constraint relates the marker
-//! `M` to the low leaf, so a proof shows only that *some* leaf is under
-//! `marker_set_root`, not that the marker is absent. Because of that gap, the
-//! shipped [`verify_hold`] rejects every proof of holding with
-//! [`ProofError::HoldUnsettled`].
+//! **Constraint 4, the absence of the marker from the data spent-marker set.**
+//! The set is the indexed tree of depth 40 of spec 05, section 6, and the
+//! private [`AbsenceWitness`] names its low leaf. The trace opens that leaf
+//! under the public `marker_set_root`: the leaf hash `L` and the 40 node
+//! hashes `S0..S39` up to the root. The ordering test, `value < marker` and
+//! (`marker < nextValue` or `nextValue = 0`), is checked on the last row of
+//! the marker hash `M`, against the first block of `L` (see [`crate::air`],
+//! item 7): it adds no permutation, row or column. The shipped
+//! [`verify_hold`] verifies.
 //!
 //! **Not settled: holding of coins** (item 3). A context with `COIN_V2` is
-//! rejected by [`HoldContext::check`], by [`hold_binding`] and by the test-only
-//! prover and verifier.
+//! rejected by [`HoldContext::check`], by [`hold_binding`], by [`verify_hold`]
+//! and by the test-only prover and verifier.
 //!
 //! The statement opens a salted (version 2) data commitment
 //! ([`SaltedHoldOpening`]), whose salt is a private witness; the context's
-//! type must be `DATA_V2`. It is built and checked only by functions compiled
-//! under the `unsettled-points-test` feature, which now covers the proof of
-//! holding only, for tests. It settles nothing, and the public verifier
-//! rejects regardless of the feature.
+//! type must be `DATA_V2`. The prover is compiled only under the
+//! `unsettled-points-test` feature, for tests.
 //!
 //! The hashes, in trace order (79 permutations, 1,896 rows padded to 2,048).
 //! `DATA` is the type tag `0x02 0x02`, with the `v2` fingerprint and marker
@@ -63,7 +60,7 @@ use crate::hash::{
     COIN_V2, DATA_V2, MARKER_SET_DEPTH, MARKER_SET_INDEX_BYTES, SALT_BYTES, TAG_DATA_MARKER_SET_LEAF,
     TAG_DATA_MARKER_SET_NODE, TAG_HOLD_BINDING, TREE_DEPTH,
 };
-use crate::schedule::{HashBuilder, Schedule, ScheduleBuilder};
+use crate::schedule::{HashBuilder, Ordering, Schedule, ScheduleBuilder};
 use crate::{Proof, ProofError};
 
 /// What a verifier chose for one proof of holding, and the type proven.
@@ -115,7 +112,6 @@ pub fn hold_binding(params: &ChainParams, ctx: &HoldContext) -> Result<[u8; 32],
     Ok(digest(Binding::Hold, &fields(params, ctx)))
 }
 
-#[cfg_attr(not(feature = "unsettled-points-test"), allow(dead_code))]
 fn public_values(params: &ChainParams, ctx: &HoldContext) -> Result<Vec<u8>, ProofError> {
     let binding = hold_binding(params, ctx)?;
     let mut public = fields(params, ctx);
@@ -197,12 +193,13 @@ fn schedule_with(
     let fields_len = binding.fields_len();
     let mut sb = ScheduleBuilder::new();
     push_data_opening(&mut sb, w, RuleSource::Private, off("cf"), off("root"));
-    // Constraint 3: the marker of the opened commitment, kept private. With
-    // the ordering of constraint 4 not in the circuit, nothing reads it yet.
+    // Constraint 3: the marker of the opened commitment, kept private. The
+    // ordering test of constraint 4 reads its digest.
+    let marker = sb.next_hash();
     sb.push(data_marker_hash());
-    // Constraint 4, the membership half: the low leaf, as free bytes, and its
-    // 40 nodes up to the public `marker_set_root`, the direction bits from
-    // the low leaf's position.
+    // Constraint 4, the membership: the low leaf, as free bytes, and its 40
+    // nodes up to the public `marker_set_root`, the direction bits from the
+    // low leaf's position.
     sb.push(
         HashBuilder::new(TAG_DATA_MARKER_SET_LEAF)
             .free(32, absence.map(|a| &a.low_value[..]))
@@ -226,7 +223,15 @@ fn schedule_with(
         (off("type") + 1, DATA_V2[1]),
         (off("purpose"), PURPOSE_HOLD),
     ];
-    sb.finish(fields_len + 32, CARRIED, None, consts)
+    let (mut schedule, free, dirs) = sb.finish(fields_len + 32, CARRIED, None, consts);
+    // Constraint 4, the ordering: the marker against the low leaf's `value`
+    // (segment 1, after the tag) and `nextValue` (segment 2).
+    schedule.ordering = Some(Ordering {
+        marker,
+        value_at: schedule.seg_offset(marker + 1, 1),
+        next_at: schedule.seg_offset(marker + 1, 2),
+    });
+    (schedule, free, dirs)
 }
 
 /// The schedule of S3, without any witness.
@@ -234,23 +239,27 @@ pub(crate) fn schedule() -> Schedule {
     schedule_with(None, None).0
 }
 
-/// The shipped verifier of a proof of holding. The trace opens the low leaf
-/// of the absence witness under `marker_set_root`, but the ordering of
-/// constraint 4 is not yet in the circuit, so nothing shows the marker is
-/// absent: it rejects every input with [`ProofError::HoldUnsettled`].
+/// The shipped verifier of a proof of holding: the statement S3 in full, the
+/// commitment under `root`, its marker's low leaf under `marker_set_root`
+/// and the marker strictly between the low leaf's `value` and its
+/// `nextValue` (or above a last `value`). Rejects what [`HoldContext::check`]
+/// rejects, so a `COIN_V2` context is refused with
+/// [`ProofError::HoldCoinUnsettled`].
 pub fn verify_hold(params: &ChainParams, ctx: &HoldContext, proof: &Proof) -> Result<(), ProofError> {
-    let _ = (params, ctx, proof);
-    Err(ProofError::HoldUnsettled)
+    let public = public_values(params, ctx)?;
+    crate::stark::verify(crate::stark::Statement::SaltedHold, &public, proof.as_bytes())
 }
 
 /// The proof for whatever the witness and the context give, without the
-/// tree check. Refuses only a context [`HoldContext::check`] rejects.
+/// tree check, the ordering test's `zero_next` flag forced when given.
+/// Refuses only a context [`HoldContext::check`] rejects.
 #[cfg(feature = "unsettled-points-test")]
 fn prove_unchecked(
     params: &ChainParams,
     w: &DataSecrets<'_>,
     absence: &AbsenceWitness,
     ctx: &HoldContext,
+    zero_next: Option<bool>,
     zk_randomness: [u8; 32],
 ) -> Result<Proof, ProofError> {
     use crate::schedule::Assignment;
@@ -263,7 +272,7 @@ fn prove_unchecked(
         free,
         dirs,
     };
-    crate::stark::prove(crate::stark::Statement::SaltedHold, &assignment, zk_randomness).map(Proof)
+    crate::stark::prove_with(crate::stark::Statement::SaltedHold, &assignment, zk_randomness, zero_next).map(Proof)
 }
 
 /// Prove holding of a salted (version 2) commitment, for tests only. The
@@ -295,13 +304,13 @@ pub fn prove_salted_hold(
     if opening.absence.root() != Some(ctx.marker_set_root) {
         return Err(ProofError::NotInMarkerSet);
     }
-    prove_unchecked(params, &w, &opening.absence, ctx, zk_randomness)
+    prove_unchecked(params, &w, &opening.absence, ctx, None, zk_randomness)
 }
 
 /// A salted proof of holding for `ctx`, whatever the opening says, without
 /// the honest prover's tree and marker-set checks, so tests can show the
-/// verifier catches a lie (another salt, another sibling, say). For tests
-/// only.
+/// verifier catches a lie (another salt, another sibling, a marker outside
+/// its low leaf's range, say). For tests only.
 #[cfg(feature = "unsettled-points-test")]
 #[doc(hidden)]
 pub fn prove_salted_hold_claiming(
@@ -310,7 +319,22 @@ pub fn prove_salted_hold_claiming(
     ctx: &HoldContext,
     zk_randomness: [u8; 32],
 ) -> Result<Proof, ProofError> {
-    prove_unchecked(params, &opening.secrets(), &opening.absence, ctx, zk_randomness)
+    prove_unchecked(params, &opening.secrets(), &opening.absence, ctx, None, zk_randomness)
+}
+
+/// [`prove_salted_hold_claiming`] with the ordering test's `zero_next` flag
+/// set to `zero_next` instead of derived from the low leaf's `nextValue`, so
+/// tests can show a forged flag is caught. For tests only.
+#[cfg(feature = "unsettled-points-test")]
+#[doc(hidden)]
+pub fn prove_salted_hold_claiming_zero_next(
+    params: &ChainParams,
+    opening: &SaltedHoldOpening,
+    ctx: &HoldContext,
+    zero_next: bool,
+    zk_randomness: [u8; 32],
+) -> Result<Proof, ProofError> {
+    prove_unchecked(params, &opening.secrets(), &opening.absence, ctx, Some(zero_next), zk_randomness)
 }
 
 /// The absence witness of `absent` in the data marker-set tree built from
@@ -378,9 +402,8 @@ pub fn test_absence_witness(markers: &[[u8; 32]], absent: &[u8; 32]) -> (Absence
     (witness, root)
 }
 
-/// Verify the statement S3 as the circuit has it, the low leaf under
-/// `marker_set_root` included but without the ordering of constraint 4, for
-/// tests only. Rejects what [`HoldContext::check`] rejects.
+/// Verify the statement S3, as [`verify_hold`] does, for tests only. Rejects
+/// what [`HoldContext::check`] rejects.
 #[cfg(feature = "unsettled-points-test")]
 pub fn verify_hold_unsettled(params: &ChainParams, ctx: &HoldContext, proof: &Proof) -> Result<(), ProofError> {
     let public = public_values(params, ctx)?;
@@ -519,5 +542,37 @@ mod tests {
         assert_eq!(node_offsets.iter().filter(|&&at| at == Some(31)).count(), MARKER_SET_DEPTH);
         assert_eq!(node_offsets.iter().flatten().count(), TREE_DEPTH + MARKER_SET_DEPTH);
         assert_eq!(schedule.hashes[76].segs[0], Seg::Const(crate::hash::tag_bytes(TAG_HOLD_BINDING)));
+    }
+
+    /// The ordering test lives in the marker row's `BITS`: S3 keeps its 79
+    /// permutations, 2,048 rows and 3,802 columns, within the budget, and
+    /// no constraint above degree 3.
+    #[test]
+    fn s3_width_and_height_are_unchanged_by_the_ordering() {
+        use p3_air::BaseAir;
+
+        let schedule = schedule();
+        let ordering = schedule.ordering.expect("S3 has the ordering test");
+        assert_eq!(ordering.marker, 34);
+        let tag = crate::hash::tag_bytes(TAG_DATA_MARKER_SET_LEAF).len();
+        assert_eq!((ordering.value_at, ordering.next_at), (tag, tag + 32));
+        assert_eq!(schedule.first_perm(ordering.marker), 35);
+        assert_eq!(schedule.first_perm(ordering.marker + 1), 36);
+        assert_eq!(schedule.expand().len(), 79);
+
+        let air = crate::stark::Statement::SaltedHold.air();
+        assert_eq!(air.height(), 2048);
+        assert_eq!(air.width(), 3802);
+        assert!(air.width() <= crate::stark::MAX_TRACE_WIDTH);
+        assert!(air.height() <= crate::stark::MAX_TRACE_HEIGHT);
+        let layout = p3_uni_stark::AirLayout::from_air(&air);
+        let degree = p3_uni_stark::get_max_constraint_degree::<crate::air::F, _>(&air, layout, air.height());
+        assert!(degree <= 3, "constraint degree {degree}");
+
+        // The same width without the test: it costs no column.
+        let without = Schedule { ordering: None, ..schedule };
+        let plain = crate::air::StatementAir::new(without, air.height());
+        assert_eq!(plain.width(), air.width());
+        assert_eq!(plain.height(), air.height());
     }
 }

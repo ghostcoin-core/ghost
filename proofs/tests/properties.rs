@@ -1175,25 +1175,29 @@ fn data_reveal_as_revocation_fails() {
 // ---------------------------------------------------------------------------
 // S3: the proof of holding.
 
-/// PS-20: the shipped verifier rejects every proof of holding, including one
-/// that verifies as written.
+/// PS-20: the shipped verifier checks the proof of holding: bytes that are
+/// no proof are refused, a `COIN_V2` context is refused before any proof is
+/// read, and an honest proof verifies.
 #[test]
-fn hold_shipped_verifier_rejects_every_proof() {
+fn hold_shipped_verifier_checks_the_proof() {
     let d = example_data();
     let mut coin_ctx = hold_context(&d, 1, [0x0c; 32]);
     coin_ctx.type_tag = COIN_V2;
-    for ctx in [hold_context(&d, 1, [0x0c; 32]), coin_ctx] {
-        for proof in [Proof::from_bytes(Vec::new()), Proof::from_bytes(vec![0xa5; 4096])] {
-            assert_eq!(verify_hold(&params(), &ctx, &proof), Err(ProofError::HoldUnsettled));
-        }
+    for proof in [Proof::from_bytes(Vec::new()), Proof::from_bytes(vec![0xa5; 4096])] {
+        assert!(verify_hold(&params(), &hold_context(&d, 1, [0x0c; 32]), &proof).is_err());
+        assert_eq!(verify_hold(&params(), &coin_ctx, &proof), Err(ProofError::HoldCoinUnsettled));
     }
     #[cfg(feature = "unsettled-points-test")]
     {
         let _one = one_at_a_time();
         let ctx = hold_context(&d, 1, [0x0c; 32]);
         let proof = prove_salted_hold(&params(), &hold_opening(&d), &ctx, zk(50)).expect("honest proof");
-        assert_eq!(verify_hold_unsettled(&params(), &ctx, &proof), Ok(()));
-        assert_eq!(verify_hold(&params(), &ctx, &proof), Err(ProofError::HoldUnsettled));
+        assert_eq!(verify_hold(&params(), &ctx, &proof), Ok(()));
+        let coin = HoldContext {
+            type_tag: COIN_V2,
+            ..ctx
+        };
+        assert_eq!(verify_hold(&params(), &coin, &proof), Err(ProofError::HoldCoinUnsettled));
     }
 }
 

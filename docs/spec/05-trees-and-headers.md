@@ -37,7 +37,7 @@ here by name. It writes no node code, no circuit and no proof-system choice.
 | Rollover inside one block | A block never appends to two tree indices of one type, so every final root appears in a header | **Proposed** (section 3) |
 | Tree state | Tree index, leaf count and frontier of each type in reserved system-account storage, covered by the state root | Front desk decision; base client plan 7.3 |
 | Header | Exactly three new fields: the current coin tree root, the current data tree root and the data spent-marker-set root `dataMarkerRoot` | Front desk decision |
-| Spent-marker-set root in the header | Data only: `dataMarkerRoot`, field 18, the root of an append-only indexed Keccak-256 tree of depth 40 (section 6), answering [spec 04](04-data-commitments.md), question 2; no coin marker-set root; proofs of holding stay rejected until the proof circuit checks constraint 4 of spec 02's S3 | Front desk decision, 2026-10-25; proofs fail closed |
+| Spent-marker-set root in the header | Data only: `dataMarkerRoot`, field 18, the root of an append-only indexed Keccak-256 tree of depth 40 (section 6), answering [spec 04](04-data-commitments.md), question 2; no coin marker-set root; the proof circuit checks constraint 4 of spec 02's S3, so data proofs of holding are verified and coin ones stay rejected | Front desk decision, 2026-10-25 |
 | Eligible roots | Exactly the roots in headers of canonical blocks before the including block, of the matching type, with no age limit | Front desk decision; [spec 03](03-coin-rules.md), question 4 |
 | Marker storage | One set per marker tag in reserved system-account storage, keyed by the marker; checked in the canonical state at block execution and pool admission | Front desk decision |
 | Reorganisation | Tree state and markers roll back with the journaled state; disconnected roots leave the eligible set at once; disconnected transactions return to the pool and are fully rechecked; no new depth limit | Front desk decision |
@@ -222,9 +222,9 @@ give is marker status:
 - For a proof of holding (spec 02, S3), the marker is private, so its
   non-membership must be proven inside the proof against a set root from a
   header. For data that root is `dataMarkerRoot` (spec 04, question 2,
-  answered), and the witness is the `absence` of section 6. Until the proof
-  circuit checks that non-membership (spec 02, S3, constraint 4), every proof
-  of holding stays rejected (spec 02, section 13, item 2). There is no coin
+  answered), and the witness is the `absence` of section 6. The proof circuit
+  checks that non-membership (spec 02, S3, constraint 4; section 13, item 2
+  there), so a proof of holding for data is verified. There is no coin
   marker-set root: a proof of holding for coins stays rejected (spec 02,
   section 13, item 3).
 
@@ -1443,9 +1443,9 @@ Each point rejects until the founder or a later specification settles it.
 1. **Spent-marker-set root in headers.** Settled (front desk decision,
    2026-10-25; spec 04, question 2): every header carries `dataMarkerRoot`,
    the root of the data marker-set tree of section 6, and none carries a coin
-   marker-set root. Proofs of holding stay rejected until the proof circuit
-   checks the marker's absence under that root (spec 02, S3, constraint 4;
-   section 13, item 2 there); a proof of holding for coins stays rejected
+   marker-set root. The proof circuit checks the marker's absence under that
+   root (spec 02, S3, constraint 4; section 13, item 2 there), so a proof of
+   holding for data is verified; a proof of holding for coins stays rejected
    (spec 02, section 13, item 3).
 2. **Reserved account addresses.** The addresses of the two tree-state accounts
    and the two marker-set accounts are for the transaction-format
@@ -1487,9 +1487,9 @@ difference is listed here for the founder's review.
    data spent-marker-set root go into every header, and spec 04, question 2
    asks whether it should. By front desk decision (2026-10-25) this document
    adds it as the third header field, `dataMarkerRoot`, with the tree of
-   section 6, and adds no coin marker-set root. Proofs of holding stay
-   rejected until the proof circuit checks it, as
-   [spec 02](02-proof-statements.md), section 13, item 2 says.
+   section 6, and adds no coin marker-set root. The proof circuit checks
+   the absence under it, as [spec 02](02-proof-statements.md), section 13,
+   item 2 says.
 4. **Epoch root after a rollover.** Spec 02, section 8 picks the epoch root of
    the tree of the leaf's type. Once a tree is full, later epoch roots are roots
    of the next tree and do not contain its leaves. Default here: a leaf in a
