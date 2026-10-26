@@ -89,7 +89,7 @@ and only the output is consensus.
 
 ## 4. Seal hash
 
-The header is the RLP list of spec 05, section 10: 19 fields, every one
+The header is the RLP list of spec 05, section 10: 18 fields, every one
 required. The seal hash is
 
 ```text
@@ -105,8 +105,7 @@ bytes of the `nonce` value cleared.
 The seal hash therefore covers every field except the two seal fields:
 `parentHash`, `uncleHash`, `coinbase`, the three base roots, `logsBloom`,
 `difficulty`, `number`, `gasLimit`, `gasUsed`, `timestamp`, `extraData`,
-`baseFee`, both tree roots, `coinTreeRoot` and `dataTreeRoot`, and
-`dataMarkerRoot`. This is
+`baseFee`, and both tree roots, `coinTreeRoot` and `dataTreeRoot`. This is
 the seal coverage spec 05, section 4 requires: no relay can change a root
 without redoing the work.
 
@@ -280,11 +279,11 @@ to Ghost's:
 ```text
 [seal-hash-genesis-example]
 header = header-genesis-example
-seal-hash = 039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4
+seal-hash = ffc501cc30c42da020a29cce3823251ca1c110c250bfed5a3d752e262bb86af7
 
 [seal-hash-block-one-example]
 header = header-block-one-example
-seal-hash = 1b5f20c1bc9d0cf05025a7e74451c1bd6015c400bc5743742ccdcd90ef4a64dd
+seal-hash = df9d13552b8f461df2e6476eb4e8b758d32f0b44b349e163e05fc3620c9197c0
 ```
 
 The genesis example has zero seal fields, so its seal hash is its header hash.
@@ -300,17 +299,17 @@ that seals it, under the key of height 1: the genesis example's hash.
 base = header-block-one-example
 difficulty = 256
 mixDigest = 0000000000000000000000000000000000000000000000000000000000000000
-nonce = 000000000000006d
-key = 039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4
-rlp = f90262a0039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000820100018401c9c3808301ec30846b37040e80a0000000000000000000000000000000000000000000000000000000000000000088000000000000006d84342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f
-hash = 88bd3adc11b2e9c2e40770b2c8297e9bfc6ea8088889d12e73bafa0ed65e2f38
-seal-hash = e4a9a151ec8247dbacf2f023ccf401fdfb6cb70e0e2a9094d4699e0da5a7362a
-output = 00a57fd17fd62cf6f7a40cf476c4618bd37dab9ae2017442d48d1b1fe6e6d9d7
+nonce = 0000000000000145
+key = ffc501cc30c42da020a29cce3823251ca1c110c250bfed5a3d752e262bb86af7
+rlp = f90241a0ffc501cc30c42da020a29cce3823251ca1c110c250bfed5a3d752e262bb86af7a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000820100018401c9c3808301ec30846b37040e80a0000000000000000000000000000000000000000000000000000000000000000088000000000000014584342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a
+hash = 094d8308380cea50e49b0359d54d841b948d128e0e11918c11f8b1b063b97f15
+seal-hash = a341aa5fc1ff4f2704f85ff96b812b4348069458892c0a2d02e46d41657d9798
+output = 0080d7962273d605552b5d8191d22d2decdc90e14626aa97ddd3e05a718c0ced
 valid = yes
 ```
 
 The output is below `M // 256 = 2^248 - 1` (its first byte is zero). The nonce
-is 109. The seal hash, output and validity were computed by the client's port
+is 325. The seal hash, output and validity were computed by the client's port
 (section 10); section 13, item 5 asks for the node to reproduce them.
 
 ## 12. Conformance tests
@@ -329,20 +328,18 @@ Each test states its expected result. RS-1 to RS-9 run in the client library
 - **RS-4. Seal hash.** The seal-hash vectors of section 11, and the block one
   example with any other `mixDigest` and `nonce`. Expected: the stated seal
   hashes; changing either seal field leaves the seal hash unchanged, and
-  changing any other field, either tree root and `dataMarkerRoot` included,
-  changes it.
+  changing any other field, either tree root included, changes it.
 - **RS-5. Valid seal.** The sealed example under its key. Expected: the stated
   output and a valid seal.
 - **RS-6. Roots are sealed (TH-6).** The sealed example with one bit of
-  `coinTreeRoot` changed, and with one bit of `dataMarkerRoot` changed.
-  Expected: each time the seal hash changes, the output is above
+  `coinTreeRoot` changed. Expected: the seal hash changes, the output is above
   the target and the seal check fails.
 - **RS-7. Wrong key.** The sealed example checked with the cache of another
   block's hash (the block one example's hash). Expected: the seal check fails.
 - **RS-8. Checks before the hash.** The sealed example with a non-zero
   `mixDigest`; checked against a difficulty its header does not carry; with a
   difficulty of zero; with a byte appended, a 31-byte `coinTreeRoot`, a
-  twentieth field or a block number with a leading zero byte. Expected: each
+  nineteenth field or a block number with a leading zero byte. Expected: each
   is invalid, with the reason given (mix digest, difficulty, zero difficulty,
   or spec 05's `trailing-bytes`, `field-size`, `item-count`,
   `non-canonical-integer`).
