@@ -4,6 +4,8 @@
 
 import { formatGhost, parseAddress, parseGhost } from "./chain.mjs";
 import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, WALLET_APPROVAL, createFlow, normalKey, wrongWords } from "./flow.mjs";
+// header.mjs, which build.sh ships, holds header-store.mjs's code.
+import { createHeaderStore } from "./header.mjs";
 import { downloadKeyImage } from "./keyimage.mjs";
 import { browserProver } from "./prover.mjs";
 import { popupConnector } from "./popup-wallet.mjs";
@@ -22,10 +24,13 @@ const SEAL_TRUST =
 const IN_A_BLOCK =
   "Marked Done when a block holds it. One block is not final: each block after it makes it harder to undo, and blocks add no privacy.";
 
+// The headers this page checked are kept in its own IndexedDB (public
+// header fields only), so a later visit checks only the seals above them.
 const flow = createFlow({
   prover: browserProver(),
   endpoint: DEFAULT_ENDPOINT,
   commitEntry: DEFAULT_COMMIT_ENTRY,
+  headerStore: createHeaderStore(),
   onChange: render,
 });
 

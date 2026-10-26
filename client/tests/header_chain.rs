@@ -1,7 +1,8 @@
 //! The header chain of `header_chain`: the ASERT rule against spec 06's
 //! vectors, and a chain that refuses headers whose seal, difficulty, parent,
 //! number, timestamp or key block is wrong, picks the heaviest branch and
-//! reports reorganisations.
+//! reports reorganisations; and the headers read back from the caller's own
+//! store, which skip the seal and nothing else.
 //!
 //! The headers are mined at the internal network's test constants
 //! (difficulty 1: its genesis difficulty, `D_START = D_MIN = 1`, the 30-second
@@ -418,6 +419,108 @@ fn missing_key_block_is_refused() {
     let genesis_at_two = Draft { difficulty: 2, ..genesis() };
     assert_eq!(HeaderChain::from_genesis(&genesis_at_two.rlp(), TEST_CHAIN).err(), Some(StartError::GenesisDifficulty));
     assert_eq!(HeaderChain::from_genesis(&pin.rlp(), TEST_CHAIN).err(), Some(StartError::NotGenesis));
+}
+
+/// A header read back from the caller's own store skips the RandomX seal and
+/// nothing else: one whose seal fails is adopted, but a wrong difficulty, an
+/// unknown parent, a wrong number, a timestamp not after the parent's and one
+/// too far ahead are still refused, and the total work is the one
+/// `add_header` gives.
+#[test]
+fn saved_header_skips_only_the_seal() {
+    let _one = one_chain();
+    // Three half-lives ahead of the schedule: difficulty 8.
+    let (pin, start) = pinned(1000, 10_800);
+    let draft = Draft { difficulty: 8, ..pin.child(30) };
+    let key = SealKey::new(&PINNED_GENESIS_HASH);
+    let mut above = draft.clone();
+    while passes(&above, &key) {
+        above.nonce += 1;
+    }
+    let mut sealed = draft.clone();
+    while !passes(&sealed, &key) {
+        sealed.nonce += 1;
+    }
+    drop(key);
+
+    let mut checked = HeaderChain::from_pinned(start.clone(), TEST_CHAIN).unwrap();
+    assert_eq!(add(&mut checked, &above), Err(ChainError::Seal(SealError::AboveTarget)));
+    assert_eq!(add(&mut checked, &sealed), Ok(Added::Extended));
+
+    let mut saved = HeaderChain::from_pinned(start.clone(), TEST_CHAIN).unwrap();
+    let refused = |chain: &mut HeaderChain, d: &Draft| chain.add_saved_header(&d.rlp(), LATER);
+    for difficulty in [1, 7, 9] {
+        let wrong = Draft { difficulty, ..sealed.clone() };
+        assert_eq!(refused(&mut saved, &wrong), Err(ChainError::Difficulty), "difficulty {difficulty}");
+    }
+    let orphan = Draft { parent: [0x42; 32], ..sealed.clone() };
+    assert_eq!(refused(&mut saved, &orphan), Err(ChainError::UnknownParent));
+    for number in [1000, 1002] {
+        let wrong = Draft { number, ..sealed.clone() };
+        assert_eq!(refused(&mut saved, &wrong), Err(ChainError::Number), "number {number}");
+    }
+    for timestamp in [pin.timestamp, pin.timestamp - 1] {
+        let wrong = Draft { timestamp, ..sealed.clone() };
+        assert_eq!(refused(&mut saved, &wrong), Err(ChainError::TimestampNotAfterParent));
+    }
+    assert_eq!(saved.add_saved_header(&sealed.rlp(), sealed.timestamp - 31), Err(ChainError::TooFarAhead));
+    let mut broken = sealed.rlp();
+    broken.push(0);
+    assert!(matches!(saved.add_saved_header(&broken, LATER), Err(ChainError::Header(_))));
+    assert_eq!(saved.best_hash(), pin.hash(), "nothing refused is held");
+
+    // The seal that fails is not checked here, and no RandomX cache is built.
+    assert_eq!(refused(&mut saved, &above), Ok(Added::Extended));
+    assert_eq!(saved.cache_count(), 0);
+    assert_eq!(saved.best_total_work(), U256::from(1001 + 8));
+
+    // The valid header: the same total work as add_header's.
+    let mut again = HeaderChain::from_pinned(start, TEST_CHAIN).unwrap();
+    assert_eq!(again.add_saved_header(&sealed.rlp(), LATER), Ok(Added::Extended));
+    assert_eq!(again.best_total_work(), checked.best_total_work());
+    assert_eq!(again.best_hash(), checked.best_hash());
+    assert_eq!(again.add_saved_header(&sealed.rlp(), LATER), Ok(Added::AlreadyHeld));
+}
+
+/// Saved headers re-link by parent hash to a pinned start: the best chain's
+/// height, tip and total work are those `add_header` gives, a saved header
+/// that does not follow the ones held is refused, and the next header from
+/// the endpoint is checked in full on top of them.
+#[test]
+fn saved_headers_relink_to_the_pin() {
+    let _one = one_chain();
+    let (pin, start) = pinned(1000, 0);
+    let headers = branch(&pin, 0, 12);
+    let (saved_part, next) = (&headers[..11], &headers[11]);
+
+    let mut checked = HeaderChain::from_pinned(start.clone(), TEST_CHAIN).unwrap();
+    for draft in saved_part {
+        assert_eq!(add(&mut checked, draft), Ok(Added::Extended));
+    }
+
+    let mut saved = HeaderChain::from_pinned(start, TEST_CHAIN).unwrap();
+    // Out of order, a saved header has no parent held yet.
+    assert_eq!(saved.add_saved_header(&saved_part[1].rlp(), LATER), Err(ChainError::UnknownParent));
+    for draft in saved_part {
+        assert_eq!(saved.add_saved_header(&draft.rlp(), LATER), Ok(Added::Extended));
+    }
+    assert_eq!(saved.cache_count(), 0, "no seal was checked");
+    assert_eq!(saved.best_height(), checked.best_height());
+    assert_eq!(saved.best_height(), 1011);
+    assert_eq!(saved.best_hash(), checked.best_hash());
+    assert_eq!(saved.best_total_work(), checked.best_total_work());
+    assert_eq!(saved.best_total_work(), U256::from(1001 + 11));
+    assert_eq!(saved.best_hash_at(1000), Some(pin.hash()));
+    assert_eq!(saved.confirmations(&saved_part[0].hash()), Some(11));
+
+    // A header whose parent hash is not the saved one before it.
+    let stray = Draft { parent: [0x42; 32], ..next.clone() };
+    assert_eq!(saved.add_saved_header(&stray.rlp(), LATER), Err(ChainError::UnknownParent));
+
+    // Above the saved tip the seal is checked again, under the pinned key block.
+    assert_eq!(add(&mut saved, next), Ok(Added::Extended));
+    assert_eq!(saved.cached_keys(), vec![PINNED_GENESIS_HASH]);
+    assert_eq!(saved.best_total_work(), U256::from(1001 + 12));
 }
 
 /// Spec 08 section 8: the key of a header past `E + L` is the key block on
