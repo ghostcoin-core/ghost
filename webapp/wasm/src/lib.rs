@@ -22,7 +22,9 @@
 //!   before anything is derived from it;
 //! - the commit payload sent to the commit entry address: version 2, with a
 //!   fresh per-coin salt in the clear beside `F` (206 bytes);
-//! - restore and the reveal over the salt the node serves beside each leaf;
+//! - restore and the reveal over the salt the node serves beside each leaf,
+//!   and restore by note buckets: the bucket bits of a tree, the key's lookup
+//!   tags and restore over leaves given with their positions;
 //! - the private transaction envelope of spec 07, section 3, and its
 //!   decoding and verification, which the test's stand-in node uses;
 //! - the built-in wallet (spec 09, section 9): a new seed as 24 words, the
@@ -75,8 +77,9 @@ use ghost_client::{
     Amount, CheckedBlock, Commitment, HeaderRoot, Marker, NOTE_BYTES, NoteContents, OwnedCoin, PhantomKey,
     ReceiptError, RevealTerms, Rule, SALT_BYTES, SALTED_COMMIT_DATA_BYTES, SALTED_COMMIT_FORMAT_VERSION, Salt,
     TreeLeaf, TreeStateChoice, check_block_receipts_against_header, check_leaves, check_markers, choose_tree_state,
-    claim_to_new_key, encrypt_note, partial_reveal, receipts_root, restore_coins, salted_commit_data,
+    claim_to_new_key, encrypt_note, partial_reveal, receipts_root, restore_coins, restore_coins_at, salted_commit_data,
 };
+use ghost_client::note_tag::{LOOKUP_TAG_BYTES, bucket_bits, lookup_tag};
 use ghost_proofs::{
     PROTOCOL_VERSION_1, Tree, empty_leaf, keccak256, tree_node, verify_salted_coin_reveal,
 };
@@ -113,6 +116,11 @@ const PAGE_LEAVES: usize = 4096;
 const PAGE_LEVELS: usize = 12;
 /// One leaf with its note, as a page carries it.
 const LEAF_RECORD_BYTES: usize = 32 + NOTE_BYTES;
+/// One leaf of a note bucket: its position (4), the leaf with its note and
+/// the salt record beside it.
+const BUCKET_RECORD_BYTES: usize = 4 + LEAF_RECORD_BYTES + SALT_RECORD_BYTES;
+/// The most lookup tags one [`ghost_note_tags`] call computes.
+const MAX_NOTE_TAGS: u32 = 4096;
 
 static mut OUT: Vec<u8> = Vec::new();
 static mut ERROR: String = String::new();
@@ -527,17 +535,87 @@ pub extern "C" fn ghost_restore(ptr: *const u8, len: usize) -> u32 {
         }
         let spent: Vec<Marker> = input.records::<32>()?.into_iter().map(Marker::from_bytes).collect();
         let restored = restore_coins(&key, chain_id, tree_index, &leaves, &spent).map_err(|e| e.to_string())?;
-        let mut out = Vec::new();
-        out.extend_from_slice(&(restored.found.len() as u32).to_be_bytes());
-        for coin in &restored.found {
-            out.extend_from_slice(&coin.number.to_be_bytes());
-            out.extend_from_slice(&coin.amount.to_bytes());
-            out.extend_from_slice(&coin.tree_index.to_be_bytes());
-            out.extend_from_slice(&coin.position.to_be_bytes());
-            out.extend_from_slice(coin.commitment.as_bytes());
-            out.extend_from_slice(coin.marker.as_bytes());
-            out.push(u8::from(spent.contains(&coin.marker)));
-            push_salt(&mut out, Some(&coin.salt));
+        Ok(found_out(&restored.found, &spent))
+    })
+}
+
+/// The coins restore found, as [`ghost_restore`] and [`ghost_restore_at`]
+/// write them.
+fn found_out(found: &[ghost_client::FoundCoin], spent: &[Marker]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(found.len() as u32).to_be_bytes());
+    for coin in found {
+        out.extend_from_slice(&coin.number.to_be_bytes());
+        out.extend_from_slice(&coin.amount.to_bytes());
+        out.extend_from_slice(&coin.tree_index.to_be_bytes());
+        out.extend_from_slice(&coin.position.to_be_bytes());
+        out.extend_from_slice(coin.commitment.as_bytes());
+        out.extend_from_slice(coin.marker.as_bytes());
+        out.push(u8::from(spent.contains(&coin.marker)));
+        push_salt(&mut out, Some(&coin.salt));
+    }
+    out
+}
+
+/// Restores a key's coins from some leaves of one coin tree, each with its
+/// position, such as the note buckets of the key's own lookup tags. Input:
+/// chain identifier (8), the tree's index (4), key text, leaf count (4) and
+/// that many records of position (4), leaf and note (32 + 156) and the salt
+/// read beside the leaf (1 + 16), marker count (4) and that many spent
+/// markers (32 each). Output: as [`ghost_restore`]'s, the coins in the order
+/// of the records.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_restore_at(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let chain_id = input.u64()?;
+        let tree_index = input.u32()?;
+        let key = key(input.text()?)?;
+        let records = input.records::<BUCKET_RECORD_BYTES>()?;
+        let mut leaves = Vec::with_capacity(records.len());
+        for record in &records {
+            let position = u32::from_be_bytes(record[..4].try_into().expect("4 bytes"));
+            let leaf = &record[4..4 + LEAF_RECORD_BYTES];
+            let salt: &[u8; SALT_RECORD_BYTES] = record[4 + LEAF_RECORD_BYTES..].try_into().expect("salt record");
+            leaves.push((
+                position,
+                TreeLeaf {
+                    commitment: Commitment::from_bytes(leaf[..32].try_into().expect("32 bytes")),
+                    note: leaf[32..].try_into().expect("note bytes"),
+                    salt: salt_of(salt)?,
+                },
+            ));
+        }
+        let spent: Vec<Marker> = input.records::<32>()?.into_iter().map(Marker::from_bytes).collect();
+        let restored = restore_coins_at(&key, chain_id, tree_index, &leaves, &spent).map_err(|e| e.to_string())?;
+        Ok(found_out(&restored.found, &spent))
+    })
+}
+
+/// The prefix bits of a note bucket of a coin tree (spec 01, section 8):
+/// `clamp(floor(log2(n / 4096)), 0, 24)`. Input: the tree's leaf count `n`
+/// (8). Output: the bits (4).
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_bucket_bits(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| Ok(bucket_bits(input.u64()?).to_be_bytes().to_vec()))
+}
+
+/// The lookup tags of a key's commitment numbers `first` to `first + count -
+/// 1` under its note key (spec 01, section 9). Input: key text, `first` (8),
+/// `count` (4, at most 4,096). Output: each tag (3), in number order.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_note_tags(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let key = key(input.text()?)?;
+        let first = input.u64()?;
+        let count = input.u32()?;
+        if count > MAX_NOTE_TAGS {
+            return Err(format!("at most {MAX_NOTE_TAGS} lookup tags are computed at once"));
+        }
+        let note_key = key.note_key();
+        let mut out = Vec::with_capacity(count as usize * LOOKUP_TAG_BYTES);
+        for i in 0..u64::from(count) {
+            let number = first.checked_add(i).ok_or_else(|| String::from("a commitment number is above 2^64 - 1"))?;
+            out.extend_from_slice(&lookup_tag(&note_key, number));
         }
         Ok(out)
     })

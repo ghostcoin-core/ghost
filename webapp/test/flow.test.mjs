@@ -45,6 +45,7 @@ const ENDPOINT_METHODS = new Set([
   "eth_estimateGas",
   "ghost_getPageRoots",
   "ghost_getTreePage",
+  "ghost_getNoteBucket",
 ]);
 
 function answersFor(key, positions) {

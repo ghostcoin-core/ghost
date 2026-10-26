@@ -238,6 +238,9 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
     requests.push(call.method);
     let reply;
     try {
+      // A method it does not serve, ghost_getNoteBucket among them, is
+      // "method not found", as the node answers it.
+      if (!Object.hasOwn(methods, call.method)) throw Object.assign(new Error("method not found"), { code: -32601 });
       reply = { jsonrpc: "2.0", id: call.id, result: methods[call.method](call.params ?? []) };
     } catch (err) {
       reply = { jsonrpc: "2.0", id: call.id, error: { code: err.code ?? -32000, message: err.message } };
@@ -320,6 +323,14 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
           return { roots: Array.from({ length: args.to + 1 }, (_, c) => rootOf(c)) };
         case "restore":
           return { found: coins.map((c) => ({ ...c })) };
+        // Restore by note buckets, from the built module (the stand-in
+        // serves no buckets, so the flow falls back to `restore`).
+        case "bucketBits":
+          return { bits: ghost.bucketBits(args.count) };
+        case "noteTags":
+          return { tags: ghost.noteTags(args) };
+        case "restoreAt":
+          return { found: ghost.restoreAt(args) };
         // choose_tree_state for one candidate (tree_state.rs).
         case "chooseTreeState": {
           const { tip: top, leafHeight, leafRoot, height, root } = args;

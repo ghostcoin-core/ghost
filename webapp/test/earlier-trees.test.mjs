@@ -65,9 +65,10 @@ function rpcTo(node) {
   };
 }
 
-// The tree requests the stand-in was sent, as [method, tree index, page].
+// The tree requests the stand-in was sent, as [method, tree index, page]:
+// the note bucket reads of a restore are left out.
 const treeRequests = (node) =>
-  node.requests.filter((r) => r.method.startsWith("ghost_")).map((r) => [r.method, r.params[1], ...(r.method === "ghost_getTreePage" ? [r.params[2]] : [])]);
+  node.requests.filter((r) => r.method.startsWith("ghost_") && r.method !== "ghost_getNoteBucket").map((r) => [r.method, r.params[1], ...(r.method === "ghost_getTreePage" ? [r.params[2]] : [])]);
 
 const tipOf = (node) => node.blocks[node.tip()];
 // Whether a header of the stand-in's chain carries `root`.

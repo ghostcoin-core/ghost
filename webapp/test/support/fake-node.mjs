@@ -217,6 +217,14 @@ function nodeFee(blocks, height) {
 // (the subtree of height 12 under each, whatever the depth), climbed to
 // level `treeDepth` with the module's Keccak-256 of the node tag, the level
 // and the two children, an empty subtree filling the right.
+//
+// With `buckets`, it serves ghost_getNoteBucket as ghost-node does
+// (docs/note-buckets.md): kind, tree index, bits, prefix and anchor hash, the
+// bits those of the bucket rule for the tree's leaf count at the anchor,
+// clamp(floor(log2(n / 4096)), 0, 24), computed here apart from the
+// module's, or `bucketBits` when given (for a test's small trees). Without
+// it the method is unknown, "method not found" (-32601), as on a node before
+// it.
 export async function startFakeNode({
   ghost,
   chainId = FAKE_CHAIN_ID,
@@ -225,6 +233,8 @@ export async function startFakeNode({
   earlyHalfLives = 0,
   treeDepth = 32,
   treeLeaves = treeDepth === 32 ? Infinity : 2 ** treeDepth,
+  buckets = false,
+  bucketBits = null,
 }) {
   const early = BigInt(earlyHalfLives) * BigInt(TEST_CHAIN_PARAMS.halfLife);
   const scheduled = 1n << BigInt(earlyHalfLives);
@@ -257,7 +267,11 @@ export async function startFakeNode({
   // pages; `receipts(number, list)` replaces the receipts (JSON) it serves
   // for block `number`, null for none; `header(json)` replaces the header
   // JSON it serves (a copy, with its hash), to drop or change a field.
+  // `bucket(entries, ask)` replaces the entries (JSON) of a note bucket it
+  // serves, `ask` being { treeIndex, bits, prefix }, to alter or withhold
+  // them; one that throws makes the read answer that error.
   const dishonest = {
+    bucket: null,
     header: null,
     note: null,
     withhold: null,
@@ -723,6 +737,54 @@ export async function startFakeNode({
       return { count: q(part.length), markers: part };
     },
   };
+
+  // The bucket rule for a tree of `n` leaves, apart from the module's:
+  // floor(log2(n / 4096)) clamped to 0 to 24, by halving.
+  const ruleBits = (n) => {
+    let bits = 0;
+    for (let quotient = BigInt(n) / 4096n; quotient >= 2n && bits < 24; quotient /= 2n) bits += 1;
+    return bits;
+  };
+
+  // A note bucket as `{ kind, treeIndex, bits, prefix, count, entries }`, an
+  // entry `{ position, leaf, note, salt? }` in increasing position order:
+  // every filled position of the tree at the anchor whose note's tag (its
+  // first 3 bytes) starts with the `bits`-bit prefix, with the dishonest
+  // notes and salts, if any. A marker kind, bits other than the rule's and a
+  // prefix of 2^bits or more are refused; no data commitment is made here.
+  if (buckets) {
+    methods.ghost_getNoteBucket = (params) => {
+      const [kind, block, treeIndex] = treeArgs(params, 5, 4);
+      if (MARKER_KINDS.has(kind)) throw invalid(0, "no note buckets for a marker kind");
+      const tree = kind === "coin" ? servedTree(block, treeIndex) : [];
+      const at = (index) => {
+        try {
+          return quantity(params[index]);
+        } catch (err) {
+          throw invalid(index, err.message);
+        }
+      };
+      const bits = at(2);
+      const prefix = at(3);
+      const required = BigInt(bucketBits ?? ruleBits(tree.length));
+      if (bits !== required) throw invalid(2, `bucket bits must be ${required} for ${tree.length} leaves`);
+      if (prefix >= 1n << bits) throw invalid(3, `prefix must be below 2^${bits}`);
+      const first = treeIndex === 0 ? 0 : treeIndex * treeLeaves;
+      const entries = [];
+      tree.forEach((l, position) => {
+        const note = dishonest.note ? dishonest.note(first + position, l.note) : l.note;
+        const tag = (BigInt(note[0]) << 16n) | (BigInt(note[1]) << 8n) | BigInt(note[2]);
+        if (tag >> (24n - bits) !== prefix) return;
+        const entry = { position: q(position), leaf: toHex(l.commitment), note: toHex(note) };
+        const salt = dishonest.salt ? dishonest.salt(first + position, l.salt) : l.salt;
+        if (salt) entry.salt = typeof salt === "string" ? salt : toHex(salt);
+        entries.push(entry);
+      });
+      const ask = { treeIndex, bits: Number(bits), prefix: Number(prefix) };
+      const list = dishonest.bucket ? dishonest.bucket(entries, ask) : entries;
+      return { kind, treeIndex: q(treeIndex), bits: q(bits), prefix: q(prefix), count: q(list.length), entries: list };
+    };
+  }
 
   // Coin or data page `page` of tree `treeIndex` as of `block`, with the
   // dishonest notes and salts, if any; those are given the leaf's index in

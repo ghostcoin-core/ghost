@@ -45,6 +45,21 @@ const OPS = {
     return { found: ghost.restore(args) };
   },
 
+  // Restore by the note buckets of the key's own lookup tags (buckets.mjs):
+  // the bucket bits of a tree of `count` leaves, the tags of numbers `first`
+  // on, and the restore over the leaves the buckets held, with positions.
+  bucketBits(ghost, { count }) {
+    return { bits: ghost.bucketBits(count) };
+  },
+
+  noteTags(ghost, args) {
+    return { tags: ghost.noteTags(args) };
+  },
+
+  restoreAt(ghost, args) {
+    return { found: ghost.restoreAt(args) };
+  },
+
   prefixRoots(ghost, { leaves, from, to }) {
     return { roots: ghost.prefixRoots(leaves, from, to) };
   },
