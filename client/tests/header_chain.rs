@@ -17,7 +17,7 @@ use std::sync::{Mutex, MutexGuard};
 use ghost_client::header_chain::{
     required_difficulty, Added, ChainError, ChainParams, HeaderChain, PinnedStart, StartError, MAX_CACHES, U256,
 };
-use ghost_client::seal::{meets_target, seal_input, SealError, SealKey, EPOCH_BLOCKS, EPOCH_LAG};
+use ghost_client::seal::{meets_target, seal_input, HeaderError, SealError, SealKey, EPOCH_BLOCKS, EPOCH_LAG};
 use tiny_keccak::{Hasher, Keccak};
 
 const SPEC: &str = include_str!("../../docs/spec/06-consensus-and-emission.md");
@@ -88,9 +88,14 @@ struct Draft {
 
 impl Draft {
     fn rlp(&self) -> Vec<u8> {
+        rlp_list(&self.fields())
+    }
+
+    /// The header's 19 items, `dataMarkerRoot` last.
+    fn fields(&self) -> Vec<Vec<u8>> {
         let mut coinbase = vec![0u8; 20];
         coinbase[19] = self.branch;
-        rlp_list(&[
+        vec![
             self.parent.to_vec(),
             vec![0x1d; 32],
             coinbase,
@@ -109,7 +114,8 @@ impl Draft {
             int(1_000_000_000),
             vec![0x44; 32],
             vec![0x55; 32],
-        ])
+            vec![0x66; 32],
+        ]
     }
 
     fn hash(&self) -> [u8; 32] {
@@ -419,6 +425,42 @@ fn missing_key_block_is_refused() {
     let genesis_at_two = Draft { difficulty: 2, ..genesis() };
     assert_eq!(HeaderChain::from_genesis(&genesis_at_two.rlp(), TEST_CHAIN).err(), Some(StartError::GenesisDifficulty));
     assert_eq!(HeaderChain::from_genesis(&pin.rlp(), TEST_CHAIN).err(), Some(StartError::NotGenesis));
+}
+
+/// The chain reads headers of 19 items, `dataMarkerRoot` last, and refuses
+/// a header of 18 items (the layout without `dataMarkerRoot`), whether
+/// offered as a start, checked in full or read back from the store.
+#[test]
+fn chain_accepts_nineteen_field_headers_and_refuses_eighteen() {
+    let _one = one_chain();
+    let eighteen = |draft: &Draft| {
+        let mut fields = draft.fields();
+        assert_eq!(fields.len(), 19);
+        fields.pop();
+        rlp_list(&fields)
+    };
+    assert_eq!(
+        HeaderChain::from_genesis(&eighteen(&genesis()), TEST_CHAIN).err(),
+        Some(StartError::Header(HeaderError::ItemCount))
+    );
+
+    let mut chain = genesis_chain();
+    let one = genesis().child(30);
+    assert_eq!(chain.add_header(&eighteen(&one), LATER), Err(ChainError::Header(HeaderError::ItemCount)));
+    assert_eq!(chain.add_saved_header(&eighteen(&one), LATER), Err(ChainError::Header(HeaderError::ItemCount)));
+    let mut twenty = one.fields();
+    twenty.push(vec![0x66; 32]);
+    assert_eq!(chain.add_header(&rlp_list(&twenty), LATER), Err(ChainError::Header(HeaderError::ItemCount)));
+    assert_eq!(chain.best_hash(), chain.start_hash());
+
+    assert_eq!(add(&mut chain, &one), Ok(Added::Extended));
+    assert_eq!(chain.best_hash(), one.hash());
+    assert_eq!(chain.header(&one.hash()), Some(one.rlp().as_slice()));
+    // The child links to the 19-item header's hash, `dataMarkerRoot` included.
+    let two = one.child(30);
+    assert_eq!(two.parent, keccak(&rlp_list(&one.fields())));
+    assert_eq!(add(&mut chain, &two), Ok(Added::Extended));
+    assert_eq!(chain.best_height(), 2);
 }
 
 /// A header read back from the caller's own store skips the RandomX seal and
