@@ -94,9 +94,19 @@ const ui = {
     } else if (summary.kind === "receive") {
       $("approve-title").textContent = "Share a new receive address";
       row(list, "The app sees", "a new account address and its public key, never your words or key");
+    } else if (summary.kind === "rescue") {
+      $("approve-title").textContent = "Rescue: move the whole balance";
+      row(list, "From", summary.from ?? "your first account (unlock to sign with it)");
+      row(list, "Signed with", "the rescue key (scheme 0x0004)");
+      row(list, "Balance", `${summary.balance} GHOST`);
+      row(list, "Amount moved", `${summary.amount} GHOST`);
+      row(list, "Maximum fee", `${summary.maxFee} GHOST`);
+      row(list, "Chain id", summary.chainId);
     } else {
       $("approve-title").textContent = "Sign a transaction";
       row(list, "From", summary.from ?? "your first account (unlock to sign with it)");
+      row(list, "Scheme", summary.scheme ?? "known once unlocked");
+      row(list, "Rescue key", summary.rescueKey === null ? "known once unlocked" : summary.rescueKey ? "yes" : "no");
       row(list, "Amount", `${summary.amount} GHOST`);
       row(list, "Maximum fee", `${summary.maxFee} GHOST`);
       row(list, "To", summary.to);
@@ -104,8 +114,21 @@ const ui = {
       row(list, "Data", `${summary.dataBytes} bytes`);
     }
     $("approve-password-label").hidden = kind !== "password";
+    // The rescue destination is typed here, never taken from the app.
+    const rescue = summary.kind === "rescue";
+    $("approve-destination-label").hidden = !rescue;
     show("approve");
-    return wait({ approve: () => ({ password: take("approve-password") }), reject: () => null });
+    return wait({
+      approve: () => {
+        const destination = take("approve-destination");
+        const password = take("approve-password");
+        return rescue ? { password, destination } : { password };
+      },
+      reject: () => {
+        take("approve-destination");
+        return null;
+      },
+    });
   },
 };
 

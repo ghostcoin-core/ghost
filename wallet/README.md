@@ -2,25 +2,58 @@
 
 A small static wallet site, served from its own origin, that the web app
 opens as a pop-up for **Connect wallet**. It holds the Ghost account's
-quantum-safe key (ML-DSA-44); the web app never sees a seed, the words or
-the key. It is a reference wallet: anyone can build another against the
-same three requests.
+quantum-safe keys (ML-DSA-44, and an SLH-DSA rescue key); the web app never
+sees a seed, the words or a key. It is a reference wallet: anyone can build
+another against the same four requests.
 
 **Experimental and unaudited.** Do not use it for anything of value.
 
 ## What it does
 
-- **Three requests, over `postMessage`.** `ghost_getAccount` answers the
-  address and public key of account 0. `ghost_newReceiveAddress` (`{ id,
-  method }`, no params) answers `{ address, publicKey }` of the next account
+- **Four requests, over `postMessage`.** `ghost_getAccount` answers
+  `{ address, publicKey, scheme, rescueKey }` of account 0.
+  `ghost_newReceiveAddress` (`{ id, method }`, no params) answers the same
+  fields for the next account
   never handed out (1, then 2, and so on), so an app can be paid to an
   address that was never used. `ghost_signTransaction` takes the fields of
   an account transaction (type 0x52) as 0x hex and answers the signed
-  envelope, its hash and sender. Its optional `from` (20 bytes of 0x hex)
-  picks the address that signs: left out, account 0; otherwise it must be
-  account 0 or an address `ghost_newReceiveAddress` issued, or the answer is
-  code -32602 naming `from`. Turned down or closed, the answer is code 4001,
-  nothing is signed and no address is issued.
+  envelope, its hash, sender and `scheme`. Its optional `from` (20 bytes of
+  0x hex) picks the address that signs: left out, account 0; otherwise it
+  must be account 0 or an address `ghost_newReceiveAddress` issued, or the
+  answer is code -32602 naming `from`. `ghost_rescue` (below) moves an
+  account's whole balance with its rescue key. Turned down or closed, the
+  answer is code 4001, nothing is signed and no address is issued.
+- **Rescue-key accounts by default.** Every new account is a rescue-key
+  account (spec 09, section 5, scheme `0x0003`): its 1,344-byte public key
+  is an ML-DSA-44 key and an SLH-DSA-SHAKE-128s key, and it signs ordinary
+  transactions with ML-DSA-44 (the module's `ghost_wallet_rescue_account`
+  and `ghost_wallet_sign_rescue_key`). Replies say `scheme: "0x0003"` and
+  `rescueKey: true`. Which scheme an account has is stored, not guessed: the
+  record `accounts` beside the vault holds `{ rescueFrom }`, and accounts
+  below that index are scheme `0x0001` (`rescueKey: false`), from it up
+  `0x0003`. A wallet created or restored stores `{ rescueFrom: 0 }` with its
+  vault. A vault stored before rescue keys gets `{ rescueFrom: issued count
+  + 1 }` on its first request: its existing accounts keep working as
+  `0x0001`, and every account it issues after is `0x0003`. Restoring the 24
+  words on a new device derives `0x0003` accounts only: an old `0x0001`
+  address is not derived again there, and can be spent only from the device
+  that holds it.
+- **The rescue action.** `ghost_rescue` takes the fields of
+  `ghost_signTransaction` without `to`, `value` and `data`, plus `balance`
+  (the account's balance in wei, a 0x quantity the app reads from the node;
+  the wallet reads no node), and `from` optional (account 0). The
+  destination is typed by the user on the wallet's approval screen, never
+  taken from the request, so an app cannot redirect a rescue. The wallet
+  signs a scheme `0x0004` transaction with the account's SLH-DSA key alone
+  (`ghost_wallet_sign_rescue`; nothing of ML-DSA signs) that sends
+  `balance - gasLimit × maxFeePerGas` to that destination with empty data,
+  and answers `{ sender, txHash, envelope, scheme: "0x0004" }`. Refused
+  before any screen: a `from` known to be a `0x0001` account ("this account
+  has no rescue key"), a `to`, `value` or `data` in the request ("unknown
+  field"), a balance that does not cover `gasLimit × maxFeePerGas` with
+  something left to move. After the approval, a destination that is not 20
+  bytes of 0x hex, or is the account itself, is refused and nothing is
+  signed.
 - **Issued addresses are counted, as public data.** Beside the vault, in
   the same IndexedDB store, the record `issued` holds `{ count }`: accounts
   1 to `count` have been handed out. It is written once the user approved
@@ -56,8 +89,11 @@ same three requests.
   Restore from the 24 words is in the wallet, never in the web app.
 - **Approval in the pop-up.** Every request shows who asks; a new receive
   address says the app sees a new address and public key; a signature
-  shows the address that signs, the amount, the maximum fee (gas limit × max fee per gas), the full
-  destination address and the chain id. Each needs Approve and the unlock.
+  shows the address that signs, its scheme and "Rescue key: yes" or "no",
+  the amount, the maximum fee (gas limit × max fee per gas), the full
+  destination address and the chain id; a rescue shows the account, the
+  balance, the amount moved and the maximum fee, and asks for the
+  destination. Each needs Approve and the unlock.
 - **Locked-down page.** Every script is a local file with an SRI hash; the
   CSP is `default-src 'none'`, `script-src 'self' 'wasm-unsafe-eval'`,
   `connect-src 'none'`, and `frame-ancestors 'none'` in the served headers.

@@ -27,7 +27,9 @@
 //!   decoding and verification, which the test's stand-in node uses;
 //! - the built-in wallet (spec 09, section 9): a new seed as 24 words, the
 //!   account a seed derives, and the account transaction (type 0x52) signed
-//!   with ML-DSA-44, plus its decoding and check for the stand-in node;
+//!   with ML-DSA-44, plus its decoding and check for the stand-in node; and
+//!   the rescue-key account (scheme 0x0003, section 5), signed with its
+//!   ML-DSA-44 key (0x0003) or with its SLH-DSA key alone (0x0004);
 //! - the page's header chain, over the client library's `header_chain`: one
 //!   chain held in the module's memory from a trusted start (genesis or a
 //!   pinned header), to which the page adds every header the endpoint
@@ -943,42 +945,97 @@ pub extern "C" fn ghost_wallet_sign(ptr: *const u8, len: usize) -> u32 {
         let seed = wallet_seed(input.text()?)?;
         let account = seed.account(input.u32()?);
         drop(seed);
-        let chain_id = input.u64()?;
-        let genesis = input.array::<32>()?;
-        let nonce = input.u64()?;
-        let max_priority_fee_per_gas = wide(input.array()?)?;
-        let max_fee_per_gas = wide(input.array()?)?;
-        let gas_limit = input.u64()?;
-        let to = match input.u8()? {
-            0 => None,
-            1 => Some(input.array::<20>()?),
-            _ => return Err(String::from("unknown destination kind")),
-        };
-        let value = wide(input.array()?)?;
-        let n = input.count()?;
-        let data = input.take(n)?.to_vec();
-        let mut rng = rng(input.array()?);
-        if max_priority_fee_per_gas > max_fee_per_gas {
-            return Err(String::from("the priority fee is above the fee cap"));
-        }
-        let tx = AccountTx {
-            chain_id,
-            nonce,
-            max_priority_fee_per_gas,
-            max_fee_per_gas,
-            gas_limit,
-            to,
-            value,
-            data,
-            access_list: Vec::new(),
-        };
-        let signed = account.sign(&tx, &genesis, &mut rng);
-        let mut out = Vec::with_capacity(52 + signed.envelope.len());
-        out.extend_from_slice(&signed.hash);
-        out.extend_from_slice(&signed.sender);
-        out.extend_from_slice(&signed.envelope);
+        let (genesis, tx, mut rng) = account_tx(input)?;
+        Ok(signed_out(account.sign(&tx, &genesis, &mut rng)))
+    })
+}
+
+/// The rescue-key account (scheme 0x0003, spec 09, section 5.1) of a wallet
+/// seed. Input: the words (text), the account index (4). Output: the address
+/// (20), then the public key (1,344: the ML-DSA-44 key, then the SLH-DSA key).
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_wallet_rescue_account(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let seed = wallet_seed(input.text()?)?;
+        let account = seed.rescue_account(input.u32()?);
+        let mut out = account.address().to_vec();
+        out.extend_from_slice(account.public_key());
         Ok(out)
     })
+}
+
+/// Signs an account transaction with rescue-key account `index` of a wallet
+/// seed, scheme 0x0003, with its ML-DSA-44 key. Input and output as
+/// [`ghost_wallet_sign`].
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_wallet_sign_rescue_key(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let seed = wallet_seed(input.text()?)?;
+        let account = seed.rescue_account(input.u32()?);
+        drop(seed);
+        let (genesis, tx, mut rng) = account_tx(input)?;
+        Ok(signed_out(account.sign(&tx, &genesis, &mut rng)))
+    })
+}
+
+/// Signs an account transaction with rescue-key account `index` of a wallet
+/// seed, scheme 0x0004, with its SLH-DSA key only: nothing of ML-DSA signs
+/// (spec 09, section 5.3). Input and output as [`ghost_wallet_sign`].
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_wallet_sign_rescue(ptr: *const u8, len: usize) -> u32 {
+    run(ptr, len, |input| {
+        let seed = wallet_seed(input.text()?)?;
+        let account = seed.rescue_account(input.u32()?);
+        drop(seed);
+        let (genesis, tx, mut rng) = account_tx(input)?;
+        Ok(signed_out(account.sign_rescue(&tx, &genesis, &mut rng)))
+    })
+}
+
+/// The fields of an account transaction after the words and the index, in
+/// the input layout of [`ghost_wallet_sign`]: the genesis hash, the
+/// transaction and the generator of the 32 random bytes.
+fn account_tx(input: &mut Input) -> Result<([u8; 32], AccountTx, StdRng), String> {
+    let chain_id = input.u64()?;
+    let genesis = input.array::<32>()?;
+    let nonce = input.u64()?;
+    let max_priority_fee_per_gas = wide(input.array()?)?;
+    let max_fee_per_gas = wide(input.array()?)?;
+    let gas_limit = input.u64()?;
+    let to = match input.u8()? {
+        0 => None,
+        1 => Some(input.array::<20>()?),
+        _ => return Err(String::from("unknown destination kind")),
+    };
+    let value = wide(input.array()?)?;
+    let n = input.count()?;
+    let data = input.take(n)?.to_vec();
+    let rng = rng(input.array()?);
+    if max_priority_fee_per_gas > max_fee_per_gas {
+        return Err(String::from("the priority fee is above the fee cap"));
+    }
+    let tx = AccountTx {
+        chain_id,
+        nonce,
+        max_priority_fee_per_gas,
+        max_fee_per_gas,
+        gas_limit,
+        to,
+        value,
+        data,
+        access_list: Vec::new(),
+    };
+    Ok((genesis, tx, rng))
+}
+
+/// The output of the signing calls: the hash (32), the sender (20), then the
+/// envelope.
+fn signed_out(signed: ghost_client::account::SignedAccountTx) -> Vec<u8> {
+    let mut out = Vec::with_capacity(52 + signed.envelope.len());
+    out.extend_from_slice(&signed.hash);
+    out.extend_from_slice(&signed.sender);
+    out.extend_from_slice(&signed.envelope);
+    out
 }
 
 /// Decodes and checks an account transaction as the node's signer does

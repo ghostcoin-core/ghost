@@ -1,7 +1,12 @@
-// The pop-up wallet's logic, apart from the page: the three requests it
+// The pop-up wallet's logic, apart from the page: the four requests it
 // answers and their strict checks, the encrypted vault, the count of issued
-// receive addresses, and the order of the screens. main.mjs gives it the browser's objects; the tests give
-// fakes.
+// receive addresses, the scheme of each account, and the order of the
+// screens. main.mjs gives it the browser's objects; the tests give fakes.
+//
+// New accounts are rescue-key accounts (spec 09, section 5, scheme 0x0003),
+// signed with their ML-DSA-44 key; ghost_rescue signs with their SLH-DSA key
+// alone (scheme 0x0004) and calls nothing of ML-DSA signing. Accounts a
+// wallet issued before rescue keys stay scheme 0x0001 and have no rescue key.
 //
 // The words of the wallet seed are the only secret. They are stored only
 // encrypted (AES-256-GCM, under a key from a passkey's PRF output or from a
@@ -15,6 +20,7 @@ import { CHAIN_IDS } from "./config.mjs";
 export const GET_ACCOUNT = "ghost_getAccount";
 export const SIGN_TRANSACTION = "ghost_signTransaction";
 export const NEW_RECEIVE_ADDRESS = "ghost_newReceiveAddress";
+export const RESCUE = "ghost_rescue";
 export const USER_REJECTED = 4001;
 const METHOD_NOT_FOUND = -32601;
 const INVALID_PARAMS = -32602;
@@ -43,6 +49,17 @@ const refuse = (message) => new Refused(INVALID_PARAMS, message);
 // snapTransaction writes them, and `from`, which may be left out (account 0).
 const SIGN_FIELDS = ["chainId", "genesisHash", "nonce", "maxPriorityFeePerGas", "maxFeePerGas", "gasLimit", "to", "value", "data"];
 const SIGN_OPTIONAL = ["from"];
+// The fields of ghost_rescue: those of ghost_signTransaction without `to`,
+// `value` and `data`, and `balance`, the account's balance in wei as the app
+// read it from the node. The destination is typed in the wallet, never
+// taken from the request.
+const RESCUE_FIELDS = ["chainId", "genesisHash", "nonce", "maxPriorityFeePerGas", "maxFeePerGas", "gasLimit", "balance"];
+
+// The account schemes (spec 09, section 5): plain ML-DSA-44, the rescue-key
+// account every new account is, and the rescue signature of the latter.
+export const SCHEME_PLAIN = "0x0001";
+export const SCHEME_RESCUE_KEY = "0x0003";
+export const SCHEME_RESCUE = "0x0004";
 const U64_MAX = (1n << 64n) - 1n;
 const U256_MAX = (1n << 256n) - 1n;
 
@@ -87,6 +104,7 @@ export function checkRequest(message) {
     exactKeys(message, ["id", "method"], "the request");
     return { id: message.id, method: NEW_RECEIVE_ADDRESS, fields: null };
   }
+  if (message.method === RESCUE) return { id: message.id, method: RESCUE, fields: checkRescue(message) };
   if (message.method !== SIGN_TRANSACTION) throw new Refused(METHOD_NOT_FOUND, `unknown method ${String(message.method)}`);
   exactKeys(message, ["id", "method", "params"], "the request");
   const p = message.params;
@@ -110,6 +128,31 @@ export function checkRequest(message) {
   return { id: message.id, method: SIGN_TRANSACTION, fields };
 }
 
+// The params of ghost_rescue: a `to`, `value` or `data` is an unknown field,
+// and the balance must pay the most the gas can cost with something left
+// to move.
+function checkRescue(message) {
+  exactKeys(message, ["id", "method", "params"], "the request");
+  const p = message.params;
+  exactKeys(p, RESCUE_FIELDS, "params", SIGN_OPTIONAL);
+  const fields = {
+    from: Object.hasOwn(p, "from") ? bytesField(p, "from", 20) : null,
+    chainId: quantityField(p, "chainId", U64_MAX),
+    genesis: bytesField(p, "genesisHash", 32),
+    nonce: quantityField(p, "nonce", U64_MAX),
+    maxPriorityFeePerGas: quantityField(p, "maxPriorityFeePerGas", U256_MAX),
+    maxFeePerGas: quantityField(p, "maxFeePerGas", U256_MAX),
+    gasLimit: quantityField(p, "gasLimit", U64_MAX),
+    balance: quantityField(p, "balance", U256_MAX),
+  };
+  if (!CHAIN_IDS.includes(fields.chainId)) throw refuse(`chainId ${fields.chainId} is not a network this wallet signs for`);
+  if (fields.maxPriorityFeePerGas > fields.maxFeePerGas) throw refuse("maxPriorityFeePerGas is above maxFeePerGas");
+  fields.maxFee = fields.gasLimit * fields.maxFeePerGas;
+  if (fields.balance <= fields.maxFee) throw refuse("balance does not cover gasLimit * maxFeePerGas with anything left to move");
+  fields.value = fields.balance - fields.maxFee;
+  return fields;
+}
+
 // An amount in wei as GHOST (18 decimals), every digit kept.
 export function formatGhost(wei) {
   const whole = wei / 10n ** 18n;
@@ -129,15 +172,34 @@ function u64(n) {
   return out;
 }
 
+// The scheme of account `index` of a wallet whose rescue-key accounts start
+// at `rescueFrom` (the "accounts" record): 0x0001 below it, 0x0003 from it.
+const schemeOf = (index, rescueFrom) => (index < rescueFrom ? SCHEME_PLAIN : SCHEME_RESCUE_KEY);
+
 // The wasm calls with the words as bytes, in the input layout of
-// webapp/src/wasm.mjs (walletAccount, walletSign): Ghost.call overwrites its
-// input with zeros, and the module its own copy.
-function account(ghost, words, index) {
-  const out = ghost.call("ghost_wallet_account", concat([u32(words.length), words, u32(index)]));
-  return { address: out.slice(0, 20), publicKey: out.slice(20) };
+// webapp/src/wasm.mjs (walletAccount, walletRescueAccount, walletSign and
+// the rescue signing calls): Ghost.call overwrites its input with zeros, and
+// the module its own copy.
+function account(ghost, words, index, scheme = SCHEME_PLAIN) {
+  const name = scheme === SCHEME_PLAIN ? "ghost_wallet_account" : "ghost_wallet_rescue_account";
+  const out = ghost.call(name, concat([u32(words.length), words, u32(index)]));
+  return { address: out.slice(0, 20), publicKey: out.slice(20), scheme };
 }
 
-function sign(ghost, words, index, f, randomness) {
+// An account as a reply carries it.
+function shown({ address, publicKey, scheme }) {
+  return { address: toHex(address), publicKey: toHex(publicKey), scheme, rescueKey: scheme === SCHEME_RESCUE_KEY };
+}
+
+// The module call that signs with `scheme`: 0x0004 is the rescue signature,
+// with the SLH-DSA key alone.
+const SIGN_CALLS = {
+  [SCHEME_PLAIN]: "ghost_wallet_sign",
+  [SCHEME_RESCUE_KEY]: "ghost_wallet_sign_rescue_key",
+  [SCHEME_RESCUE]: "ghost_wallet_sign_rescue",
+};
+
+function sign(ghost, words, index, f, randomness, scheme) {
   const input = concat([
     u32(words.length),
     words,
@@ -156,7 +218,7 @@ function sign(ghost, words, index, f, randomness) {
     randomness,
   ]);
   randomness.fill(0);
-  const out = ghost.call("ghost_wallet_sign", input);
+  const out = ghost.call(SIGN_CALLS[scheme], input);
   return { txHash: out.slice(0, 32), sender: out.slice(32, 52), envelope: out.slice(52) };
 }
 
@@ -164,7 +226,10 @@ function sign(ghost, words, index, f, randomness) {
 // (add refuses to replace it), read for every request. Beside it, under the
 // key "issued", `{ count }`: how many receive addresses (accounts 1 to
 // count) ghost_newReceiveAddress has handed out. Public data only, replaced
-// on each new address.
+// on each new address. Under the key "accounts", `{ rescueFrom }`: accounts
+// below that index are scheme 0x0001, from it up scheme 0x0003. A new vault
+// is written with `{ rescueFrom: 0 }` in the same transaction; a vault from
+// before rescue keys has none until the wallet's first request writes it.
 export function vaultStore(indexedDB) {
   function open() {
     return new Promise((resolve, reject) => {
@@ -192,6 +257,24 @@ export function vaultStore(indexedDB) {
   return {
     get: () => run("readonly", (s) => s.get("vault")),
     add: (record) => run("readwrite", (s) => s.add(record, "vault")),
+    // A new vault and its "accounts" record, every account scheme 0x0003.
+    create: (record) =>
+      run("readwrite", (s) => {
+        const req = s.add(record, "vault");
+        s.add({ rescueFrom: 0 }, "accounts");
+        return req;
+      }),
+    // The first rescue-key account index, or undefined for a vault stored
+    // before rescue keys.
+    async getRescueFrom() {
+      const record = await run("readonly", (s) => s.get("accounts"));
+      if (record === undefined) return undefined;
+      if (!Number.isSafeInteger(record?.rescueFrom) || record.rescueFrom < 0 || record.rescueFrom > U32_MAX) {
+        throw new Error("the accounts record is damaged");
+      }
+      return record.rescueFrom;
+    },
+    putRescueFrom: (rescueFrom) => run("readwrite", (s) => s.put({ rescueFrom }, "accounts")),
     async getIssued() {
       const record = await run("readonly", (s) => s.get("issued"));
       if (record === undefined) return 0;
@@ -272,7 +355,7 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
     const key = await vaultKey(subtle, record, secret);
     const iv = random(12);
     const ciphertext = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv }, key, words));
-    await store.add({ ...record, iv, ciphertext });
+    await store.create({ ...record, iv, ciphertext });
   }
 
   // The words of a stored record; throws on a wrong password or passkey.
@@ -359,8 +442,21 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
     return store.get();
   }
 
+  // The first rescue-key account index. A vault stored before rescue keys
+  // gets it now: its issued accounts stay 0x0001, the next ones are 0x0003.
+  // Before any vault, 0: setup stores that with the vault.
+  async function rescueFrom() {
+    const stored = await store.getRescueFrom();
+    if (stored !== undefined) return stored;
+    if (!(await store.get())) return 0;
+    const from = (await store.getIssued()) + 1;
+    await store.putRescueFrom(from);
+    return from;
+  }
+
   // Shows `summary`, waits for Approve and the unlock, and runs `use` on
-  // the decrypted words, overwritten with zeros after. Reject signs nothing.
+  // the decrypted words and the screen's answer, the words overwritten with
+  // zeros after. Reject signs nothing.
   async function approved(summary, use) {
     const record = await vault();
     for (;;) {
@@ -375,7 +471,7 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
       }
       try {
         // Awaited, so the words are zeroed only once `use` has finished.
-        return await use(words);
+        return await use(words, answer);
       } finally {
         words.fill(0);
       }
@@ -387,10 +483,10 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
   // only, so a `from` can be checked before any screen.
   const addresses = new Map();
 
-  // Derives the accounts 0 to `count` not yet known.
-  function learn(words, count) {
+  // Derives the accounts 0 to `count` not yet known, each with its scheme.
+  function learn(words, count, first) {
     for (let index = 0; index <= count; index += 1) {
-      if (!addresses.has(index)) addresses.set(index, toHex(account(ghost, words, index).address));
+      if (!addresses.has(index)) addresses.set(index, toHex(account(ghost, words, index, schemeOf(index, first)).address));
     }
   }
 
@@ -407,24 +503,37 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
 
   const notIssued = () => refuse("from is not an address this wallet issued");
 
+  const noRescueKey = () => refuse("this account has no rescue key");
+
+  // A typed rescue destination: 20 bytes of 0x hex, and not the account
+  // itself. Checked after the approval, before anything is signed.
+  function destination(typed, sender) {
+    const text = typeof typed === "string" ? typed.trim() : typed;
+    const to = bytesField({ destination: text }, "destination", 20);
+    if (toHex(to) === sender) throw refuse("the destination is the account itself");
+    return to;
+  }
+
   async function answer(request, origin) {
+    const first = await rescueFrom();
     if (request.method === GET_ACCOUNT) {
       const count = await store.getIssued();
       return approved({ kind: "connect", origin }, (words) => {
-        const { address, publicKey } = account(ghost, words, ACCOUNT_INDEX);
-        learn(words, count);
-        return { address: toHex(address), publicKey: toHex(publicKey) };
+        const derived = account(ghost, words, ACCOUNT_INDEX, schemeOf(ACCOUNT_INDEX, first));
+        addresses.set(ACCOUNT_INDEX, toHex(derived.address));
+        learn(words, count, first);
+        return shown(derived);
       });
     }
     if (request.method === NEW_RECEIVE_ADDRESS) {
       return approved({ kind: "receive", origin }, async (words) => {
         // Read after the approval, so a count raised meanwhile is not reused.
         const index = (await store.getIssued()) + 1;
-        const { address, publicKey } = account(ghost, words, index);
+        const derived = account(ghost, words, index, schemeOf(index, first));
         // Stored before the answer: the address is never handed out twice.
         await store.putIssued(index);
-        addresses.set(index, toHex(address));
-        return { address: toHex(address), publicKey: toHex(publicKey) };
+        addresses.set(index, toHex(derived.address));
+        return shown(derived);
       });
     }
     const f = request.fields;
@@ -432,11 +541,48 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
     const from = f.from ? toHex(f.from) : null;
     // Refused before any screen when every account is known; otherwise
     // checked once unlocked, still before anything is signed.
-    if (from && indexOf(from, count) === null) throw notIssued();
+    const known = from ? indexOf(from, count) : ACCOUNT_INDEX;
+    if (known === null) throw notIssued();
+    // The account's scheme, when its index is known before the unlock.
+    const scheme = known === undefined ? null : schemeOf(known, first);
+    const named = from ?? addresses.get(ACCOUNT_INDEX) ?? null;
+    // The index of the account that signs, checked once unlocked.
+    const signer = (words) => {
+      if (!from) return ACCOUNT_INDEX;
+      learn(words, count, first);
+      const index = indexOf(from, count);
+      if (index === null) throw notIssued();
+      return index;
+    };
+
+    if (request.method === RESCUE) {
+      if (scheme === SCHEME_PLAIN) throw noRescueKey();
+      const summary = {
+        kind: "rescue",
+        origin,
+        from: named,
+        balance: formatGhost(f.balance),
+        amount: formatGhost(f.value),
+        maxFee: formatGhost(f.maxFee),
+        chainId: String(f.chainId),
+      };
+      return approved(summary, (words, approval) => {
+        const index = signer(words);
+        if (schemeOf(index, first) === SCHEME_PLAIN) throw noRescueKey();
+        const sender = addresses.get(index) ?? toHex(account(ghost, words, index, SCHEME_RESCUE_KEY).address);
+        const to = destination(approval.destination, sender);
+        const signed = sign(ghost, words, index, { ...f, to, data: new Uint8Array(0) }, random(32), SCHEME_RESCUE);
+        addresses.set(index, toHex(signed.sender));
+        return { sender: toHex(signed.sender), txHash: toHex(signed.txHash), envelope: toHex(signed.envelope), scheme: SCHEME_RESCUE };
+      });
+    }
+
     const summary = {
       kind: "sign",
       origin,
-      from: from ?? addresses.get(ACCOUNT_INDEX) ?? null,
+      from: named,
+      scheme,
+      rescueKey: scheme === null ? null : scheme === SCHEME_RESCUE_KEY,
       amount: formatGhost(f.value),
       maxFee: formatGhost(f.gasLimit * f.maxFeePerGas),
       to: toHex(f.to),
@@ -444,15 +590,11 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
       dataBytes: f.data.length,
     };
     return approved(summary, (words) => {
-      let index = ACCOUNT_INDEX;
-      if (from) {
-        learn(words, count);
-        index = indexOf(from, count);
-        if (index === null) throw notIssued();
-      }
-      const signed = sign(ghost, words, index, f, random(32));
+      const index = signer(words);
+      const signedScheme = schemeOf(index, first);
+      const signed = sign(ghost, words, index, f, random(32), signedScheme);
       addresses.set(index, toHex(signed.sender));
-      return { sender: toHex(signed.sender), txHash: toHex(signed.txHash), envelope: toHex(signed.envelope) };
+      return { sender: toHex(signed.sender), txHash: toHex(signed.txHash), envelope: toHex(signed.envelope), scheme: signedScheme };
     });
   }
 
