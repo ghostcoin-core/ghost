@@ -1,5 +1,5 @@
 // The receipts of a coin's own block (spec 05, section 8, item 5 "Notes are
-// authenticated separately" and "Marker status query"): the scan (flow.mjs,
+// authenticated separately"): the scan (flow.mjs,
 // scanKey) checks the leaf, note and salt of the key's highest-numbered coin
 // against the coin tree record at its tree index and position in the receipts
 // of the block that appended it. That block is asked for together with

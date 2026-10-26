@@ -1486,7 +1486,7 @@ export function createFlow({
 
   // Checks the key's highest-numbered coin restore found (every earlier
   // number is spent by construction) against the receipts of its own block
-  // (spec 05, section 8, item 5 and "Marker status query"): every block of
+  // (spec 05, section 8, item 5): every block of
   // the page's chain from its start to the tip (`blocks`, checkReceipts) is
   // placed among the prefix roots (`placeOf`), the coin's block is the first
   // whose place is past the coin's position (blockOfPosition), and its

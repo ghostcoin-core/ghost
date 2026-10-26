@@ -41,7 +41,7 @@ here by name. It writes no node code, no circuit and no proof-system choice.
 | Eligible roots | Exactly the roots in headers of canonical blocks before the including block, of the matching type, with no age limit | Front desk decision; [spec 03](03-coin-rules.md), question 4 |
 | Marker storage | One set per marker tag in reserved system-account storage, keyed by the marker; checked in the canonical state at block execution and pool admission | Front desk decision |
 | Reorganisation | Tree state and markers roll back with the journaled state; disconnected roots leave the eligible set at once; disconnected transactions return to the pool and are fully rechecked; no new depth limit | Front desk decision |
-| Wallet tree data | Whole pages of 4,096 consecutive leaves with their notes, by position, and a bulk list of page roots; the wallet builds its witness itself; no per-commitment request exists; note buckets by key-derived tag prefix, at least 4,096 expected notes each; a page-root tail from a multiple of 65,536 pages and a read of 8 pages (7 of them decoys) to extend a witness; a status query of exactly 64 markers, one real and 63 random decoys, whose "spent" needs a receipt and whose "not spent" stays unchecked | Front desk decision; page size **Proposed** |
+| Wallet tree data | Whole pages of 4,096 consecutive leaves with their notes, by position, and a bulk list of page roots; the wallet builds its witness itself; no per-commitment request exists; note buckets by key-derived tag prefix, at least 4,096 expected notes each; a page-root tail from a multiple of 65,536 pages and a read of 8 pages (7 of them decoys) to extend a witness | Front desk decision; page size **Proposed** |
 | History | Every full node keeps and serves all commitments and notes of both trees; no pruning in version 1; header-only clients keep none; project-run indexers are optional | Front desk decision |
 | Header encoding | The pinned base header's fields in order with the base fee required, then the two tree roots and the data marker-set root, 19 items; no optional fields; withdrawals, blob and beacon-root fields forbidden; any extra trailing field rejected | Front desk decision |
 
@@ -611,14 +611,14 @@ roughly when the wallet last synced, never which leaf is its own.
 **Forbidden.** Tree data is requested by whole pages. Besides the page-root
 list and the pages in order from the scan start, the requests allowed are a
 bucket read by tag prefix (above), the page-root tail from a multiple of
-65,536 pages, the 8-page read of one page with 7 decoy pages, the 64-marker
-status query and the block-range receipts request (the subsections below), and
-no others. There is no request keyed by a commitment, a single position, a
-range that is not whole pages, a single marker (a status query with fewer or
-more than 64 markers), a note or a transaction, and no endpoint that returns a
-witness. A Ghost node refuses a status query that is not exactly 64 distinct
-32-byte values. A wallet never sends such a request, and a Ghost node refuses
-one. A wallet never asks an endpoint for its own leaf's position or path.
+65,536 pages, the 8-page read of one page with 7 decoy pages and the
+block-range receipts request (the subsections below), and no others. There is
+no request keyed by a commitment, a single position, a range that is not whole
+pages, a note or a transaction, no request that names a marker, alone or among
+others (subsection "No query names a marker" below), and no endpoint that
+returns a witness. A wallet never sends such a request, and a Ghost node
+refuses one. A wallet never asks an endpoint for its own leaf's position or
+path.
 
 **Marker status.** A wallet also needs the spent markers of its type to know
 which found commitment is unspent (spec 01, section 8, step 5). **Proposed:**
@@ -635,10 +635,8 @@ against each block's `receiptsRoot` (item 5 above), in the same bulk fetch as
 the notes; this names no marker. A marker page may let it show a provisional
 answer sooner, marked as unchecked, and a page that disagrees with the
 receipts is rejected with its endpoint. A status that is not yet checked, from
-marker pages or anything else, is "unknown", never "unspent" or "spent", with
-one exception: a "not spent" answer to the 64-marker status query (subsection
-"Marker status query" below) is shown as "unchecked, not reported spent", and
-its "spent" answer is checked against receipts like any other. A wrong status can never make the chain
+marker pages or anything else, is "unknown", never "unspent" or "spent". A
+wrong status can never make the chain
 accept a bad reveal (every node checks the marker itself), but it can mislead
 the holder, which is what this rule prevents.
 
@@ -657,26 +655,20 @@ MiB, small enough for a phone to download once.
 Page bytes are `leaves × (LEAF_BYTES + NOTE_BYTES)` for a full page.
 
 - **TH-19. Whole pages only.** A wallet restores, then builds a witness,
-  extends it after more blocks, checks the status of its highest found coin
-  and reveals. Expected: every serving node's request log shows only page-root
-  lists, whole pages in order from the scan start, bucket reads of
-  `bucket_bits(n)` bits, 16 tags a batch, page-root tails from a multiple of
-  65,536 pages, 8-page reads of one page and 7 decoy pages, the 64-marker status
-  query of one real marker and 63 decoys, and block-range receipts requests,
-  with no request naming a lone commitment, position, marker, note or
-  transaction. A request for half a page or one position, a bucket read of any
-  other bit count, a page-root tail from any other page, or a status query that
-  is not exactly 64 distinct 32-byte values (63 markers, 65, or one repeated),
-  is refused by the node.
+  extends it after more blocks and reveals. Expected: every serving node's
+  request log shows only page-root lists, whole pages in order from the scan
+  start, bucket reads of `bucket_bits(n)` bits, 16 tags a batch, page-root
+  tails from a multiple of 65,536 pages, 8-page reads of one page and 7 decoy
+  pages, and block-range receipts requests, with no request naming a lone
+  commitment, position, marker, note or transaction. A request for half a page
+  or one position, a bucket read of any other bit count, or a page-root tail
+  from any other page is refused by the node.
 - **TH-20. Wrong data is caught.** An endpoint serves a page with one leaf
   changed, then a page-root list with one root changed, then a page-root tail
-  with one root changed, then a "spent" answer to a status query for a marker
-  that no reveal receipt of the named block carries. Expected: the wallet
-  rejects all four and finishes from another peer; its witness, extended from
-  its last synced leaf count, hashes to the header root of its anchor
-  (vectors `witness-extension-same-page` and `witness-extension-new-pages`); a
-  "not spent" answer is shown as "unchecked, not reported spent", never as
-  checked.
+  with one root changed. Expected: the wallet rejects all three and finishes
+  from another peer; its witness, extended from its last synced leaf count,
+  hashes to the header root of its anchor (vectors
+  `witness-extension-same-page` and `witness-extension-new-pages`).
 
 ### Reading the tail of the page roots
 
@@ -721,61 +713,9 @@ page-root list as in item 2.
 the 8-page read return page roots and whole pages, and the wallet computes its
 witness itself, as in item 3.
 
-### Marker status query
+### No query names a marker
 
-A restored wallet needs the status of one found commitment only: the
-highest-numbered one it found. Numbers have no gaps and every earlier number is
-spent by construction (spec 01, section 8), so the status query (front desk
-decision, 2026-10-25) carries exactly 64 markers: the marker of that one real
-commitment and 63 decoys, in random order.
-
-```text
-request:  type, 64 distinct markers of 32 bytes, anchor block hash
-response: for each marker, in request order: "spent" with the number of the
-          block whose reveal spent it, or "not spent", as of the anchor
-```
-
-**Decoys (the privacy rule).** Each decoy is a uniformly random 32-byte value,
-never a marker taken from the chain or from a marker page. The 63 decoys and
-their order are drawn once per real marker and reused on every retry, so that
-repeated requests for one marker cannot be intersected. An endpoint cannot
-tell a real unspent marker from a decoy: neither is on the chain. A spent real
-marker is on the chain, so a "spent" answer shows the endpoint which of the 64
-is real and which reveal spent it; that reveal is public already, and it
-happens only when the wallet missed a later hop. Several unspent candidates
-(spec 01, section 8, step 6) take one query each, never one query with two real
-markers.
-
-**Authentication.** Spent needs a receipt: a "spent" answer counts only once
-the wallet has fetched the receipts of the named block together with 7 decoy
-blocks, drawn uniformly among the canonical blocks up to the anchor, in one
-block-range receipts request of 8 blocks in block order; has recomputed that
-block's `receiptsRoot` against its header in its own header chain; and has
-found the marker in a reveal receipt of that block (item 5; no new proof
-format). A "spent" answer that no checked receipt carries is rejected with its
-endpoint. Not spent cannot be authenticated: no header covers a coin marker
-set (section 6 and section 12, item 1). The header does carry `dataMarkerRoot`
-and an absence witness against it exists (vector `marker-set-absence`), but
-using it would make the wallet send the marker alone, the lookup this query
-avoids, so a data marker is treated like a coin marker and no absence-witness
-read is added.
-
-**Consequence.** An endpoint can answer "not spent" for a spent coin. The
-wallet then shows the coin as "unchecked, not reported spent", the one place an
-unchecked "unspent" is shown, and a reveal of it, if it is in fact spent, is
-refused by every node at the marker check (section 6), so no value is lost. An
-endpoint can never make a real unspent coin look spent, because "spent" needs
-a receipt. A checked "spent" for the highest found number means a later hop
-exists that the wallet did not find: it continues the bucket batches (spec 01,
-section 8, "The bucket path") or falls back to the full scan.
-
-**What the wallet compares.** A wallet that uses the status query reads no
-marker page and compares no list of markers against the receipts: the marker
-comparison of item 5 and of the "Marker status." Rule is for a full scan that
-reads marker pages. The notes it reads are still checked as item 5 says. A
-Ghost node refuses a status query that is not exactly 64 distinct 32-byte
-values (vectors `marker-query-one-real` and
-`marker-query-rejects-wrong-count`).
+A wallet asks no endpoint about a marker, alone or among decoys. A marker is public once its coin is spent and a random decoy never is, so any query that names a marker before the spend can be linked to the spend by the endpoint. The spent status of a found commitment comes only from the checked receipts of every block from the scan start (the "Marker status." Rule above); until it is so checked it is "unknown".
 
 ### Cost against the restore ceilings
 
@@ -792,7 +732,6 @@ and 10 minutes for a restore, each not yet established. None is measured.
 | Leaves and notes, one year | 686.2 GB for the full scan; 131.9 GB with the note buckets of the design modeled there | the 500 MB download and the 10 minutes |
 | Page-root tail | at most 65,536 roots already held, 2 MiB a request, beside the new roots; the whole list grows 28.5 MB a year | none on its own |
 | 8-page read | 8 pages, at most 6,160,384 bytes | none on its own |
-| Status query | 2,048 bytes of markers a candidate, and 8 blocks of receipts for a "spent" answer | none on its own |
 | Spent markers | no longer read for restore: the 116.8 GB of the first year leave the full-restore download, which is 132.0 GB with buckets instead of 248.8 GB | the 500 MB download, still, by the leaves, notes and headers |
 | Keeping up | unchanged: 66.0 GB a month for the full scan and 20.4 GB with buckets (stage1-verdict.md, with markers); the leaf and note bytes alone are 10.8 GB a month with buckets | the 50 MB a month |
 
@@ -816,7 +755,7 @@ section 6 item 8).
 
 | Node class | Keeps | Serves |
 |---|---|---|
-| Full node, including an archive node | Every leaf and note of every tree index of both types, every page root, every spent marker, and the receipts of every block (review 01, N5); no pruning of these in version 1, whatever the base client prunes of old state or history | Pages, page-root lists and their tails, 8-page reads, marker pages, 64-marker status queries and block receipts by block range to any peer |
+| Full node, including an archive node | Every leaf and note of every tree index of both types, every page root, every spent marker, and the receipts of every block (review 01, N5); no pruning of these in version 1, whatever the base client prunes of old state or history | Pages, page-root lists and their tails, 8-page reads, marker pages and block receipts by block range to any peer |
 | Snap-synced node | State first, then the history above, including every block's receipts, downloaded from peers | Only pages and receipts it has checked against canonical headers |
 | Header-only client (light verifier, wallet) | None of it, beyond the pages a wallet keeps for its own keys | Nothing |
 | Project-run indexer | Whatever it chooses | A convenience only, never required; a wallet checks its answers as any peer's |
@@ -1036,8 +975,7 @@ python3 scripts/check_trees_and_headers.py
 
 to recompute every tree vector from the rules of section 3, every marker-set
 vector from those of section 6, every witness-extension vector with the
-checker's own tree code and every marker-query vector against the rules of
-section 8, and every header
+checker's own tree code, and every header
 vector with the checker's own RLP code, and to compare the header vectors with
 the output of the separately written encoder,
 
@@ -1224,10 +1162,10 @@ reject-above-next = eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
   each of the three rejected markers; a node that rewrites the wrong low leaf
   or hashes `nextIndex` at another width fails.
 
-### Witness-extension and marker-query vectors
+### Witness-extension vectors
 
-The reads of section 8, "Reading the tail of the page roots" and "Marker status
-query". The witness-extension vectors use the real page size of 4,096 leaves
+The read of section 8, "Reading the tail of the page roots". The
+witness-extension vectors use the real page size of 4,096 leaves
 and list no full page; `witness-before` and `witness-after` are the 32 siblings
 of the leaf from level 0 up, the 12 in-page siblings first, then the 20 upper
 siblings from the page-root list. `stored-page-roots` are the roots the wallet
@@ -1245,17 +1183,6 @@ every page above it, as the coin root field of the anchor carries it.
   page 0 is climbed from the leaf through them, so no 4,096 leaves are listed.
   The wallet's scan start is page 1, so the tail starts at page 0 and serves
   pages 0 to 2; the roots of pages 1 and 2 are opaque.
-
-`marker-query-one-real` is a status query for a data marker: the real marker
-is `8888...88`, the absent marker of `marker-set-absence`, at position 37
-(counting from 0) among 63 decoys. The decoys here are Keccak-256 of the ASCII
-bytes `decoy` followed by `i` as one byte, for `i` from 0 to 62, standing in
-for uniformly random draws so that the vector can be reproduced. Every answer
-is `not-spent`, so the real marker's status is `unchecked-not-reported-spent`;
-a `spent-N` answer would count only if `receipt-markers-N`, the markers of the
-reveal receipts of block `N`, carried it, and would make the status `spent`.
-`marker-query-rejects-wrong-count` is the same query without its last decoy,
-63 markers, which a node refuses.
 
 ```text
 [witness-extension-same-page]
@@ -1292,22 +1219,6 @@ stored-page-roots =
 page-roots = 2716f68f96662291f3213f03618e0e17f30146654ca1278da24f92c2c2c09ee1 e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1 e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2
 header-root = c81d94ca55f0d04a7d8a4bf40d78e5799c8f3adcdc28ffbe2b6263ce4149cad5
 witness-after = d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0 d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1 d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2 d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3 d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4 d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5 d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6d6 d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7 d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8 d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9 dadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadada dbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbdb e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1 9f146ce6910cd2e18f28dd03fd68a80cc769715b124ccaa3a4644cde3b93c90b 7a04cae3422b09862b052461bdf3fdabd1701b5848d6c7c457d28a8486f7c17c 1dd3c81e4e390b32f25c696f1dc0c17e05cf86e0fab870ce53d5bccdcfef1603 b5d9b22171f75552635565fdcd7229f360c2dfe4fc883b9ba86d01f7fda849f1 5037b977992ff9c6315931c21c0b7da37ee9232d8cbdf3f32a26a28c66ba3eab d7abc911715bb38aac28e1465b260943d651e152df2d846cb72d9c32210cccd7 cd74a8288da24dc7171ebeb3d2a9b41eb4890669c04c5d1012dd9e7368a106bb 885935f6f826c1d722b32fd4176dd68f3a214fc24c96fe99ef49855f0295cb58 f01030d347243da62a8006b6b2a963334c8d75fbdd4cd29ec17e6eee9161ccf3 e5c157634719410469743931b0d6fdfd9ed8ba10a83df52d69196bcfb561ca27 47f00c274cceed311b72eb711f1b541cf0a9b64adb245013072ae91a7e317fe9 a1b6b879ff5ea4a91fe79b036f7c1c541dd7b8bc3dea6ad5fc55c35dfa79e87d cfa896957f0ae3ca413e746b76935bad1092eef537cb33807b7ae22a3121f5a4 bdaa4253c959d9e6fbb035774ce5af92475a09d825e46f7d224ed22f1189b17a 0056f319b8f4caa0ef317e9da648b97404b0bba382acaeebc715b4844fef4982 8fd326425cde256254578888caf18b4aaae00ab81ab79a6bb841c338dc4e67e5 41df46222cbee4fba640fe035378aa0746d9d412d3d1dfbf3a7d9c9aa1ac98d8 bfc8015e9d9909bf6ca3b1f2bd21fc2c9f3af0739fbe96f9bc7be87d30c3906b e6e3779f2407af6cd0ae24335bc6ce9e73fdc504a5d397d5e81dbe046158a274
-
-[marker-query-one-real]
-kind = marker-query
-type = data
-markers = 5a5972a2ed527a3d3e8a844c7dc51475add0d52f8aba4cd1a17a277216cdeec2 dd6cfc2b9c78af075d55b674e57682ae6a2682d1cac99225fd99152388078586 024022e451490a8a11dd5f1b0a28abdc6f61bfc2bf5cfdcace68a583a87f0ddd 20064ddfb73a57d15b00c3cf9aeb84ecaacb2de87a4b412a9c540e475941bd66 05d39a7b5d924e0e382350f531324bc83cd4e1a52bd1bbd7ea1fd90549b5522f 5f27dffb96f83b6f6018660889b1e6a91f9ba52025fa27f071f85a82d8237424 044dcd87eb7e6503a3811ea133ad5abfa6d5e5f9b9412c72d27870b6f1286f6b b4af24d287480270d6bdf043ca91a1f1cfbaccfc0fb006dbd98190cc44b6426c 5eaf67b4d722b999ae881179b3ece790040fe0174490ca16912b671bfc7037e8 7a213a44b378e63bf7fd50a2e6a044576555c1d16264df871acc68a605ba14aa 15755b1c6863ccd05a2c99a23fc573ac0d18c130c38ebecf58371d0c39205315 6d8c06c039285dc9a97237ef3f7c77cc4e205e00c8314e6e1bcc204e235c52f7 626b6dc9b3a52779787388bf10f13cebf4fd9e8472c95f0f1cd8797bb0eda9e2 db64d4ce14c5ebd5a9bf4ba4d2be6713509f7a106fd345935ae13be522d6fa13 a23147dcfb3f4c95751b1b5cd35d8a8cf44efcd7d28ef110c604e0c33e991a12 47992aa8c0a6ea4a24896bf0f0a72b1859b5c7cce47c642d6b05cc49747e4146 c7a9b1b8fde979408fba9ba24d23431c075b9e987a8670873effde2051588a54 119ac47f675018dedff6c9d5fbed8f6de8a8c29dd00d138a4d4bbfa72efe45f0 19a130b089be79b3f3d6840c30e4a28a91a1d1034bf07935f13682aefeb194a9 4770bdbf87c98a2700e65642958fcbd3e9daf1a279940ae6e9c064d16cd87a4b a0157901f53928a27c87ac956ffbce2afa7d23666ef7d177610e85f2a4c38c93 7a8963d7969199617aef5f55c810d30b0a31d1693ac9b37e05cde5e618b992bb fa389c4dfaea33ae9b0b151cdbf22c00b6174d40e9f6386fcdf81022f62699fc aca5ad7775536775386fd1dc8b160a963c9ef4ef3b60711381ad037238e46a21 949ac71590cc5d7831a1d56694069f66ede1f6cbf7c88ae4cae6e54f5c97bd89 a442d143d2b3f713d626231a28590d01c4c9163aeefa2e3824e68c98185ae63e 565e619926570f7bcc5d511587dc484368205c87128f338f629c61a5034c14ba 1773507dd96da0bb413c7c69b7aff6d5d64f14afc61e6be07f1061e9aee6afaa f1e71763a7786fcc5e9b723233b84a0fe8ed68e157552ea5cf610a654dc20d92 4378c45682e50523af2cc928afed57aa271bc4d93146db079ebab63197389314 0157e19261e67f740b45bd36c0684442d2475764a7b2f7523f79da1114d8e645 8ce19ef14ae4a8d4e8dd8e4ce03d2d7ec6e781cf5cdd493c45317b0ca0d1606b 3f5802eeb0be9f0023d3133414c4146ab282fb2d7b0a34bd49cb0e2e955c7c3c c55c47592f5092728acc4f7b073b51fa8de92eef224b4b645cbbb259d7a18eea 0e180910fbcd49f0cd01455b111d93b117b41659b51debde41a67bdf563c52c3 6e598cd30d3e9f9253fbbd0b03dfdf724677ff7ce4fa3f980e773b006ae2d3da b2c1b8b84857b42b49517c7123e72bce9afec32526f6e378250069f5ddca8530 8888888888888888888888888888888888888888888888888888888888888888 c4b7de79ec79babae262ff38f05fb9add5331d3995dfc2f7dd345cdead27e069 bc70fb00510bc6f0d12b0e121fa5b18af18f05570029d6f1a1dd3faa978c2473 9e11091beefb4bb91ce3c6fd2a6ed58577d2ca0d2b5328c507b54c6b8057ca0e 28926574197688f66187a09adb57bdc9d169782e355abe7c211fbe6c5e7ecc87 23e86e732eacf6bfbc78d5d96b8504c0536e3a04109a82b1f2ae1aa4a02c8f8d 74999829654225188c46e41f5d4ce0bbba9672c9e404d2b0eb1d357e5d926d39 1fde38b52a0bcefe555aa755f3a36963ac76a431764452ec78a1dccde23c5cfe bbc40adf7d3e75b270dd86d588c70e4a97c2761cbc1c929940cb27b2c6f66d52 f984aa0147ff670314a124b78628d63f7d983f7fdf55e791651fc2e78ef9d9aa 22f6b1b1c0191b1e380bd5fafc1e82b2ae57935f4567eaa256f19676eb53507e 8bcdaf5a643ca4715b503b9574cd59d8c885ced6ba81ce10c24c66b3e996e3b3 8c0313e87f819d6d1568e8868247d18392b792f4630917712c5657d34631928f 28ba27a77b8ec71509436e12aafaa6ba9bf3814c719f09567893203427712a5b 41e97af83be09475c0caeb2157cb0e848025abc967676dcfcf70ec2ab02ca2b8 be6101976eb7ad9f1b80790a3eeafbebf29633fe9bcff883268d912c9a27ff87 836e0a71fff7a11c195441920e90a483dc2fe126823fd472e0de34bf7b2367f0 f72ba42387ab0d860df3dfa352e3dc759a6ee4d30bb8958f3cfaeaac40d78058 8329d6ebc2a56b6938f6f6c1e6ced1874c9b96ba28b551b80d7b56ed6679c5e0 3f5f07760cc2d7233b325257c281a7961ad492910c221ff6aed656d65fb54dc2 0d0c25338d06fc2530caa75aa45802bf43ec250f8cd3c8a0e7f388d682d6388e dda3c54be888eb2d7e5bb78b468687ec324775431636d17fe81cfae8c7010ad2 5ac59b6da77a088915e82ee18c5e516bb262895fd9b81af14195e82a5ebd5b0b 1901d7e8c09c075bab46a7cc96be1cb003215c4c89a96bdb71908c22632ecfc6 d91e204804fcdeb4dfd25e8754573de77b79fe82e9263fc777443f07d0b35704 f4a0b1e4e19cd07083b733855f0c9a099b62adc016fc2369b11d99fd346fc014 b0c48d43efdf1668e8e3f912e3369b062ad00f37d33b188a421f83e211dd247c
-real = 8888888888888888888888888888888888888888888888888888888888888888
-answers = not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent not-spent
-status = unchecked-not-reported-spent
-valid = yes
-
-[marker-query-rejects-wrong-count]
-kind = marker-query
-type = data
-markers = 5a5972a2ed527a3d3e8a844c7dc51475add0d52f8aba4cd1a17a277216cdeec2 dd6cfc2b9c78af075d55b674e57682ae6a2682d1cac99225fd99152388078586 024022e451490a8a11dd5f1b0a28abdc6f61bfc2bf5cfdcace68a583a87f0ddd 20064ddfb73a57d15b00c3cf9aeb84ecaacb2de87a4b412a9c540e475941bd66 05d39a7b5d924e0e382350f531324bc83cd4e1a52bd1bbd7ea1fd90549b5522f 5f27dffb96f83b6f6018660889b1e6a91f9ba52025fa27f071f85a82d8237424 044dcd87eb7e6503a3811ea133ad5abfa6d5e5f9b9412c72d27870b6f1286f6b b4af24d287480270d6bdf043ca91a1f1cfbaccfc0fb006dbd98190cc44b6426c 5eaf67b4d722b999ae881179b3ece790040fe0174490ca16912b671bfc7037e8 7a213a44b378e63bf7fd50a2e6a044576555c1d16264df871acc68a605ba14aa 15755b1c6863ccd05a2c99a23fc573ac0d18c130c38ebecf58371d0c39205315 6d8c06c039285dc9a97237ef3f7c77cc4e205e00c8314e6e1bcc204e235c52f7 626b6dc9b3a52779787388bf10f13cebf4fd9e8472c95f0f1cd8797bb0eda9e2 db64d4ce14c5ebd5a9bf4ba4d2be6713509f7a106fd345935ae13be522d6fa13 a23147dcfb3f4c95751b1b5cd35d8a8cf44efcd7d28ef110c604e0c33e991a12 47992aa8c0a6ea4a24896bf0f0a72b1859b5c7cce47c642d6b05cc49747e4146 c7a9b1b8fde979408fba9ba24d23431c075b9e987a8670873effde2051588a54 119ac47f675018dedff6c9d5fbed8f6de8a8c29dd00d138a4d4bbfa72efe45f0 19a130b089be79b3f3d6840c30e4a28a91a1d1034bf07935f13682aefeb194a9 4770bdbf87c98a2700e65642958fcbd3e9daf1a279940ae6e9c064d16cd87a4b a0157901f53928a27c87ac956ffbce2afa7d23666ef7d177610e85f2a4c38c93 7a8963d7969199617aef5f55c810d30b0a31d1693ac9b37e05cde5e618b992bb fa389c4dfaea33ae9b0b151cdbf22c00b6174d40e9f6386fcdf81022f62699fc aca5ad7775536775386fd1dc8b160a963c9ef4ef3b60711381ad037238e46a21 949ac71590cc5d7831a1d56694069f66ede1f6cbf7c88ae4cae6e54f5c97bd89 a442d143d2b3f713d626231a28590d01c4c9163aeefa2e3824e68c98185ae63e 565e619926570f7bcc5d511587dc484368205c87128f338f629c61a5034c14ba 1773507dd96da0bb413c7c69b7aff6d5d64f14afc61e6be07f1061e9aee6afaa f1e71763a7786fcc5e9b723233b84a0fe8ed68e157552ea5cf610a654dc20d92 4378c45682e50523af2cc928afed57aa271bc4d93146db079ebab63197389314 0157e19261e67f740b45bd36c0684442d2475764a7b2f7523f79da1114d8e645 8ce19ef14ae4a8d4e8dd8e4ce03d2d7ec6e781cf5cdd493c45317b0ca0d1606b 3f5802eeb0be9f0023d3133414c4146ab282fb2d7b0a34bd49cb0e2e955c7c3c c55c47592f5092728acc4f7b073b51fa8de92eef224b4b645cbbb259d7a18eea 0e180910fbcd49f0cd01455b111d93b117b41659b51debde41a67bdf563c52c3 6e598cd30d3e9f9253fbbd0b03dfdf724677ff7ce4fa3f980e773b006ae2d3da b2c1b8b84857b42b49517c7123e72bce9afec32526f6e378250069f5ddca8530 8888888888888888888888888888888888888888888888888888888888888888 c4b7de79ec79babae262ff38f05fb9add5331d3995dfc2f7dd345cdead27e069 bc70fb00510bc6f0d12b0e121fa5b18af18f05570029d6f1a1dd3faa978c2473 9e11091beefb4bb91ce3c6fd2a6ed58577d2ca0d2b5328c507b54c6b8057ca0e 28926574197688f66187a09adb57bdc9d169782e355abe7c211fbe6c5e7ecc87 23e86e732eacf6bfbc78d5d96b8504c0536e3a04109a82b1f2ae1aa4a02c8f8d 74999829654225188c46e41f5d4ce0bbba9672c9e404d2b0eb1d357e5d926d39 1fde38b52a0bcefe555aa755f3a36963ac76a431764452ec78a1dccde23c5cfe bbc40adf7d3e75b270dd86d588c70e4a97c2761cbc1c929940cb27b2c6f66d52 f984aa0147ff670314a124b78628d63f7d983f7fdf55e791651fc2e78ef9d9aa 22f6b1b1c0191b1e380bd5fafc1e82b2ae57935f4567eaa256f19676eb53507e 8bcdaf5a643ca4715b503b9574cd59d8c885ced6ba81ce10c24c66b3e996e3b3 8c0313e87f819d6d1568e8868247d18392b792f4630917712c5657d34631928f 28ba27a77b8ec71509436e12aafaa6ba9bf3814c719f09567893203427712a5b 41e97af83be09475c0caeb2157cb0e848025abc967676dcfcf70ec2ab02ca2b8 be6101976eb7ad9f1b80790a3eeafbebf29633fe9bcff883268d912c9a27ff87 836e0a71fff7a11c195441920e90a483dc2fe126823fd472e0de34bf7b2367f0 f72ba42387ab0d860df3dfa352e3dc759a6ee4d30bb8958f3cfaeaac40d78058 8329d6ebc2a56b6938f6f6c1e6ced1874c9b96ba28b551b80d7b56ed6679c5e0 3f5f07760cc2d7233b325257c281a7961ad492910c221ff6aed656d65fb54dc2 0d0c25338d06fc2530caa75aa45802bf43ec250f8cd3c8a0e7f388d682d6388e dda3c54be888eb2d7e5bb78b468687ec324775431636d17fe81cfae8c7010ad2 5ac59b6da77a088915e82ee18c5e516bb262895fd9b81af14195e82a5ebd5b0b 1901d7e8c09c075bab46a7cc96be1cb003215c4c89a96bdb71908c22632ecfc6 d91e204804fcdeb4dfd25e8754573de77b79fe82e9263fc777443f07d0b35704 f4a0b1e4e19cd07083b733855f0c9a099b62adc016fc2369b11d99fd346fc014
-valid = no
-reject = marker-count
 ```
 
 ### Header vectors
@@ -1457,10 +1368,7 @@ Each point rejects until the founder or a later specification settles it.
 4. **Marker page integrity.** Marker pages are not checkable against a header
    (section 8); they are hints, and status is taken only from receipts checked
    against `receiptsRoot` (review 01, F4). Until checked, status from marker
-   pages is "unknown", never "unspent" or "spent". The one exception is the
-   64-marker status query (section 8, "Marker status query"): its "spent" is
-   checked against the receipts of the named block, and its "not spent", which
-   no header can confirm, is shown as "unchecked, not reported spent".
+   pages is "unknown", never "unspent" or "spent".
 5. **Indexed logs.** If the transaction-format specification gives commit or
    reveal receipts logs, no leaf, marker or note may be an indexed topic, so
    that a log filter cannot become a per-commitment lookup. Whatever layout it
@@ -1567,11 +1475,8 @@ markers) and every header's `dataMarkerRoot` is the root of one; that every
 `witness-extension` vector is recomputed with the script's own tree code (the
 witness before, the page read whole or the root climbed from the stored
 in-page siblings, the page-root tail against the header root, which rejects a
-wrong tail, and the witness after) and every `marker-query` vector is served
-only with exactly 64 distinct markers, one real, every "spent" answer carried
-by a receipt, and the 63-marker query rejected; that section 8 states the tail
-read, the status query with its privacy rule and its cost against the restore
-ceilings, and that its "Forbidden." paragraph, TH-19, the "Marker status."
+wrong tail, and the witness after); that section 8 states the tail read and
+its cost against the restore ceilings, and that its "Forbidden." paragraph, TH-19, the "Marker status."
 Rule and section 12, item 4 follow them; that every
 negative header vector is rejected for the stated reason, and the header
 vectors equal the output of `scripts/header_golden_encoder.py`; that the conformance requirements and the
