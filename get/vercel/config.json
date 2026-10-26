@@ -1,0 +1,60 @@
+{
+  "version": 3,
+  "routes": [
+    {
+      "src": "/(.*)",
+      "headers": {
+        "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY"
+      },
+      "continue": true
+    },
+    {
+      "src": "/",
+      "headers": {
+        "Cache-Control": "no-store",
+        "Vary": "User-Agent"
+      },
+      "continue": true
+    },
+    {
+      "src": "/(install\\.sh|win|cmd)",
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store"
+      },
+      "continue": true
+    },
+    {
+      "src": "/",
+      "has": [
+        {
+          "type": "header",
+          "key": "user-agent",
+          "value": "^(curl|[Ww]get2?)/|PowerShell/"
+        }
+      ],
+      "dest": "/install.sh",
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store"
+      }
+    },
+    {
+      "handle": "filesystem"
+    }
+  ],
+  "overrides": {
+    "install.sh": {
+      "contentType": "text/plain; charset=utf-8"
+    },
+    "win": {
+      "contentType": "text/plain; charset=utf-8"
+    },
+    "cmd": {
+      "contentType": "text/plain; charset=utf-8"
+    }
+  }
+}

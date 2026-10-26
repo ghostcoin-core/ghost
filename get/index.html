@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en" data-ready="sh">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+    <meta name="referrer" content="no-referrer">
+    <title>Run a Ghost node</title>
+    <meta name="description" content="One line installs a Ghost node: on the network, syncing and mining, with nothing else to do.">
+    <link rel="stylesheet" href="/style.css">
+    <script type="module" src="/src/page.mjs"></script>
+  </head>
+  <body>
+    <main>
+      <h1>Run a Ghost node</h1>
+      <p class="lede">Paste one line into a terminal. When it finishes, your node is installed, on the network, syncing and mining. There is nothing else to do.</p>
+
+      <section class="primary" aria-labelledby="primary-label">
+        <h2 id="primary-label">macOS and Linux</h2>
+        <div class="command" id="primary-command">
+          <code id="primary-line">curl -fsSL https://get.ghostcoin.com | sh</code>
+          <button type="button" id="copy" hidden>Copy</button>
+        </div>
+        <p class="soon" id="primary-soon" hidden>Coming soon: the installer for this system is not published yet.</p>
+      </section>
+
+      <section class="others" aria-labelledby="others-label">
+        <h2 id="others-label">Other systems</h2>
+        <ul id="others"></ul>
+      </section>
+
+      <p class="source">Each script is served from the <a href="https://github.com/ghostcoin-core/ghost-node/releases/latest">latest signed ghost-node release</a> and checked against the release key before it is published here.</p>
+    </main>
+  </body>
+</html>

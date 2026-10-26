@@ -1,0 +1,12 @@
+{
+  "name": "ghost-get",
+  "version": "0.1.0",
+  "private": true,
+  "description": "get.ghostcoin.com: the one-line node install scripts from the signed ghost-node release, and the Run a node page; plain ES modules, no dependencies",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/"
+  }
+}
