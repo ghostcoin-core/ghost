@@ -42,6 +42,7 @@
 // as the step that needs it is done. The connection is not remembered
 // either.
 
+import { restoreTreesByBuckets } from "./buckets.mjs";
 import { concat, fromHex, quantity, toHex, toQuantity } from "./bytes.mjs";
 import {
   CONFIRMATIONS,
@@ -950,6 +951,10 @@ export function createFlow({
   // Vanish commits, reveals and claims, each kept up to date by its recheck
   // (a reorganisation can make one dropped). settleFirst waits on them.
   const ownSent = [];
+  // The endpoints that answered ghost_getNoteBucket with "method not found"
+  // (-32601) in this flow: a later scan restores from their pages without
+  // asking again.
+  const bucketless = new Set();
   const state = {
     endpoint: rpc.url,
     commitEntry,
@@ -1508,17 +1513,33 @@ export function createFlow({
     const settledPlace = settledAt === null ? null : places[settledAt];
     const settledLeaves = settledPlace === null ? tree.leaves : trees[settledPlace.treeIndex].leaves.slice(0, settledPlace.count * 32);
     progress("looking for the key's coins");
-    const found = [];
-    for (const t of trees) {
-      const restored = await prover.request("restore", {
-        chainId: chain.chainId,
-        key,
-        records: t.records,
-        salts: t.salts,
-        markers: spent,
-        treeIndex: t.treeIndex,
-      });
-      found.push(...restored.found);
+    // By the note buckets of the key's own lookup tags first (buckets.mjs),
+    // as of the tip the pages were read at, each entry cross-checked against
+    // the pages; by the full page scan when the endpoint does not serve
+    // buckets (remembered for it), refuses a bucket read, or serves a bucket
+    // that is malformed or disagrees with the pages. Either way the scan's
+    // coins come wholly from one restore, never partly from each.
+    let found = null;
+    if (!bucketless.has(rpc.url)) {
+      try {
+        found = await restoreTreesByBuckets({ prover, rpc, anchorHash: chain.tip.hash, key, chainId: chain.chainId, trees, spent });
+      } catch (err) {
+        if (Number(err?.code) === METHOD_NOT_FOUND) bucketless.add(rpc.url);
+      }
+    }
+    if (found === null) {
+      found = [];
+      for (const t of trees) {
+        const restored = await prover.request("restore", {
+          chainId: chain.chainId,
+          key,
+          records: t.records,
+          salts: t.salts,
+          markers: spent,
+          treeIndex: t.treeIndex,
+        });
+        found.push(...restored.found);
+      }
     }
     return { chain, trees, tree, rootHeaders, rootCounts, prefixRoots, settledAt, settledLeaves, fee, found, commitsByAmount };
   }

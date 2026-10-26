@@ -291,6 +291,7 @@ network, `http://127.0.0.1:8545`. The app sends only these requests:
 | `ghost_getPageRoots` | `"coin"`, tree index, anchor block hash | An array of 32-byte page roots, of pages 0 to the last page with a leaf (`[]` for an empty tree) |
 | `ghost_getTreePage` | `"coin"`, tree index, page, anchor block hash | `{ kind, treeIndex, page, filled, entries }`: `filled` positions of the page, and `entries`, one `{ leaf, note, salt }` (32, 156 and 16 bytes of hex) per filled position, in order; `salt` beside the leaf of a commit, left out for a reveal's remainder |
 | `ghost_getTreePage` | `"coin-markers"`, tree index, page, anchor block hash | `{ count, markers }`: a page of 4,096 spent coin markers in inclusion order |
+| `ghost_getNoteBucket` | `"coin"`, tree index, bucket bits, prefix, anchor block hash | `{ kind, treeIndex, bits, prefix, count, entries }`: every filled position of the tree at the anchor whose note's lookup tag starts with the `bits`-bit `prefix`, one `{ position, leaf, note, salt }` each in increasing position order; `bits` must be `clamp(floor(log2(n / 4096)), 0, 24)` for the tree's `n` leaves at the anchor (see Summon and Claim, Restore). A node without it answers `-32601` |
 | `eth_getBlockReceipts` | a block hash | The block's receipts in transaction order, each with `type`, `status`, `cumulativeGasUsed`, `logsBloom` and `logs` (`address`, `topics`, `data`) |
 | `eth_sendRawTransaction` | the reveal envelope, or the commit's account transaction | The transaction hash |
 | `eth_getBalance` | the wallet's address, `"latest"` | The account's balance |
@@ -309,7 +310,11 @@ asked for the same way: by block hash, once for every block of the page's
 header chain from its start to the tip, in chain order, whatever the key
 (see Block receipts). No request names a key, a commitment, a position or
 a marker, and the app never asks for a witness; it computes its own from the
-pages. The wallet's requests name its address, which the commit transaction
+pages. The note bucket reads of restore are the one exception to "whatever
+the key": their prefixes are the first bits of the key's own lookup tags,
+asked only after every page, marker and receipt above (see Summon and
+Claim, Restore); below 8,192 leaves a tree is one bucket, prefix 0, for
+every key. The wallet's requests name its address, which the commit transaction
 shows anyway. The only request that carries a coin's data is the reveal itself,
 whose fields are public; sending it, though, links the connection to the
 coin it spends.
@@ -706,6 +711,31 @@ app makes no data commitments.
    block receipts, fixed by the tip and by what the page already holds)
    before the key is tried, and restore runs only once the leaves, notes,
    salts and markers have passed the check of Block receipts.
+
+   The restore itself reads the key's note buckets first
+   (`webapp/src/buckets.mjs`, the twin of the client library's
+   `restore_coins_by_tags`; spec 01, sections 8 and 9). Every note's nonce
+   starts with the 3-byte lookup tag of its commitment number under the
+   key's note key, and a bucket is the notes of one tree whose tag starts
+   with the same `clamp(floor(log2(n / 4096)), 0, 24)` bits, `n` the tree's
+   page-read leaf count. For each tree, as of the tip the pages were read
+   at, the worker gives the tags of numbers 0 to 15 (always 16) and the app
+   asks `ghost_getNoteBucket` once for each distinct prefix, then for
+   numbers 16 to 31 only if number 15 was found, and so on; after each batch
+   the worker's `restoreAt` tries the key on every note read so far, with
+   its position. A bucket is a hint, not completeness: no header root covers
+   it, and a node can withhold a note. So each entry must be the leaf, note
+   and salt the pages read (and checked against the tip's root and the block
+   receipts) hold at its position, before the key is tried on it. The full
+   page scan stays the fallback, and a scan's coins are wholly from one or
+   the other, never partly: a node that answers "method not found"
+   (`-32601`) is not asked again for the life of the flow, and a node that
+   answers any other error, or serves a bucket that is malformed (not the
+   kind, tree, bits, prefix or count asked for, positions not strictly
+   increasing, a field of the wrong length, a note of another bucket) or
+   that disagrees with the pages, gets the full page scan for that scan
+   only. The pages are still read whole for the root and receipt checks, so
+   the buckets do not yet save a page read.
 2. **Same requests after restore.** On a reveal or claim, every path after
    restore, the one where the key holds no unspent coin included, then asks
    the endpoint the same thing in the same order before anything depends on

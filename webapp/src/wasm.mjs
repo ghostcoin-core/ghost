@@ -98,6 +98,8 @@ export const SALT_BYTES = 16;
 const SALT_RECORD_BYTES = 1 + SALT_BYTES;
 // A leaf with its note.
 export const LEAF_RECORD_BYTES = 32 + 156;
+// A note's lookup tag: the first bytes of its nonce.
+export const LOOKUP_TAG_BYTES = 3;
 // The commit version: 2, salted, the only one.
 export const COMMIT_VERSION = 2;
 
@@ -200,21 +202,45 @@ export class Ghost {
       .records(saltRecords, SALT_RECORD_BYTES)
       .records(markers, 32)
       .build();
-    const out = new Output(this.call("ghost_restore", input));
-    const found = [];
-    for (let n = out.u32(); n > 0; n -= 1) {
-      found.push({
-        number: out.u64(),
-        amount: fromWord(out.take(32)),
-        treeIndex: out.u32(),
-        position: out.u32(),
-        commitment: out.take(32),
-        marker: out.take(32),
-        spent: out.take(1)[0] === 1,
-        salt: out.salt(),
-      });
+    return readFound(new Output(this.call("ghost_restore", input)));
+  }
+
+  // The prefix bits of a note bucket of a coin tree of `count` leaves (a
+  // u64): clamp(floor(log2(count / 4096)), 0, 24).
+  bucketBits(count) {
+    return new Output(this.call("ghost_bucket_bits", new Input().u64(count).build())).u32();
+  }
+
+  // The lookup tags (3 bytes each) of the key's commitment numbers `first`
+  // to `first + count - 1`, in number order.
+  noteTags({ key, first, count }) {
+    const out = new Output(this.call("ghost_note_tags", new Input().text(key).u64(first).u32(count).build()));
+    const tags = [];
+    while (out.at < out.bytes.length) tags.push(out.take(LOOKUP_TAG_BYTES));
+    return tags;
+  }
+
+  // As restore, over some leaves of tree `treeIndex` each with its position:
+  // `entries` [{ position, leaf, note, salt }] (32 and 156 bytes, a 16-byte
+  // salt or null). The coins found come in the order of `entries`.
+  restoreAt({ chainId, key, treeIndex, entries, markers }) {
+    if (!Number.isInteger(treeIndex) || treeIndex < 0 || treeIndex > 0xffffffff) throw new Error("a tree index is a 32-bit unsigned integer");
+    const records = [];
+    for (const { position, leaf, note, salt } of entries) {
+      if (!Number.isInteger(position) || position < 0 || position > 0xffffffff) throw new Error("a position is a 32-bit unsigned integer");
+      const at = new Uint8Array(4);
+      new DataView(at.buffer).setUint32(0, position);
+      if (leaf.length !== 32 || note.length !== LEAF_RECORD_BYTES - 32) throw new Error("a leaf is 32 bytes and its note 156");
+      records.push(at, leaf, note, saltRecord(salt ?? null));
     }
-    return found;
+    const input = new Input()
+      .u64(chainId)
+      .u32(treeIndex)
+      .text(key)
+      .records(concat(records), 4 + LEAF_RECORD_BYTES + SALT_RECORD_BYTES)
+      .records(markers, 32)
+      .build();
+    return readFound(new Output(this.call("ghost_restore_at", input)));
   }
 
   treeCheck({ pageRoots, leaves, root }) {
@@ -485,6 +511,24 @@ export class Ghost {
     while (out.at < out.bytes.length) hashes.push(out.take(32));
     return { best, held, work, confirmations, hashes };
   }
+}
+
+// The coins of ghost_restore and ghost_restore_at: a count, then each coin.
+function readFound(out) {
+  const found = [];
+  for (let n = out.u32(); n > 0; n -= 1) {
+    found.push({
+      number: out.u64(),
+      amount: fromWord(out.take(32)),
+      treeIndex: out.u32(),
+      position: out.u32(),
+      commitment: out.take(32),
+      marker: out.take(32),
+      spent: out.take(1)[0] === 1,
+      salt: out.salt(),
+    });
+  }
+  return found;
 }
 
 // A list of byte strings as lib.rs reads one: a count, then each as a
