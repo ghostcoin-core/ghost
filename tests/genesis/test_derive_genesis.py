@@ -100,7 +100,8 @@ class DeriveGenesisTest(unittest.TestCase):
         self.assertEqual(REORG_HEADERS[:26], NORMAL_HEADERS)
         self.assertEqual(TOO_FEW_CONFIRMATIONS_HEADERS, NORMAL_HEADERS[:-1])
         for golden in (NORMAL_GENESIS, REORG_GENESIS):
-            self.assertEqual(len(golden), 1232)
+            # 19 header fields: the 18-field genesis was 1232 hex digits.
+            self.assertEqual(len(golden), 1298)
             # timestamp = MTP(B) + GENESIS_OFFSET = 1800000000 + 6000
             self.assertIn("84" + (FIXTURE_TL + 6000).to_bytes(4, "big").hex() + "a0", golden)
 
@@ -130,6 +131,41 @@ class DeriveGenesisTest(unittest.TestCase):
                          derive_genesis.keccak256(_header_slice(REORG_GENESIS)).hex())
         self.assertNotEqual(fields["genesis-block"], NORMAL_GENESIS)
         self.assertNotEqual(fields["bitcoin-block"], NORMAL_BITCOIN_BLOCK)
+
+    def test_genesis_header_carries_the_empty_marker_set_root(self):
+        # The root of the data marker-set tree holding only the sentinel
+        # (0, 0, 0) at position 0 (spec 05, section 6), computed here from the
+        # definition with the script's own Keccak-256.
+        def tagged(tag, *parts):
+            return derive_genesis.keccak256(bytes([len(tag)]) + tag.encode("ascii") + b"".join(parts))
+
+        root = tagged("ghost/data-marker-set-leaf/v1", bytes(32), bytes(32), bytes(5))
+        empty = tagged("ghost/empty-leaf/v1")
+        for level in range(40):
+            root = tagged("ghost/data-marker-set-node/v1", bytes([level]), root, empty)
+            empty = tagged("ghost/data-marker-set-node/v1", bytes([level]), empty, empty)
+        self.assertEqual(root, derive_genesis.EMPTY_DATA_MARKER_SET_ROOT)
+        spec05 = (HERE.parent.parent / "docs" / "spec" / "05-trees-and-headers.md").read_text()
+        self.assertIn("| `dataMarkerRoot` | `%s`" % root.hex(), spec05)
+        for golden in (NORMAL_GENESIS, REORG_GENESIS):
+            header = _header_slice(golden)
+            # The header list is 19 items and its last is the 32-byte root,
+            # right after the empty data tree root.
+            self.assertTrue(header.endswith(b"\xa0" + derive_genesis.EMPTY_DATA_TREE_ROOT
+                                            + b"\xa0" + root))
+            items, at = 0, 3
+            while at < len(header):
+                lead = header[at]
+                if lead < 0x80:
+                    at += 1
+                elif lead <= 0xB7:
+                    at += 1 + lead - 0x80
+                else:
+                    size = lead - 0xB7
+                    at += 1 + size + int.from_bytes(header[at + 1:at + 1 + size], "big")
+                items += 1
+            self.assertEqual(at, len(header))
+            self.assertEqual(items, 19)
 
     def test_too_few_confirmations_refused(self):
         block_hash = TOO_FEW_CONFIRMATIONS_REFUSED.split("block ")[-1].split()[0]

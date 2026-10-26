@@ -363,12 +363,17 @@ commitment of those bytes shares, not that they concern one commitment.
    asks about, and checks the proof against it.
 
 **Header-only verifiers.** The outline puts tree states in every header ("Core
-protocol" 6) but does not say the marker set's root is there. **Proposed:** the
-data spent-marker-set root goes into every header, so a header-only verifier can
-check "not revealed" without asking an endpoint (threat model, section 6 item
-2). Until that is settled a verifier rejects any proof of holding whose
+protocol" 6) but does not say the marker set's root is there. **Proposed**, and
+settled by front desk decision (2026-10-25): the data spent-marker-set root goes
+into every header, as `dataMarkerRoot`
+([spec 05](05-trees-and-headers.md), sections 6 and 10), so a header-only
+verifier can check "not revealed" without asking an endpoint (threat model,
+section 6 item 2). A verifier rejects any proof of holding whose
 spent-marker-set root it cannot take from a header it trusts; a bare answer
-from a node or endpoint is never enough (question 2).
+from a node or endpoint is never enough (question 2). Until the proof circuit
+checks the marker's absence under that root
+([spec 02](02-proof-statements.md), S3, constraint 4), every proof of holding
+is rejected.
 
 **What it claims.** A proof of holding says "the prover held an unrevealed
 `DATA` commitment to the content of fingerprint `cf`, unrevealed as of the
@@ -805,9 +810,15 @@ Each has a default that rejects or adds nothing until the founder decides.
    wallet-chosen reserve, a public account paying the reveal, and a refund of
    the leftover.
 2. **Spent-marker-set root in headers.** Should every header carry the data
-   spent-marker-set root? Default: proofs of holding are accepted only against
-   a root the verifier takes from a header it trusts; without one, the
-   verifier rejects.
+   spent-marker-set root? Answered (front desk decision, 2026-10-25): yes.
+   Every header carries `dataMarkerRoot`, the root of an append-only indexed
+   Keccak-256 tree of depth 40 over the data markers, with a 1,354-byte
+   non-membership witness ([spec 05](05-trees-and-headers.md), section 6
+   "The data marker-set tree", and section 10). Proofs of holding are accepted
+   only against a root the verifier takes from a header it trusts, and stay
+   rejected until the proof circuit checks the absence. Rejected: a sparse
+   tree of depth 256, buckets by marker prefix, non-membership in the storage
+   trie, and a second root per type; no coin marker-set root is added.
 3. **Remainder on a data reveal.** Should a data reveal create a remainder
    commitment? Default: none.
 4. **Revoke purpose.** Is revoke a purpose separate from the ordinary reveal?
@@ -856,9 +867,10 @@ itself:
 - The transaction-format specification fixes the data commit entry point, the
   note layout and its one fixed length, the data reveal's encoding and purpose
   values, and how an on-chain verifier issues a challenge.
-- The data tree's root rules (which roots are canonical, the rollover, and
-  whether the spent-marker-set root goes in the header) are fixed with the
-  tree and header specification.
+- The data tree's root rules (which roots are canonical, the rollover) and the
+  spent-marker-set tree with its header root `dataMarkerRoot` are fixed by the
+  tree and header specification ([spec 05](05-trees-and-headers.md), sections
+  6 and 10).
 - The fee reserve (section 3, "The fee reserve"; section 6, "Fee settlement
   at reveal and revoke") touches other specifications, edited by the
   implementation work, not here: [spec 02](02-proof-statements.md), the S2

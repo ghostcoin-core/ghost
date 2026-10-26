@@ -428,7 +428,7 @@ class CheckerTest(unittest.TestCase):
         self.assertTrue(any("ghost/empty-leaf/v2 is listed" in e for e in errors))
 
     def test_tags_are_distinct_ascii_with_version(self):
-        self.assertEqual(len(checker.ALL_TAGS), 19)
+        self.assertEqual(len(checker.ALL_TAGS), 21)
         for tag in checker.ALL_TAGS:
             self.assertRegex(tag, r"^ghost/[a-z0-9-]+/v[12]$")
         v2 = sorted(t for t in checker.ALL_TAGS if t.endswith("/v2"))
@@ -722,6 +722,33 @@ class SaltTest(unittest.TestCase):
         self.assertEqual(rows["`ghost/data-commitment/v1`"]["Input bytes"], "91")
         text = self.text.replace("`DATA`, `DATA_RESERVE`, `F_d` | 91 | 1 |", "`DATA`, `F_d` | 59 | 1 |")
         self.assertIn("tag ghost/data-commitment/v1: table says '59' input bytes, recomputed 91",
+                      self.run_on(text))
+
+    def test_marker_set_tags_are_listed(self):
+        leaf, node = "ghost/data-marker-set-leaf/v1", "ghost/data-marker-set-node/v1"
+        self.assertIn(leaf, checker.ALL_TAGS)
+        self.assertIn(node, checker.ALL_TAGS)
+        self.assertEqual(checker.TAG_LAYOUTS[leaf], (32, 32, 5))
+        self.assertEqual(checker.TAG_LAYOUTS[node], (1, 32, 32))
+        body = checker.section(self.text, "Tagged hashing")
+        rows = {r["Tag"]: r for r in checker._table_rows(body)}
+        self.assertEqual((rows[f"`{leaf}`"]["Input bytes"], rows[f"`{leaf}`"]["Keccak permutations"]),
+                         ("99", "1"))
+        self.assertEqual((rows[f"`{node}`"]["Input bytes"], rows[f"`{node}`"]["Keccak permutations"]),
+                         ("95", "1 per level"))
+        # A missing row, a wrong size and a wrong permutation count are caught.
+        for tag in (leaf, node):
+            with self.subTest(tag=tag):
+                text = self.text.replace(f"| `{tag}` |", "| marker set |", 1)
+                self.assertIn(f"tag {tag} is used but not listed in the tag table", self.run_on(text))
+        text = self.text.replace("`nextIndex` as 5 bytes | 99 | 1 |", "`nextIndex` as 8 bytes | 102 | 1 |")
+        self.assertIn(f"tag {leaf}: table says '102' input bytes, recomputed 99", self.run_on(text))
+        row = f"| `{node}` |"
+        start = self.text.index(row)
+        end = self.text.index("\n", start)
+        text = self.text[:start] + self.text[start:end].replace("| 95 | 1 per level |", "| 95 | 1 |") + \
+            self.text[end:]
+        self.assertIn(f"tag {node}: table says '1' Keccak permutations, recomputed '1 per level'",
                       self.run_on(text))
 
     def test_data_commitment_without_the_reserve_is_caught(self):

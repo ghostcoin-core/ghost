@@ -1,6 +1,6 @@
 """Tests for check_trees_and_headers.py: it passes on the specification and
 fails when a section, a parameter, a table, the header layout, the genesis
-list, a tree, rollover or header vector, the encoder's output, a requirement,
+list, a tree, rollover, marker-set or header vector, the encoder's output, a requirement,
 the recovery test, a conflict or a tag is damaged. It also checks that the
 separately written encoder agrees with the checker's own RLP code and stays
 separate from it."""
@@ -152,11 +152,114 @@ class CheckerTest(unittest.TestCase):
                             "| 8 | `gasLimit` | integer below 2^64 | base |\n| 9 | `number` |")
         self.assert_gap(text, "header fields are")
 
-    def test_no_third_header_field(self):
-        row = "| 17 | `dataTreeRoot` | 32 bytes | Ghost |\n"
-        text = self.damaged(row, row + "| 18 | `spentMarkerRoot` | 32 bytes | Ghost |\n")
-        self.assert_gap(text, "no spent-marker-set root may be added")
-        self.assert_gap(text, "header fields are")
+    def test_marker_root_is_field_eighteen(self):
+        # A coin marker-set root after the data one is refused.
+        row = "| 18 | `dataMarkerRoot` | 32 bytes | Ghost |\n"
+        text = self.damaged(row, row + "| 19 | `coinMarkerRoot` | 32 bytes | Ghost |\n")
+        self.assert_gap(text, "no coin marker-set root may be added")
+        self.assert_gap(text, "the header table lists 20 fields, expected exactly 19")
+        # The marker-set root moved before the tree roots is refused.
+        text = self.damaged("| 16 | `coinTreeRoot` | 32 bytes | Ghost |\n"
+                            "| 17 | `dataTreeRoot` | 32 bytes | Ghost |\n"
+                            "| 18 | `dataMarkerRoot` | 32 bytes | Ghost |\n",
+                            "| 16 | `dataMarkerRoot` | 32 bytes | Ghost |\n"
+                            "| 17 | `coinTreeRoot` | 32 bytes | Ghost |\n"
+                            "| 18 | `dataTreeRoot` | 32 bytes | Ghost |\n")
+        self.assert_gap(text, "the one marker-set root must be 'dataMarkerRoot', field 18")
+        # The 18-field table without it is refused.
+        self.assert_gap(self.damaged(row, ""), "the header table lists 18 fields, expected exactly 19")
+        self.assert_gap(self.damaged("| 18 | `dataMarkerRoot` | 32 bytes | Ghost |",
+                                     "| 18 | `dataMarkerRoot` | 32 bytes | base |"),
+                        "header field 'dataMarkerRoot' must have source Ghost")
+
+    def test_header_has_nineteen_items(self):
+        self.assertEqual(len(checker.HEADER), 19)
+        self.assertEqual(checker.HEADER_NAMES[18], "dataMarkerRoot")
+        self.assertEqual(tuple(encoder.HEADER_LAYOUT)[18], ("dataMarkerRoot", "fixed", 32))
+        self.assert_gap(self.damaged("holds exactly 19 items", "holds exactly 18 items"),
+                        "do not say the list holds exactly 19 items")
+        # The decoder takes 19 items and refuses the 18 of a header without
+        # the marker-set root.
+        one = dict(encoder.golden_vectors())["header-block-one-example"]
+        fields = checker.decode_header(bytes.fromhex(dict(one)["rlp"]))
+        self.assertEqual(list(fields), list(checker.HEADER_NAMES))
+        items = [checker.rlp_encode(x) for x in checker.header_list(fields)]
+        body = b"".join(items[:18])
+        with self.assertRaises(checker.DecodeError) as ctx:
+            checker.decode_header(checker._prefix(0xC0, len(body)) + body)
+        self.assertEqual(ctx.exception.reason, "item-count")
+        # The negative vector of that header is required and rejected as item-count.
+        text = self.in_block("header-eighteen-items", "reject = item-count", "reject = field-size")
+        self.assert_gap(text, "header-eighteen-items: rejected as item-count")
+        self.assert_gap(self.damaged("fault = eighteen-items\n", "fault = unknown\n"),
+                        "no negative header vector with fault 'eighteen-items'")
+        eighteen = dict(dict(encoder.golden_vectors())["header-eighteen-items"])
+        self.assertEqual(eighteen["rlp"], checker.with_fault(fields, "eighteen-items").hex())
+
+    def test_marker_root_is_a_marker_set_vector(self):
+        two = "f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f"
+        empty = "0ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3"
+        self.assertIn(f"dataMarkerRoot = {two}", self.text)
+        text = self.in_block("header-block-one-example", f"dataMarkerRoot = {two}",
+                             "dataMarkerRoot = " + "55" * 32)
+        self.assert_gap(text, "header-block-one-example: dataMarkerRoot is not the root of any "
+                              "marker-set vector")
+        text = self.in_block("header-block-one-example", f"dataMarkerRoot = {two}",
+                             f"dataMarkerRoot = {empty}")
+        self.assert_gap(text, "header-block-one-example: dataMarkerRoot is not the root of "
+                              "marker-set-two-markers")
+        text = self.in_block("header-genesis-example", f"dataMarkerRoot = {empty}",
+                             f"dataMarkerRoot = {two}")
+        self.assert_gap(text, "header-genesis-example: 'dataMarkerRoot' is not the genesis value")
+        self.assert_gap(text, "genesis field 'dataMarkerRoot' is '" + empty)
+        # A wrong set root breaks the vector and leaves the header root unmatched.
+        text = self.in_block("marker-set-two-markers", f"root = {two}", "root = " + "55" * 32)
+        self.assert_gap(text, "vector marker-set-two-markers: root is")
+        self.assert_gap(self.in_block("marker-set-two-markers", "kind = marker-set", "kind = other"),
+                        "header-block-one-example: dataMarkerRoot is not the root of any")
+
+    def test_marker_set_vectors_required(self):
+        for name in checker.MARKER_SET_VECTORS:
+            with self.subTest(name=name):
+                self.assert_gap(self.damaged(f"[{name}]\n", f"[renamed-{name}]\n"), f"no vector {name}")
+        # Leaves, count and markers are recomputed from the insertions.
+        text = self.in_block("marker-set-two-markers", "count = 3", "count = 2")
+        self.assert_gap(text, "vector marker-set-two-markers: count is 2, recomputed 3")
+        text = self.in_block("marker-set-two-markers", "leaf-1 = c340", "leaf-1 = c341")
+        self.assert_gap(text, "vector marker-set-two-markers: the leaves differ")
+        text = self.in_block("marker-set-one-marker", "0000000001\n", "0000000002\n")
+        self.assert_gap(text, "vector marker-set-one-marker: the leaves differ")
+        text = self.in_block("marker-set-empty", "count = 1\n", "count = 1\nleaf-1 = 00 00 00\n")
+        self.assert_gap(text, "vector marker-set-empty: the leaves differ")
+        text = self.in_block("marker-set-one-marker", "markers = c340c4a3",
+                             "markers = 0000000000000000000000000000000000000000000000000000000000000000 c340c4a3")
+        self.assert_gap(text, "vector marker-set-one-marker: a marker cannot be inserted")
+        marker = "40b6aa08963fee7e02d69cf4d7c5e9d2ba775d28991f4e08e27ed97c8a38acc8"
+        self.assertIn(f"marker = {marker}", self.spec01)
+        spec01 = self.spec01.replace(f"marker = {marker}", "marker = " + "77" * 32)
+        self.assert_gap(self.text, "vector marker-set-two-markers: markers are not the data markers "
+                                   "of spec 01", spec01=spec01)
+        # The absence witness, its low leaf and its rejected markers.
+        start = self.text.index("absence = 40b6", self.text.index("[marker-set-absence]"))
+        at = start + len("absence = ") + 200
+        flipped = "0" if self.text[at] != "0" else "1"
+        text = self.text[:at] + flipped + self.text[at + 1:]
+        self.assert_gap(text, "vector marker-set-absence: absence differs from the witness")
+        self.assert_gap(text, "vector marker-set-absence: valid is yes, the witness check gives root")
+        self.assert_gap(self.in_block("marker-set-absence", "absence = 40b6", "absence = 0040b6"),
+                        "vector marker-set-absence: absence is 1355 bytes, expected 1354")
+        self.assert_gap(self.in_block("marker-set-absence", "valid = yes", "valid = no"),
+                        "vector marker-set-absence: valid is no")
+        self.assert_gap(self.in_block("marker-set-absence", "low-position = 2", "low-position = 1"),
+                        "vector marker-set-absence: low-position is 1")
+        self.assert_gap(self.in_block("marker-set-absence", "set = marker-set-two-markers",
+                                      "set = marker-set-one-marker"),
+                        "vector marker-set-absence: root is")
+        text = self.in_block("marker-set-absence", "reject-equal = 40b6", "reject-equal = 50b6")
+        self.assert_gap(text, "reject-equal does not have its relation to the low leaf")
+        self.assert_gap(text, "the witness is accepted for reject-equal")
+        text = self.in_block("marker-set-absence", "reject-above-next = eeee", "reject-above-next = 8888")
+        self.assert_gap(text, "the witness is accepted for reject-above-next")
 
     def test_base_fee_required(self):
         text = self.damaged("| `baseFee` | integer below 2^256 | base, required |",
@@ -171,9 +274,9 @@ class CheckerTest(unittest.TestCase):
     def test_forbidden_fields(self):
         self.assert_gap(self.damaged("| `excessBlobGas` | `ExcessBlobGas` |\n", ""),
                         "forbidden field 'excessBlobGas' is not listed")
-        text = self.damaged("| 17 | `dataTreeRoot` | 32 bytes | Ghost |\n",
-                            "| 17 | `dataTreeRoot` | 32 bytes | Ghost |\n"
-                            "| 18 | `withdrawalsRoot` | 32 bytes | base |\n")
+        text = self.damaged("| 18 | `dataMarkerRoot` | 32 bytes | Ghost |\n",
+                            "| 18 | `dataMarkerRoot` | 32 bytes | Ghost |\n"
+                            "| 19 | `withdrawalsRoot` | 32 bytes | base |\n")
         self.assert_gap(text, "forbidden field 'withdrawalsRoot' is in the header")
 
     # -- genesis -----------------------------------------------------------
@@ -268,8 +371,8 @@ class CheckerTest(unittest.TestCase):
 
     def test_header_vector_rlp(self):
         start = self.text.index("[header-block-one-example]")
-        at = self.text.index("rlp = f90243", start)
-        text = self.text[:at] + "rlp = f90244" + self.text[at + len("rlp = f90243"):]
+        at = self.text.index("rlp = f90264", start)
+        text = self.text[:at] + "rlp = f90265" + self.text[at + len("rlp = f90264"):]
         errors = self.errors(text)
         self.assertTrue(any("header-block-one-example: rlp differs" in e for e in errors), errors)
         self.assertTrue(any("differs from the encoder's output" in e for e in errors), errors)
@@ -281,11 +384,11 @@ class CheckerTest(unittest.TestCase):
         self.assertTrue(any("header-block-one-example: hash is" in e for e in errors), errors)
 
     def test_header_vector_hash(self):
-        text = self.damaged("hash = 943182f2", "hash = 043182f2")
+        text = self.damaged("hash = 81ca9614", "hash = 01ca9614")
         self.assert_gap(text, "vector header-block-one-example: hash is")
 
     def test_parent_link(self):
-        text = self.damaged("parentHash = ffc501cc", "parentHash = efc501cc")
+        text = self.damaged("parentHash = 039d14f5", "parentHash = 139d14f5")
         self.assert_gap(text, "parentHash is not the genesis example's hash")
 
     def test_header_root_must_be_a_tree_vector(self):
@@ -301,8 +404,8 @@ class CheckerTest(unittest.TestCase):
 
     def test_negative_vector_bytes(self):
         start = self.text.index("[header-extra-trailing-field]")
-        at = self.text.index("3237a80\n", start)
-        text = self.text[:at] + "3237a81\n" + self.text[at + len("3237a80\n"):]
+        at = self.text.index("36e4f80\n", start)
+        text = self.text[:at] + "36e4f81\n" + self.text[at + len("36e4f80\n"):]
         self.assert_gap(text, "header-extra-trailing-field: rlp differs from the re-derived")
 
     def test_negative_vector_marked_valid(self):
@@ -402,6 +505,49 @@ class TreeAndRlpTest(unittest.TestCase):
         self.assertEqual(checker.append(3, full, True), (False, 3, full, None))
         self.assertEqual(checker.append(checker.INDEX_MAX, full, False),
                          (False, checker.INDEX_MAX, full, None))
+
+    def test_marker_set_rules(self):
+        # The genesis root from the definition alone: the sentinel leaf at
+        # position 0, empty leaves elsewhere, 40 levels.
+        at = checker.tagged("ghost/data-marker-set-leaf/v1", bytes(69))
+        z = checker.empty_leaf()
+        for level in range(40):
+            at = checker.node("ghost/data-marker-set-node/v1", level, at, z)
+            z = checker.node("ghost/data-marker-set-node/v1", level, z, z)
+        self.assertEqual(checker.marker_set_root(checker.marker_set_genesis()), at)
+        self.assertEqual(1 + len(checker.TAG_MARKER_SET_LEAF) + 69, 99)
+        self.assertEqual(1 + len(checker.TAG_MARKER_SET_NODE) + 65, 95)
+        self.assertEqual(checker.ABSENCE_BYTES, 1354)
+        # Inserts keep the list sorted through nextValue and nextIndex.
+        rng = random.Random(11)
+        markers = [bytes(rng.randrange(256) for _ in range(32)) for _ in range(12)]
+        leaves = checker.marker_set(markers)
+        chain, at = [], 0
+        while True:
+            value, next_value, next_index = leaves[at]
+            chain.append(value)
+            if next_value == bytes(32):
+                break
+            self.assertEqual(leaves[next_index][0], next_value)
+            at = next_index
+        self.assertEqual(chain, [bytes(32)] + sorted(markers))
+        for bad in (bytes(32), markers[3]):
+            with self.assertRaises(checker.MarkerRejected):
+                checker.marker_insert(list(leaves), bad)
+        # A witness for every absent marker verifies; one changed sibling or a
+        # wrong length does not; a present marker has no low leaf.
+        root = checker.marker_set_root(leaves)
+        for _ in range(5):
+            m = bytes(rng.randrange(256) for _ in range(32))
+            witness = checker.absence_witness(leaves, m)
+            self.assertIsNone(checker.check_absence(root, m, witness))
+            broken = bytearray(witness)
+            broken[74 + 32 * rng.randrange(40)] ^= 1
+            self.assertEqual(checker.check_absence(root, m, bytes(broken)), "root")
+            self.assertEqual(checker.check_absence(root, m, witness[:-1]), "witness-size")
+            self.assertEqual(checker.check_absence(root, bytes(32), witness), "zero-marker")
+        with self.assertRaises(checker.MarkerRejected):
+            checker.absence_witness(leaves, markers[0])
 
     def test_decoder_rejects_non_canonical_rlp(self):
         genesis = encoder.genesis_example()
