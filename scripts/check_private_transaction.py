@@ -26,7 +26,10 @@ Python standard library only. It checks that:
      `window-genesis`;
   6. the properties are numbered PT-1 upwards without gaps or repeats, each
      names its check, and every PT-n cited anywhere exists;
-  7. the conflicts section names spec 02, spec 03 and spec 04.
+  7. the conflicts section names spec 02, spec 03 and spec 04;
+  8. section 4 states the data reveal fee rule of spec 04, section 6: a
+     "Data reveals" item that names the window fee, the reserve
+     `DATA_RESERVE` and the check `fee <= DATA_RESERVE`.
 
 Usage:
     python3 scripts/check_private_transaction.py [SPEC_MD]
@@ -91,6 +94,11 @@ REQUIRED_EXAMPLES = {
     "fee-above-balance": "reveal",
     "competing-reveals": "competing",
 }
+
+# The data reveal fee rule section 4 must state (spec 04, section 6, "Fee
+# settlement at reveal and revoke").
+DATA_REVEAL_ITEM = "- **Data reveals.**"
+DATA_REVEAL_FEE_TERMS = ("window fee", "`DATA_RESERVE`", "`fee <= DATA_RESERVE`")
 
 HEADING_RE = re.compile(r"^## (\d+)\. (.+)$")
 PROPERTY_RE = re.compile(r"^- \*\*PT-(\d+)\. (.+?)\*\*")
@@ -266,6 +274,7 @@ class Checker:
         self.check_binding()
         self.check_examples()
         self.check_smallest_vanish()
+        self.check_data_reveal_fee()
         self.check_properties()
         self.check_conflicts()
         return self.errors
@@ -508,6 +517,26 @@ class Checker:
         if got != want:
             self.fail(f"the smallest Vanish is {got} wei, recomputed MIN_VANISH_FEES * fee of "
                       f"window-genesis = {want}")
+
+    def check_data_reveal_fee(self):
+        """Section 4 has a 'Data reveals' item stating the data reveal's fee:
+        the window fee, paid out of DATA_RESERVE, with fee <= DATA_RESERVE."""
+        lines = self.section("Fee formula")
+        if lines is None:
+            return
+        start = next((i for i, line in enumerate(lines) if line.startswith(DATA_REVEAL_ITEM)),
+                     None)
+        if start is None:
+            self.fail("section 4 does not state the data reveal fee rule: no "
+                      f"'{DATA_REVEAL_ITEM}' item")
+            return
+        end = next((i for i in range(start + 1, len(lines))
+                    if lines[i].startswith("- ") or not lines[i].strip()), len(lines))
+        body = " ".join(" ".join(lines[start:end]).split())
+        missing = [term for term in DATA_REVEAL_FEE_TERMS if term not in body]
+        if missing:
+            self.fail(f"section 4 does not state the data reveal fee rule: the "
+                      f"'{DATA_REVEAL_ITEM}' item lacks {missing}")
 
     def params_ready(self):
         return all(p in self.params for p in PARAMETERS)

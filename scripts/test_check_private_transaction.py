@@ -426,6 +426,32 @@ class CheckerTest(unittest.TestCase):
         self.assert_gap(self.damaged("(spec 02, PS-7).", "(spec 02, PS-7; PT-99)."),
                         "PT-99 is cited but not defined")
 
+    def test_data_reveal_fee_is_the_window_fee(self):
+        start = self.text.index("## 4. Fee formula")
+        end = self.text.index("## 5. Fee is current")
+        item = self.text.index("- **Data reveals.**", start)
+        stop = self.text.index("\n\n", item)
+        self.assertLess(stop, end)
+        section = self.text[start:end]
+        self.assertIn("`fee <= DATA_RESERVE`", section)
+        self.assertIn("window fee", self.text[item:stop])
+        # The rule removed from section 4.
+        text = self.text[:item] + self.text[stop:]
+        self.assert_gap(text, "section 4 does not state the data reveal fee rule")
+        # The item kept but each part of the rule left out.
+        for term, new in (("`fee <= DATA_RESERVE`", "a check"),
+                          ("DATA_RESERVE", "the reserve"),
+                          ("window fee", "fee")):
+            with self.subTest(term=term):
+                body = self.text[item:stop].replace(term, new)
+                text = self.text[:item] + body + self.text[stop:]
+                self.assert_gap(text, "section 4 does not state the data reveal fee rule")
+        # The rule stated only outside section 4 does not count.
+        moved = self.text[:item] + self.text[stop:]
+        at = moved.index("## 9. Not settled")
+        moved = moved[:at] + self.text[item:stop] + "\n\n" + moved[at:]
+        self.assert_gap(moved, "section 4 does not state the data reveal fee rule")
+
     def test_conflicts_name_each_spec(self):
         start = self.text.index("## 10. Conflicts")
         end = self.text.index("## 11.")

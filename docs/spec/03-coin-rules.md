@@ -98,7 +98,12 @@ Nothing else writes to the coin tree. In particular:
   commitments go only into the data tree, are written with a `DATA` type tag
   under their own hash tag, and are never accepted by the coin reveal
   (section 7, step 3). A data commit burns the fixed reserve `DATA_RESERVE`
-  of [spec 04](04-data-commitments.md), section 3, and mints nothing.
+  of [spec 04](04-data-commitments.md), section 3, and mints nothing. That is
+  the one place a data commitment gets an amount: the constant reserve,
+  250,000,000,000,000,000 wei, the same for every data commitment, set by the
+  node in the leaf's outer hash, never a value the wallet chooses. It is
+  burned at commit and never becomes money: at reveal or revocation it pays
+  the fee and the rest is forfeited, credited to nobody (spec 04, section 6).
 - The general proof checker for developer-written statements can never add a
   coin leaf or mint (outline, "Extension points" 3; threat model C37).
 - No contract, precompile caller or account has any right over the coin tree
@@ -118,7 +123,9 @@ Nothing else writes to the coin tree. In particular:
   sets no fee formula; [spec 07](07-private-transaction.md), sections 4 and 5,
   fixes it and the split.
 - **No custodian, no reserve.** No contract or account holds committed value,
-  and no balance anywhere can be drawn on to pay a reveal.
+  and no balance anywhere can be drawn on to pay a reveal. A data
+  commitment's `DATA_RESERVE` is not such a reserve: it is burned at commit
+  and held by no account (section 3).
 - **Only the chain's reveal rule mints.** The node's reveal rule (section 7) is
   the only code path that increases a balance for a coin reveal. No contract
   address is ever authorized to mint, there is no mint permission to grant,
@@ -212,7 +219,9 @@ in this order and stops at the first failure.
    specification; a note of any other length is rejected (threat model C18).
 6. **Amount range.** The burned amount `v` is the transaction's value, and
    `1 <= v <= V_MAX`. A zero or larger amount is rejected. No other minimum and
-   no cooldown apply (question 3).
+   no cooldown apply (question 3). A data commit's value must equal
+   `DATA_RESERVE` exactly; any other value, zero included, is rejected
+   ([spec 04](04-data-commitments.md), section 4, "Commit checks", check 1).
 7. **Funds.** The sender's balance covers `v` plus the maximum gas cost. This
    is the base client's own check, restated because the burn depends on it.
 8. **Tree room.** The coin tree has room for one more leaf. **Proposed:** if
@@ -372,14 +381,34 @@ The node keeps two running totals in the chain state, both 256-bit unsigned
 integers that start at zero at genesis:
 
 - `total_in`: the sum of `v` over every commit (and over issuance, if a
-  specification ever adds it).
-- `total_out`: the sum of `out + fee` over every reveal.
+  specification ever adds it), plus `DATA_RESERVE` for every data commit.
+- `total_out`: the sum of `out + fee` over every reveal, plus `DATA_RESERVE`
+  for every data reveal or revocation, whatever its fee.
 
 The hidden total is `total_in - total_out`. It equals the sum of the amounts in
-the unspent coin commitments if every proof was sound, but nobody can check
-that sum, because the amounts are hidden. Both totals are public, readable from
-the state, and change only in commit step 10 and reveal step 13, together with
-the rest of that step's state change.
+the unspent coin commitments, plus `DATA_RESERVE` for each data commitment not
+yet revealed or revoked, if every proof was sound, but nobody can check that
+sum, because the coin amounts are hidden. Both totals are public, readable
+from the state, and change only in commit step 10 and reveal step 13, in the
+data commit's apply step and the data reveal's (spec 04, section 4, "Commit
+checks", check 4, and section 6, step 11), together with the rest of that
+step's state change.
+
+A data commitment adds `DATA_RESERVE` to `total_in` once and to `total_out`
+at most once, because its marker can be spent once. At a data reveal or
+revocation the reserve settles as `burn + tip_paid + forfeit = DATA_RESERVE`:
+the base-fee part of the fee is burned, the tip goes to the block finder, and
+`DATA_RESERVE - fee` is forfeited, credited to nobody (spec 04, section 6,
+"Fee settlement at reveal and revoke"). So the hidden total drops by exactly
+what the spent data commitment held, and a data commitment never moves more
+out of the hidden set than its commit put in.
+
+Worked example, amounts in wei (spec 04, section 6, has the data-only one):
+two data commits and one
+coin commit of 1,000,000,000,000,000,000 give `total_in`
+1,500,000,000,000,000,000; revealing one data commitment adds
+250,000,000,000,000,000 to `total_out`, leaving a hidden total of
+1,250,000,000,000,000,000, the coin plus one `DATA_RESERVE`.
 
 This is a **backstop**, not a detector of counterfeits inside the set (outline,
 "Coin rules"; threat model C27). Conservation is proven on every reveal, and

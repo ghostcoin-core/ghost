@@ -40,6 +40,7 @@ It chooses nothing inside the proof system beyond what the statements need.
 | Domain tag | The genesis block hash of the chain | **Proposed** (question 1) |
 | Tree state | By default the newest root at least 2 blocks below the tip that is not the root of the block that added the wallet's own leaf, except a full tree's shared final root; no forced wait, the holder chooses the cover (section 8) | Outline ("Core protocol" 10); founder decision 2026-10-20 (question 4) |
 | Conservation | `v = out + v' + fee` over the integers, on every coin reveal, including the full reveal | Outline ("Coin rules"); spec 03, section 7 |
+| Data reveal fee | The coin reveal's window fee, paid out of the constant reserve `DATA_RESERVE` inside every data leaf, with `fee <= DATA_RESERVE` checked by the node; S2 and S3 open the data leaf with the reserve as a constant, with no new input | Spec 04, sections 3 and 6 |
 | Amount encoding | One 32-byte big-endian word for Go, the wire, the binding digest and the proof; valid only below `2^96` | **Proposed** (section 10) |
 | Range constraints in the proof | Six 16-bit limbs per amount, limb-wise conservation with bounded carries | **Proposed** (section 10, question 6) |
 | Remainder note | Bound by the coin reveal's binding digest | **Proposed** (question 3) |
@@ -91,13 +92,19 @@ binding digest. These parts are the same in all three statements.
    `F = K("ghost/coin-fingerprint/v2", s, r, b, salt, COIN, cf, rule)` and
    `C = K("ghost/coin-commitment/v1", COIN, F, v)` for a coin;
    `F_d = K("ghost/data-fingerprint/v2", s, r, b, salt, DATA, cf, rule)` and
-   `C = K("ghost/data-commitment/v1", DATA, F_d)` for data. The type tag inside
+   `C = K("ghost/data-commitment/v1", DATA, DATA_RESERVE, F_d)` for data. The type tag inside
    both hashes is the statement's public `type`, so a data leaf never opens as
    a coin or the other way round, and a type tag of any other version byte is
    rejected. For `COIN`, `cf` is the constant 32 zero bytes (spec 01, section 3),
    not an input. For `DATA`, `cf` is the public input of S2 and S3 (sections 5
    and 6): the fingerprint is computed from the public `cf`, so the commitment
    opens only with the content fingerprint the node or verifier holds.
+   `DATA_RESERVE` is the data commitment's fee reserve, the protocol constant
+   250,000,000,000,000,000 wei as a 32-byte amount word
+   ([spec 04](04-data-commitments.md), section 3, "The fee reserve"). It is a
+   constant of the statement, written into the circuit, not an input: no
+   statement takes it as a private or a public input, and no binding layout
+   carries it.
 2. **Membership.** Starting from `C` at the private `position`, hashing with
    the private `path` level by level with the tree-node tag of the statement's
    type (`ghost/coin-tree-node/v1` or `ghost/data-tree-node/v1`, level byte 0 to
@@ -225,7 +232,7 @@ creates no remainder and carries no amount out. Its binding tag is
 | `root` | 32 | Transaction, checked against a canonical header | The settled root of the data tree (section 8), never the root of the block that added the wallet's own leaf, except a full tree's shared final root |
 | `marker` | 32 | Transaction | `K("ghost/data-marker/v2", r, b, salt)`, never published before and not computable from `F_d`, `C` or the commit's salt without `r` and `b`, as for S1 |
 | `party` | 32 | Transaction | The verifier or recipient the ticket is for, or zero for none (spec 04, section 6). Chosen by the user; nothing is credited to it |
-| `fee` | 32 | Node | Not settled; every data reveal is rejected at spec 04, section 6, step 6 until it is |
+| `fee` | 32 | Node's fee formula for the window, the coin reveal's (spec 04, section 6, step 6) | The same window fee every private transaction pays in the window, coin or data, reveal or revoke, so it says nothing about the commitment |
 | `rule` | 32 | Transaction, must be the empty rule | The same in every data reveal of version 1 |
 | `cf` | 32 | Transaction | The content fingerprint `K("ghost/content-fingerprint/v1", length, content)` of spec 01, section 3. The commit never published it: `F_d` hides it behind `s`, `r` and `b`. It names the content, which the reveal shows to `party` anyway, and any other commitment of the same content has the same `cf`. Anyone holding the revealed bytes computes it and compares (spec 04, question 8) |
 | `binding` | 32 | Node, section 7 | A hash of the values above |
@@ -248,9 +255,11 @@ fingerprint `cf` and nothing computed from the data beyond it.
 **Constraints.**
 
 1. `F_d = K("ghost/data-fingerprint/v2", s, r, b, salt, DATA, cf, rule)` and
-   `C = K("ghost/data-commitment/v1", DATA, F_d)`, with `DATA` the public
-   `type` and `cf` the public `cf`: the commitment's own content fingerprint
-   must equal it, so a reveal carrying another `cf` fails.
+   `C = K("ghost/data-commitment/v1", DATA, DATA_RESERVE, F_d)`, with `DATA`
+   the public `type`, `cf` the public `cf` and `DATA_RESERVE` the constant of
+   section 3, item 1: the commitment's own content fingerprint must equal
+   `cf`, so a reveal carrying another `cf` fails, and only a leaf the node
+   wrote with the reserve opens.
 2. `C` is the leaf at `position` under `root` in the data tree.
 3. `marker = K("ghost/data-marker/v2", r, b, salt)` with the `r`, `b` and salt
    of constraint 1.
@@ -258,11 +267,16 @@ fingerprint `cf` and nothing computed from the data beyond it.
    including `purpose`, so a reveal cannot be passed off as a revocation or the
    other way round.
 
-No constraint ties `fee` to a value inside the commitment, because a data
-commitment holds none. That is why the node rejects every data reveal at the
-fee step until the founder settles where its fee comes from (spec 04,
-question 1). There is no conservation constraint: nothing goes in and nothing
-comes out.
+The fee is paid out of the reserve the leaf holds (spec 04, section 6, "Fee
+settlement at reveal and revoke"). It is the coin reveal's window fee, and the
+node checks `fee <= DATA_RESERVE` before the proof, so no constraint ties
+`fee` to the commitment: the reserve is the same constant inside every data
+leaf, and no part of it is carried into a new commitment. S2 therefore has no
+new private input, no remainder, no new public input and no conservation
+constraint. The node settles the reserve itself: `total_out` grows by
+`DATA_RESERVE`, the base-fee part of the fee is burned, the tip goes to the
+block finder and `DATA_RESERVE - fee` is forfeited
+([spec 03](03-coin-rules.md), section 9).
 
 ## 6. Statement S3: Proof of holding
 
@@ -320,7 +334,10 @@ fingerprint of the content it shows anyway.
 
 1. `C` is opened as in section 3, item 1, with the public `type` and the
    public `cf`: the commitment's own content fingerprint must equal it, so a
-   proof made for one `cf` fails for another.
+   proof made for one `cf` fails for another. For `DATA` the leaf is
+   `C = K("ghost/data-commitment/v1", DATA, DATA_RESERVE, F_d)` with the
+   constant reserve of section 3, item 1, as in S2: no new private or public
+   input, and no amount is claimed or published.
 2. `C` is the leaf at `position` under `root` in the tree of `type`.
 3. `marker` is computed from the `r`, `b` and salt of constraint 1 with the
    marker tag of `type` (section 3, item 3).
@@ -595,7 +612,9 @@ value comes near the field's modulus.
 | Fee uses the whole balance | 0 | 0 | `v` |
 | Fee above the balance | none | none | no valid proof exists |
 
-A data reveal has no amounts and no conservation constraint (section 5). The
+A data reveal has no amounts and no conservation constraint (section 5): its
+leaf holds the constant `DATA_RESERVE`, which the node settles as
+`burn + tip_paid + forfeit = DATA_RESERVE` (spec 04, section 6). The
 node's own accounting backstop ([spec 03](03-coin-rules.md), section 9) is
 separate and does not replace this constraint.
 
@@ -845,8 +864,10 @@ removed does not count ([spec 03](03-coin-rules.md), section 10).
   version 2 with its own salt, also when `v' = 0`. Check: a full reveal
   appends a leaf; a remainder built with another type, another rule or no salt
   fails to verify.
-- **PS-14. Data mints nothing.** A data reveal credits nothing, burns no
-  committed value and appends no leaf. Check: spec 04, CR-D5.
+- **PS-14. Data mints nothing.** A data reveal mints nothing, credits nothing
+  to `party` and appends no leaf; what leaves the hidden set is the constant
+  reserve its commit burned, which pays the fee, the rest forfeited (spec 04,
+  section 6). Check: spec 04, CR-D5 and CR-D18.
 - **PS-15. Holding uses nothing up.** A proof of holding publishes no marker,
   writes no state and can be repeated. Check: ten proofs of holding of one
   commitment all verify and leave the spent-marker set unchanged.
@@ -998,16 +1019,25 @@ fail-closed point they need is settled, and no milestone passes before then:
 - **First milestone (coin lifecycle):** the reserved accounts ([spec 05](05-trees-and-headers.md),
   section 12, item 2; [spec 07](07-private-transaction.md), section 9, item 4)
   and the receipt layout (spec 07, section 9, item 3).
-- **Second milestone (data lifecycle):** in addition, the fee and encoding of a
-  data reveal (item 1 below; spec 07, section 9, item 2) and the spent-marker
+- **Second milestone (data lifecycle):** in addition, the node's acceptance and
+  the encoding of a data reveal (item 1 below; spec 07, section 9, item 2) and
+  the spent-marker
   set and its header root for proofs of holding (items 2 and 3 below; spec 05,
   section 12, item 1).
 
 Until then the claims that depend on them (threat model C4, C6, C11, C13, C36
 and C43) are pending, not met.
 
-1. **Fee of a data reveal.** Every data reveal is rejected at the fee step
-   ([spec 04](04-data-commitments.md), question 1).
+1. **Fee of a data reveal.** The fee itself is settled by
+   [spec 04](04-data-commitments.md) (section 3, "The fee reserve"; section 6,
+   "Fee settlement at reveal and revoke"; question 1): it is the coin reveal's
+   window fee, in the same field, paid out of the reserve `DATA_RESERVE` that
+   every data leaf holds, and the node checks `fee <= DATA_RESERVE` before the
+   proof; S2 opens the leaf with the reserve as a constant (section 5). What
+   is not yet settled is the node's side, which accepts data reveals, and
+   their encoding (spec 07, section 9, item 2). Until both are, the shipped
+   verifier still rejects every data reveal at the fee step, and every proof
+   of holding (item 2), whatever the proof.
 2. **Spent-marker-set structure and header root.** S3 needs non-membership
    under an authenticated set root taken from a header. The set's structure,
    its node hashes and tags, and whether its root is in the header belong to
@@ -1111,8 +1141,9 @@ tables, and that every statement takes `s`, `r`, `b`, the salt, the position
 and the path as private inputs and none of them as public ones; that the
 document names the four salted fingerprint and marker tags; that every binding layout is contiguous, sums to its stated total and
 holds the fields its statement must bind, the data reveal and hold bindings
-the 32-byte content fingerprint `cf` and the coin reveal binding not; that
-every binding tag is in the tag
+the 32-byte content fingerprint `cf` and the coin reveal binding not; that S2
+and S3 open the data leaf with `DATA_RESERVE` in its outer hash and no data
+leaf hash leaves it out; that every binding tag is in the tag
 table of [spec 01](01-commitments-and-keys.md); that the properties are
 numbered PS-1 upwards without gaps and each names its check; that every named
 adversarial vector has an entry citing existing properties; and that the
