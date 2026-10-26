@@ -69,6 +69,16 @@ async function chainWithCoin() {
 // The endpoint's requests as (method, params), with no JSON-RPC id.
 const seen = (node, from) => node.requests.slice(from).map((r) => JSON.stringify([r.method, r.params]));
 
+// A refused scan stops before restore, so it never sends the one bucket probe
+// an honest scan's restore step asks a node without ghost_getNoteBucket:
+// the refused scan's requests followed by that probe.
+function withRestoreProbe(refused, honest) {
+  const probe = honest.at(-1);
+  assert.ok(probe.startsWith('["ghost_getNoteBucket",["coin",'), `the honest scan ends on the bucket probe, not ${probe}`);
+  assert.equal(honest.filter((r) => r.startsWith('["ghost_getNoteBucket"')).length, 1, "asked once");
+  return [...refused, probe];
+}
+
 // Opens `key` on a fresh page: what the endpoint saw, the worker's steps and
 // the outcome.
 async function openOnFreshPage(node, key) {
@@ -152,7 +162,12 @@ test("an altered note is refused before restore, and the requests do not say whe
 
     assert.ok(mine.requests.some((r) => r.startsWith('["eth_getBlockReceipts"')));
     assert.deepEqual(mine.requests, theirs.requests, "the same requests whether the altered leaf is the key's or another's");
-    assert.deepEqual(mine.requests, honest.requests, "and the same as an honest scan's");
+    assert.ok(!mine.requests.some((r) => r.startsWith('["ghost_getNoteBucket"')), "no bucket is asked before restore");
+    assert.deepEqual(
+      withRestoreProbe(mine.requests, honest.requests),
+      honest.requests,
+      "and the same as an honest scan's, up to its restore step",
+    );
     assert.deepEqual(mine.ops, theirs.ops, "the same work in the worker");
   } finally {
     await node.close();
@@ -244,7 +259,11 @@ test("a hidden or invented spent marker is refused before restore", async () => 
     node.dishonest.markers = (list) => list.map(() => `0x${"5e".repeat(32)}`);
     refusedBeforeKey(await openOnFreshPage(node, key), /spent marker 0 differs from its receipt/);
     node.dishonest.markers = null;
-    assert.deepEqual(hidden.requests, honest.requests, "a hidden marker changes nothing the endpoint is asked");
+    assert.deepEqual(
+      withRestoreProbe(hidden.requests, honest.requests),
+      honest.requests,
+      "a hidden marker changes nothing the endpoint is asked before restore",
+    );
 
     // The page that revealed refuses a hidden marker on its next scan too,
     // with the receipts it already holds.
