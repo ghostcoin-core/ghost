@@ -471,7 +471,7 @@ test("a coin of a full earlier tree is revealed against that tree's final root, 
   });
 });
 
-test("a scan of a rolled-over chain refuses a note, salt or marker the receipts do not show, before the key is tried", async () => {
+test("a scan of a rolled-over chain refuses a note or salt the receipts do not show, before the key is tried", async () => {
   await withNode({ treeLeaves: TREE_LEAVES }, async (node) => {
     const prover = nodeProver();
     const asked = [];
@@ -497,7 +497,6 @@ test("a scan of a rolled-over chain refuses a note, salt or marker the receipts 
         [() => (node.dishonest.note = (i, note) => (i === 3 ? noteOf(0) : note)), /the note at position 0 of coin tree 1 differs from its receipt/],
         [() => (node.dishonest.note = (i, note) => (i === 1 ? noteOf(0) : note)), /the note at position 1 of coin tree 0 differs from its receipt/],
         [() => (node.dishonest.salt = (i, salt) => (i === 4 ? null : salt)), /the salt at position 1 of coin tree 1 differs from its receipt/],
-        [() => (node.dishonest.markers = (list) => [...list, toHex(MARKER)]), /spent marker 0 is not in the receipts/],
       ];
       for (const [change, why] of changes) {
         change();

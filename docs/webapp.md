@@ -290,7 +290,7 @@ network, `http://127.0.0.1:8545`. The app sends only these requests:
 | `eth_getBlockByNumber` | height, `false` | A header with its `hash` and the 19 fields of spec 05, section 10, by their base client names (`parentHash` to `nonce`, `baseFeePerGas`, `coinTreeRoot`, `dataTreeRoot`, `dataMarkerRoot`); a header without `dataMarkerRoot` is refused |
 | `ghost_getPageRoots` | `"coin"`, tree index, anchor block hash | An array of 32-byte page roots, of pages 0 to the last page with a leaf (`[]` for an empty tree) |
 | `ghost_getTreePage` | `"coin"`, tree index, page, anchor block hash | `{ kind, treeIndex, page, filled, entries }`: `filled` positions of the page, and `entries`, one `{ leaf, note, salt }` (32, 156 and 16 bytes of hex) per filled position, in order; `salt` beside the leaf of a commit, left out for a reveal's remainder |
-| `ghost_getTreePage` | `"coin-markers"`, tree index, page, anchor block hash | `{ count, markers }`: a page of 4,096 spent coin markers in inclusion order |
+| `ghost_getTreePage` | `"coin-markers"` | Not asked: the app no longer reads the spent marker pages; it takes the spent markers from the block receipts it has checked (see Block receipts) |
 | `ghost_getNoteBucket` | `"coin"`, tree index, bucket bits, prefix, anchor block hash | `{ kind, treeIndex, bits, prefix, count, entries }`: every filled position of the tree at the anchor whose note's lookup tag starts with the `bits`-bit `prefix`, one `{ position, leaf, note, salt }` each in increasing position order; `bits` must be `clamp(floor(log2(n / 4096)), 0, 24)` for the tree's `n` leaves at the anchor (see Summon and Claim, Restore). A node without it answers `-32601` |
 | `eth_getBlockReceipts` | a block hash | The block's receipts in transaction order, each with `type`, `status`, `cumulativeGasUsed`, `logsBloom` and `logs` (`address`, `topics`, `data`) |
 | `eth_sendRawTransaction` | the reveal envelope, or the commit's account transaction | The transaction hash |
@@ -300,7 +300,7 @@ network, `http://127.0.0.1:8545`. The app sends only these requests:
 | `eth_estimateGas` | the commit as a call from the wallet's address | The commit's gas, without the account transaction's extra 63,256 |
 | `eth_getTransactionReceipt` | a transaction hash | `null` until the transaction is in a block |
 
-The page and marker requests follow [spec 05](spec/05-trees-and-headers.md),
+The page requests follow [spec 05](spec/05-trees-and-headers.md),
 section 8: whole pages from page 0, as of a block hash, whatever the wallet
 expects to find. The headers asked for depend only on the tip and on the
 headers the page already holds: from the tip down to the first block its
@@ -312,7 +312,7 @@ header chain from its start to the tip, in chain order, whatever the key
 a marker, and the app never asks for a witness; it computes its own from the
 pages. The note bucket reads of restore are the one exception to "whatever
 the key": their prefixes are the first bits of the key's own lookup tags,
-asked only after every page, marker and receipt above (see Summon and
+asked only after every page and receipt above (see Summon and
 Claim, Restore); below 8,192 leaves a tree is one bucket, prefix 0, for
 every key. The wallet's requests name its address, which the commit transaction
 shows anyway. The only request that carries a coin's data is the reveal itself,
@@ -523,9 +523,10 @@ evidence, never a substitute for the checks above.
 ## Block receipts
 
 No header root covers the notes stored with the leaves, the salts beside
-them or the spent markers, so the app checks them against the block
-receipts ([spec 05](spec/05-trees-and-headers.md), section 8, item 5 and
-"Marker status"), through the client library's receipt checks
+them or the spent markers, so the app checks the notes and salts against
+the block receipts and takes the spent markers from them
+([spec 05](spec/05-trees-and-headers.md), section 8, item 5 and "Marker
+status"), through the client library's receipt checks
 (`check_block_receipts_against_header`, `check_leaves`, `check_markers`),
 exported by `webapp/wasm` (`ghost_receipts_add`, `ghost_receipts_check`, and
 `ghost_receipts_root` for the stand-ins). Every scan does this before the key
@@ -550,15 +551,20 @@ is tried on any note:
   leaves, 0 at genesis) to the tip, every downloaded leaf, note and salt
   must be exactly the one the receipts appended at that position, none
   missing, repeated, reordered or invented.
-- **Markers.** The spent markers, read as of the tip, must be exactly those
-  of the reveal receipts of the blocks up to that block, in order: the
-  whole list from genesis, or from a pinned start the markers its blocks
-  spent, which must end the list.
-- **Uncertain means refused.** A leaf, note, salt or marker the receipts do
-  not show, a missing, repeated or reordered page or block, a receipts root
-  that differs, a block whose receipts cannot be fetched, a receipt not in
-  that shape or a start the app cannot place: the scan stops with a plain
-  message (`the endpoint's coin tree or spent markers do not match the
+- **Markers.** The endpoint is not asked for spent markers. The app takes
+  them from the receipts it has just checked: the markers of the reveal
+  logs of the blocks from the chain's start up to the tip's depth of Done
+  (the tip itself), in block and log order (`heldMarkers` in
+  `webapp/src/flow.mjs`). The worker's marker check is still made against
+  that list, as a guard. From a pinned start, the markers of the blocks
+  before the pin are in no receipt the page checks, so a coin whose only
+  spend is before the pin shows unspent (Before a pinned start); a reveal
+  of it is refused by every node at the marker check, so no value is lost.
+- **Uncertain means refused.** A leaf, note or salt the receipts do not
+  show, a missing, repeated or reordered page or block, a receipts root
+  that differs, a block whose receipts cannot be fetched, a receipt or
+  coin tree log not in that shape or a start the app cannot place: the scan
+  stops with a plain message (`the endpoint's coin tree does not match the
   block receipts`), shows no coin, and the key is used for nothing, so no
   restore, marker lookup, proof or reveal follows. Every request of the
   scan comes before this check, so the endpoint sees the same requests
@@ -693,9 +699,13 @@ app makes no data commitments.
 
 1. **Restore.** The app reads the coin tree as of the tip in whole pages and
    checks each page against the page-root list and the list against the tip's
-   `coinTreeRoot`. It reads the spent markers the same way, as of the tip
-   (the depth of Done, the block itself), so a key shows claimed as soon as
-   a block holds its spend. With each leaf and its note the app reads the
+   `coinTreeRoot`. It does not ask the endpoint for the spent markers: it
+   takes them from the reveal logs of the block receipts it has checked
+   (Block receipts), of the blocks from the chain's start up to the tip (the
+   depth of Done, the block itself), so a key shows claimed as soon as a
+   block holds its spend. From a pinned start, a spend before the pin is in
+   no checked receipt, so its coin shows unspent; every node refuses a reveal
+   of it at the marker check (Before a pinned start). With each leaf and its note the app reads the
    salt served beside it, if any, and hands restore one salt (or none) per
    leaf, beside the leaf (the records stay leaf and note, 188 bytes each).
    The worker tries the key's note key on every note and recomputes
@@ -707,10 +717,11 @@ app makes no data commitments.
    not a scan that stops part way. The prover refuses a coin without a salt
    (`a coin without a salt cannot be revealed`). The current coin is
    the found commitment whose marker is not spent. The app asks for
-   everything a reveal needs (the headers, the tree, the markers and the
-   block receipts, fixed by the tip and by what the page already holds)
-   before the key is tried, and restore runs only once the leaves, notes,
-   salts and markers have passed the check of Block receipts.
+   everything a reveal needs (the headers, the tree and the block receipts,
+   in that order, fixed by the tip and by what the page already holds)
+   before the key is tried, and restore runs only once the leaves, notes
+   and salts have passed the check of Block receipts and the markers have
+   been taken from it.
 
    The restore itself reads the key's note buckets first
    (`webapp/src/buckets.mjs`, the twin of the client library's
@@ -842,7 +853,7 @@ app makes no data commitments.
    roots of that block and its parent on the page's header chain leading
    to the tip, the one with the most work. Until then a claim stays Sent and
    the old key unclaimed. From that block on the old key shows claimed,
-   because the markers are read at the tip. An endpoint whose chain fails
+   because the markers are taken from the receipts up to the tip. An endpoint whose chain fails
    the check of Headers gets no step past Sent.
 8. **Reorganisation.** Done comes at the first block, so a reorganisation
    can still replace that block. A receipt, or a missing one, is never the
@@ -919,12 +930,17 @@ app makes no data commitments.
   the start again.
 - **Before a pinned start.** The receipts start at the chain's start, so on
   a network whose build pins a header above genesis, the notes and salts of
-  the leaves before it, and the spent markers its earlier blocks hold, rest
-  on the pin as its coin root does: no header of the page's chain covers
-  their receipts. From genesis, every one is checked. (Closed: the notes and
-  markers are checked against block receipts, and an endpoint can no longer
-  test for a coin one bit at a time by spoiling notes or markers and
-  watching whether a reveal follows; see Block receipts.)
+  the leaves before it rest on the pin as its coin root does: no header of
+  the page's chain covers their receipts. The spent markers are taken from
+  the checked receipts alone, so the markers of the blocks before the pin
+  are not among them: a coin whose only spend is before the pin shows
+  unspent. A reveal of it is refused by every node at the marker check, so
+  no value is lost; a marker status query for such coins is later work.
+  From genesis, every note and salt is checked and every marker is in the
+  receipts. (Closed: the notes are checked against block receipts and the
+  markers come from them, so an endpoint can no longer test for a coin one
+  bit at a time by spoiling notes or markers and watching whether a reveal
+  follows; see Block receipts.)
 - **The zero address.** The app refuses it as a reveal's recipient and as
   the commit entry address, because what it is credited cannot be spent.
 - **Later trees are checked in the page.** Once the coin tree has rolled
@@ -968,13 +984,20 @@ app makes no data commitments.
   a worker. An honest scan passes, asking for the receipts of every block
   from genesis to the tip once, by hash, in chain order, before restore, and
   a later scan only for the blocks added since. An altered note, an altered
-  or missing salt, a dropped, repeated or reordered page, a hidden, invented
-  or replaced spent marker, receipts that do not give the header's
-  `receiptsRoot`, a block whose receipts are not returned and a malformed
-  receipt are each refused before restore, marker lookup, proving or any
-  reveal, with no coin shown. The requests (method and parameters) of a scan
-  whose altered note is the key's are those of one whose altered note is
-  another's, and of an honest scan.
+  or missing salt, a dropped, repeated or reordered page, receipts that do
+  not give the header's `receiptsRoot`, a block whose receipts are not
+  returned and a malformed receipt are each refused before restore, marker
+  lookup, proving or any reveal, with no coin shown. The requests (method
+  and parameters) of a scan whose altered note is the key's are those of one
+  whose altered note is another's, and of an honest scan.
+- `spent-from-receipts.test.mjs`: against the same stand-in, a scan after a
+  partial reveal never asks for a `coin-markers` page and still opens the
+  key on its remainder, the spent coin shown spent; a marker list the
+  endpoint hides, invents or replaces changes neither the requests, the
+  worker's steps nor the result; a fully claimed key opened on a fresh page
+  shows claimed from the markers of the reveal receipts; and `heldMarkers`
+  gives the markers of the reveal records of the first `markerBlocks`
+  blocks, in order, none for commits.
 - `header-chain.test.mjs`: the module's chain exports directly (sealed
   headers adopted; a wrong hash, a wrong difficulty, an unmined seal above a
   pinned start stamped ahead of the schedule and a header ahead of the clock
@@ -1025,8 +1048,8 @@ app makes no data commitments.
   the full tree 0 is revealed against tree 0's final root with no wait, a
   clean device restores it spent and its remainder in tree 1, and that
   remainder is revealed against a settled root of tree 1. A note of either
-  tree, a salt or a spent marker that the receipts do not show is refused
-  before restore; the page's check of every tree also refuses, on its own,
+  tree or a salt that the receipts do not show is refused before restore;
+  the page's check of every tree also refuses, on its own,
   a changed leaf, note or salt, a leaf missing or invented, a record of a
   tree not read, a rollover before or after `treeLeaves` and a marker
   missing, invented or changed. The page's Keccak-256 and its 32-level roots
