@@ -29,8 +29,9 @@
 //! The statement opens a salted (version 2) data commitment
 //! ([`SaltedHoldOpening`]), whose salt is a private witness; the context's
 //! type must be `DATA_V2`. It is built and checked only by functions compiled
-//! under the `unsettled-points-test` feature, for tests. It settles nothing,
-//! and the public verifier rejects regardless of the feature.
+//! under the `unsettled-points-test` feature, which now covers the proof of
+//! holding only, for tests. It settles nothing, and the public verifier
+//! rejects regardless of the feature.
 //!
 //! The hashes, in trace order (38 permutations). `DATA` is the type tag
 //! `0x02 0x02`, with the `v2` fingerprint and marker tags:

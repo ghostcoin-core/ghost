@@ -9,8 +9,8 @@
 //! Anyone holding the revealed bytes computes the fingerprint and compares it
 //! with the reveal's `cf`.
 //!
-//! The S2 and S3 provers exist only under the `unsettled-points-test`
-//! feature. Every negative test starts from the honest proof, asserted to
+//! The S3 prover exists only under the `unsettled-points-test` feature, so
+//! the file is built with it. Every negative test starts from the honest proof, asserted to
 //! verify, and changes one thing. Proving runs one test at a time to bound
 //! memory.
 
@@ -148,7 +148,7 @@ impl Commitment {
 }
 
 fn verify_reveal(tx: &DataReveal, proof: &Proof) -> Result<(), ProofError> {
-    verify_salted_data_reveal_unsettled(&params(), tx, proof)
+    verify_salted_data_reveal(&params(), tx, proof)
 }
 
 /// A lying prover's proof does not verify. In a release build the prover

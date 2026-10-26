@@ -5,8 +5,9 @@
 //!
 //! - S1, the one-time reveal of a coin: [`prove_salted_coin_reveal`] and
 //!   [`verify_salted_coin_reveal`].
-//! - S2, the one-time reveal of data: [`verify_salted_data_reveal`], which
-//!   rejects every data reveal until its fee is settled.
+//! - S2, the one-time reveal of data: [`prove_salted_data_reveal`] and
+//!   [`verify_salted_data_reveal`], which checks the fee against the reserve
+//!   `DATA_RESERVE` (spec 04, section 6) and then the proof.
 //! - S3, the proof of holding: [`verify_hold`], for `DATA_V2` commitments,
 //!   which rejects every proof until the spent-marker set is settled, and the
 //!   verifier's [`ChallengeBook`].
@@ -14,9 +15,9 @@
 //! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`], with
 //! its header in `include/ghost_proofs.h`.
 //!
-//! S2 and S3 are written in full, and are built and verified only by the
-//! functions compiled under the `unsettled-points-test` feature, for tests.
-//! The public verifiers reject them whether or not the feature is on.
+//! S3 is written in full, and is built and verified only by the functions
+//! compiled under the `unsettled-points-test` feature, for tests. The public
+//! [`verify_hold`] rejects it whether or not the feature is on.
 //!
 //! **Proof system** (decision 0003): Plonky3's uni-STARK over BabyBear with a
 //! degree-5 extension, hiding FRI at blowup 2^3 (rate 1/8) with 43 queries,
@@ -71,10 +72,10 @@ pub use binding::{
     PURPOSE_HOLD, PURPOSE_REVEAL, PURPOSE_REVOKE, PURPOSE_SPEND, STATEMENT_COIN_REVEAL, STATEMENT_DATA_REVEAL,
     STATEMENT_HOLD, STATEMENT_VERSION_1,
 };
-pub use data::{DataPurpose, DataReveal, SaltedDataOpening, salted_data_reveal_binding, verify_salted_data_reveal};
-#[cfg(feature = "unsettled-points-test")]
-pub use data::{DataRevealRequest, prove_salted_data_reveal, verify_salted_data_reveal_unsettled};
-#[cfg(feature = "unsettled-points-test")]
+pub use data::{
+    DataPurpose, DataReveal, DataRevealRequest, SaltedDataOpening, prove_salted_data_reveal,
+    salted_data_reveal_binding, verify_salted_data_reveal,
+};
 #[doc(hidden)]
 pub use data::prove_salted_data_reveal_claiming;
 pub use hash::{
@@ -136,9 +137,9 @@ pub enum ProofError {
     /// Every proof of holding, until the spent-marker set and its header root
     /// are settled (spec 02, section 13, item 2).
     HoldUnsettled,
-    /// Every data reveal, until its fee is settled (spec 02, section 13,
-    /// item 1).
-    DataFeeUnsettled,
+    /// A data reveal whose fee is above the fee reserve `DATA_RESERVE` it is
+    /// paid from (spec 04, section 6).
+    FeeAboveReserve,
     /// A challenge the verifier never issued.
     ChallengeUnknown,
     /// A challenge already accepted once.
@@ -193,7 +194,7 @@ impl fmt::Display for ProofError {
             }
             Self::HoldCoinUnsettled => f.write_str("proof of holding for coins is not settled"),
             Self::HoldUnsettled => f.write_str("proof of holding is not settled: no spent-marker set"),
-            Self::DataFeeUnsettled => f.write_str("the fee of a data reveal is not settled"),
+            Self::FeeAboveReserve => f.write_str("the fee of a data reveal is above the fee reserve"),
             Self::ChallengeUnknown => f.write_str("challenge never issued"),
             Self::ChallengeUsed => f.write_str("challenge already accepted"),
             Self::ChallengeExpired => f.write_str("challenge expired"),

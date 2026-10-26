@@ -18,9 +18,10 @@ crate-type = ["rlib", "staticlib"]
 default = []
 # Multi-threaded proving through Plonky3's rayon wrapper. Off by default.
 parallel = ["p3-maybe-rayon/parallel", "p3-uni-stark/parallel"]
-# Builds and verifies the statements whose acceptance spec 02, section 13
-# leaves unsettled (the data reveal and the proof of holding), for tests only.
-# The public verifiers reject those statements whether or not it is on.
+# Builds and verifies the proof of holding, whose acceptance spec 02, section
+# 13, item 2 leaves unsettled, for tests only. It covers the proof of holding
+# only: the data reveal is built and verified without it. The public
+# verify_hold rejects every proof of holding whether or not it is on.
 unsettled-points-test = []
 
 # Every Plonky3 crate is pinned to the revision of decision 0003.

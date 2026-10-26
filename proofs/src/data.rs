@@ -20,13 +20,13 @@
 //! has no remainder and no new public input. A leaf made with another
 //! reserve, or without one, does not open.
 //!
-//! **Not settled: the fee of a data reveal** (spec 02, section 13, item 1).
-//! The node-side settlement out of the reserve (`fee <= DATA_RESERVE`, spec
-//! 04, section 6) is not shipped yet. So the public [`verify_salted_data_reveal`]
-//! rejects every data reveal with [`ProofError::DataFeeUnsettled`]. The
-//! statement itself is built and checked only by the functions compiled under
-//! the `unsettled-points-test` feature, for tests; they do not settle the
-//! point and the public verifier rejects regardless of the feature.
+//! **The fee of a data reveal** is settled by spec 04, section 6 ("Fee
+//! settlement at reveal and revoke"): it is paid out of the reserve, so
+//! [`verify_salted_data_reveal`] rejects a fee that is no amount word or is
+//! above `DATA_RESERVE`, before the proof. The window fee equality and the
+//! cover rule (spec 03, section 7, step 5; spec 07, sections 4 and 5) need the
+//! including block's base fee and window, which [`ChainParams`] does not
+//! carry: they stay the node's check, as for the coin reveal.
 //!
 //! The hashes, in trace order (38 permutations). `DATA` is the type tag
 //! `0x02 0x02`, with the `v2` fingerprint and marker tags:
@@ -45,6 +45,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::amount::amount_value;
 use crate::binding::{
     Binding, ChainParams, FieldWriter, PURPOSE_REVEAL, PURPOSE_REVOKE, STATEMENT_DATA_REVEAL, STATEMENT_VERSION_1,
     digest,
@@ -54,7 +55,6 @@ use crate::hash::{
     TAG_DATA_REVEAL_BINDING, TAG_DATA_TREE_NODE, TREE_DEPTH,
 };
 use crate::schedule::{HashBuilder, Schedule, ScheduleBuilder};
-#[cfg(feature = "unsettled-points-test")]
 use crate::stark::Statement;
 use crate::{Proof, ProofError};
 
@@ -142,7 +142,6 @@ pub fn salted_data_reveal_binding(params: &ChainParams, tx: &DataReveal) -> [u8;
     digest(Binding::DataReveal, &fields(params, tx))
 }
 
-#[cfg(feature = "unsettled-points-test")]
 fn public_values(params: &ChainParams, tx: &DataReveal) -> Vec<u8> {
     let mut public = fields(params, tx);
     let binding = digest(Binding::DataReveal, &public);
@@ -165,19 +164,16 @@ pub(crate) struct DataSecrets<'a> {
 
 impl DataSecrets<'_> {
     /// `C` of spec 01, section 3.
-    #[cfg_attr(not(feature = "unsettled-points-test"), allow(dead_code))]
     pub(crate) fn commitment(&self, rule: &[u8; 32]) -> [u8; 32] {
         use crate::hash::{data_commitment_v2, data_fingerprint_v2};
         data_commitment_v2(&data_fingerprint_v2(self.s, self.r, self.b, self.salt, self.cf, rule))
     }
 
-    #[cfg_attr(not(feature = "unsettled-points-test"), allow(dead_code))]
     pub(crate) fn marker(&self) -> [u8; 32] {
         crate::hash::data_marker_v2(self.r, self.b, self.salt)
     }
 
     /// The carried columns: the bytes of `r`, `b` and the salt.
-    #[cfg_attr(not(feature = "unsettled-points-test"), allow(dead_code))]
     pub(crate) fn carried_values(&self) -> Vec<u32> {
         let mut carried = vec![0u32; CARRIED];
         for k in 0..32 {
@@ -192,7 +188,6 @@ impl DataSecrets<'_> {
 }
 
 impl<'a> DataSecrets<'a> {
-    #[cfg_attr(not(feature = "unsettled-points-test"), allow(dead_code))]
     fn reveal(o: &'a SaltedDataOpening) -> Self {
         Self {
             s: &o.s,
@@ -294,17 +289,26 @@ pub(crate) fn schedule() -> Schedule {
     schedule_with(None).0
 }
 
-/// The shipped verifier of a salted (version 2) data reveal. The fee of a
-/// data reveal is not settled (spec 02, section 13, item 1), so it rejects
-/// every data reveal with [`ProofError::DataFeeUnsettled`], whatever the
-/// proof.
+/// Verify S2 of a salted (version 2) commitment, for a reveal or a revoke
+/// alike (the purpose is bound in the digest). In order: a non-empty rule is
+/// rejected, a fee that is no amount word is rejected, a fee above
+/// `DATA_RESERVE` is rejected (spec 04, section 6), all before the proof;
+/// then the proof is checked against the binding digest. The window fee and
+/// the cover rule are the node's check.
 pub fn verify_salted_data_reveal(params: &ChainParams, tx: &DataReveal, proof: &Proof) -> Result<(), ProofError> {
-    let _ = (params, tx, proof);
-    Err(ProofError::DataFeeUnsettled)
+    use crate::hash::{DATA_RESERVE, EMPTY_RULE};
+
+    if tx.rule != EMPTY_RULE {
+        return Err(ProofError::RuleNotEmpty);
+    }
+    let fee = amount_value(&tx.fee).ok_or(ProofError::AmountOutOfRange)?;
+    if fee > DATA_RESERVE {
+        return Err(ProofError::FeeAboveReserve);
+    }
+    crate::stark::verify(Statement::SaltedDataReveal, &public_values(params, tx), proof.as_bytes())
 }
 
 /// What the wallet chooses for a data reveal.
-#[cfg(feature = "unsettled-points-test")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DataRevealRequest {
     pub purpose: DataPurpose,
@@ -314,12 +318,11 @@ pub struct DataRevealRequest {
     pub rule: [u8; 32],
 }
 
-/// Prove S2 for a salted (version 2) commitment, for tests only. The salt is
-/// a private witness: neither the returned public fields nor the proof hold
-/// it. Refuses a non-empty rule and a commitment that is not the leaf at
-/// `position` under `root`; a wrong salt makes another commitment, which is
-/// not the leaf under `root`.
-#[cfg(feature = "unsettled-points-test")]
+/// Prove S2 for a salted (version 2) commitment. The salt is a private
+/// witness: neither the returned public fields nor the proof hold it. Refuses
+/// a non-empty rule and a commitment that is not the leaf at `position` under
+/// `root`; a wrong salt makes another commitment, which is not the leaf under
+/// `root`.
 pub fn prove_salted_data_reveal(
     params: &ChainParams,
     opening: &SaltedDataOpening,
@@ -351,7 +354,6 @@ pub fn prove_salted_data_reveal(
 /// A salted data reveal proof claiming `claimed`, whatever the opening says,
 /// with none of the honest prover's checks, so tests can show the verifier
 /// catches a lie (another salt, say). For tests only.
-#[cfg(feature = "unsettled-points-test")]
 #[doc(hidden)]
 pub fn prove_salted_data_reveal_claiming(
     params: &ChainParams,
@@ -370,20 +372,4 @@ pub fn prove_salted_data_reveal_claiming(
         dirs,
     };
     crate::stark::prove(Statement::SaltedDataReveal, &assignment, zk_randomness).map(Proof)
-}
-
-/// Verify S2 of a salted (version 2) commitment without the fee step, for
-/// tests only. Rejects a non-empty rule before the proof.
-#[cfg(feature = "unsettled-points-test")]
-pub fn verify_salted_data_reveal_unsettled(
-    params: &ChainParams,
-    tx: &DataReveal,
-    proof: &Proof,
-) -> Result<(), ProofError> {
-    use crate::hash::EMPTY_RULE;
-
-    if tx.rule != EMPTY_RULE {
-        return Err(ProofError::RuleNotEmpty);
-    }
-    crate::stark::verify(Statement::SaltedDataReveal, &public_values(params, tx), proof.as_bytes())
 }
