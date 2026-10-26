@@ -267,6 +267,7 @@ a count.
 | `webapp/src/chain.mjs` | The fee of spec 07, the base fee rule, the settled height, amounts |
 | `webapp/src/header.mjs` | The header's 19-field RLP of spec 05, section 10 (`dataMarkerRoot` last), the table of networks this build knows, with the start of each one's header chain, and the IndexedDB store of the headers the page checked |
 | `webapp/src/header-store.mjs` | The name the header store is imported by in tests (`createHeaderStore`); its code is in `header.mjs`, which the build ships |
+| `webapp/src/receipts-at.mjs` | The receipts of the key's highest coin's own block: the block that appended a position, the 8 blocks asked for (that block and 7 decoys, drawn once per coin for the page session) and the check of the coin's record in them |
 | `webapp/src/rpc.mjs` | JSON-RPC to the chosen endpoint |
 | `webapp/src/prover.mjs`, `worker.mjs`, `worker-core.mjs` | The background worker and its message interface |
 | `webapp/src/wasm.mjs` | The WebAssembly module's plain exports, with no bindings generator |
@@ -560,6 +561,17 @@ is tried on any note:
   before the pin are in no receipt the page checks, so a coin whose only
   spend is before the pin shows unspent (Before a pinned start); a reveal
   of it is refused by every node at the marker check, so no value is lost.
+- **The coin's own block.** After restore, the key's highest-numbered coin
+  (every earlier number is spent) is checked against the one coin tree
+  record at its tree index and position in the receipts of the block that
+  appended it (`webapp/src/receipts-at.mjs`). That block's receipts are
+  asked for with those of 7 decoy blocks of the chain from its start to the
+  tip, by hash, in block order, and checked by the worker as above; the
+  decoys are drawn once per coin and kept in memory for the page session,
+  so a repeat scan asks the same 8. A key with no coin, or a coin older
+  than a pinned start, asks its own fixed 8 with no real block. The
+  receipts of every block are already held by then, so an honest scan sends
+  no request for this step.
 - **Uncertain means refused.** A leaf, note or salt the receipts do not
   show, a missing, repeated or reordered page or block, a receipts root
   that differs, a block whose receipts cannot be fetched, a receipt or
@@ -998,6 +1010,16 @@ app makes no data commitments.
   shows claimed from the markers of the reveal receipts; and `heldMarkers`
   gives the markers of the reveal records of the first `markerBlocks`
   blocks, in order, none for commits.
+- `receipts-at.test.mjs`: `blockOfPosition` across a tree rollover and for
+  a position no block holds; `drawBlocks` gives 8 distinct blocks in block
+  order with the real one among them (every block when fewer exist) and
+  rejects the random values that would favour the low blocks; the decoys
+  are drawn once per coin and reused on every later scan; `findRecord`
+  refuses none or two records at a place and `checkRecord` a changed leaf,
+  note or salt. Against the stand-in, with the worker's whole-chain receipts
+  check stood down, a coin record changed, dropped or repeated in the
+  receipts of the coin's own block is refused after restore, and an honest
+  scan asks each block's receipts once.
 - `header-chain.test.mjs`: the module's chain exports directly (sealed
   headers adopted; a wrong hash, a wrong difficulty, an unmined seal above a
   pinned start stamped ahead of the schedule and a header ahead of the clock
