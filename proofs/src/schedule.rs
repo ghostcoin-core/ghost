@@ -80,6 +80,18 @@ pub(crate) struct Conservation {
     pub fee: usize,
 }
 
+/// The ordering test of an absence witness (spec 02, section 6, constraint
+/// 4): `value < marker` and (`marker < nextValue` or `nextValue = 0`), all
+/// three 32-byte big-endian integers. The marker is the digest of hash
+/// `marker`; the low leaf is the hash right after it, whose first block holds
+/// `value` at `value_at` and `nextValue` at `next_at`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Ordering {
+    pub marker: usize,
+    pub value_at: usize,
+    pub next_at: usize,
+}
+
 /// A statement as data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Schedule {
@@ -91,6 +103,8 @@ pub(crate) struct Schedule {
     pub conservation: Option<Conservation>,
     /// Public bytes that must hold a fixed value.
     pub public_consts: Vec<(usize, u8)>,
+    /// The ordering test of an absence witness, S3 only.
+    pub ordering: Option<Ordering>,
 }
 
 /// The source of one byte of a block, after expansion.
@@ -123,6 +137,19 @@ pub(crate) struct PermSpec {
 }
 
 impl Schedule {
+    /// The index of the first permutation of hash `h` in the trace.
+    pub(crate) fn first_perm(&self, h: usize) -> usize {
+        self.hashes[..h]
+            .iter()
+            .map(|hash| crate::hash::permutations(hash.segs.iter().map(Seg::len).sum()))
+            .sum()
+    }
+
+    /// The byte offset of segment `s` in the message of hash `h`.
+    pub(crate) fn seg_offset(&self, h: usize, s: usize) -> usize {
+        self.hashes[h].segs[..s].iter().map(Seg::len).sum()
+    }
+
     /// The permutations of the trace, in order.
     pub(crate) fn expand(&self) -> Vec<PermSpec> {
         let mut perms = Vec::new();
@@ -383,6 +410,11 @@ impl ScheduleBuilder {
         }
     }
 
+    /// The number of hashes pushed so far: the index of the next one.
+    pub(crate) fn next_hash(&self) -> usize {
+        self.hashes.len()
+    }
+
     pub(crate) fn push(&mut self, hash: HashBuilder) {
         self.hashes.push(HashSpec {
             segs: hash.segs,
@@ -407,6 +439,7 @@ impl ScheduleBuilder {
                 carried,
                 conservation,
                 public_consts,
+                ordering: None,
             },
             self.free,
             self.dirs,

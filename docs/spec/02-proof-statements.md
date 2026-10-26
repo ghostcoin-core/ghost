@@ -44,8 +44,8 @@ It chooses nothing inside the proof system beyond what the statements need.
 | Amount encoding | One 32-byte big-endian word for Go, the wire, the binding digest and the proof; valid only below `2^96` | **Proposed** (section 10) |
 | Range constraints in the proof | Six 16-bit limbs per amount, limb-wise conservation with bounded carries | **Proposed** (section 10, question 6) |
 | Remainder note | Bound by the coin reveal's binding digest | **Proposed** (question 3) |
-| Proof of holding for coins | Same statement with `COIN`; rejected until the founder settles it | **Proposed** (fail closed, question 2) |
-| Spent-marker-set non-membership | Required by S3; the data set is the indexed tree of [spec 05](05-trees-and-headers.md), section 6, with its root `dataMarkerRoot` in every header; every proof of holding stays rejected until the proof circuit checks constraint 4 | Structure settled (spec 04, question 2); proofs fail closed |
+| Proof of holding for coins | Same statement with `COIN`; rejected until the founder settles it (the data proof of holding is verified) | **Proposed** (fail closed, question 2) |
+| Spent-marker-set non-membership | Required by S3; the data set is the indexed tree of [spec 05](05-trees-and-headers.md), section 6, with its root `dataMarkerRoot` in every header; the proof circuit checks constraint 4, the low leaf under the root and the marker strictly inside its range, so a data proof of holding is verified | Structure settled (spec 04, question 2); circuit settled (section 6) |
 
 ## 2. Conventions
 
@@ -290,9 +290,9 @@ The statement is the same for both types. **Proposed:** version 1 accepts it
 for `DATA`; for `COIN` it is rejected until the founder settles question 2.
 The data spent-marker set and its header root are fixed by
 [spec 05](05-trees-and-headers.md), section 6 ("The data marker-set tree") and
-section 10 (`dataMarkerRoot`, field 18); there is no coin marker-set root. In
-both cases a proof of holding is rejected until the proof circuit checks
-constraint 4 (section 13, item 2).
+section 10 (`dataMarkerRoot`, field 18); there is no coin marker-set root. The
+proof circuit checks constraint 4 (section 13, item 2), so a proof of holding
+for `DATA` is verified; one for `COIN` stays rejected.
 
 **Public inputs.**
 
@@ -350,18 +350,26 @@ fingerprint of the content it shows anyway.
    unspent" (spec 04, section 5, item 2).
 5. `binding` is the hold binding of section 7 over the public inputs.
 
-**Constraint 4 in the circuit, so far.** The trace of S3 now has the
-membership half of constraint 4: after the marker hash it opens the low leaf of
+**Constraint 4 in the circuit.** The trace of S3 checks the whole of
+constraint 4. Membership: after the marker hash it opens the low leaf of
 `absence` under the public `marker_set_root`, one permutation for the leaf hash
 `K("ghost/data-marker-set-leaf/v1", value, nextValue, nextIndex)` and one for
 each of the 40 nodes `K("ghost/data-marker-set-node/v1", level, left, right)`,
 the direction of each from the low leaf's position and the last node's digest
-equal to `marker_set_root`. The trace grows from 38 to 79 Keccak permutations
-(1,896 rows, padded to 2,048). The ordering half is not in the circuit yet:
-nothing relates `marker` to the low leaf's `value` and `nextValue`, so a proof
-shows only that *some* leaf is under `marker_set_root`, not that `marker` is
-absent. Until it is, every proof of holding is still rejected (section 13,
-item 2).
+equal to `marker_set_root`. Ordering: on the last row of the marker hash, whose
+bit columns no other check uses, the circuit reads `marker` from that row's
+digest (its 16 limbs decomposed into 256 bits) and the low leaf's `value` and
+`nextValue` from the next row, the leaf hash's message block. All three are
+32-byte big-endian integers. Two byte-by-byte subtractions, each with 32
+difference bytes held as bits (the range check) and 32 borrow bits, show
+`value < marker` (the final borrow is 1, so equal values are refused) and
+`marker < nextValue`; a boolean flag `zero_next` may replace the second
+comparison only when every byte of `nextValue` is zero
+(`zero_next * (sum of the bytes of nextValue) = 0`), the case of a marker above
+the last value. The witness takes 833 of the 1,088 bit columns of that one
+row. The trace stays at 79 Keccak permutations (1,896 rows, padded to 2,048)
+and 3,802 columns: the ordering adds no row, column or permutation, and no
+constraint above degree 3.
 
 **What S3 shows (review 01, F5 and N1).** S3 shows that the prover holds *some*
 unspent commitment of the type to the content of the public `cf`, under the
@@ -1062,11 +1070,11 @@ and C43) are pending, not met.
    [spec 05](05-trees-and-headers.md), section 6 ("The data marker-set tree":
    an append-only indexed Keccak-256 tree of depth 40, its leaf and node tags
    and the 1,354-byte `absence` witness) and section 10 (its root
-   `dataMarkerRoot` in every header), answering spec 04, question 2. What is
-   not yet settled is the proof circuit that checks constraint 4 against it:
-   the circuit opens the low leaf under `marker_set_root` (section 6), but the
-   ordering of `marker` against that leaf is not in it yet. Until it is, the
-   shipped verifier rejects every proof of holding, whatever the proof.
+   `dataMarkerRoot` in every header), answering spec 04, question 2.
+   **Settled:** the proof circuit checks constraint 4 against it, the low
+   leaf under `marker_set_root` and the ordering of `marker` against that
+   leaf (section 6, "Constraint 4 in the circuit"), and the shipped verifier
+   verifies a proof of holding for `DATA`. Coins stay rejected (item 3).
 3. **Proof of holding for coins.** S3 with `COIN` is rejected (question 2).
 4. **Non-empty rules.** Rejected in S1 and S2 (spec 03, section 7, step 11;
    spec 04, question 9).

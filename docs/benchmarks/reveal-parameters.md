@@ -379,6 +379,10 @@ follow from its schedule (1,896 rows padded to a power of two) and were not
 re-measured. No parameter changes; the conjectured bits
 with grinding counted at half stay at least 128 for both, and their proof
 length bound is below the budget trace's 1,056,723 bytes.
+The ordering test of constraint 4 (spec 02, section 6) adds no row and no
+column to the salted proof of holding: its witness sits in the bit columns of
+the marker hash's last row, so every figure above stands, and no constraint
+goes above degree 3.
 
 ## Security figures
 

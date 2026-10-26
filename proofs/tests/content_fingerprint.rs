@@ -253,8 +253,8 @@ fn hold_rejects_other_fingerprint() {
     let ctx = c.hold_context(root, content_fingerprint(CONTENT));
     let proof = c.hold(&ctx, 50).expect("honest proof");
     assert_eq!(verify_hold_unsettled(&params(), &ctx, &proof), Ok(()));
-    // The shipped verifier still rejects every proof of holding.
-    assert_eq!(verify_hold(&params(), &ctx, &proof), Err(ProofError::HoldUnsettled));
+    // The shipped verifier accepts it.
+    assert_eq!(verify_hold(&params(), &ctx, &proof), Ok(()));
 
     // The same proof for another fingerprint fails, and the binding digest
     // differs.

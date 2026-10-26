@@ -9,15 +9,16 @@
 //!   [`verify_salted_data_reveal`], which checks the fee against the reserve
 //!   `DATA_RESERVE` (spec 04, section 6) and then the proof.
 //! - S3, the proof of holding: [`verify_hold`], for `DATA_V2` commitments,
-//!   which rejects every proof until the spent-marker set is settled, and the
-//!   verifier's [`ChallengeBook`].
+//!   which checks the opening, the marker and its absence from the
+//!   spent-marker set, and the verifier's [`ChallengeBook`]. Holding of coins
+//!   is not settled and `COIN_V2` is refused.
 //!
 //! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`], with
 //! its header in `include/ghost_proofs.h`.
 //!
-//! S3 is written in full, and is built and verified only by the functions
-//! compiled under the `unsettled-points-test` feature, for tests. The public
-//! [`verify_hold`] rejects it whether or not the feature is on.
+//! The S3 prover is compiled only under the `unsettled-points-test` feature,
+//! for tests. The public [`verify_hold`] verifies whether or not the feature
+//! is on.
 //!
 //! **Proof system** (decision 0003): Plonky3's uni-STARK over BabyBear with a
 //! degree-5 extension, hiding FRI at blowup 2^3 (rate 1/8) with 43 queries,
@@ -89,7 +90,7 @@ pub use hold::{AbsenceWitness, ChallengeBook, HoldContext, SaltedHoldOpening, ho
 pub use hold::{prove_salted_hold, test_absence_witness, verify_hold_unsettled, verify_hold_unsettled_with_book};
 #[cfg(feature = "unsettled-points-test")]
 #[doc(hidden)]
-pub use hold::prove_salted_hold_claiming;
+pub use hold::{prove_salted_hold_claiming, prove_salted_hold_claiming_zero_next};
 pub use reveal::{
     CoinReveal, NOTE_BYTES, RevealRequest, SaltedCoinOpening, SaltedCoinRemainder, prove_salted_coin_reveal,
     salted_coin_reveal_binding, verify_salted_coin_reveal,
@@ -139,9 +140,6 @@ pub enum ProofError {
     WrongContentFingerprint,
     /// A proof of holding for `COIN_V2` (spec 02, section 13, item 3).
     HoldCoinUnsettled,
-    /// Every proof of holding, until the ordering of constraint 4 is in the
-    /// circuit (spec 02, section 6).
-    HoldUnsettled,
     /// A data reveal whose fee is above the fee reserve `DATA_RESERVE` it is
     /// paid from (spec 04, section 6).
     FeeAboveReserve,
@@ -199,9 +197,6 @@ impl fmt::Display for ProofError {
                 f.write_str("the content fingerprint is not the one of the commitment opened")
             }
             Self::HoldCoinUnsettled => f.write_str("proof of holding for coins is not settled"),
-            Self::HoldUnsettled => {
-                f.write_str("proof of holding is not settled: the ordering of constraint 4 is not yet in the circuit")
-            }
             Self::FeeAboveReserve => f.write_str("the fee of a data reveal is above the fee reserve"),
             Self::ChallengeUnknown => f.write_str("challenge never issued"),
             Self::ChallengeUsed => f.write_str("challenge already accepted"),
