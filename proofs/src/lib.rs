@@ -79,13 +79,14 @@ pub use data::{
 #[doc(hidden)]
 pub use data::prove_salted_data_reveal_claiming;
 pub use hash::{
-    COIN_V2, DATA_RESERVE, DATA_RESERVE_WORD, DATA_V2, EMPTY_RULE, RATE_BYTES, SALT_BYTES, TREE_DEPTH, Tree,
-    coin_commitment_v2, coin_fingerprint_v2, coin_marker_v2, data_commitment_v2, data_fingerprint_v2, data_marker_v2,
-    empty_leaf, keccak256, merkle_root, permutations, tag_bytes, tagged, tree_node,
+    COIN_V2, DATA_RESERVE, DATA_RESERVE_WORD, DATA_V2, EMPTY_RULE, MARKER_SET_DEPTH, MARKER_SET_INDEX_BYTES,
+    RATE_BYTES, SALT_BYTES, TREE_DEPTH, Tree, coin_commitment_v2, coin_fingerprint_v2, coin_marker_v2,
+    data_commitment_v2, data_fingerprint_v2, data_marker_v2, empty_leaf, keccak256, marker_set_leaf, marker_set_node,
+    marker_set_root, merkle_root, permutations, tag_bytes, tagged, tree_node,
 };
-pub use hold::{ChallengeBook, HoldContext, SaltedHoldOpening, hold_binding, verify_hold};
+pub use hold::{AbsenceWitness, ChallengeBook, HoldContext, SaltedHoldOpening, hold_binding, verify_hold};
 #[cfg(feature = "unsettled-points-test")]
-pub use hold::{prove_salted_hold, verify_hold_unsettled, verify_hold_unsettled_with_book};
+pub use hold::{prove_salted_hold, test_absence_witness, verify_hold_unsettled, verify_hold_unsettled_with_book};
 #[cfg(feature = "unsettled-points-test")]
 #[doc(hidden)]
 pub use hold::prove_salted_hold_claiming;
@@ -125,6 +126,10 @@ pub enum ProofError {
     ReusedBlinding,
     /// The commitment is not the leaf at the position under the root.
     NotInTree,
+    /// The low leaf of a proof of holding's absence witness, folded with its
+    /// siblings along its position, does not give the context's
+    /// `marker_set_root`, or its position is not below 2^40.
+    NotInMarkerSet,
     /// A type tag version 1 does not know.
     UnknownType,
     /// A purpose code other than the statement's.
@@ -134,8 +139,8 @@ pub enum ProofError {
     WrongContentFingerprint,
     /// A proof of holding for `COIN_V2` (spec 02, section 13, item 3).
     HoldCoinUnsettled,
-    /// Every proof of holding, until the spent-marker set and its header root
-    /// are settled (spec 02, section 13, item 2).
+    /// Every proof of holding, until the ordering of constraint 4 is in the
+    /// circuit (spec 02, section 6).
     HoldUnsettled,
     /// A data reveal whose fee is above the fee reserve `DATA_RESERVE` it is
     /// paid from (spec 04, section 6).
@@ -187,13 +192,16 @@ impl fmt::Display for ProofError {
             Self::ConservationFails => f.write_str("v is not out + remainder + fee"),
             Self::ReusedBlinding => f.write_str("the remainder reuses the input's blinding"),
             Self::NotInTree => f.write_str("the commitment is not under the root"),
+            Self::NotInMarkerSet => f.write_str("the low leaf of the absence witness is not under the marker-set root"),
             Self::UnknownType => f.write_str("unknown type tag"),
             Self::UnknownPurpose => f.write_str("unknown purpose code"),
             Self::WrongContentFingerprint => {
                 f.write_str("the content fingerprint is not the one of the commitment opened")
             }
             Self::HoldCoinUnsettled => f.write_str("proof of holding for coins is not settled"),
-            Self::HoldUnsettled => f.write_str("proof of holding is not settled: no spent-marker set"),
+            Self::HoldUnsettled => {
+                f.write_str("proof of holding is not settled: the ordering of constraint 4 is not yet in the circuit")
+            }
             Self::FeeAboveReserve => f.write_str("the fee of a data reveal is above the fee reserve"),
             Self::ChallengeUnknown => f.write_str("challenge never issued"),
             Self::ChallengeUsed => f.write_str("challenge already accepted"),

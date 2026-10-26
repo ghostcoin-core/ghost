@@ -13,13 +13,15 @@
 //! shows"): it names no particular commitment, so it is no capability for a
 //! particular resource.
 //!
-//! **Not implemented: constraint 4, the absence of the marker from the
-//! spent-marker set.** The set's structure and its header root are not
-//! settled (spec 02, section 13, item 2), so there is nothing defined to check
-//! the marker against. The marker is computed in the proof from the `r` and
-//! `b` that open the commitment, and `marker_set_root` is bound through the
-//! digest, but no constraint relates the two. Because of that gap, the shipped
-//! [`verify_hold`] rejects every proof of holding with
+//! **Constraint 4, the absence of the marker from the data spent-marker set,
+//! is only half in the circuit.** The set is the indexed tree of depth 40 of
+//! spec 05, section 6, and the private [`AbsenceWitness`] names its low leaf.
+//! The trace opens that leaf under the public `marker_set_root`: the leaf hash
+//! `L` and the 40 node hashes `S0..S39` up to the root. The ordering of
+//! constraint 4 is not yet in the circuit: no constraint relates the marker
+//! `M` to the low leaf, so a proof shows only that *some* leaf is under
+//! `marker_set_root`, not that the marker is absent. Because of that gap, the
+//! shipped [`verify_hold`] rejects every proof of holding with
 //! [`ProofError::HoldUnsettled`].
 //!
 //! **Not settled: holding of coins** (item 3). A context with `COIN_V2` is
@@ -33,15 +35,18 @@
 //! holding only, for tests. It settles nothing, and the public verifier
 //! rejects regardless of the feature.
 //!
-//! The hashes, in trace order (38 permutations). `DATA` is the type tag
-//! `0x02 0x02`, with the `v2` fingerprint and marker tags:
+//! The hashes, in trace order (79 permutations, 1,896 rows padded to 2,048).
+//! `DATA` is the type tag `0x02 0x02`, with the `v2` fingerprint and marker
+//! tags:
 //!
 //! ```text
-//! F_d     K(data-fingerprint, s, r, b, salt, DATA, cf, rule)  2 blocks, cf public, rule private
-//! C       K(data-commitment, DATA, DATA_RESERVE, F_d)         1, reserve constant
-//! N0..N31 K(data-tree-node, level, left, right)               32, N31 = root
-//! M       K(data-marker, r, b, salt)                          1, private
-//! B       K(hold-binding, fields)                             2, = binding
+//! F_d     K(data-fingerprint, s, r, b, salt, DATA, cf, rule)          2 blocks, cf public, rule private
+//! C       K(data-commitment, DATA, DATA_RESERVE, F_d)                 1, reserve constant
+//! N0..N31 K(data-tree-node, level, left, right)                       32, N31 = root
+//! M       K(data-marker, r, b, salt)                                  1, private
+//! L       K(data-marker-set-leaf, value, nextValue, nextIndex)        1, private
+//! S0..S39 K(data-marker-set-node, level, left, right)                 40, S39 = marker_set_root
+//! B       K(hold-binding, fields)                                     2, = binding
 //! ```
 //!
 //! `C` takes the fee reserve `DATA_RESERVE` as a constant amount word, as in
@@ -54,7 +59,10 @@ use alloc::vec::Vec;
 
 use crate::binding::{Binding, ChainParams, FieldWriter, PURPOSE_HOLD, STATEMENT_HOLD, STATEMENT_VERSION_1, digest};
 use crate::data::{CARRIED, DataSecrets, RuleSource, data_marker_hash, push_data_opening};
-use crate::hash::{COIN_V2, DATA_V2, SALT_BYTES, TAG_HOLD_BINDING, TREE_DEPTH};
+use crate::hash::{
+    COIN_V2, DATA_V2, MARKER_SET_DEPTH, MARKER_SET_INDEX_BYTES, SALT_BYTES, TAG_DATA_MARKER_SET_LEAF,
+    TAG_DATA_MARKER_SET_NODE, TAG_HOLD_BINDING, TREE_DEPTH,
+};
 use crate::schedule::{HashBuilder, Schedule, ScheduleBuilder};
 use crate::{Proof, ProofError};
 
@@ -129,6 +137,38 @@ pub struct SaltedHoldOpening {
     pub rule: [u8; 32],
     pub position: u32,
     pub path: [[u8; 32]; TREE_DEPTH],
+    /// The low leaf of the marker in the data marker-set tree and its path,
+    /// a private input of S3.
+    pub absence: AbsenceWitness,
+}
+
+/// The `absence` witness of spec 02, section 6 and spec 05, section 6: the
+/// low leaf `(value, nextValue, nextIndex)` of the marker, its position and
+/// its 40 siblings from level 0 up, 1,354 bytes in the spec layout. A private
+/// input of S3: no `Debug`, no serialization.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct AbsenceWitness {
+    pub low_value: [u8; 32],
+    pub low_next_value: [u8; 32],
+    /// A big-endian position.
+    pub low_next_index: [u8; MARKER_SET_INDEX_BYTES],
+    /// Position of the low leaf, below 2^40.
+    pub position: u64,
+    pub siblings: [[u8; 32]; MARKER_SET_DEPTH],
+}
+
+impl AbsenceWitness {
+    /// The hash of the low leaf.
+    pub fn leaf(&self) -> [u8; 32] {
+        crate::hash::marker_set_leaf(&self.low_value, &self.low_next_value, &self.low_next_index)
+    }
+
+    /// The marker-set root the low leaf's path gives, or `None` for a
+    /// position at or above 2^40.
+    pub fn root(&self) -> Option<[u8; 32]> {
+        (self.position >> MARKER_SET_DEPTH == 0)
+            .then(|| crate::hash::marker_set_root(&self.leaf(), self.position, &self.siblings))
+    }
 }
 
 impl SaltedHoldOpening {
@@ -148,15 +188,36 @@ impl SaltedHoldOpening {
 }
 
 /// The schedule of S3 and, with a witness, the free bytes and direction bits.
-fn schedule_with(w: Option<&DataSecrets<'_>>) -> (Schedule, Vec<Vec<u8>>, Vec<bool>) {
+fn schedule_with(
+    w: Option<&DataSecrets<'_>>,
+    absence: Option<&AbsenceWitness>,
+) -> (Schedule, Vec<Vec<u8>>, Vec<bool>) {
     let binding = Binding::Hold;
     let off = |name: &str| binding.offset(name);
     let fields_len = binding.fields_len();
     let mut sb = ScheduleBuilder::new();
     push_data_opening(&mut sb, w, RuleSource::Private, off("cf"), off("root"));
     // Constraint 3: the marker of the opened commitment, kept private. With
-    // constraint 4 not implemented, nothing reads it yet.
+    // the ordering of constraint 4 not in the circuit, nothing reads it yet.
     sb.push(data_marker_hash());
+    // Constraint 4, the membership half: the low leaf, as free bytes, and its
+    // 40 nodes up to the public `marker_set_root`, the direction bits from
+    // the low leaf's position.
+    sb.push(
+        HashBuilder::new(TAG_DATA_MARKER_SET_LEAF)
+            .free(32, absence.map(|a| &a.low_value[..]))
+            .free(32, absence.map(|a| &a.low_next_value[..]))
+            .free(MARKER_SET_INDEX_BYTES, absence.map(|a| &a.low_next_index[..])),
+    );
+    for level in 0..MARKER_SET_DEPTH {
+        let mut node = HashBuilder::new(TAG_DATA_MARKER_SET_NODE)
+            .constant(&[level as u8])
+            .node(absence.map(|a| (&a.siblings[level], a.position >> level & 1 == 1)));
+        if level + 1 == MARKER_SET_DEPTH {
+            node = node.output(off("marker_set_root"));
+        }
+        sb.push(node);
+    }
     sb.push(HashBuilder::new(TAG_HOLD_BINDING).public(0, fields_len).output(fields_len));
     let consts = vec![
         (off("statement"), STATEMENT_HOLD),
@@ -170,12 +231,13 @@ fn schedule_with(w: Option<&DataSecrets<'_>>) -> (Schedule, Vec<Vec<u8>>, Vec<bo
 
 /// The schedule of S3, without any witness.
 pub(crate) fn schedule() -> Schedule {
-    schedule_with(None).0
+    schedule_with(None, None).0
 }
 
-/// The shipped verifier of a proof of holding. The spent-marker-set
-/// structure and its header root are not settled (spec 02, section 13, item
-/// 2), so it rejects every input with [`ProofError::HoldUnsettled`].
+/// The shipped verifier of a proof of holding. The trace opens the low leaf
+/// of the absence witness under `marker_set_root`, but the ordering of
+/// constraint 4 is not yet in the circuit, so nothing shows the marker is
+/// absent: it rejects every input with [`ProofError::HoldUnsettled`].
 pub fn verify_hold(params: &ChainParams, ctx: &HoldContext, proof: &Proof) -> Result<(), ProofError> {
     let _ = (params, ctx, proof);
     Err(ProofError::HoldUnsettled)
@@ -187,13 +249,14 @@ pub fn verify_hold(params: &ChainParams, ctx: &HoldContext, proof: &Proof) -> Re
 fn prove_unchecked(
     params: &ChainParams,
     w: &DataSecrets<'_>,
+    absence: &AbsenceWitness,
     ctx: &HoldContext,
     zk_randomness: [u8; 32],
 ) -> Result<Proof, ProofError> {
     use crate::schedule::Assignment;
 
     let public = public_values(params, ctx)?;
-    let (_, free, dirs) = schedule_with(Some(w));
+    let (_, free, dirs) = schedule_with(Some(w), Some(absence));
     let assignment = Assignment {
         public,
         carried: w.carried_values(),
@@ -207,8 +270,10 @@ fn prove_unchecked(
 /// context's type must be `DATA_V2`. The salt is a private witness: neither
 /// the public values nor the proof hold it. Rejects what
 /// [`HoldContext::check`] rejects, a context whose `cf` is not the opening's,
-/// and a commitment that is not the leaf at `position` under `root`; a wrong
-/// salt makes another commitment, which is not the leaf under `root`.
+/// a commitment that is not the leaf at `position` under `root` (a wrong salt
+/// makes another commitment, which is not the leaf under `root`), and an
+/// absence witness whose low leaf is not under `marker_set_root`
+/// ([`ProofError::NotInMarkerSet`]).
 #[cfg(feature = "unsettled-points-test")]
 pub fn prove_salted_hold(
     params: &ChainParams,
@@ -227,12 +292,16 @@ pub fn prove_salted_hold(
     if merkle_root(Tree::Data, &w.commitment(rule), w.position, w.path) != ctx.root {
         return Err(ProofError::NotInTree);
     }
-    prove_unchecked(params, &w, ctx, zk_randomness)
+    if opening.absence.root() != Some(ctx.marker_set_root) {
+        return Err(ProofError::NotInMarkerSet);
+    }
+    prove_unchecked(params, &w, &opening.absence, ctx, zk_randomness)
 }
 
 /// A salted proof of holding for `ctx`, whatever the opening says, without
-/// the honest prover's tree check, so tests can show the verifier catches a
-/// lie (another salt, say). For tests only.
+/// the honest prover's tree and marker-set checks, so tests can show the
+/// verifier catches a lie (another salt, another sibling, say). For tests
+/// only.
 #[cfg(feature = "unsettled-points-test")]
 #[doc(hidden)]
 pub fn prove_salted_hold_claiming(
@@ -241,11 +310,77 @@ pub fn prove_salted_hold_claiming(
     ctx: &HoldContext,
     zk_randomness: [u8; 32],
 ) -> Result<Proof, ProofError> {
-    prove_unchecked(params, &opening.secrets(), ctx, zk_randomness)
+    prove_unchecked(params, &opening.secrets(), &opening.absence, ctx, zk_randomness)
 }
 
-/// Verify the statement S3 as written, without the absence check, for tests
-/// only. Rejects what [`HoldContext::check`] rejects.
+/// The absence witness of `absent` in the data marker-set tree built from
+/// the genesis set by inserting `markers` in order (spec 05, section 6,
+/// "Insert"), and that set's root, so tests prove against real sets. Panics
+/// on a zero marker, a marker inserted twice, or an `absent` that is in the
+/// set. For tests only.
+#[cfg(feature = "unsettled-points-test")]
+pub fn test_absence_witness(markers: &[[u8; 32]], absent: &[u8; 32]) -> (AbsenceWitness, [u8; 32]) {
+    use crate::hash::{empty_leaf, marker_set_leaf, marker_set_node};
+
+    // The used leaves as (value, nextValue, nextIndex), the sentinel at 0.
+    let mut leaves: Vec<([u8; 32], [u8; 32], u64)> = vec![([0; 32], [0; 32], 0)];
+    let fresh = |leaves: &[([u8; 32], [u8; 32], u64)], m: &[u8; 32]| {
+        *m != [0; 32] && leaves.iter().all(|(value, _, _)| value != m)
+    };
+    // Byte arrays compare as big-endian integers.
+    let low_of = |leaves: &[([u8; 32], [u8; 32], u64)], m: &[u8; 32]| {
+        leaves
+            .iter()
+            .position(|(value, next, _)| value < m && (m < next || *next == [0; 32]))
+            .expect("exactly one low leaf")
+    };
+    for m in markers {
+        assert!(fresh(&leaves, m), "a marker is non-zero and inserted once");
+        let low = low_of(&leaves, m);
+        let n = leaves.len() as u64;
+        let (_, next, next_index) = leaves[low];
+        leaves.push((*m, next, next_index));
+        leaves[low].1 = *m;
+        leaves[low].2 = n;
+    }
+    assert!(fresh(&leaves, absent), "the marker is non-zero and not in the set");
+    let low = low_of(&leaves, absent);
+    let index = |i: u64| -> [u8; MARKER_SET_INDEX_BYTES] {
+        i.to_be_bytes()[8 - MARKER_SET_INDEX_BYTES..].try_into().expect("5 bytes")
+    };
+
+    let mut nodes: Vec<[u8; 32]> = leaves
+        .iter()
+        .map(|(value, next, next_index)| marker_set_leaf(value, next, &index(*next_index)))
+        .collect();
+    let mut empty = empty_leaf();
+    let mut siblings = [[0u8; 32]; MARKER_SET_DEPTH];
+    let mut at = low;
+    for (level, sibling) in siblings.iter_mut().enumerate() {
+        *sibling = nodes.get(at ^ 1).copied().unwrap_or(empty);
+        nodes = nodes
+            .chunks(2)
+            .map(|pair| marker_set_node(level as u8, &pair[0], pair.get(1).unwrap_or(&empty)))
+            .collect();
+        empty = marker_set_node(level as u8, &empty, &empty);
+        at >>= 1;
+    }
+    let root = nodes[0];
+    let (value, next, next_index) = leaves[low];
+    let witness = AbsenceWitness {
+        low_value: value,
+        low_next_value: next,
+        low_next_index: index(next_index),
+        position: low as u64,
+        siblings,
+    };
+    assert_eq!(witness.root(), Some(root));
+    (witness, root)
+}
+
+/// Verify the statement S3 as the circuit has it, the low leaf under
+/// `marker_set_root` included but without the ordering of constraint 4, for
+/// tests only. Rejects what [`HoldContext::check`] rejects.
 #[cfg(feature = "unsettled-points-test")]
 pub fn verify_hold_unsettled(params: &ChainParams, ctx: &HoldContext, proof: &Proof) -> Result<(), ProofError> {
     let public = public_values(params, ctx)?;
@@ -338,5 +473,51 @@ impl ChallengeBook {
     /// rejected either way.
     pub fn prune(&mut self, now: u64) {
         self.entries.retain(|_, entry| now < entry.expires);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schedule::Seg;
+
+    /// The 38 permutations of the opening, the marker and the binding, plus
+    /// the low leaf and its 40 nodes: 79 permutations, 1,896 rows padded to
+    /// 2,048, the last node's digest the public `marker_set_root`.
+    #[test]
+    fn schedule_has_79_permutations() {
+        let schedule = schedule();
+        assert_eq!(schedule.expand().len(), 79);
+        assert_eq!(schedule.expand().len() * p3_keccak_air::NUM_ROUNDS, 1896);
+        assert_eq!(crate::air::StatementAir::height_for(&schedule, 0), 2048);
+
+        // F_d, C, N0..N31, M, then L at 35, S0..S39 at 36..76, B at 76.
+        assert_eq!(schedule.hashes.len(), 77);
+        let leaf = &schedule.hashes[35];
+        assert_eq!(leaf.segs[0], Seg::Const(crate::hash::tag_bytes(TAG_DATA_MARKER_SET_LEAF)));
+        assert_eq!(leaf.segs[1..], [Seg::Free(32), Seg::Free(32), Seg::Free(MARKER_SET_INDEX_BYTES)]);
+        assert_eq!(leaf.output, None);
+        for level in 0..MARKER_SET_DEPTH {
+            let node = &schedule.hashes[36 + level];
+            assert_eq!(
+                node.segs,
+                [
+                    Seg::Const(crate::hash::tag_bytes(TAG_DATA_MARKER_SET_NODE)),
+                    Seg::Const(vec![level as u8]),
+                    Seg::Node
+                ]
+            );
+            let root = (level + 1 == MARKER_SET_DEPTH).then(|| Binding::Hold.offset("marker_set_root"));
+            assert_eq!(node.output, root, "level {level}");
+        }
+        assert_eq!(Binding::Hold.offset("marker_set_root"), 79);
+
+        // The data-tree nodes have their pair at offset 25, the marker-set
+        // nodes at 31: the AIR checks both, each under its own selector.
+        let node_offsets: Vec<Option<usize>> = schedule.expand().iter().map(|perm| perm.node_at).collect();
+        assert_eq!(node_offsets.iter().filter(|&&at| at == Some(25)).count(), TREE_DEPTH);
+        assert_eq!(node_offsets.iter().filter(|&&at| at == Some(31)).count(), MARKER_SET_DEPTH);
+        assert_eq!(node_offsets.iter().flatten().count(), TREE_DEPTH + MARKER_SET_DEPTH);
+        assert_eq!(schedule.hashes[76].segs[0], Seg::Const(crate::hash::tag_bytes(TAG_HOLD_BINDING)));
     }
 }

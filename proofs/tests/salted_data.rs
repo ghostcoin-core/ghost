@@ -87,6 +87,16 @@ fn with_salt(o: &SaltedDataOpening, salt: [u8; SALT_BYTES]) -> SaltedDataOpening
     SaltedDataOpening { salt, ..*o }
 }
 
+/// Example spent markers of a data marker set no opening of this file has
+/// its marker in.
+const SPENT_MARKERS: [[u8; 32]; 3] = [[0x22; 32], [0x99; 32], [0xdd; 32]];
+
+/// The absence witness of `o`'s marker in the set of [`SPENT_MARKERS`], and
+/// that set's root.
+fn absence(o: &SaltedDataOpening) -> (AbsenceWitness, [u8; 32]) {
+    test_absence_witness(&SPENT_MARKERS, &data_marker_v2(&o.r, &o.b, &o.salt))
+}
+
 fn hold_opening(o: &SaltedDataOpening) -> SaltedHoldOpening {
     SaltedHoldOpening {
         s: o.s,
@@ -97,6 +107,7 @@ fn hold_opening(o: &SaltedDataOpening) -> SaltedHoldOpening {
         rule: EMPTY_RULE,
         position: o.position,
         path: o.path,
+        absence: absence(o).0,
     }
 }
 
@@ -114,7 +125,7 @@ fn hold_context(root: [u8; 32]) -> HoldContext {
     HoldContext {
         type_tag: DATA_V2,
         root,
-        marker_set_root: [0x6d; 32],
+        marker_set_root: absence(&salted_data()).1,
         verifier: [0x0a; 32],
         challenge: [0xc1; 32],
         cf: salted_data().cf,

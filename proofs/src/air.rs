@@ -24,6 +24,9 @@
 //! 4. Every block byte matches its source: a constant, a public value, a
 //!    carried column, a limb of a carried amount, or the digest of the
 //!    permutation just before (for a tree node, on the side `DIR` names).
+//!    Tree-node blocks with their pair at different offsets (25 for a
+//!    commitment tree node, 31 for a data marker-set node) each have their
+//!    own selector, and every node block is checked.
 //! 5. A digest with a public destination equals those public bytes.
 //! 6. Carried columns never change; conservation holds on their limbs.
 
@@ -110,7 +113,9 @@ pub(crate) struct StatementAir {
     const_val: usize,
     first: usize,
     cont: usize,
-    node: Option<(usize, usize)>,
+    /// One `(selector, offset)` per offset of a tree-node pair, in the order
+    /// the schedule first has them.
+    nodes: Vec<(usize, usize)>,
     links: Vec<(usize, usize)>,
     outputs: Vec<(usize, usize)>,
     checks: Vec<PermCheck>,
@@ -148,7 +153,7 @@ impl StatementAir {
         let first = column(&mut periodic);
         let cont = column(&mut periodic);
 
-        let mut node = None;
+        let mut nodes: Vec<(usize, usize)> = Vec::new();
         let mut link_cols: BTreeMap<usize, usize> = BTreeMap::new();
         let mut outputs = Vec::new();
         let mut checks = Vec::new();
@@ -187,8 +192,14 @@ impl StatementAir {
                 periodic[selector][last_row(p - 1)] = F::ONE;
             }
             if let Some(at) = perm.node_at {
-                let (selector, node_at) = *node.get_or_insert_with(|| (column(&mut periodic), at));
-                assert_eq!(node_at, at, "every node block has its pair at one offset");
+                let selector = match nodes.iter().find(|&&(_, node_at)| node_at == at) {
+                    Some(&(selector, _)) => selector,
+                    None => {
+                        let selector = column(&mut periodic);
+                        nodes.push((selector, at));
+                        selector
+                    }
+                };
                 periodic[selector][last_row(p - 1)] = F::ONE;
             }
             if let Some(offset) = perm.output {
@@ -208,7 +219,7 @@ impl StatementAir {
             const_val,
             first,
             cont,
-            node,
+            nodes,
             links,
             outputs,
             checks,
@@ -367,7 +378,7 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
                 builder.assert_zero(sel.clone() * (e(out(kl, j)) - limb_n(at, j)));
             }
         }
-        if let Some((selector, at)) = self.node {
+        for &(selector, at) in &self.nodes {
             let sel = s(selector);
             let right = e(next[DIR]);
             for j in 0..DIGEST_LIMBS {

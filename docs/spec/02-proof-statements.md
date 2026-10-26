@@ -350,6 +350,19 @@ fingerprint of the content it shows anyway.
    unspent" (spec 04, section 5, item 2).
 5. `binding` is the hold binding of section 7 over the public inputs.
 
+**Constraint 4 in the circuit, so far.** The trace of S3 now has the
+membership half of constraint 4: after the marker hash it opens the low leaf of
+`absence` under the public `marker_set_root`, one permutation for the leaf hash
+`K("ghost/data-marker-set-leaf/v1", value, nextValue, nextIndex)` and one for
+each of the 40 nodes `K("ghost/data-marker-set-node/v1", level, left, right)`,
+the direction of each from the low leaf's position and the last node's digest
+equal to `marker_set_root`. The trace grows from 38 to 79 Keccak permutations
+(1,896 rows, padded to 2,048). The ordering half is not in the circuit yet:
+nothing relates `marker` to the low leaf's `value` and `nextValue`, so a proof
+shows only that *some* leaf is under `marker_set_root`, not that `marker` is
+absent. Until it is, every proof of holding is still rejected (section 13,
+item 2).
+
 **What S3 shows (review 01, F5 and N1).** S3 shows that the prover holds *some*
 unspent commitment of the type to the content of the public `cf`, under the
 tree state used, answering the verifier's challenge. It names the content but
@@ -1050,9 +1063,10 @@ and C43) are pending, not met.
    an append-only indexed Keccak-256 tree of depth 40, its leaf and node tags
    and the 1,354-byte `absence` witness) and section 10 (its root
    `dataMarkerRoot` in every header), answering spec 04, question 2. What is
-   not yet settled is the proof circuit that checks constraint 4 against it;
-   until it exists, the shipped verifier rejects every proof of holding,
-   whatever the proof.
+   not yet settled is the proof circuit that checks constraint 4 against it:
+   the circuit opens the low leaf under `marker_set_root` (section 6), but the
+   ordering of `marker` against that leaf is not in it yet. Until it is, the
+   shipped verifier rejects every proof of holding, whatever the proof.
 3. **Proof of holding for coins.** S3 with `COIN` is rejected (question 2).
 4. **Non-empty rules.** Rejected in S1 and S2 (spec 03, section 7, step 11;
    spec 04, question 9).
