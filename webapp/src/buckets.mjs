@@ -14,7 +14,8 @@
 // header root covers a bucket. So the scan (flow.mjs, scanKey) still reads
 // every page, checks it against the header root and the block receipts, and
 // takes a bucket restore only when every entry read equals the page-read
-// record at its position; otherwise, or when the node does not serve buckets,
+// record at its position and every bucket holds every page-read note of its
+// prefix (an empty or partial bucket would hide coins); otherwise, or when the node does not serve buckets,
 // the full page scan restores the key.
 
 import { equalBytes, fromHex, quantity, toHex, toQuantity } from "./bytes.mjs";
@@ -130,13 +131,16 @@ function sameQuantity(text, n) {
 // pages, `anchorHash` the hash of the header they were read at. Each tree is
 // restored by restoreByBuckets with its page-read leaf count, and every
 // entry a bucket holds must be the page-read leaf, note and salt at its
-// position, checked as the bucket arrives, before the key is tried on it,
-// or the whole restore is refused (BucketRefused). Returns the coins found,
-// tree by tree.
+// position, and the bucket must hold every position whose page-read note
+// starts with its prefix (a bucket is not covered by any root, so an empty
+// or partial reply would otherwise hide the key's coins), checked as the
+// bucket arrives, before the key is tried on it, or the whole restore is
+// refused (BucketRefused). Returns the coins found, tree by tree.
 export async function restoreTreesByBuckets({ prover, rpc, anchorHash, key, chainId, trees, spent }) {
   const reader = createBucketReader({ rpc, anchorHash });
   const found = [];
   for (const t of trees) {
+    let index = null;
     const readBucket = async (treeIndex, bits, prefix) => {
       const entries = await reader.readBucket(treeIndex, bits, prefix);
       for (const entry of entries) {
@@ -144,12 +148,33 @@ export async function restoreTreesByBuckets({ prover, rpc, anchorHash, key, chai
           throw new BucketRefused(`the note bucket entry at position ${entry.position} of coin tree ${treeIndex} is not the leaf the pages hold there`);
         }
       }
+      if (index?.bits !== bits) index = { bits, positions: pagePositionsByPrefix(t, bits) };
+      const expected = index.positions.get(prefix) ?? [];
+      const missing = expected.find((position, i) => entries[i]?.position !== position);
+      if (missing !== undefined || entries.length !== expected.length) {
+        const which = missing ?? expected.length;
+        throw new BucketRefused(`the note bucket ${prefix} of ${bits} bits of coin tree ${treeIndex} leaves out the note the pages hold at position ${which}`);
+      }
       return entries;
     };
     const restored = await restoreByBuckets({ prover, readBucket, key, chainId, treeIndex: t.treeIndex, count: t.count, spent });
     found.push(...restored.found);
   }
   return found;
+}
+
+// The positions of tree `t`'s page-read notes, by the `bits`-bit prefix of
+// their lookup tag, each list in increasing order.
+function pagePositionsByPrefix(t, bits) {
+  const byPrefix = new Map();
+  for (let position = 0; position < t.count; position++) {
+    const at = position * LEAF_RECORD_BYTES + 32;
+    const prefix = tagPrefix(t.records.subarray(at, at + 3), bits);
+    const list = byPrefix.get(prefix);
+    if (list) list.push(position);
+    else byPrefix.set(prefix, [position]);
+  }
+  return byPrefix;
 }
 
 // Whether `entry` is the record the pages of tree `t` hold at its position.
