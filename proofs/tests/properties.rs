@@ -306,7 +306,6 @@ fn sub_one(word: &[u8; 32]) -> [u8; 32] {
     amount_word(amount_value(word).unwrap() - 1)
 }
 
-#[cfg_attr(not(feature = "unsettled-points-test"), allow(dead_code))]
 struct Data {
     s: [u8; 32],
     r: [u8; 32],
@@ -340,7 +339,6 @@ fn example_data() -> Data {
     }
 }
 
-#[cfg(feature = "unsettled-points-test")]
 fn data_opening(d: &Data) -> SaltedDataOpening {
     SaltedDataOpening {
         s: d.s,
@@ -530,7 +528,6 @@ fn coin_reveal_proof_fits_field() {
 
 /// A real data reveal proof, reveal and revoke, fits the field and its
 /// trace's bound.
-#[cfg(feature = "unsettled-points-test")]
 #[test]
 fn data_reveal_proof_fits_field() {
     let _one = one_at_a_time();
@@ -547,7 +544,7 @@ fn data_reveal_proof_fits_field() {
             rule: EMPTY_RULE,
         };
         let (tx, proof) = prove_salted_data_reveal(&params(), &opening, &request, zk(seed)).expect("honest proof");
-        assert_eq!(verify_salted_data_reveal_unsettled(&params(), &tx, &proof), Ok(()));
+        assert_eq!(verify_salted_data_reveal(&params(), &tx, &proof), Ok(()));
         let len = proof.as_bytes().len();
         assert!(len <= PROOF_FIELD_BYTES, "a data reveal proof of {len} bytes");
         assert!(len <= bound, "a data reveal proof of {len} bytes, over the bound {bound}");
@@ -1092,16 +1089,19 @@ fn data_reveal_tx(d: &Data, purpose: DataPurpose) -> DataReveal {
     }
 }
 
-/// PS-20: the shipped verifier rejects every data reveal at the fee step,
-/// including one whose proof verifies; purpose codes other than reveal and
-/// revoke are unknown.
+/// PS-20: the shipped verifier checks the fee against the reserve, then the
+/// proof: an honest reveal verifies, and an empty or garbage proof fails at
+/// the proof; purpose codes other than reveal and revoke are unknown.
 #[test]
-fn data_reveal_shipped_verifier_rejects_until_fee_settled() {
+fn data_reveal_shipped_verifier_checks_fee_then_proof() {
     let d = example_data();
     for purpose in [DataPurpose::Reveal, DataPurpose::Revoke] {
         for proof in [Proof::from_bytes(Vec::new()), Proof::from_bytes(vec![0xa5; 4096])] {
             let result = verify_salted_data_reveal(&params(), &data_reveal_tx(&d, purpose), &proof);
-            assert_eq!(result, Err(ProofError::DataFeeUnsettled));
+            assert!(
+                matches!(result, Err(ProofError::MalformedProof | ProofError::Rejected)),
+                "{result:?}"
+            );
         }
     }
     assert_eq!(DataPurpose::from_code(0x02), Ok(DataPurpose::Reveal));
@@ -1109,26 +1109,25 @@ fn data_reveal_shipped_verifier_rejects_until_fee_settled() {
     for code in [0x00, 0x01, 0x04, 0x05, 0xff] {
         assert_eq!(DataPurpose::from_code(code), Err(ProofError::UnknownPurpose));
     }
-    #[cfg(feature = "unsettled-points-test")]
-    {
-        let _one = one_at_a_time();
-        let request = DataRevealRequest {
-            purpose: DataPurpose::Reveal,
-            root: d.root,
-            party: [0x70; 32],
-            fee: amount_word(FEE),
-            rule: EMPTY_RULE,
-        };
-        let (tx, proof) =
-            prove_salted_data_reveal(&params(), &data_opening(&d), &request, zk(40)).expect("honest proof");
-        assert_eq!(verify_salted_data_reveal_unsettled(&params(), &tx, &proof), Ok(()));
-        assert_eq!(verify_salted_data_reveal(&params(), &tx, &proof), Err(ProofError::DataFeeUnsettled));
-    }
+    let _one = one_at_a_time();
+    let request = DataRevealRequest {
+        purpose: DataPurpose::Reveal,
+        root: d.root,
+        party: [0x70; 32],
+        fee: amount_word(FEE),
+        rule: EMPTY_RULE,
+    };
+    let (tx, proof) = prove_salted_data_reveal(&params(), &data_opening(&d), &request, zk(40)).expect("honest proof");
+    assert_eq!(verify_salted_data_reveal(&params(), &tx, &proof), Ok(()));
+    let over = DataReveal {
+        fee: amount_word(DATA_RESERVE + 1),
+        ..tx.clone()
+    };
+    assert_eq!(verify_salted_data_reveal(&params(), &over, &proof), Err(ProofError::FeeAboveReserve));
 }
 
 /// PS-23, AV-9: a data reveal resubmitted as a revocation fails, and the
 /// other way round.
-#[cfg(feature = "unsettled-points-test")]
 #[test]
 fn data_reveal_as_revocation_fails() {
     let _one = one_at_a_time();
@@ -1147,10 +1146,10 @@ fn data_reveal_as_revocation_fails() {
         };
         let (tx, proof) = prove_salted_data_reveal(&params(), &opening, &request, zk(seed)).expect("honest proof");
         assert_eq!(tx.marker, hex32(&vector(SPEC_01, "data-commit-salted")["marker"]));
-        assert_eq!(verify_salted_data_reveal_unsettled(&params(), &tx, &proof), Ok(()));
+        assert_eq!(verify_salted_data_reveal(&params(), &tx, &proof), Ok(()));
         let resubmitted = DataReveal { purpose: swapped, ..tx };
         assert_eq!(
-            verify_salted_data_reveal_unsettled(&params(), &resubmitted, &proof),
+            verify_salted_data_reveal(&params(), &resubmitted, &proof),
             Err(ProofError::Rejected)
         );
     }
@@ -1317,7 +1316,7 @@ fn hold_proof_submitted_as_reveal_fails() {
             party: ctx.verifier,
             ..data_reveal_tx(&d, purpose)
         };
-        assert_eq!(verify_salted_data_reveal_unsettled(&params(), &as_data, &proof), Err(ProofError::Rejected));
+        assert_eq!(verify_salted_data_reveal(&params(), &as_data, &proof), Err(ProofError::Rejected));
     }
     let as_coin = CoinReveal {
         root: d.root,

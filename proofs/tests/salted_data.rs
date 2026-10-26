@@ -7,8 +7,8 @@
 //! fields, the binding digest nor the proof bytes hold the salt. A version 1
 //! data commitment, made without a salt, neither opens nor can be held.
 //!
-//! The S2 and S3 provers exist only under the `unsettled-points-test`
-//! feature. Every negative test starts from the honest proof, asserted to
+//! The S3 prover exists only under the `unsettled-points-test` feature, so
+//! the file is built with it. Every negative test starts from the honest proof, asserted to
 //! verify, and changes one thing. Proving runs one test at a time to bound
 //! memory.
 
@@ -192,7 +192,7 @@ fn honest_reveal() -> &'static (DataReveal, Proof) {
         let (tx, proof) =
             prove_salted_data_reveal(&params(), &salted_data(), &request(DataPurpose::Reveal, salted_root()), zk(1))
                 .expect("honest proof");
-        assert_eq!(verify_salted_data_reveal_unsettled(&params(), &tx, &proof), Ok(()));
+        assert_eq!(verify_salted_data_reveal(&params(), &tx, &proof), Ok(()));
         (tx, proof)
     })
 }
@@ -247,20 +247,20 @@ fn a_salted_data_reveal_verifies_with_the_salt() {
     assert_eq!(tx.marker, data_marker_v2(&o.r, &o.b, &o.salt));
     assert_ne!(tx.marker, tagged("ghost/data-marker/v1", &[&o.r, &o.b]));
     assert!(proof.as_bytes().len() <= PROOF_FIELD_BYTES);
-    // The shipped verifier still rejects every data reveal.
-    assert_eq!(verify_salted_data_reveal(&params(), tx, proof), Err(ProofError::DataFeeUnsettled));
+    // The shipped verifier settles the fee from the reserve and accepts it.
+    assert_eq!(verify_salted_data_reveal(&params(), tx, proof), Ok(()));
 
     // A revocation of the same commitment verifies too, and not as a reveal.
     let (revoke, revoke_proof) =
         prove_salted_data_reveal(&params(), &o, &request(DataPurpose::Revoke, salted_root()), zk(3))
             .expect("honest proof");
-    assert_eq!(verify_salted_data_reveal_unsettled(&params(), &revoke, &revoke_proof), Ok(()));
+    assert_eq!(verify_salted_data_reveal(&params(), &revoke, &revoke_proof), Ok(()));
     let as_reveal = DataReveal {
         purpose: DataPurpose::Reveal,
         ..revoke
     };
     assert_eq!(
-        verify_salted_data_reveal_unsettled(&params(), &as_reveal, &revoke_proof),
+        verify_salted_data_reveal(&params(), &as_reveal, &revoke_proof),
         Err(ProofError::Rejected)
     );
 }
@@ -284,7 +284,7 @@ fn a_data_reveal_with_a_wrong_salt_fails() {
     let wrong = with_salt(&salted_data(), changed_salt(7));
     lying_proof_fails(
         || prove_salted_data_reveal_claiming(&params(), &wrong, tx, zk(5)),
-        |proof| verify_salted_data_reveal_unsettled(&params(), tx, proof),
+        |proof| verify_salted_data_reveal(&params(), tx, proof),
     );
     // The honest proof does not verify for the marker another salt gives.
     let other_marker = DataReveal {
@@ -292,7 +292,7 @@ fn a_data_reveal_with_a_wrong_salt_fails() {
         ..tx.clone()
     };
     assert_eq!(
-        verify_salted_data_reveal_unsettled(&params(), &other_marker, honest_proof),
+        verify_salted_data_reveal(&params(), &other_marker, honest_proof),
         Err(ProofError::Rejected)
     );
 }
@@ -352,7 +352,7 @@ fn a_version_1_data_leaf_does_not_open() {
     };
     lying_proof_fails(
         || prove_salted_data_reveal_claiming(&params(), &o, &claimed, zk(7)),
-        |proof| verify_salted_data_reveal_unsettled(&params(), &claimed, proof),
+        |proof| verify_salted_data_reveal(&params(), &claimed, proof),
     );
 }
 
@@ -386,7 +386,7 @@ fn a_data_leaf_built_without_the_reserve_does_not_open() {
     let claimed = claimed_reveal(old_root);
     lying_proof_fails(
         || prove_salted_data_reveal_claiming(&params(), &o, &claimed, zk(21)),
-        |proof| verify_salted_data_reveal_unsettled(&params(), &claimed, proof),
+        |proof| verify_salted_data_reveal(&params(), &claimed, proof),
     );
 }
 
@@ -406,18 +406,18 @@ fn a_data_reveal_proof_for_a_different_reserve_fails() {
     let claimed = claimed_reveal(other_root);
     lying_proof_fails(
         || prove_salted_data_reveal_claiming(&params(), &o, &claimed, zk(23)),
-        |proof| verify_salted_data_reveal_unsettled(&params(), &claimed, proof),
+        |proof| verify_salted_data_reveal(&params(), &claimed, proof),
     );
 
     let (tx, proof) = honest_reveal();
     assert_eq!(tx.root, root_of(&leaf_with_reserve(&o, DATA_RESERVE)));
-    assert_eq!(verify_salted_data_reveal_unsettled(&params(), tx, proof), Ok(()));
+    assert_eq!(verify_salted_data_reveal(&params(), tx, proof), Ok(()));
     let moved = DataReveal {
         root: other_root,
         ..tx.clone()
     };
     assert_eq!(
-        verify_salted_data_reveal_unsettled(&params(), &moved, proof),
+        verify_salted_data_reveal(&params(), &moved, proof),
         Err(ProofError::Rejected)
     );
 }

@@ -895,9 +895,10 @@ removed does not count ([spec 03](03-coin-rules.md), section 10).
   branch, or from the other tree, is rejected. Check: spec 03, CR-10; spec 04,
   CR-D13.
 - **PS-20. Unsettled points fail closed.** Every point of section 13 rejects
-  until settled. Check: a data reveal that passes every other check is rejected
-  at the fee step; a proof of holding for `COIN` is rejected; a proof of
-  holding without a marker-set root from a trusted header is rejected.
+  until settled. Check: a data reveal with a fee above `DATA_RESERVE`, or with
+  a proof that does not verify, is rejected by the verifier; a proof of
+  holding for `COIN` is rejected; a proof of holding without a marker-set root
+  from a trusted header is rejected.
 - **PS-21. Only the empty rule.** Version 1 rejects any `rule` other than the
   empty rule in S1 and S2. Check: spec 03, section 7, step 11; spec 04,
   question 9.
@@ -1036,11 +1037,13 @@ and C43) are pending, not met.
    "Fee settlement at reveal and revoke"; question 1): it is the coin reveal's
    window fee, in the same field, paid out of the reserve `DATA_RESERVE` that
    every data leaf holds, and the node checks `fee <= DATA_RESERVE` before the
-   proof; S2 opens the leaf with the reserve as a constant (section 5). What
-   is not yet settled is the node's side, which accepts data reveals, and
-   their encoding (spec 07, section 9, item 2). Until both are, the shipped
-   verifier still rejects every data reveal at the fee step, and every proof
-   of holding (item 2), whatever the proof.
+   proof; S2 opens the leaf with the reserve as a constant (section 5). The
+   proofs verifier checks what needs no block data: the fee is a valid amount
+   word, `fee <= DATA_RESERVE`, and the proof verifies; the window fee and the
+   cover rule need the including block and stay the node's check, as for the
+   coin reveal. What is not yet settled is the node's acceptance of a data
+   reveal and its encoding (spec 07, section 9, item 2); until both are, the
+   node still rejects every data reveal.
 2. **Spent-marker-set structure and header root.** S3 needs non-membership
    under an authenticated set root taken from a header. Settled for data by
    [spec 05](05-trees-and-headers.md), section 6 ("The data marker-set tree":
@@ -1048,7 +1051,8 @@ and C43) are pending, not met.
    and the 1,354-byte `absence` witness) and section 10 (its root
    `dataMarkerRoot` in every header), answering spec 04, question 2. What is
    not yet settled is the proof circuit that checks constraint 4 against it;
-   until it exists, every proof of holding is rejected.
+   until it exists, the shipped verifier rejects every proof of holding,
+   whatever the proof.
 3. **Proof of holding for coins.** S3 with `COIN` is rejected (question 2).
 4. **Non-empty rules.** Rejected in S1 and S2 (spec 03, section 7, step 11;
    spec 04, question 9).
