@@ -218,7 +218,8 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
 - **Footer.** One short line: experimental and unaudited. Under it,
   **Network** opens a small panel with the node endpoint, the commit entry
   address and the chain status (the Network link carries a red dot while
-  the endpoint's chain is refused), and **About** opens the wording on
+  the endpoint's chain is refused), the local node line or the Run a node
+  block (see Node endpoint, A node on this computer), and **About** opens the wording on
   what the app stores, where proofs are made and what still links a reveal
   to its commit.
 
@@ -269,6 +270,7 @@ a count.
 | `webapp/src/header-store.mjs` | The name the header store is imported by in tests (`createHeaderStore`); its code is in `header.mjs`, which the build ships |
 | `webapp/src/receipts-at.mjs` | The receipts of the key's highest coin's own block: the block that appended a position, the 8 blocks asked for (that block and 7 decoys, drawn once per coin for the page session) and the check of the coin's record in them |
 | `webapp/src/rpc.mjs` | JSON-RPC to the chosen endpoint |
+| `webapp/src/local-node.mjs` | The one look for a Ghost node on this computer (`probeLocalNode`), the three install lines and the visitor's system from the user agent (`systemOf`) |
 | `webapp/src/prover.mjs`, `worker.mjs`, `worker-core.mjs` | The background worker and its message interface |
 | `webapp/src/wasm.mjs` | The WebAssembly module's plain exports, with no bindings generator |
 | `webapp/wasm/` | The client library built for `wasm32-unknown-unknown`: its own workspace and lock file, path dependencies on `client` and `proofs` |
@@ -331,6 +333,40 @@ order. An entry's `salt`, when
 present, must be 16 bytes of hex, or the page is refused as malformed. The
 page roots and leaves must then give the root of their tree, as Coin trees
 says.
+
+### A node on this computer
+
+On load, and only while the flow's endpoint is still the default, the page
+looks once for a Ghost node at `http://127.0.0.1:8545`
+(`src/local-node.mjs`, `probeLocalNode`): one POST whose whole body is
+`{"jsonrpc":"2.0","id":1,"method":"rpc_modules","params":[]}`, with
+`credentials: "omit"`, `cache: "no-store"` and a 1,500 ms
+`AbortSignal.timeout`. It names no key, coin, address or marker. The node
+is a Ghost node when the result is an object with a `ghost` key: the node
+registers the `ghost` namespace, while its `web3_clientVersion` names the
+base client and this build pins no chain id to compare with.
+
+- **Found.** The node is the default endpoint the flow already uses, so
+  nothing is set and nothing is stored; Network shows one line, "Connected
+  to your Ghost node".
+- **Not found.** An HTTP error, a JSON-RPC error, an answer without
+  `ghost`, a network or CORS failure, or no answer in time. Network shows
+  the Run a node block: one sentence, the install line for the visitor's
+  system in a `code` element with one Copy button, and a link to
+  `https://get.ghostcoin.com` (`rel="noopener noreferrer"`). The system is
+  read from the user agent: Windows, macOS (a Mac, not an iPhone or iPad),
+  otherwise Linux. The lines are fixed text:
+  - macOS and Linux: `curl -fsSL https://get.ghostcoin.com/install.sh | bash`
+  - Windows (PowerShell): `irm https://get.ghostcoin.com/install.ps1 | iex`
+
+A failed look shows nothing else: no error line, no message on the console
+from the page, no retry, no polling and no reconnect button; the page looks
+again only when it is reloaded. Both lines stay hidden until the look ends,
+and both hide while another endpoint is set. The link's address and the
+lines are set by `app.mjs`, so `index.html` still names no external URL.
+For the look to succeed from the hosted page, the node's CORS setting must
+allow `https://ghost-webapp-alpha.vercel.app` and
+`https://ghost-wallet-nine.vercel.app`; the installer sets that.
 
 ### Coin trees
 
@@ -1264,6 +1300,17 @@ app makes no data commitments.
   account of the tests' wallet each call; `amountMatches` counts the
   checked commits of the coin's amount; a reveal that cannot be made is not
   proved.
+- `local-node-probe.test.mjs`, with nothing built: `probeLocalNode` over an
+  injected fetch (a Ghost node found; a node without `ghost`, an HTTP 500,
+  a JSON-RPC error, a thrown error and an answer that never comes are no
+  node, each after one request whose body is exactly the `rpc_modules`
+  envelope), the system for macOS, Linux and Windows user agents, and
+  `app.mjs` on a stand-in page: a stubbed node on `127.0.0.1:8545` is the
+  default endpoint with no setting written; no node shows the Run a node
+  block with the visitor's line, its Copy button and the link; a failed
+  look changes nothing else on the page, writes nothing to the console and
+  is not tried again. The other tests that run `app.mjs` pass a look that
+  finds no node without reaching the network.
 
 The key image download, drawn on a canvas in the page, and Claim's
 digit-view button are not covered by the headless tests; the flow's digit

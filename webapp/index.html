@@ -242,6 +242,16 @@
       </label>
       <button class="primary wide" type="submit">Use this network</button>
     </form>
+    <p id="local-node-found" class="local-node-found" role="status" hidden>Connected to your Ghost node</p>
+    <div id="local-node-run" class="local-node" hidden>
+      <h3>Run a node</h3>
+      <p>Paste this line into a terminal on <span id="local-node-system"></span> and a Ghost node installs, joins the network, syncs and mines, with nothing else to do.</p>
+      <p class="install-line">
+        <code id="local-node-line"></code>
+        <button id="local-node-copy" type="button" data-keep-enabled="true">Copy</button>
+      </p>
+      <p><a id="local-node-site" rel="noopener noreferrer" target="_blank">get.ghostcoin.com</a></p>
+    </div>
     <p id="chain-status" class="chain-status" role="alert"></p>
     <p class="note">The app checks every block it uses itself: its hash, its difficulty and its proof-of-work seal, from the start this build pins for the network, and keeps the chain with the most work. A chain that fails the check shows no confirmations.</p>
   </section>

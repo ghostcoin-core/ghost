@@ -298,7 +298,8 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, popup = 
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];
   const more = ["wrongWords", "DEFAULT_COMMIT_ENTRY", "MAX_COMMIT_FEE", "WALLET_APPROVAL", "DEFAULT_ENDPOINT", "browserProver", "downloadKeyImage"];
-  new Function(...names, ...more, "popupConnector", "parseAddress", body)(
+  const local = ["createHeaderStore", "INSTALL_LINES", "INSTALL_SITE", "probeLocalNode", "systemOf"];
+  new Function(...names, ...more, "popupConnector", "parseAddress", ...local, body)(
     document,
     window,
     { clipboard: { writeText: async () => {} } },
@@ -316,6 +317,13 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, popup = 
     async () => {},
     popup,
     parseAddress,
+    // No header store, and a look for a local node that finds none without
+    // reaching the network.
+    () => null,
+    { Linux: "" },
+    "",
+    async () => false,
+    () => "Linux",
   );
   $("tab-summon").fire("click");
   return { $, log, screens, window };

@@ -908,6 +908,36 @@ main {
   margin: 0;
 }
 
+/* The local node lines of the Network panel */
+
+.local-node-found {
+  color: var(--accent);
+}
+
+.local-node {
+  border-top: 1px solid var(--border);
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+}
+
+.install-line {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.install-line code {
+  background: var(--surface-behind);
+  border-radius: 8px;
+  flex: 1;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.6rem;
+}
+
+#local-node-site {
+  text-decoration: underline;
+}
+
 /* Glow and motion only where the user has not asked for less motion. */
 @media (prefers-reduced-motion: no-preference) {
   .card,

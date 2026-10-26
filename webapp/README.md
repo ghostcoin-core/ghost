@@ -175,7 +175,16 @@ two small panels: **About**, on what the app keeps and sends, and
 **Network**. Under **Network**, the endpoint defaults to
 the local internal network at `http://127.0.0.1:8545`; type another JSON-RPC
 URL to use another node. The node must allow requests from the page's origin
-(its CORS setting). The commit entry address is a setting next to it; it
+(its CORS setting; the Ghost installer allows the hosted page and wallet).
+On load, while the endpoint is still the default, the page asks
+`http://127.0.0.1:8545` once for its `rpc_modules` (no parameters, no
+cookie, nothing else). A node that lists the `ghost` module is used as is,
+and Network shows "Connected to your Ghost node"; nothing is set or stored.
+Anything else, or no answer within 1.5 seconds, shows nothing but a
+**Run a node** block in Network: the one-line install for your system
+(macOS, Linux or Windows, from the browser's user agent) with a Copy
+button, and a link to get.ghostcoin.com. The page never asks again until
+it is reloaded. The commit entry address is a setting next to it; it
 defaults to the internal network's, `0x67686f7374000000000000000000000000000005`.
 
 ## Test it
