@@ -1,6 +1,6 @@
 """Tests for check_trees_and_headers.py: it passes on the specification and
 fails when a section, a parameter, a table, the header layout, the genesis
-list, a tree, rollover, marker-set, witness-extension, marker-query or header vector, the
+list, a tree, rollover, marker-set, witness-extension or header vector, the
 encoder's output, a requirement, the restore reads of section 8 and their cost, the
 recovery test, a conflict or a tag is damaged. It also checks that the
 separately written encoder agrees with the checker's own RLP code and stays
@@ -262,7 +262,7 @@ class CheckerTest(unittest.TestCase):
         text = self.in_block("marker-set-absence", "reject-above-next = eeee", "reject-above-next = 8888")
         self.assert_gap(text, "the witness is accepted for reject-above-next")
 
-    # -- witness extension and marker status query ------------------------
+    # -- witness extension and the restore reads ---------------------------
 
     def without(self, start, end, phrase):
         """The text with every `phrase` between start and end replaced, also
@@ -283,9 +283,12 @@ class CheckerTest(unittest.TestCase):
         start, end = self.subsection_span(title)
         self.assert_gap(self.text[:start] + f"\n### Other {title}\n" + self.text[start + len(title) + 6:],
                         f"has no subsection '{title}'")
+        # The phrases are taken out of the body only, below the heading, which
+        # may hold one of them.
+        body = start + len(f"\n### {title}\n")
         for phrase in checker.RESTORE_SUBSECTIONS[title]:
             with self.subTest(phrase=phrase):
-                self.assert_gap(self.without(start, end, phrase),
+                self.assert_gap(self.without(body, end, phrase),
                                 f"subsection '{title}' does not mention '{phrase}'")
 
     def test_witness_extension_vectors_required(self):
@@ -364,75 +367,18 @@ class CheckerTest(unittest.TestCase):
             path = checker.witness(tag, pages[position // 4], wrong, position, depth)
             self.assertNotEqual(checker.fold(tag, leaf, position, path), root)
 
-    def test_marker_query_rules_required(self):
-        one = "marker-query-one-real"
-        # The section 8 text: 64 markers, one real, 63 decoys, spent needs a
-        # receipt, not spent is unauthenticated, and its consequence.
-        self.assert_subsection_words("Marker status query")
+    def test_no_query_names_a_marker(self):
+        # The section 8 text: no query names a marker, and spent status comes
+        # only from the checked receipts.
+        self.assert_subsection_words("No query names a marker")
+        # A status not yet checked stays "unknown", in the rule and in
+        # section 12, item 4.
         for start, end in (("**Marker status.**", "\n\n"),
                            ("4. **Marker page integrity.**", "5. **Indexed logs.**")):
             with self.subTest(start=start):
                 at = self.text.index(start)
-                text = self.without(at, self.text.index(end, at), "unchecked, not reported spent")
-                self.assert_gap(text, "give 'unchecked, not reported spent' for a 64-marker query")
-        # Spent needs a receipt of its block; not spent leaves the real marker
-        # unchecked.
-        self.assert_gap(self.in_block(one, "answers = not-spent", "answers = spent-1"),
-                        f"vector {one}: the answer spent-1 for 5a5972a2ed527a3d3e8a844c7dc51475add0d52f8"
-                        "aba4cd1a17a277216cdeec2 has no receipt")
-        answers = ["not-spent"] * 64
-        old = "answers = " + " ".join(answers)
-        answers[37] = "spent-1"
-        new = "answers = " + " ".join(answers)
-        text = self.in_block(one, old, new)
-        self.assert_gap(text, f"vector {one}: the answer spent-1 for {'88' * 32} has no receipt")
-        self.assert_gap(text, f"vector {one}: status is unchecked-not-reported-spent, the answer for the "
-                              "real marker gives rejected")
-        text = self.in_block(one, old, new + f"\nreceipt-markers-1 = {'c340c4a3' * 8} {'88' * 32}")
-        self.assert_gap(text, f"vector {one}: status is unchecked-not-reported-spent, the answer for the "
-                              "real marker gives spent")
-        self.assertFalse(any("has no receipt" in e for e in self.errors(text)))
-        self.assert_gap(self.in_block(one, "status = unchecked-not-reported-spent", "status = spent"),
-                        f"vector {one}: status is spent, the answer for the real marker gives "
-                        "unchecked-not-reported-spent")
-        # A decoy is never a marker from the chain, and the real one is in the query.
-        spent = "c340c4a3020d70f72ed289d4e5fcc0c41cd41224d69bea229f0f8a6ecbb77e3b"
-        first = "5a5972a2ed527a3d3e8a844c7dc51475add0d52f8aba4cd1a17a277216cdeec2"
-        self.assert_gap(self.in_block(one, f"markers = {first}", f"markers = {spent}"),
-                        f"vector {one}: decoy {spent} is a spent marker of a marker-set vector")
-        self.assert_gap(self.in_block(one, "real = 8888", "real = 7888"),
-                        f"vector {one}: real is not one of the markers")
-        for name in checker.MARKER_QUERY_VECTORS:
-            with self.subTest(name=name):
-                self.assert_gap(self.damaged(f"[{name}]\n", f"[renamed-{name}]\n"), f"no vector {name}")
-
-    def test_marker_query_rejects_a_wrong_count(self):
-        one, short = checker.MARKER_QUERY_VECTORS
-        last = "b0c48d43efdf1668e8e3f912e3369b062ad00f37d33b188a421f83e211dd247c"
-        # 63 markers, a repeated marker or a short one is refused.
-        self.assert_gap(self.in_block(one, f" {last}\n", "\n"),
-                        f"vector {one}: valid is yes, a query of 63 markers gives marker-count")
-        self.assert_gap(self.in_block(one, f" {last}\n", f" {last} {'77' * 32}\n"),
-                        f"vector {one}: valid is yes, a query of 65 markers gives marker-count")
-        self.assert_gap(self.in_block(one, "dd6cfc2b9c78af075d55b674e57682ae6a2682d1cac99225fd99152388078586",
-                                      "5a5972a2ed527a3d3e8a844c7dc51475add0d52f8aba4cd1a17a277216cdeec2"),
-                        f"vector {one}: valid is yes, a query of 64 markers gives duplicate-marker")
-        self.assert_gap(self.in_block(one, "markers = 5a59", "markers = 5a5"),
-                        f"vector {one}: valid is yes, a query of 64 markers gives marker-size")
-        # The 63-marker vector is rejected for its count, and only then.
-        self.assert_gap(self.in_block(short, "valid = no", "valid = yes"),
-                        f"vector {short}: valid is yes, a query of 63 markers gives marker-count")
-        self.assert_gap(self.in_block(short, "reject = marker-count", "reject = duplicate-marker"),
-                        f"vector {short}: rejected as marker-count, the vector says duplicate-marker")
-        tail = "f4a0b1e4e19cd07083b733855f0c9a099b62adc016fc2369b11d99fd346fc014\n"
-        self.assert_gap(self.in_block(short, tail, tail[:-1] + f" {last}\n"),
-                        f"vector {short}: valid is no, a query of 64 markers gives yes")
-        markers = [f"{i:064x}" for i in range(1, 65)]
-        self.assertIsNone(checker.query_reject(markers))
-        self.assertEqual(checker.query_reject(markers[:63]), "marker-count")
-        self.assertEqual(checker.query_reject(markers + ["ff" * 32]), "marker-count")
-        self.assertEqual(checker.query_reject(markers[:63] + markers[:1]), "duplicate-marker")
-        self.assertEqual(checker.query_reject(markers[:63] + ["ff" * 31]), "marker-size")
+                text = self.without(at, self.text.index(end, at), "unknown")
+                self.assert_gap(text, "does not keep 'unknown' for marker pages")
 
     def test_forbidden_rule_names_the_new_reads(self):
         spans = (("the 'Forbidden.' paragraph", "**Forbidden.**", "\n\n"),
@@ -443,9 +389,6 @@ class CheckerTest(unittest.TestCase):
             for read in checker.ALLOWED_READS:
                 with self.subTest(label=label, read=read):
                     self.assert_gap(self.without(at, stop, read), f"{label} does not name the {read}")
-            with self.subTest(label=label, read="exactly 64 distinct"):
-                self.assert_gap(self.without(at, stop, "exactly 64 distinct"),
-                                f"{label} does not refuse a status query that is not exactly 64")
         # The bucket sentences stay.
         self.assertIn("a bucket read by tag prefix", " ".join(self.text.split()))
         self.assertIn("`bucket_bits(n)` bits, 16 tags a batch", " ".join(self.text.split()))

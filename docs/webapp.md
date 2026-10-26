@@ -947,7 +947,7 @@ app makes no data commitments.
   the checked receipts alone, so the markers of the blocks before the pin
   are not among them: a coin whose only spend is before the pin shows
   unspent. A reveal of it is refused by every node at the marker check, so
-  no value is lost; a marker status query for such coins is later work.
+  no value is lost; the page cannot learn it, because no query names a marker.
   From genesis, every note and salt is checked and every marker is in the
   receipts. (Closed: the notes are checked against block receipts and the
   markers come from them, so an endpoint can no longer test for a coin one

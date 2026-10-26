@@ -20,10 +20,10 @@ check_commitment_vectors.py. It checks that:
      and each header's dataMarkerRoot is the root of a marker-set vector;
      every witness-extension vector is recomputed with this script's own tree
      code (the page-root tail must hash to the header root, the witness after
-     must be the one recomputed and hash to it), and every marker-query vector
-     is served only with exactly 64 distinct markers, each "spent" answer
-     carried by a receipt; section 8 states the tail read, the status query
-     and their cost, and its "Forbidden." paragraph and TH-19 name the reads;
+     must be the one recomputed and hash to it); section 8 states the tail
+     read and its cost and that no query names a marker, its "Forbidden."
+     paragraph and TH-19 name the reads, and its "Marker status." Rule and
+     section 12, item 4 keep an unchecked status "unknown";
   6. every header vector re-encodes byte for byte with this script's own RLP
      code, every negative vector is re-derived and rejected for the stated
      reason, and the header vectors equal the output of the separately written
@@ -111,35 +111,26 @@ SPEC_01_MARKERS = {
 # to the low leaf.
 ABSENCE_REJECTS = ("reject-equal", "reject-below", "reject-above-next")
 
-# Witness extension and the marker status query of section 8. A page-root
-# tail starts at a multiple of TAIL_PAGES pages, a page read whole is read with
-# decoys PAGE_READ pages a request, and a status query holds exactly
-# MARKER_QUERY_SIZE markers.
+# Witness extension of section 8. A page-root tail starts at a multiple of
+# TAIL_PAGES pages, and a page read whole is read with decoys PAGE_READ pages a
+# request.
 WITNESS_EXTENSION_VECTORS = ("witness-extension-same-page", "witness-extension-new-pages")
-MARKER_QUERY_VECTORS = ("marker-query-one-real", "marker-query-rejects-wrong-count")
 TAIL_PAGES = 65536
 PAGE_READ = 8
-MARKER_QUERY_SIZE = 64
 # Section 8's subsections on restore at scale, with the words each must use.
 RESTORE_SUBSECTIONS = {
     "Reading the tail of the page roots": (
         "65,536 pages", "about a month", "2 MiB", "header root", "Z_12", "8 pages",
         "7 decoy pages", "reused on retry", "no new witness endpoint"),
-    "Marker status query": (
-        "exactly 64 markers", "one real", "63 decoys", "uniformly random 32-byte value",
-        "reused on every retry", "spent needs a receipt", "7 decoy blocks",
-        "not spent cannot be authenticated", "unchecked, not reported spent",
-        "refused by every node", "never make a real unspent coin look spent",
-        "no absence-witness read"),
+    "No query names a marker": ("names a marker", "random decoy", "linked to the spend",
+                                "checked receipts of every block"),
     "Cost against the restore ceilings": (
         "modeled", "restore_sim.py", "stage1-verdict.md", "611.8 MB", "298 days", "500 MB",
         "50 MB a month", "10 minutes", "not feasible as designed", "header-chain proof"),
 }
 # The reads the "Forbidden." paragraph and TH-19 must allow, the bucket read
 # among them.
-ALLOWED_READS = ("bucket read", "page-root tail", "8-page read", "64-marker status query",
-                 "block-range receipts request")
-UNCHECKED_STATUS = "unchecked, not reported spent"
+ALLOWED_READS = ("bucket read", "page-root tail", "8-page read", "block-range receipts request")
 
 PARAMETERS = ("TREE_DEPTH", "LEAVES_PER_TREE", "PAGE_LEAVES", "LEAF_BYTES", "NOTE_BYTES",
               "MARKER_BYTES", "TREE_INDEX_MAX")
@@ -392,18 +383,6 @@ def witness(tag, page_leaves, page_roots, position, page_depth):
                             position % (1 << page_depth), page_depth)
     return in_page + path_siblings(tag, dict(enumerate(page_roots)), page_depth,
                                    position >> page_depth)
-
-
-def query_reject(markers):
-    """None when a marker status query (hex strings) may be served, else the
-    reason a node refuses it."""
-    if len(markers) != MARKER_QUERY_SIZE:
-        return "marker-count"
-    if any(not HEX_RE.match(m) or len(m) != 64 for m in markers):
-        return "marker-size"
-    if len(set(markers)) != len(markers):
-        return "duplicate-marker"
-    return None
 
 
 def append(index, count, filled_this_block):
@@ -695,7 +674,6 @@ class Checker:
         self.check_append_vectors()
         self.check_marker_set_vectors()
         self.check_witness_extension_vectors()
-        self.check_marker_query_vectors()
         self.check_restore_reads()
         self.check_header_vectors()
         self.check_encoder()
@@ -1326,68 +1304,10 @@ class Checker:
             self.fail(f"vector {name}: pages-read is not {want} distinct pages in page order, page "
                       f"{page} and {want - 1} full decoy pages")
 
-    def check_marker_query_vectors(self):
-        blocks = self.blocks()
-        spent = {value.hex() for leaves in self.marker_sets.values() for value, _, _ in leaves[1:]}
-        for name, lines in blocks.items():
-            v = dict(lines)
-            if v.get("kind") == "marker-query":
-                self.check_marker_query(name, v, spent)
-        for name in MARKER_QUERY_VECTORS:
-            if name not in blocks:
-                self.fail(f"no vector {name}")
-
-    def check_marker_query(self, name, v, spent):
-        """A status query is served only with exactly 64 distinct markers; a
-        "spent" answer needs a reveal receipt of its block, and "not spent"
-        leaves the real marker unchecked."""
-        if v.get("type") not in NODE_TAGS:
-            self.fail(f"vector {name}: type '{v.get('type')}' is not coin or data")
-        markers = v.get("markers", "").split()
-        reason = query_reject(markers)
-        if (reason is None) != (v.get("valid") == "yes"):
-            self.fail(f"vector {name}: valid is {v.get('valid')}, a query of {len(markers)} "
-                      f"markers gives {'yes' if reason is None else reason}")
-            return
-        if reason is not None:
-            if v.get("reject") != reason:
-                self.fail(f"vector {name}: rejected as {reason}, the vector says {v.get('reject')}")
-            return
-        real = v.get("real")
-        if markers.count(real) != 1:
-            self.fail(f"vector {name}: real is not one of the markers")
-            return
-        for m in markers:
-            if m != real and m in spent:
-                self.fail(f"vector {name}: decoy {m} is a spent marker of a marker-set vector")
-        answers = v.get("answers", "").split()
-        if len(answers) != len(markers):
-            self.fail(f"vector {name}: {len(answers)} answers for {len(markers)} markers")
-            return
-        checked = {}
-        for m, answer in zip(markers, answers):
-            if answer == "not-spent":
-                continue
-            block = number(answer[len("spent-"):]) if answer.startswith("spent-") else None
-            if block is None:
-                self.fail(f"vector {name}: answer '{answer}' is not spent-N or not-spent")
-                continue
-            checked[m] = m in v.get(f"receipt-markers-{block}", "").split()
-            if not checked[m]:
-                self.fail(f"vector {name}: the answer spent-{block} for {m} has no receipt: no "
-                          f"reveal receipt of block {block} carries it")
-        if real not in checked:
-            status = "unchecked-not-reported-spent"
-        else:
-            status = "spent" if checked[real] else "rejected"
-        if v.get("status") != status:
-            self.fail(f"vector {name}: status is {v.get('status')}, the answer for the real marker "
-                      f"gives {status}")
-
     def check_restore_reads(self):
-        """Section 8 states the tail read, the status query and their cost, and
-        its "Forbidden." paragraph, TH-19, the "Marker status." Rule and
-        section 12, item 4 follow them."""
+        """Section 8 states the tail read and its cost and that no query names
+        a marker, and its "Forbidden." paragraph, TH-19, the "Marker status."
+        Rule and section 12, item 4 follow them."""
         lines = self.section("Wallet tree data")
         if lines is None:
             return
@@ -1409,17 +1329,13 @@ class Checker:
             for read in ALLOWED_READS:
                 if read not in text.lower():
                     self.fail(f"{label} does not name the {read}")
-            if "exactly 64 distinct" not in text.lower():
-                self.fail(f"{label} does not refuse a status query that is not exactly 64 "
-                          "distinct markers")
         status = paragraph(lines, "**Marker status.**")
         settled = self.section("Not settled")
         item4 = next((body for n, _, body in entries(settled or [], CONFLICT_RE) if n == 4), None)
         for label, text in (("the 'Marker status.' Rule", status), ("section 12, item 4", item4)):
             text = (text or "").lower()
-            if UNCHECKED_STATUS not in text or "marker pages" not in text:
-                self.fail(f"{label} does not keep 'unknown' for marker pages and give "
-                          f"'{UNCHECKED_STATUS}' for a 64-marker query")
+            if "unknown" not in text or "marker pages" not in text:
+                self.fail(f"{label} does not keep 'unknown' for marker pages")
 
     def parse_header_fields(self, name, v):
         fields = {}
