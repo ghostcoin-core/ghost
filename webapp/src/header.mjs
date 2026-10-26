@@ -5,8 +5,8 @@
 // header only when that hash is the one the endpoint returned and its
 // difficulty and proof-of-work seal check (lib.rs, ghost_chain_add).
 //
-// It also holds the networks this build knows: where the header chain of
-// each one starts.
+// It also holds the networks this build knows (where the header chain of
+// each one starts) and the page's store of the headers it checked.
 
 import { concat, fromHex, quantity } from "./bytes.mjs";
 
@@ -25,9 +25,16 @@ import { concat, fromHex, quantity } from "./bytes.mjs";
 //
 // The page fetches the start header from the endpoint and keeps it only if
 // its hash is the one here; that start is the one assumption the chain
-// rests on. The table is empty: no launch network and no pinned start exist
-// yet, so this build shows no confirmations on any network until one is
-// added. createFlow takes another table (the tests add their own network).
+// rests on. With a pin, that includes its `totalWork`: it is taken as given,
+// never checked, and every header after the pin adds its difficulty to it,
+// so a wrong value moves which of two competing chains the page calls the
+// heavier. Headers below the pin are not authenticated. Each release ships
+// its own pin, a host step taken from the launch network; the headers the
+// page saved in its own storage are kept per chain and start, so a new pin
+// starts them afresh. The table is empty: no launch network and no pinned
+// start exist yet, so this build shows no confirmations on any network
+// until one is added. createFlow takes another table (the tests add their
+// own network).
 export const NETWORKS = Object.freeze({});
 
 // The entry of `chainId` in `networks`, or null.
@@ -102,4 +109,102 @@ export function readHeader(raw) {
     return rlpString(bytes);
   });
   return { values, rlp: rlpList(items) };
+}
+
+// --- The headers the page checked, kept between sessions ---
+//
+// Kept in the page's own IndexedDB so that the next session does not check
+// every seal again (flow.mjs, loadSaved). header-store.mjs is this part's
+// module name; the code lives here, in a module the build already ships.
+// Public data only: each record is one header of the best chain as the
+// endpoint's JSON gave it, the fields of HEADER_FIELDS and the hash, never a
+// key, an address or anything else.
+//
+// One database, `ghost-headers`, with one object store whose keys are
+// [entry, block number]; an entry is the chain identifier and start hash
+// the flow names. The store's interface is the flow's `headerStore`:
+//
+// - load(entry): the records of that entry in block number order ([] when
+//   none);
+// - save(entry, records): each record written at its block number, in
+//   place of what was there, and every record above the last one dropped,
+//   in one transaction;
+// - clear(entry): every record of that entry dropped.
+//
+// Browser storage may be missing, refused or blocked: createHeaderStore then
+// returns null, or the store's calls throw, and the flow checks every header
+// from the start as on a first visit. Nothing else depends on it.
+
+export const HEADER_DATABASE = "ghost-headers";
+const HEADER_RECORDS = "headers";
+
+// The request's result, or its error.
+function requestDone(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("the browser storage refused the request"));
+  });
+}
+
+// A transaction's end.
+function committed(tx) {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error("the browser storage refused the write"));
+    tx.onabort = () => reject(tx.error || new Error("the browser storage dropped the write"));
+  });
+}
+
+// The keys of `entry` from block `from` up (above it when `open`).
+function recordsFrom(entry, from, open = false) {
+  return IDBKeyRange.bound([entry, from], [entry, Number.MAX_SAFE_INTEGER], open, false);
+}
+
+const recordNumber = (record) => Number(BigInt(record.number));
+
+// The store over `indexedDB`, or null when the page has none or opening it
+// throws at once. Opening it later failing or being blocked (another tab
+// holds an older version) makes each call throw instead.
+export function createHeaderStore(indexedDB = globalThis.indexedDB) {
+  if (!indexedDB || typeof indexedDB.open !== "function") return null;
+  let opened;
+  try {
+    const request = indexedDB.open(HEADER_DATABASE, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(HEADER_RECORDS)) request.result.createObjectStore(HEADER_RECORDS);
+    };
+    opened = new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("the browser storage could not be opened"));
+      request.onblocked = () => reject(new Error("the browser storage is blocked"));
+    });
+  } catch {
+    return null;
+  }
+  // A failed open is reported by each call, not as an unhandled rejection.
+  opened.catch(() => {});
+
+  return {
+    async load(entry) {
+      const db = await opened;
+      return requestDone(db.transaction(HEADER_RECORDS, "readonly").objectStore(HEADER_RECORDS).getAll(recordsFrom(entry, 0)));
+    },
+
+    async save(entry, records) {
+      if (records.length === 0) return;
+      const db = await opened;
+      const tx = db.transaction(HEADER_RECORDS, "readwrite");
+      const store = tx.objectStore(HEADER_RECORDS);
+      for (const record of records) store.put(record, [entry, recordNumber(record)]);
+      store.delete(recordsFrom(entry, recordNumber(records.at(-1)), true));
+      await committed(tx);
+    },
+
+    async clear(entry) {
+      const db = await opened;
+      const tx = db.transaction(HEADER_RECORDS, "readwrite");
+      tx.objectStore(HEADER_RECORDS).delete(recordsFrom(entry, 0));
+      await committed(tx);
+    },
+  };
 }

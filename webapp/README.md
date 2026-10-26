@@ -54,8 +54,13 @@ The design, the node methods it calls and its limits are in
   keeps a header chain for the page and checks every header's difficulty
   and RandomX seal from the start this build pins for the network, keeping
   the chain with the most work; a chain that fails the check shows no
-  confirmations. This build pins no network yet (`webapp/src/header.mjs`),
-  so it shows none on any network until one is added.
+  confirmations. The headers it checked are saved in the page's own
+  IndexedDB (public header fields only, never a key), so a later visit
+  re-links them to the start, checks everything but their seals again, and
+  checks seals only for the new headers; with no storage, or a saved header
+  that does not re-link, it checks every header again. This build pins no
+  network yet (`webapp/src/header.mjs`), so it shows none on any network
+  until one is added.
 
 ## Build it yourself
 

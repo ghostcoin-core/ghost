@@ -80,6 +80,13 @@ const OPS = {
     return ghost.chainAdd(args);
   },
 
+  // Headers this page checked in an earlier session, read back from its own
+  // storage: every check again but the seal.
+  chainAddSaved(ghost, args, progress) {
+    progress("reading the headers this page checked before");
+    return ghost.chainAddSaved(args);
+  },
+
   chainView(ghost, args) {
     return ghost.chainView(args);
   },

@@ -4,6 +4,7 @@
 
 import "./units.test.mjs";
 import "./header-chain.test.mjs";
+import "./header-store.test.mjs";
 import "./early-reveal.test.mjs";
 import "./reveal-moving-head.test.mjs";
 import "./wasm.test.mjs";

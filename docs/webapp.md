@@ -265,7 +265,8 @@ a count.
 | `webapp/src/flow.mjs` | The flow controller: every step above, with no DOM |
 | `webapp/src/app.mjs`, `keyimage.mjs` | The thin DOM layer and the key image drawn on a canvas |
 | `webapp/src/chain.mjs` | The fee of spec 07, the base fee rule, the settled height, amounts |
-| `webapp/src/header.mjs` | The header's 18-field RLP of spec 05, section 10, and the table of networks this build knows, with the start of each one's header chain |
+| `webapp/src/header.mjs` | The header's 18-field RLP of spec 05, section 10, the table of networks this build knows, with the start of each one's header chain, and the IndexedDB store of the headers the page checked |
+| `webapp/src/header-store.mjs` | The name the header store is imported by in tests (`createHeaderStore`); its code is in `header.mjs`, which the build ships |
 | `webapp/src/rpc.mjs` | JSON-RPC to the chosen endpoint |
 | `webapp/src/prover.mjs`, `worker.mjs`, `worker-core.mjs` | The background worker and its message interface |
 | `webapp/src/wasm.mjs` | The WebAssembly module's plain exports, with no bindings generator |
@@ -417,8 +418,10 @@ A flow of 32 levels asks for neither.
 The page keeps its own header chain, in the background worker's memory for
 the length of the page session: the client library's
 `client/src/header_chain.rs`, exported by `webapp/wasm` (`ghost_chain_start`,
-`ghost_chain_add`, `ghost_chain_view`). It holds public headers only. The app
-adopts a header only through it:
+`ghost_chain_add`, `ghost_chain_add_saved`, `ghost_chain_view`). It holds
+public headers only. The headers it adopted on the best chain are also saved
+in the page's own IndexedDB (Saved headers, below), so that a later session
+does not check their seals again. The app adopts a header only through it:
 
 - **Start.** The released build holds a table of networks in
   `webapp/src/header.mjs`, keyed by chain identifier. An entry has the chain
@@ -427,7 +430,11 @@ adopts a header only through it:
   genesis timestamp, the genesis hash and the start: genesis for a network
   with no pin, or a pinned header (its hash, height, total work and the key
   blocks below it). The page fetches the start header from the endpoint and
-  keeps it only if its hash is the pinned one. **The table is empty today**:
+  keeps it only if its hash is the pinned one. Each release is meant to ship
+  a pinned checkpoint this way; its value is taken from the launch network by
+  whoever cuts the release (a host step), and the pin's total work is an
+  assumption, not a check (see "The pinned start is the one assumption
+  left"). **The table is empty today**:
   no launch network or pinned start exists yet, so on any network this build
   shows no confirmations and says, in plain words, that it has no pinned
   start for the network. `createFlow` takes another table; the stand-in tests
@@ -444,8 +451,10 @@ adopts a header only through it:
   clock; its difficulty is the one the ASERT rule of spec 06, section 4.3,
   requires; and its RandomX seal is valid under the key block on its own
   branch ([spec 08](spec/08-randomx-seal.md)). No seal after the start is
-  skipped. A header that is only ahead of the clock is offered again after a
-  short wait, three times at most.
+  skipped, except for headers this page itself checked in an earlier session
+  and read back from its own storage (Saved headers). A header that is only
+  ahead of the clock is offered again after a short wait, three times at
+  most.
 - **Most work.** The best chain is the one with the most total work. The
   endpoint's tip must be on it: a tip on a lighter branch is refused, with
   the heavier chain kept, and a reorganisation is followed as soon as the
@@ -464,6 +473,43 @@ most two. Checking a seal takes about a quarter of a second in the
 WebAssembly module on a desktop, so the first visit to a long chain reads
 and checks every header since the start, and a node that seals blocks
 faster than that cannot be followed.
+
+### Saved headers
+
+After each sync, the headers newly adopted on the best chain are saved in
+the page's own IndexedDB (`webapp/src/header-store.mjs`, whose code is in
+`header.mjs`; database `ghost-headers`), under the chain identifier and the
+start's hash. A record is the endpoint's header JSON of one block: the
+fields of `HEADER_FIELDS` and the hash, nothing else. No key, word, address
+or amount is ever saved. After a reorganisation the heights that changed
+are written again and those above the new tip dropped. A failed save is
+ignored.
+
+A later session, after the start is checked, loads that entry in height
+order and adds the headers to the worker's chain with
+`ghost_chain_add_saved` (`HeaderChain::add_saved_header`): every check of
+`ghost_chain_add` is made again, the hash, the parent held (so the saved
+headers re-link by parent hash from the start to the saved tip), the number,
+the timestamp, the required difficulty and so the total work (recomputed,
+never read from storage) and the drift, except the RandomX seal, which needs
+no key block or cache. The endpoint is then read from its tip down to the
+saved tip only, and only the headers above it are checked with their seals.
+If the saved list does not start at the height after the start, skips or
+repeats a height, or any header in it is refused, or the storage throws, the
+entry is discarded, the worker's chain is started again and every header is
+checked from the start, seals included, as on a first visit. Browser storage
+may be missing, refused or blocked; the page works the same without it.
+
+The cost: the first session checks one RandomX seal per header above the
+start; a later one checks one per header above its saved tip and none below
+(the test `a second session checks no seal below the saved tip` counts them:
+600, then 0, then 5 after 5 new blocks). Saving does not shorten a first
+visit on a clean device, which still reads every header from the start: the
+year-one header volume of [phone-results.md](scale/phone-results.md) (611.8
+MB of headers a year from genesis, modeled, not measured here) and the
+[stage 1 verdict](scale/stage1-verdict.md)'s finding on headers for a clean
+device stand. Only a pin above genesis shortens that first visit, by trust in
+the pin, not by a check.
 
 Querying more than one endpoint and refusing on conflict is not built
 (front-desk decision, 2026-10-20): agreement between endpoints would be extra
@@ -791,15 +837,35 @@ app makes no data commitments.
   blocks, or serve a chain that real miners sealed and outworked. What the
   chain rests on is the start header in this build's table (genesis, or a
   pinned header with its total work and key blocks): a build with a wrong
-  pin would follow the wrong chain. The table is empty today, so the
-  released build shows no confirmations on any network until a launch
-  network and its start are added.
+  pin would follow the wrong chain. **The pin's total work is assumed, not
+  checked**: the page cannot recompute the work of the headers below the pin,
+  so it takes `totalWork` from the table as given and adds each later
+  header's difficulty to it. Every branch the page holds descends from the
+  pin, so the same assumed value lies under all of them and the choice of the
+  heaviest is exact; a total work the page reports is that assumed value plus
+  the work it checked above the pin, and a chain that forks below the pin is
+  never followed (Before a pinned start). The headers below the pin are not
+  authenticated: the page does not walk back from it by parent hashes. The table is empty today, so
+  the released build shows no confirmations on any network until a launch
+  network and its start are added; the value of each release's pin is a host
+  step taken from the launch network.
+- **Saved headers trust the page's own storage.** A header read back from
+  the page's IndexedDB skips only its RandomX seal (Saved headers); every
+  other check, the parent link to the pin and the total work included, is
+  made again. The one assumption this adds is that the page's own storage
+  for its origin was written only by this page in an earlier session. It
+  holds public header fields only, never a key; whoever can write the page's
+  storage can already run code on its origin and read the wallet in it.
 - **One endpoint.** The page asks one endpoint. Asking several and refusing
   on conflict is not built; agreement between endpoints would be extra
   evidence, never a substitute for the checks of Headers.
-- **The chain lives as long as the page.** The header chain is held in the
-  worker's memory only, so each new page session reads and checks every
-  header from the start again.
+- **The chain lives as long as the page; its headers outlive it.** The
+  header chain is held in the worker's memory, and its best chain's headers
+  are saved in the page's IndexedDB (Saved headers). A new page session
+  re-links the saved headers from the start, checking everything again but
+  their seals, and checks seals only above the saved tip. With no storage, or
+  a saved header that does not re-link, it reads and checks every header from
+  the start again.
 - **Before a pinned start.** The receipts start at the chain's start, so on
   a network whose build pins a header above genesis, the notes and salts of
   the leaves before it, and the spent markers its earlier blocks hold, rest
@@ -873,6 +939,19 @@ app makes no data commitments.
   reorganisation. An empty table, and a start whose hash is not the pinned
   one, show no confirmations either. From a pinned start, the receipts of
   every block from the pin to the tip, and none below it, are checked.
+- `header-store.test.mjs`: the saved headers, session after session on one
+  stand-in pinned at block 10 and one in-memory store, with the headers sent
+  to `chainAdd` (seal checked) and `chainAddSaved` counted. A first session
+  on 600 blocks above the pin checks 600 seals, a second none (600 re-linked),
+  a third after 5 new blocks exactly 5. A saved header whose parent hash is
+  changed, one whose number is changed and a list with a gap each make the
+  page discard the entry and check every header from the pin, showing what a
+  clean session shows; the entry is then written again. A store that throws,
+  an IndexedDB that throws or is blocked and none at all leave the page
+  working as with no store. The records hold the header JSON fields and the
+  hash only. `client/tests/header_chain.rs` checks `add_saved_header`
+  directly: only the seal is skipped, and saved headers re-link to a pin with
+  the height and total work `add_header` gives.
 - `words-key.test.mjs`: a new key is 24 words of the list, its digit view
   21 groups that open the same key; words round-trip through the save
   check; a typed key is taken in any case with spaces or hyphens, whole

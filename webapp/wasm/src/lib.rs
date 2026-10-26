@@ -33,7 +33,9 @@
 //!   pinned header), to which the page adds every header the endpoint
 //!   returns. Each header is adopted only once its difficulty (spec 06,
 //!   section 4.3) and its RandomX seal (spec 08) check; the best chain is
-//!   the one with the most work;
+//!   the one with the most work. Headers the page checked in an earlier
+//!   session and read back from its own storage are added with every check
+//!   but the seal (`ghost_chain_add_saved`);
 //! - the block receipts, over the client library's `receipts`: each block's
 //!   receipts checked against its header's `receiptsRoot`, and the coin
 //!   tree's leaves, notes, salts and the spent markers the page downloaded
@@ -1088,6 +1090,23 @@ pub extern "C" fn ghost_chain_start(ptr: *const u8, len: usize) -> u32 {
 /// reorganisations (8).
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_chain_add(ptr: *const u8, len: usize) -> u32 {
+    add_headers(ptr, len, HeaderChain::add_header)
+}
+
+/// Adds headers the page checked in full in an earlier session and read back
+/// from its own storage, with every check of [`ghost_chain_add`] but the
+/// RandomX seal (`HeaderChain::add_saved_header`). Input and output as
+/// [`ghost_chain_add`]'s.
+#[unsafe(no_mangle)]
+pub extern "C" fn ghost_chain_add_saved(ptr: *const u8, len: usize) -> u32 {
+    add_headers(ptr, len, HeaderChain::add_saved_header)
+}
+
+fn add_headers(
+    ptr: *const u8,
+    len: usize,
+    add: fn(&mut HeaderChain, &[u8], u64) -> Result<Added, ChainError>,
+) -> u32 {
     run(ptr, len, |input| {
         let now = input.u64()?;
         let count = input.count()?;
@@ -1110,7 +1129,7 @@ pub extern "C" fn ghost_chain_add(ptr: *const u8, len: usize) -> u32 {
                 refused = Some((fields.number, REFUSED_HASH, String::from("the header does not hash to the block hash returned")));
                 break;
             }
-            match chain.add_header(header, now) {
+            match add(chain, header, now) {
                 Ok(added) => {
                     if let Added::Reorganised { removed: gone, .. } = added {
                         removed += gone;

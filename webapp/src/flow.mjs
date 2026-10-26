@@ -56,7 +56,7 @@ import {
   parseGhost,
   settledHeight,
 } from "./chain.mjs";
-import { NETWORKS, networkOf, readHeader, rlpList, rlpString } from "./header.mjs";
+import { HEADER_FIELDS, NETWORKS, networkOf, readHeader, rlpList, rlpString } from "./header.mjs";
 import { DEFAULT_ENDPOINT, SERVER_ERROR, createRpc } from "./rpc.mjs";
 import { WalletRejected, WalletSignFailed, isWalletRejection } from "./wallet-connect.mjs";
 
@@ -879,6 +879,27 @@ async function prefixRootsOf(prover, depth, leaves, from, to) {
   return prefixRootsAt(depth, leaves, from, to);
 }
 
+// A block header as the endpoint's JSON gives it (or as the page saved it):
+// its fields, its 18-field RLP (spec 05, section 10), the hash it claims,
+// and its record, the fields of HEADER_FIELDS and the hash only, which is
+// all the page saves of a header. Throws on a missing or malformed field.
+function parseHeader(raw) {
+  const { values, rlp } = readHeader(raw);
+  const header = {
+    number: Number(values.number),
+    hash: fromHex(raw.hash, 32),
+    parentHash: values.parentHash,
+    baseFee: values.baseFeePerGas,
+    gasUsed: values.gasUsed,
+    gasLimit: values.gasLimit,
+    coinTreeRoot: values.coinTreeRoot,
+    timestamp: values.timestamp,
+  };
+  const record = { hash: toHex(header.hash) };
+  for (const [name] of HEADER_FIELDS) record[name] = String(raw[name]);
+  return { header, rlp, record };
+}
+
 export function createFlow({
   prover,
   fetch = globalThis.fetch,
@@ -898,6 +919,12 @@ export function createFlow({
   // The page's clock in Unix seconds, against which a header's timestamp
   // may run at most the network's future drift ahead.
   clock = () => Math.floor(Date.now() / 1000),
+  // Where the headers this page checked are kept between sessions
+  // (header-store.mjs, IndexedDB in the page): { load(key), save(key,
+  // entries), clear(key) }, async, or null for none. Public header fields
+  // only; a store that fails or holds a header that does not re-link only
+  // costs the full check.
+  headerStore = null,
   // Levels of a coin tree (TREE_DEPTH; fewer only for a test node, whose
   // headers carry roots of that depth) and the leaves one holds
   // (LEAVES_PER_TREE, 2^treeDepth; fewer only for a test node).
@@ -973,19 +1000,9 @@ export function createFlow({
     const latest = number === "latest";
     const raw = await rpc.call("eth_getBlockByNumber", [latest ? "latest" : toQuantity(number), false]);
     if (!raw) throw new Error(`the endpoint has no block ${number}`);
-    const { values, rlp } = readHeader(raw);
-    const header = {
-      number: Number(values.number),
-      hash: fromHex(raw.hash, 32),
-      parentHash: values.parentHash,
-      baseFee: values.baseFeePerGas,
-      gasUsed: values.gasUsed,
-      gasLimit: values.gasLimit,
-      coinTreeRoot: values.coinTreeRoot,
-      timestamp: values.timestamp,
-    };
+    const { header, rlp, record } = parseHeader(raw);
     if (!latest && header.number !== number) throw new Error(`the endpoint returned block ${header.number} for ${number}`);
-    return { header, rlp };
+    return { header, rlp, record };
   }
 
   const notTheHash = (number) => new Error(`the endpoint's header of block ${number} does not hash to the block hash it returned`);
@@ -1017,25 +1034,121 @@ export function createFlow({
           keyBlocks: pin.keyBlocks.map(([h, hash]) => [h, fromHex(hash, 32)]),
         }
       : { header: rlp };
-    let started;
-    try {
-      started = await prover.request("chainStart", { params: network.params, start });
-    } catch (err) {
-      throw powFailed(err.message);
-    }
-    if (toHex(started.startHash) !== startHash) throw notTheHash(height);
-    headerChain = {
-      chainId,
-      network,
-      endpoint: rpc.url,
-      startHeight: height,
-      known: new Map([[startHash, { ...header, rlpHex: toHex(rlp) }]]),
-      receipts: new Set(),
-      // The coin tree logs of those blocks' receipts, by block hash
-      // (coinLogsOf), read when a scan's coin tree has rolled over.
-      coinLogs: new Map(),
+    const startChain = async () => {
+      let started;
+      try {
+        started = await prover.request("chainStart", { params: network.params, start });
+      } catch (err) {
+        throw powFailed(err.message);
+      }
+      if (toHex(started.startHash) !== startHash) throw notTheHash(height);
+      return {
+        chainId,
+        network,
+        endpoint: rpc.url,
+        startHeight: height,
+        known: new Map([[startHash, { ...header, rlpHex: toHex(rlp) }]]),
+        receipts: new Set(),
+        // The coin tree logs of those blocks' receipts, by block hash
+        // (coinLogsOf), read when a scan's coin tree has rolled over.
+        coinLogs: new Map(),
+        // The page's header store: its entry for this chain and start, the
+        // record of each header adopted (what a save writes), and the hash
+        // the store holds at each height.
+        storeKey: `${chainId}:${startHash}`,
+        records: new Map(),
+        saved: new Map(),
+      };
     };
+    let hc = await startChain();
+    if (headerStore && !(await loadSaved(hc))) {
+      // The entry is dropped and the chain started again: the headers are
+      // then all checked from the start, seals included.
+      try {
+        await headerStore.clear(hc.storeKey);
+      } catch {
+        // Storage that fails is storage the page does without.
+      }
+      hc = await startChain();
+    }
+    headerChain = hc;
     return headerChain;
+  }
+
+  // The headers this page saved of `hc`'s chain and start in an earlier
+  // session, added to the worker's chain with every check but the seal
+  // (lib.rs, ghost_chain_add_saved): they must run from the height after
+  // the start, one per height, each the parent of the next, from the start's
+  // hash, and pass every other check of ghost_chain_add again, the
+  // difficulty and so the total work included. True when there are none or
+  // all are adopted; false when the store fails or any is refused, and the
+  // caller discards the entry. The headers above the saved tip are then
+  // read and checked in full by syncTip.
+  async function loadSaved(hc) {
+    let entries;
+    try {
+      entries = await headerStore.load(hc.storeKey);
+    } catch {
+      return false;
+    }
+    if (entries == null) return true;
+    if (!Array.isArray(entries)) return false;
+    const read = [];
+    try {
+      for (const [i, entry] of entries.entries()) {
+        const parsed = parseHeader(entry);
+        if (parsed.header.number !== hc.startHeight + 1 + i) return false;
+        read.push(parsed);
+      }
+    } catch {
+      return false;
+    }
+    for (let i = 0; i < read.length; i += CHAIN_BATCH) {
+      const part = read.slice(i, i + CHAIN_BATCH);
+      let added;
+      try {
+        added = await prover.request("chainAddSaved", {
+          now: clock(),
+          headers: part.map(({ header, rlp }) => ({ hash: header.hash, rlp })),
+        });
+      } catch {
+        return false;
+      }
+      if (added.refused || added.adopted !== part.length) return false;
+      for (const { header, rlp, record } of part) {
+        hc.known.set(record.hash, { ...header, rlpHex: toHex(rlp) });
+        hc.records.set(record.hash, record);
+        hc.saved.set(header.number, record.hash);
+      }
+    }
+    return true;
+  }
+
+  // Saves the headers of the page's best chain, up to its tip `best`, that
+  // the store does not hold at their height yet: those newly adopted, and
+  // after a reorganisation every height that changed. The store drops what
+  // it held above the last one. A failed save is ignored: the next one
+  // writes from the last height it holds.
+  async function saveAdopted(hc, best) {
+    if (!headerStore) return;
+    const newer = [];
+    for (let id = toHex(best.hash); ; ) {
+      const held = hc.known.get(id);
+      if (!held || held.number <= hc.startHeight || hc.saved.get(held.number) === id) break;
+      const record = hc.records.get(id);
+      if (!record) return;
+      newer.unshift({ number: held.number, record });
+      id = toHex(held.parentHash);
+    }
+    if (newer.length === 0) return;
+    try {
+      await headerStore.save(hc.storeKey, newer.map(({ record }) => record));
+    } catch {
+      return;
+    }
+    const top = newer.at(-1).number;
+    for (const number of hc.saved.keys()) if (number > top) hc.saved.delete(number);
+    for (const { number, record } of newer) hc.saved.set(number, record.hash);
   }
 
   // The chain of the current endpoint; its chain identifier is asked once
@@ -1055,6 +1168,9 @@ export function createFlow({
   // and the heavier chain kept. A reorganisation is followed as soon as the
   // endpoint's tip is on the heavier branch. Which blocks are asked for
   // depends on the tip and on what the chain already holds, never on a key.
+  // Headers saved by an earlier session (loadSaved) are held already, so
+  // only those above the saved tip are read and sealed-checked; the newly
+  // adopted ones are saved after (saveAdopted).
   async function syncTip(hc = null) {
     hc ??= await currentChain();
     const top = Number(quantity(await rpc.call("eth_blockNumber")));
@@ -1085,8 +1201,9 @@ export function createFlow({
         now: clock(),
         headers: part.map(({ header, rlp }) => ({ hash: header.hash, rlp })),
       });
-      for (const { header, rlp } of part.slice(0, added.adopted)) {
-        hc.known.set(toHex(header.hash), { ...header, rlpHex: toHex(rlp) });
+      for (const { header, rlp, record } of part.slice(0, added.adopted)) {
+        hc.known.set(record.hash, { ...header, rlpHex: toHex(rlp) });
+        hc.records.set(record.hash, record);
       }
       i += added.adopted;
       const { refused } = added;
@@ -1112,6 +1229,7 @@ export function createFlow({
       );
     }
     state.chainRefused = null;
+    await saveAdopted(hc, view.best);
     return hc.known.get(tipHash);
   }
 

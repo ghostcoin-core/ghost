@@ -387,9 +387,19 @@ export class Ghost {
   // Adds `headers` ([{ hash, rlp }], in order) to the chain, with the
   // page's clock `now` in Unix seconds; stops at the first one refused.
   chainAdd({ now, headers }) {
+    return this.addHeaders("ghost_chain_add", now, headers);
+  }
+
+  // As chainAdd, for headers this page checked in an earlier session and
+  // read back from its own storage: every check but the RandomX seal.
+  chainAddSaved({ now, headers }) {
+    return this.addHeaders("ghost_chain_add_saved", now, headers);
+  }
+
+  addHeaders(name, now, headers) {
     const input = new Input().u64(now).u32(headers.length);
     for (const { hash, rlp } of headers) input.bytes(hash, 32).u32(rlp.length).bytes(rlp);
-    const out = new Output(this.call("ghost_chain_add", input.build()));
+    const out = new Output(this.call(name, input.build()));
     const adopted = out.u32();
     let refused = null;
     if (out.take(1)[0] === 1) {

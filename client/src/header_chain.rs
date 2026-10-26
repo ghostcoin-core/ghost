@@ -17,9 +17,12 @@
 //! - its RandomX seal is valid under the key block found by following parent
 //!   hashes on its own branch (spec 08, sections 8 and 9).
 //!
-//! No seal is skipped after the trusted start. A header that cannot be fully
-//! checked (its parent or its key block is not held) is refused and reported
-//! as such; it is never accepted on trust.
+//! No seal is skipped after the trusted start, except by
+//! [`HeaderChain::add_saved_header`]: a header the caller checked in full
+//! before and read back from its own store has every check above made again
+//! but the seal. A header that cannot be fully checked (its parent or its key
+//! block is not held) is refused and reported as such; it is never accepted
+//! on trust.
 //!
 //! The work of a header is its difficulty; the best chain is the one with the
 //! most total work, and the first seen wins a tie (spec 06, section 4.5).
@@ -529,6 +532,21 @@ impl HeaderChain {
     /// Checks a header and, if it passes, holds it and updates the best
     /// chain. `now` is the caller's clock in Unix seconds.
     pub fn add_header(&mut self, header: &[u8], now: u64) -> Result<Added, ChainError> {
+        self.add(header, now, true)
+    }
+
+    /// Like [`add_header`](Self::add_header), for a header this caller
+    /// itself checked in full before and kept: every check is made again
+    /// (decoding, parent held, number, timestamp, the required difficulty and
+    /// so the total work, drift) except the RandomX seal, so no key block and
+    /// no cache are needed. The one assumption it adds is that the caller's
+    /// own store holds only headers it adopted with `add_header`; a header
+    /// from anywhere else must go through that.
+    pub fn add_saved_header(&mut self, header: &[u8], now: u64) -> Result<Added, ChainError> {
+        self.add(header, now, false)
+    }
+
+    fn add(&mut self, header: &[u8], now: u64, seal: bool) -> Result<Added, ChainError> {
         let fields = header_fields(header).map_err(ChainError::Header)?;
         if self.headers.contains_key(&fields.hash) {
             return Ok(Added::AlreadyHeld);
@@ -548,8 +566,10 @@ impl HeaderChain {
             return Err(ChainError::Difficulty);
         }
         let total_work = parent.total_work.checked_add(required).ok_or(ChainError::WorkOverflow)?;
-        let key = self.key_block(&fields.parent_hash, fields.number).ok_or(ChainError::MissingKeyBlock)?;
-        verify_seal(header, &required.to_be_bytes(), self.seal_key(key)).map_err(ChainError::Seal)?;
+        if seal {
+            let key = self.key_block(&fields.parent_hash, fields.number).ok_or(ChainError::MissingKeyBlock)?;
+            verify_seal(header, &required.to_be_bytes(), self.seal_key(key)).map_err(ChainError::Seal)?;
+        }
         if fields.timestamp > now.saturating_add(self.params.future_drift) {
             return Err(ChainError::TooFarAhead);
         }
