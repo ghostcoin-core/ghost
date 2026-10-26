@@ -428,7 +428,7 @@ class CheckerTest(unittest.TestCase):
         self.assertTrue(any("ghost/empty-leaf/v2 is listed" in e for e in errors))
 
     def test_tags_are_distinct_ascii_with_version(self):
-        self.assertEqual(len(checker.ALL_TAGS), 21)
+        self.assertEqual(len(checker.ALL_TAGS), 22)
         for tag in checker.ALL_TAGS:
             self.assertRegex(tag, r"^ghost/[a-z0-9-]+/v[12]$")
         v2 = sorted(t for t in checker.ALL_TAGS if t.endswith("/v2"))
@@ -436,6 +436,86 @@ class CheckerTest(unittest.TestCase):
                               "ghost/data-fingerprint/v2", "ghost/data-marker/v2"])
         prefixes = {checker._tag_prefix(t) for t in checker.ALL_TAGS}
         self.assertEqual(len(prefixes), len(checker.ALL_TAGS))
+
+    def test_note_tag_is_in_the_tag_list(self):
+        tag = "ghost/note-tag/v1"
+        self.assertEqual(checker.TAG_NOTE_TAG, tag)
+        self.assertIn(tag, checker.ALL_TAGS)
+        # A SHA3-256 tag: no Keccak layout or permutation count.
+        self.assertNotIn(tag, checker.TAG_LAYOUTS)
+        body = checker.section(self.text, "Tagged hashing")
+        rows = {r["Tag"]: r for r in checker._table_rows(body)}
+        row = rows[f"`{tag}`"]
+        self.assertEqual(row["Hash"], "SHA3-256")
+        self.assertEqual(row["Inputs after the tag"], "`k_note`, `i` as 8 bytes")
+        self.assertEqual(row["Input bytes"], str(len(checker._tag_prefix(tag)) + 32 + 8))
+        self.assertEqual(row["Input bytes"], "58")
+        # Without its row, the tag table is incomplete.
+        text = self.text.replace(f"| `{tag}` |", "| note tag |", 1)
+        text = text.replace(f"`{tag}` takes", "The note tag takes", 1)
+        self.assertIn(f"tag {tag} is used but not listed in the tag table", self.run_on(text))
+
+    def test_note_tag_vectors_required(self):
+        vectors = {v["name"]: v for v in
+                   checker.parse_vectors(checker.section(self.text, "Test vectors"))}
+        kb = bytes.fromhex(vectors["derivation-words"]["key-bytes"])
+        for index in (0, 1):
+            v = vectors[f"note-tag-index-{index}"]
+            self.assertEqual(v["kind"], "note-tag")
+            self.assertEqual(v["key-bytes"], kb.hex())
+            # An independent recomputation: k_note, then the tag over it.
+            note_key = hashlib.sha3_256(b"\x11ghost/note-key/v1" + kb).digest()
+            self.assertEqual(note_key.hex(), vectors["derivation-words"]["note-key"])
+            digest = hashlib.sha3_256(b"\x11ghost/note-tag/v1" + note_key
+                                      + index.to_bytes(8, "big")).digest()
+            self.assertEqual(v["digest"], digest.hex())
+            self.assertEqual(v["tag"], digest[:3].hex())
+        self.assertEqual([(vectors[f"bucket-rule-{n}"]["notes"], vectors[f"bucket-rule-{n}"]["bits"])
+                          for n in range(6)],
+                         [("0", "0"), ("8191", "0"), ("8192", "1"), ("1048576", "8"),
+                          ("3650000000", "19"), ("1099511627776", "24")])
+        # A changed tag, digest, index or rule is caught.
+        for vector, name in (("note-tag-index-0", "tag"), ("note-tag-index-1", "tag"),
+                             ("note-tag-index-1", "digest")):
+            with self.subTest(vector=vector, field=name):
+                text = self.replace_field(vector, name, _flip_hex(self.field(vector, name)))
+                self.assertTrue(any(f"[{vector}] {name}" in e for e in self.run_on(text)))
+        errors = self.run_on(self.replace_field("note-tag-index-1", "index", "2"))
+        self.assertTrue(any("[note-tag-index-1] digest" in e for e in errors), errors)
+        for vector, bits in (("bucket-rule-2", "0"), ("bucket-rule-4", "20"), ("bucket-rule-5", "28")):
+            with self.subTest(vector=vector):
+                errors = self.run_on(self.replace_field(vector, "bits", bits))
+                self.assertTrue(any(f"[{vector}] bits" in e for e in errors), errors)
+        # A tag over the key bytes in place of k_note is caught.
+        with mock.patch.object(checker, "derive_note_key", lambda kb: kb):
+            errors = checker.run(SPEC)[0]
+        self.assertTrue(any("[note-tag-index-0] digest" in e for e in errors), errors)
+        # The rule without its clamp at 24 bits is caught.
+        with mock.patch.object(checker, "MAX_BUCKET_BITS", 64):
+            errors = checker.run(SPEC)[0]
+        self.assertTrue(any("[bucket-rule-5] bits" in e for e in errors), errors)
+        # Without the vectors of a kind, the document is incomplete.
+        start = self.text.index("### Note tag and bucket vectors")
+        end = self.text.index("### Salted commitment vectors")
+        errors = self.run_on(self.text[:start] + self.text[end:])
+        self.assertIn("no vector of kind note-tag", errors)
+        self.assertIn("no vector of kind bucket-rule", errors)
+        for kind in ("note-tag", "bucket-rule"):
+            with self.subTest(kind=kind):
+                text = self.text.replace(f"kind = {kind}\n", "kind = other\n")
+                self.assertIn(f"no vector of kind {kind}", self.run_on(text))
+        # Both numbers and both ends of the rule must be covered.
+        start = self.text.index("[note-tag-index-1]")
+        end = self.text.index("[bucket-rule-0]")
+        errors = self.run_on(self.text[:start] + self.text[end:])
+        self.assertIn("note-tag vectors must cover index 0 and index 1", errors)
+        start = self.text.index("[bucket-rule-5]")
+        end = self.text.index("```", start)
+        errors = self.run_on(self.text[:start] + self.text[end:])
+        self.assertIn("bucket-rule vectors must cover 0 bits and the clamp at 24", errors)
+        # Key bytes that are not a words key's are refused.
+        errors = self.run_on(self.replace_field("note-tag-index-0", "key-bytes", "21" + kb.hex()[2:]))
+        self.assertTrue(any("[note-tag-index-0] cannot be checked" in e for e in errors), errors)
 
     def test_version_1_vectors_are_refused(self):
         # A block of an old unsalted kind is an unknown kind, not a vector the

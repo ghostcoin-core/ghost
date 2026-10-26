@@ -19,6 +19,8 @@ pub const TAG_BLINDING: &str = "ghost/blinding/v1";
 pub const TAG_NOTE_KEY: &str = "ghost/note-key/v1";
 /// Data key (SHA3-256).
 pub const TAG_DATA_KEY: &str = "ghost/data-key/v1";
+/// Note lookup tag `tag_i`, the first 3 bytes of a note's nonce (SHA3-256).
+pub const TAG_NOTE_TAG: &str = "ghost/note-tag/v1";
 /// Coin commitment `C` (Keccak-256).
 pub const TAG_COIN_COMMITMENT: &str = "ghost/coin-commitment/v1";
 /// Data commitment `C` (Keccak-256).

@@ -6,6 +6,7 @@
 //!                          || 16 zero bytes
 //! associated data        = chain_id as 8 bytes || C
 //! note (156 bytes)       = nonce (12) || ciphertext (128) || tag (16)
+//! nonce (12 bytes)       = tag_i (3) || 9 random bytes
 //! ```
 //!
 //! Note version 2 carries the salt of the commitment, so a wallet restoring
@@ -15,9 +16,14 @@
 //! `2^96 - 1`.
 //!
 //! The cipher is ChaCha20-Poly1305 of RFC 8439, from the `chacha20poly1305`
-//! crate, under the key's note key. The nonce is 12 bytes from the caller's
-//! secure random source, new for every note. The associated data ties the note
-//! to its chain and its leaf, so a note copied to another leaf or another chain
+//! crate, under the key's note key. The nonce is 12 bytes: the note's 3-byte
+//! lookup tag `tag_i` ([`crate::note_tag`]), derived from the note key and the
+//! commitment number, then 9 bytes from the caller's secure random source, new
+//! for every note. The tag lets a wallet read only the buckets of notes its own
+//! tags fall in; being part of the nonce, it is authenticated, so a changed
+//! tag fails to decrypt. Reading ignores what the nonce holds, so a note with
+//! a fully random nonce still decrypts. The associated data ties the note to
+//! its chain and its leaf, so a note copied to another leaf or another chain
 //! does not decrypt.
 //!
 //! The note's contents hold the commitment's number and amount: they have no
@@ -33,6 +39,7 @@ use rand_core::CryptoRng;
 
 use crate::commit::{Amount, Commitment, ContentFingerprint, Rule, Salt, TypeTag, COIN_V2, DATA_V2};
 use crate::derive::NoteKey;
+use crate::note_tag::{lookup_tag, LOOKUP_TAG_BYTES};
 use crate::wipe::wipe;
 
 /// Length of the note plaintext.
@@ -284,8 +291,9 @@ pub fn chacha20poly1305_open(
 }
 
 /// Encrypts a note under the note key for the leaf `C` on chain `chain_id`,
-/// with a fresh 12-byte nonce from the caller's secure random source. The
-/// note is version 2.
+/// with a 12-byte nonce: the lookup tag of the contents' number under this
+/// note key (nonce bytes 0 to 2), then 9 fresh bytes from the caller's secure
+/// random source. The note is version 2.
 ///
 /// # Panics
 ///
@@ -300,7 +308,9 @@ pub fn encrypt_note<R: CryptoRng + ?Sized>(
 ) -> [u8; NOTE_BYTES] {
     let mut note = [0u8; NOTE_BYTES];
     let (nonce, rest) = note.split_at_mut(NOTE_NONCE_BYTES);
-    rng.fill_bytes(nonce);
+    let (tag_bytes, random) = nonce.split_at_mut(LOOKUP_TAG_BYTES);
+    tag_bytes.copy_from_slice(&lookup_tag(key, contents.number));
+    rng.fill_bytes(random);
     let nonce: [u8; NOTE_NONCE_BYTES] = read(nonce);
     let (body, tag_slot) = rest.split_at_mut(NOTE_PLAINTEXT_BYTES);
     let mut plaintext = contents.to_plaintext();

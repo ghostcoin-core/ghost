@@ -41,7 +41,7 @@ here by name. It writes no node code, no circuit and no proof-system choice.
 | Eligible roots | Exactly the roots in headers of canonical blocks before the including block, of the matching type, with no age limit | Front desk decision; [spec 03](03-coin-rules.md), question 4 |
 | Marker storage | One set per marker tag in reserved system-account storage, keyed by the marker; checked in the canonical state at block execution and pool admission | Front desk decision |
 | Reorganisation | Tree state and markers roll back with the journaled state; disconnected roots leave the eligible set at once; disconnected transactions return to the pool and are fully rechecked; no new depth limit | Front desk decision |
-| Wallet tree data | Whole pages of 4,096 consecutive leaves with their notes, by position, and a bulk list of page roots; the wallet builds its witness itself; no per-commitment request exists | Front desk decision; page size **Proposed** |
+| Wallet tree data | Whole pages of 4,096 consecutive leaves with their notes, by position, and a bulk list of page roots; the wallet builds its witness itself; no per-commitment request exists; note buckets by key-derived tag prefix, at least 4,096 expected notes each, as the one other read | Front desk decision; page size **Proposed** |
 | History | Every full node keeps and serves all commitments and notes of both trees; no pruning in version 1; header-only clients keep none; project-run indexers are optional | Front desk decision |
 | Header encoding | The pinned base header's fields in order with the base fee required, then the two tree roots and the data marker-set root, 19 items; no optional fields; withdrawals, blob and beacon-root fields forbidden; any extra trailing field rejected | Front desk decision |
 
@@ -533,6 +533,37 @@ positions are `E`).
 roots of pages 0 to the last page with any leaf, 32 bytes each, in one bulk
 response. Pages above the list are empty; their root is `Z_12`.
 
+**Note buckets (front desk decision).** Every note's nonce starts with a 3-byte lookup
+tag that only its key can compute (spec 01, section 9). A bucket is the set of
+notes of one tree whose tag starts with the same `m` bits, and is served whole,
+as of an anchor block:
+
+```text
+request:  type, tree index k, bucket bits m, prefix, anchor block hash
+response: for each filled position whose note's tag starts with the m-bit
+          prefix, in position order: its position (4 bytes), leaf C
+          (32 bytes) and its note (156 bytes)
+```
+
+The leaf count `n` is the tree's at the anchor, and `m` must be
+`bucket_bits(n) = clamp(floor(log2(n / 4096)), 0, 24)`: an expected bucket
+holds at least 4,096 notes, `m = 0` is the whole tree (below 8,192 notes) and
+`m = 24` is every bit of the tag. A Ghost node refuses any other `m` and a
+prefix of `2^m` or more. A wallet asks for the prefixes of its own tags
+16 numbers a batch, always 16, each distinct prefix once, and the next batch
+only if the last number of the one before was found (spec 01, section 8,
+"The bucket path").
+
+A bucket query shows `m` bits of a key-derived hash among at least 4,096
+expected other notes, 16 at a time; not a leaf, an amount or a position. A
+bucket is a hint, not a complete answer: an endpoint can withhold a note, and
+the wallet then shows less, never more. The whole-page scan below remains the
+fallback. Proving that a returned leaf sits at its position is not specified
+yet, so a bucket result is unchecked like any page result, and its notes are
+checked against the receipts as in item 5 below. The scale model of
+`benchmarks/scale/restore_sim.py` still models a 4-byte tag with a per-leaf
+tag column; this design reads no such column and adds no header root.
+
 **What the wallet does.**
 
 1. It downloads the page-root list and computes the tree root from it: the 20
@@ -543,7 +574,8 @@ response. Pages above the list are empty; their root is `Z_12`.
 2. It downloads every page from its scan start onward to the last page, in
    order, whatever it expects to find in them. For each page it recomputes the
    page root from the leaves and checks it against the list.
-3. It restores by trial decryption of every note (spec 01, section 8), reads
+3. It restores by trial decryption of every note (spec 01, section 8), or of
+   the notes of its own buckets (above), reads
    its own leaf's position from the page, and computes the witness itself: 12
    siblings from the leaves of its page, 20 from the page-root list.
 4. Any mismatch, missing page or disagreement rejects the data from that
@@ -576,11 +608,13 @@ and always re-reads the last, partly filled page whole. **Proposed:** a wallet
 may start earlier than it needs, never later. The scan start tells an endpoint
 roughly when the wallet last synced, never which leaf is its own.
 
-**Forbidden.** There is no request keyed by a commitment, a single position, a
-range that is not whole pages, a marker, a note or a transaction for tree data,
-and no endpoint that returns a witness. A wallet never sends such a request,
-and a Ghost node refuses one. A wallet never asks an endpoint for its own
-leaf's position or path.
+**Forbidden.** Tree data is requested by whole pages, and a bucket read by
+tag prefix (above) is the one request allowed that is keyed by anything else.
+There is no request keyed by a commitment, a single position, a range that is
+not whole pages, a marker, a note or a transaction for tree data, and no
+endpoint that returns a witness. A wallet never sends such a request, and a
+Ghost node refuses one. A wallet never asks an endpoint for its own leaf's
+position or path.
 
 **Marker status.** A wallet also needs the spent markers of its type to know
 which found commitment is unspent (spec 01, section 8, step 5). **Proposed:**
@@ -617,9 +651,11 @@ Page bytes are `leaves × (LEAF_BYTES + NOTE_BYTES)` for a full page.
 
 - **TH-19. Whole pages only.** A wallet restores, then builds a witness and
   reveals. Expected: every serving node's request log shows only page-root
-  lists and whole pages in order from the scan start, with no request naming a
+  lists, whole pages in order from the scan start and bucket reads of
+  `bucket_bits(n)` bits, 16 tags a batch, with no request naming a
   commitment, position, marker, note or transaction. A request for half a page
-  or one position is refused by the node.
+  or one position, or a bucket read of any other bit count, is refused by the
+  node.
 - **TH-20. Wrong data is caught.** An endpoint serves a page with one leaf
   changed, then a page-root list with one root changed. Expected: the wallet
   rejects both and finishes from another peer; its witness hashes to the header

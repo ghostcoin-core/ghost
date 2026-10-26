@@ -10,7 +10,8 @@ retired twelve- and twenty-four-group digit keys among them, is refused. It
 also checks that the tag table lists exactly the tags used here,
 with the right input sizes, that the same secret under two salts gives
 unrelated fingerprints, commitments and markers, and that every note vector
-has a version 2 type tag and is the note of a commitment vector. Commitment
+has a version 2 type tag and is the note of a commitment vector. It recomputes
+the note lookup tag of the note nonce and the bucket rule. Commitment
 format version 2, the salted format, is the only one: a vector of another
 kind or a type tag of another version is refused.
 
@@ -136,6 +137,7 @@ TAG_REVEAL_SECRET = "ghost/reveal-secret/v1"
 TAG_BLINDING = "ghost/blinding/v1"
 TAG_NOTE_KEY = "ghost/note-key/v1"
 TAG_DATA_KEY = "ghost/data-key/v1"
+TAG_NOTE_TAG = "ghost/note-tag/v1"
 TAG_COIN_FINGERPRINT_V2 = "ghost/coin-fingerprint/v2"
 TAG_COIN_COMMITMENT = "ghost/coin-commitment/v1"
 TAG_DATA_FINGERPRINT_V2 = "ghost/data-fingerprint/v2"
@@ -159,6 +161,7 @@ ALL_TAGS = {
     TAG_BLINDING,
     TAG_NOTE_KEY,
     TAG_DATA_KEY,
+    TAG_NOTE_TAG,
     TAG_COIN_FINGERPRINT_V2,
     TAG_COIN_COMMITMENT,
     TAG_DATA_FINGERPRINT_V2,
@@ -304,6 +307,26 @@ def derive_note_key(kb):
 
 def derive_data_key(kb):
     return sha3_tagged(TAG_DATA_KEY, kb)
+
+
+# The note lookup tag (sections 8 and 9): the first LOOKUP_TAG_BYTES bytes of
+# S("ghost/note-tag/v1", k_note, i as 8 bytes), the start of the note's nonce.
+LOOKUP_TAG_BYTES = 3
+# The bucket rule (spec 05, section 8): m = clamp(floor(log2(n / 4096)), 0, 24).
+MIN_BUCKET_NOTES = 4096
+MAX_BUCKET_BITS = 8 * LOOKUP_TAG_BYTES
+
+
+def note_tag_digest(note_key, index):
+    return sha3_tagged(TAG_NOTE_TAG, note_key, index.to_bytes(8, "big"))
+
+
+def bucket_bits(notes):
+    """The prefix bits of a bucket of a tree of `notes` leaves."""
+    if notes < 0:
+        raise ValueError("a leaf count is not negative")
+    quotient = notes // MIN_BUCKET_NOTES
+    return min(quotient.bit_length() - 1, MAX_BUCKET_BITS) if quotient else 0
 
 
 def content_fingerprint(content):
@@ -615,10 +638,28 @@ def check_note(ch, v):
     ch.expect(v, "associated-data", ad.hex())
 
 
+def check_note_tag(ch, v):
+    kb = _hex_field(v, "key-bytes")
+    if len(kb) != 33 or kb[0] != FORMAT_WORDS:
+        raise ValueError("key-bytes must be the format code 20 and 32 secret bytes")
+    index = int(v["index"])
+    if not 0 <= index < 1 << 64:
+        raise ValueError("index out of range")
+    digest = note_tag_digest(derive_note_key(kb), index)
+    ch.expect(v, "digest", digest.hex())
+    ch.expect(v, "tag", digest[:LOOKUP_TAG_BYTES].hex())
+
+
+def check_bucket_rule(ch, v):
+    ch.expect(v, "bits", str(bucket_bits(int(v["notes"]))))
+
+
 CHECKS = {
     "keccak256": check_keccak,
     "checksum": check_checksum,
     "derivation": check_derivation,
+    "note-tag": check_note_tag,
+    "bucket-rule": check_bucket_rule,
     "salted-coin-commitment": check_coin_commitment,
     "salted-data-commitment": check_data_commitment,
     "empty-leaf": check_empty_leaf,
@@ -656,6 +697,12 @@ def check_coverage(vectors):
                       "and a remainder at index 1")
     if not of("data-commitment", "2"):
         errors.append("no version 2 data commitment vector")
+    tag_indexes = {v.get("index") for v in vectors if v.get("kind") == "note-tag"}
+    if not {"0", "1"} <= tag_indexes:
+        errors.append("note-tag vectors must cover index 0 and index 1")
+    rule_bits = {v.get("bits") for v in vectors if v.get("kind") == "bucket-rule"}
+    if not {"0", str(MAX_BUCKET_BITS)} <= rule_bits:
+        errors.append(f"bucket-rule vectors must cover 0 bits and the clamp at {MAX_BUCKET_BITS}")
     names = [v["name"] for v in vectors]
     for name in sorted({n for n in names if names.count(n) > 1}):
         errors.append(f"vector name [{name}] used more than once")
