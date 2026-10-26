@@ -96,6 +96,7 @@ function draft(number, parentHash, { timestamp = GENESIS_TIME + 30 * number, dif
     baseFeePerGas: q(1_000_000_000),
     coinTreeRoot: zeros(32),
     dataTreeRoot: zeros(32),
+    dataMarkerRoot: zeros(32),
   });
   return rlp;
 }
@@ -274,6 +275,27 @@ test("from a pinned start, the receipts of every block from the pin to the tip a
     node.dishonest.note = (at, note) => (at === position ? new Uint8Array(note.length) : note);
     await assert.rejects(flow.summonRefresh(), new RegExp(`the note at position ${position} differs from its receipt`));
     assert.equal(flow.state.summon.status, "refused");
+  } finally {
+    await done();
+  }
+});
+
+test("a header from a node that returns no dataMarkerRoot is refused", async () => {
+  const { node, flow, done } = await setUp();
+  try {
+    const first = await vanish(flow);
+    assert.equal(flow.state.vanish.stage, "done", "the 19-field chain confirms");
+    // From here on the endpoint serves its headers without the marker root,
+    // as a node from before the 19-field header does.
+    node.dishonest.header = (json) => {
+      delete json.dataMarkerRoot;
+      return json;
+    };
+    node.mine();
+    await assert.rejects(flow.summonOpen(first.key), /the header has no dataMarkerRoot/);
+    assert.equal(flow.state.summon.current, null, "no coin is shown from that endpoint");
+    await assert.rejects(flow.summonReveal({ amount: "0.25", recipient: RECIPIENT }), /no coin to reveal/);
+    assert.equal(node.reveals.length, 0);
   } finally {
     await done();
   }

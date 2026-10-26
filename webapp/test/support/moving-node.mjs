@@ -133,6 +133,7 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
       baseFeePerGas: q(1_000_000_000),
       coinTreeRoot: toHex(rootOf(leaves.length)),
       dataTreeRoot: toHex(sha256("data")),
+      dataMarkerRoot: toHex(sha256("data markers")),
     };
     json.hash = toHex(ghost.keccak256(readHeader(json).rlp));
     const block = { number, json, leafCount: leaves.length, receipts: txReceipts.map((r) => ({ ...r, blockHash: json.hash })) };

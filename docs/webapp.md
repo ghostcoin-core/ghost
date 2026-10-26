@@ -265,7 +265,7 @@ a count.
 | `webapp/src/flow.mjs` | The flow controller: every step above, with no DOM |
 | `webapp/src/app.mjs`, `keyimage.mjs` | The thin DOM layer and the key image drawn on a canvas |
 | `webapp/src/chain.mjs` | The fee of spec 07, the base fee rule, the settled height, amounts |
-| `webapp/src/header.mjs` | The header's 18-field RLP of spec 05, section 10, the table of networks this build knows, with the start of each one's header chain, and the IndexedDB store of the headers the page checked |
+| `webapp/src/header.mjs` | The header's 19-field RLP of spec 05, section 10 (`dataMarkerRoot` last), the table of networks this build knows, with the start of each one's header chain, and the IndexedDB store of the headers the page checked |
 | `webapp/src/header-store.mjs` | The name the header store is imported by in tests (`createHeaderStore`); its code is in `header.mjs`, which the build ships |
 | `webapp/src/rpc.mjs` | JSON-RPC to the chosen endpoint |
 | `webapp/src/prover.mjs`, `worker.mjs`, `worker-core.mjs` | The background worker and its message interface |
@@ -287,7 +287,7 @@ network, `http://127.0.0.1:8545`. The app sends only these requests:
 |---|---|---|
 | `eth_chainId` | none | The chain identifier |
 | `eth_blockNumber` | none | The tip |
-| `eth_getBlockByNumber` | height, `false` | A header with its `hash` and the 18 fields of spec 05, section 10, by their base client names (`parentHash` to `nonce`, `baseFeePerGas`, `coinTreeRoot`, `dataTreeRoot`) |
+| `eth_getBlockByNumber` | height, `false` | A header with its `hash` and the 19 fields of spec 05, section 10, by their base client names (`parentHash` to `nonce`, `baseFeePerGas`, `coinTreeRoot`, `dataTreeRoot`, `dataMarkerRoot`); a header without `dataMarkerRoot` is refused |
 | `ghost_getPageRoots` | `"coin"`, tree index, anchor block hash | An array of 32-byte page roots, of pages 0 to the last page with a leaf (`[]` for an empty tree) |
 | `ghost_getTreePage` | `"coin"`, tree index, page, anchor block hash | `{ kind, treeIndex, page, filled, entries }`: `filled` positions of the page, and `entries`, one `{ leaf, note, salt }` (32, 156 and 16 bytes of hex) per filled position, in order; `salt` beside the leaf of a commit, left out for a reveal's remainder |
 | `ghost_getTreePage` | `"coin-markers"`, tree index, page, anchor block hash | `{ count, markers }`: a page of 4,096 spent coin markers in inclusion order |
@@ -443,9 +443,9 @@ does not check their seals again. The app adopts a header only through it:
 - **Every header after it.** The endpoint's headers are read from its tip
   down to the first one the chain holds, then added from there up, with the
   page's clock in Unix seconds. A header is adopted only if keccak256 of its
-  RLP, the list of the 18 fields of
-  [spec 05](spec/05-trees-and-headers.md), section 10 (`webapp/src/header.mjs`
-  builds it), is the hash the endpoint returned with it; its parent is a
+  RLP, the list of the 19 fields of
+  [spec 05](spec/05-trees-and-headers.md), section 10, `dataMarkerRoot` last
+  (`webapp/src/header.mjs` builds it), is the hash the endpoint returned with it; its parent is a
   header the chain holds and its number the parent's plus one; its
   timestamp is after the parent's and at most the future drift ahead of the
   clock; its difficulty is the one the ASERT rule of spec 06, section 4.3,
