@@ -39,6 +39,8 @@ HEADER_SIZE = 80
 EMPTY_TRIE_ROOT = bytes.fromhex("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
 EMPTY_COIN_TREE_ROOT = bytes.fromhex("8e66512042388a7863d500c4f96861466ae48b9d64ea1e10ec382c31aa61b5a8")
 EMPTY_DATA_TREE_ROOT = bytes.fromhex("3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03")
+# The data marker-set tree holding only its sentinel (spec 05, section 6).
+EMPTY_DATA_MARKER_SET_ROOT = bytes.fromhex("0ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3")
 GENESIS_GAS_LIMIT = 30_000_000
 GENESIS_BASE_FEE = 1_000_000_000
 
@@ -282,7 +284,7 @@ def select(headers, chain, t_l):
 # --- Genesis -----------------------------------------------------------------
 
 def genesis_header(mtp, bitcoin_hash_hex):
-    """The 18 header fields of spec 05 section 10, in order, RLP-encoded."""
+    """The 19 header fields of spec 05 section 10, in order, RLP-encoded."""
     fields = [
         rlp_bytes(bytes(32)),                           # parentHash
         rlp_bytes(keccak256(rlp_list([]))),             # uncleHash
@@ -302,6 +304,7 @@ def genesis_header(mtp, bitcoin_hash_hex):
         rlp_int(GENESIS_BASE_FEE),                      # baseFee
         rlp_bytes(EMPTY_COIN_TREE_ROOT),                # coinTreeRoot
         rlp_bytes(EMPTY_DATA_TREE_ROOT),                # dataTreeRoot
+        rlp_bytes(EMPTY_DATA_MARKER_SET_ROOT),          # dataMarkerRoot
     ]
     return rlp_list(fields)
 

@@ -24,7 +24,8 @@ _spec.loader.exec_module(_keccak_source)
 keccak256 = _keccak_source.keccak256
 
 # The Ghost header, in RLP order: the pinned base header's fields with the base
-# fee required, then the two tree roots. Each entry is (name, kind, size): a
+# fee required, then the two tree roots and the data marker-set root, 19 fields
+# in all. Each entry is (name, kind, size): a
 # "fixed" field is exactly `size` bytes, a "bytes" field at most `size` bytes,
 # an "int" field a canonical integer below 2^size.
 HEADER_LAYOUT = (
@@ -46,6 +47,7 @@ HEADER_LAYOUT = (
     ("baseFee", "int", 256),
     ("coinTreeRoot", "fixed", 32),
     ("dataTreeRoot", "fixed", 32),
+    ("dataMarkerRoot", "fixed", 32),
 )
 
 
@@ -126,6 +128,10 @@ EMPTY_COIN_TREE_ROOT = bytes.fromhex("8e66512042388a7863d500c4f96861466ae48b9d64
 EMPTY_DATA_TREE_ROOT = bytes.fromhex("3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03")
 COIN_ROOT_TWO_LEAVES = bytes.fromhex("142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5")
 DATA_ROOT_ONE_LEAF = bytes.fromhex("dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a")
+# Root of the data marker-set tree at genesis (vector marker-set-empty) and after
+# spec 01's two data markers (vector marker-set-two-markers), taken as given.
+EMPTY_MARKER_SET_ROOT = bytes.fromhex("0ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3")
+MARKER_SET_ROOT_TWO_MARKERS = bytes.fromhex("f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f")
 
 # Stand-in for Bitcoin block B: the hash of Bitcoin's own first block, as
 # Bitcoin Core prints it. An example only, never Ghost's anchor.
@@ -157,6 +163,7 @@ def genesis_example():
         "baseFee": GENESIS_BASE_FEE,
         "coinTreeRoot": EMPTY_COIN_TREE_ROOT,
         "dataTreeRoot": EMPTY_DATA_TREE_ROOT,
+        "dataMarkerRoot": EMPTY_MARKER_SET_ROOT,
     }
 
 
@@ -180,6 +187,7 @@ def block_one_example(parent_hash):
         "baseFee": 875_000_000,
         "coinTreeRoot": COIN_ROOT_TWO_LEAVES,
         "dataTreeRoot": DATA_ROOT_ONE_LEAF,
+        "dataMarkerRoot": MARKER_SET_ROOT_TWO_MARKERS,
     }
 
 
@@ -191,6 +199,7 @@ NEGATIVE_VECTORS = (
     ("header-non-canonical-integer", "non-canonical-integer", "non-canonical-integer"),
     ("header-short-tree-root", "short-tree-root", "field-size"),
     ("header-trailing-bytes", "trailing-bytes", "trailing-bytes"),
+    ("header-eighteen-items", "eighteen-items", "item-count"),
 )
 
 
@@ -215,6 +224,9 @@ def damaged(fields, fault):
         items[index["coinTreeRoot"]] = rlp_string(fields["coinTreeRoot"][:31])
     elif fault == "trailing-bytes":
         return rlp_list_of_encoded(items) + b"\x00"
+    elif fault == "eighteen-items":
+        # The 18-field header from before the data marker-set root.
+        del items[index["dataMarkerRoot"]]
     else:
         raise ValueError(f"unknown fault {fault}")
     return rlp_list_of_encoded(items)

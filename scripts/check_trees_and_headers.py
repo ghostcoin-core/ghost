@@ -9,11 +9,15 @@ check_commitment_vectors.py. It checks that:
      and the note size of spec 01;
   3. the page-size and storage tables are right;
   4. the header field table is the pinned base header in order with the base
-     fee required, then exactly the two tree roots; that no forbidden field and
-     no marker-set root is in it; and that every genesis field is listed once
-     with its source and agrees with the genesis vector;
+     fee required, then the two tree roots and the data marker-set root as
+     field 18, exactly 19 fields; that no forbidden field and no other
+     marker-set root is in it; and that every genesis field is listed once with
+     its source and agrees with the genesis vector;
   5. every tree, page and rollover vector is right, and the tree vectors over
-     spec 01's commitments hold exactly those of its words-key vectors;
+     spec 01's commitments hold exactly those of its words-key vectors; every
+     marker-set vector is recomputed with this script's own indexed tree
+     (insertions, leaves, root, the absence witness and its rejected markers),
+     and each header's dataMarkerRoot is the root of a marker-set vector;
   6. every header vector re-encodes byte for byte with this script's own RLP
      code, every negative vector is re-derived and rejected for the stated
      reason, and the header vectors equal the output of the separately written
@@ -81,11 +85,32 @@ TAG_DATA_NODE = "ghost/data-tree-node/v1"
 TAG_EMPTY_LEAF = "ghost/empty-leaf/v1"
 NODE_TAGS = {"coin": TAG_COIN_NODE, "data": TAG_DATA_NODE}
 
+# The data marker-set tree of section 6: an append-only indexed tree.
+TAG_MARKER_SET_LEAF = "ghost/data-marker-set-leaf/v1"
+TAG_MARKER_SET_NODE = "ghost/data-marker-set-node/v1"
+MARKER_SET_DEPTH = 40
+MARKER_SET_POSITIONS = 2**MARKER_SET_DEPTH
+INDEX_BYTES = 5
+ABSENCE_BYTES = 32 + 32 + INDEX_BYTES + INDEX_BYTES + 32 * MARKER_SET_DEPTH
+# Marker-set vectors the chapter must hold, and the spec 01 vectors whose data
+# markers they insert, in order.
+MARKER_SET_VECTORS = ("marker-set-empty", "marker-set-one-marker", "marker-set-two-markers",
+                      "marker-set-absence")
+SPEC_01_MARKERS = {
+    "marker-set-empty": (),
+    "marker-set-one-marker": ("data-commit-salted",),
+    "marker-set-two-markers": ("data-commit-salted", "data-commit-salted-other"),
+}
+# The rejected markers of an absence vector, with the relation each must have
+# to the low leaf.
+ABSENCE_REJECTS = ("reject-equal", "reject-below", "reject-above-next")
+
 PARAMETERS = ("TREE_DEPTH", "LEAVES_PER_TREE", "PAGE_LEAVES", "LEAF_BYTES", "NOTE_BYTES",
               "MARKER_BYTES", "TREE_INDEX_MAX")
 
 # The Ghost header: the base header of the pinned Core-Geth commit (Go Ethereum
-# 1.13.15) in its order, the base fee required, then the two tree roots.
+# 1.13.15) in its order, the base fee required, then the two tree roots and the
+# data marker-set root.
 # (name, kind, size): "fixed" is exactly size bytes, "bytes" at most size bytes,
 # "int" a canonical integer below 2^size.
 HEADER = (
@@ -107,9 +132,13 @@ HEADER = (
     ("baseFee", "int", 256),
     ("coinTreeRoot", "fixed", 32),
     ("dataTreeRoot", "fixed", 32),
+    ("dataMarkerRoot", "fixed", 32),
 )
 HEADER_NAMES = tuple(name for name, _, _ in HEADER)
-GHOST_FIELDS = ("coinTreeRoot", "dataTreeRoot")
+GHOST_FIELDS = ("coinTreeRoot", "dataTreeRoot", "dataMarkerRoot")
+# The one marker-set root in the header, and its index.
+MARKER_FIELD = "dataMarkerRoot"
+MARKER_FIELD_INDEX = 18
 FORBIDDEN_FIELDS = ("withdrawalsRoot", "blobGasUsed", "excessBlobGas", "parentBeaconRoot")
 # Genesis fields that spec 06, section 8.3 fixes, with the word it uses.
 SPEC06_GENESIS = {"parentHash": "parentHash", "uncleHash": "uncle hash", "coinbase": "coinbase",
@@ -118,7 +147,7 @@ SPEC06_GENESIS = {"parentHash": "parentHash", "uncleHash": "uncle hash", "coinba
 D_START = 2**24
 
 REQUIRED_FAULTS = ("forbidden-field", "extra-trailing-field", "missing-required-field",
-                   "non-canonical-integer")
+                   "non-canonical-integer", "eighteen-items")
 # Conflicts this chapter must list: (chapter, place) both in one item.
 REQUIRED_CONFLICTS = (("spec 03", "question 6"), ("spec 04", "question 2"),
                       ("spec 02", "section 8"), ("spec 06", "8.3"))
@@ -283,6 +312,121 @@ def append(index, count, filled_this_block):
 
 
 # ---------------------------------------------------------------------------
+# The data marker-set tree, this script's own
+# ---------------------------------------------------------------------------
+
+class MarkerRejected(Exception):
+    pass
+
+
+def marker_leaf_hash(leaf):
+    value, next_value, next_index = leaf
+    return tagged(TAG_MARKER_SET_LEAF, value, next_value, next_index.to_bytes(INDEX_BYTES, "big"))
+
+
+def marker_empty_roots():
+    """Z_0 to Z_40 of the marker-set tree."""
+    z = [empty_leaf()]
+    for level in range(MARKER_SET_DEPTH):
+        z.append(node(TAG_MARKER_SET_NODE, level, z[level], z[level]))
+    return z
+
+
+def marker_set_genesis():
+    """The used leaves of the genesis set: the sentinel (0, 0, 0) at position 0."""
+    return [(bytes(32), bytes(32), 0)]
+
+
+def marker_low(leaves, marker):
+    """Position of the one used leaf with value < marker and (marker <
+    nextValue or nextValue = 0)."""
+    found = [p for p, (value, next_value, _) in enumerate(leaves)
+             if value < marker and (marker < next_value or next_value == bytes(32))]
+    if len(found) != 1:
+        raise MarkerRejected(f"{len(found)} low leaves for {marker.hex()}")
+    return found[0]
+
+
+def marker_insert(leaves, marker):
+    """Insert one marker into the set under the rules of section 6."""
+    if len(marker) != 32 or marker == bytes(32):
+        raise MarkerRejected("the marker 0 is never valid")
+    if any(value == marker for value, _, _ in leaves):
+        raise MarkerRejected("the marker is already in the set")
+    n = len(leaves)
+    if n >= MARKER_SET_POSITIONS:
+        raise MarkerRejected("the set is full")
+    low = marker_low(leaves, marker)
+    value, next_value, next_index = leaves[low]
+    leaves.append((marker, next_value, next_index))
+    leaves[low] = (value, marker, n)
+
+
+def marker_set(markers):
+    leaves = marker_set_genesis()
+    for m in markers:
+        marker_insert(leaves, m)
+    return leaves
+
+
+def marker_layers(leaves):
+    """Every level of the tree as position -> node, level 0 the leaf hashes,
+    level 40 the root."""
+    z = marker_empty_roots()
+    layers = [{p: marker_leaf_hash(leaf) for p, leaf in enumerate(leaves)}]
+    for level in range(MARKER_SET_DEPTH):
+        below, parents = layers[-1], {}
+        for pos in sorted({p // 2 for p in below}):
+            parents[pos] = node(TAG_MARKER_SET_NODE, level, below.get(2 * pos, z[level]),
+                                below.get(2 * pos + 1, z[level]))
+        layers.append(parents)
+    return layers
+
+
+def marker_set_root(leaves):
+    return marker_layers(leaves)[MARKER_SET_DEPTH][0]
+
+
+def absence_witness(leaves, marker):
+    """The non-membership witness for marker: the low leaf, its position and
+    its 40 siblings."""
+    position = marker_low(leaves, marker)
+    value, next_value, next_index = leaves[position]
+    z = marker_empty_roots()
+    layers = marker_layers(leaves)
+    siblings = [layers[level].get((position >> level) ^ 1, z[level])
+                for level in range(MARKER_SET_DEPTH)]
+    return (value + next_value + next_index.to_bytes(INDEX_BYTES, "big")
+            + position.to_bytes(INDEX_BYTES, "big") + b"".join(siblings))
+
+
+def check_absence(root, marker, witness):
+    """None when witness shows marker is not in the set under root, else the
+    reason it fails."""
+    if len(witness) != ABSENCE_BYTES:
+        return "witness-size"
+    if len(marker) != 32 or marker == bytes(32):
+        return "zero-marker"
+    value, next_value = witness[0:32], witness[32:64]
+    next_index = int.from_bytes(witness[64:69], "big")
+    position = int.from_bytes(witness[69:74], "big")
+    at = marker_leaf_hash((value, next_value, next_index))
+    for level in range(MARKER_SET_DEPTH):
+        sibling = witness[74 + 32 * level:106 + 32 * level]
+        if (position >> level) & 1:
+            at = node(TAG_MARKER_SET_NODE, level, sibling, at)
+        else:
+            at = node(TAG_MARKER_SET_NODE, level, at, sibling)
+    if at != root:
+        return "root"
+    if not value < marker:
+        return "not-above-low"
+    if not (marker < next_value or next_value == bytes(32)):
+        return "not-below-next"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # RLP, this script's own
 # ---------------------------------------------------------------------------
 
@@ -398,6 +542,8 @@ def with_fault(fields, fault):
         items[at("number")] = _prefix(0x80, len(body)) + body
     elif fault == "short-tree-root":
         items[at("coinTreeRoot")] = rlp_encode(fields["coinTreeRoot"][:31])
+    elif fault == "eighteen-items":
+        items.pop(at(MARKER_FIELD))
     elif fault == "trailing-bytes":
         body = b"".join(items)
         return _prefix(0xC0, len(body)) + body + b"\x00"
@@ -421,6 +567,8 @@ class Checker:
         self.errors = []
         self.params = {}
         self.roots = {"coin": set(), "data": set()}
+        self.marker_roots = set()
+        self.marker_sets = {}
         self.headers = {}
 
     def fail(self, message):
@@ -440,6 +588,7 @@ class Checker:
         self.check_tree_vectors()
         self.check_spec01_leaves()
         self.check_append_vectors()
+        self.check_marker_set_vectors()
         self.check_header_vectors()
         self.check_encoder()
         self.check_genesis_values()
@@ -589,10 +738,13 @@ class Checker:
             self.fail("no header field table (Index, Field, Encoding, Source)")
             return
         names = [row["Field"].strip("`") for row in rows]
-        for name in names:
-            if "marker" in name.lower():
-                self.fail(f"header field '{name}': no spent-marker-set root may be added "
-                          "(spec 04, question 2)")
+        markers = [(i, name) for i, name in enumerate(names) if "marker" in name.lower()]
+        if markers != [(MARKER_FIELD_INDEX, MARKER_FIELD)]:
+            self.fail(f"header marker fields are {markers}: the one marker-set root must be "
+                      f"'{MARKER_FIELD}', field {MARKER_FIELD_INDEX}, and no coin marker-set "
+                      "root may be added")
+        if len(names) != len(HEADER):
+            self.fail(f"the header table lists {len(names)} fields, expected exactly {len(HEADER)}")
         if names != list(HEADER_NAMES):
             self.fail(f"header fields are {names}, expected {list(HEADER_NAMES)}")
         for i, row in enumerate(rows):
@@ -616,6 +768,9 @@ class Checker:
                 self.fail("the base fee is not marked required")
             if "optional" in source:
                 self.fail(f"header field '{name}' is optional; no field may be")
+        body = " ".join(" ".join(lines).split())
+        if f"exactly {len(HEADER)} items" not in body:
+            self.fail(f"the decoding rules do not say the list holds exactly {len(HEADER)} items")
         forbidden = table_with(lines, ("Field", "Base client name"))
         if forbidden is None:
             self.fail("no forbidden-field table (Field, Base client name)")
@@ -696,7 +851,8 @@ class Checker:
                  "transactionsRoot": keccak256(rlp_encode(b"")),
                  "receiptsRoot": keccak256(rlp_encode(b"")),
                  "coinTreeRoot": empty_roots(TAG_COIN_NODE)[DEPTH],
-                 "dataTreeRoot": empty_roots(TAG_DATA_NODE)[DEPTH]}
+                 "dataTreeRoot": empty_roots(TAG_DATA_NODE)[DEPTH],
+                 MARKER_FIELD: marker_set_root(marker_set_genesis())}
         for name, value in fixed.items():
             if genesis.get(name) != value:
                 self.fail(f"header-genesis-example: '{name}' is not the genesis value")
@@ -827,6 +983,114 @@ class Checker:
         if not any(full and not ok and index == INDEX_MAX for full, _, ok, index in cases):
             self.fail("no vector for an exhausted tree index")
 
+    def _hex32(self, name, key, raw):
+        if raw is None or not HEX_RE.match(raw) or len(raw) != 64:
+            self.fail(f"vector {name}: '{key}' is not 32 bytes of hex")
+            return None
+        return bytes.fromhex(raw)
+
+    def _leaf_text(self, leaf):
+        value, next_value, next_index = leaf
+        return f"{value.hex()} {next_value.hex()} {next_index.to_bytes(INDEX_BYTES, 'big').hex()}"
+
+    def check_marker_set_vectors(self):
+        blocks = self.blocks()
+        try:
+            spec01 = {v["name"]: v for v in
+                      _ccv.parse_vectors(_ccv.section(self.spec01, "Test vectors"))}
+        except ValueError:
+            spec01 = {}
+        absences = []
+        for name, lines in blocks.items():
+            v = dict(lines)
+            if v.get("kind") == "marker-set-absence":
+                absences.append((name, v))
+                continue
+            if v.get("kind") != "marker-set":
+                continue
+            markers = [self._hex32(name, "markers", x) for x in v.get("markers", "").split()]
+            if None in markers:
+                continue
+            try:
+                leaves = marker_set(markers)
+            except MarkerRejected as e:
+                self.fail(f"vector {name}: a marker cannot be inserted ({e})")
+                continue
+            self.marker_sets[name] = leaves
+            if v.get("count") != str(len(leaves)):
+                self.fail(f"vector {name}: count is {v.get('count')}, recomputed {len(leaves)}")
+            stated = [(k, x) for k, x in lines if k.startswith("leaf-")]
+            want = [(f"leaf-{p}", self._leaf_text(leaf)) for p, leaf in enumerate(leaves)]
+            if stated != want:
+                self.fail(f"vector {name}: the leaves differ from the insertions, recomputed "
+                          f"{want}")
+            root = marker_set_root(leaves)
+            if v.get("root") != root.hex():
+                self.fail(f"vector {name}: root is {v.get('root')}, recomputed {root.hex()}")
+            self.marker_roots.add(root)
+            sources = SPEC_01_MARKERS.get(name)
+            if sources is not None and spec01 and \
+                    [m.hex() for m in markers] != [spec01.get(s, {}).get("marker") for s in sources]:
+                self.fail(f"vector {name}: markers are not the data markers of spec 01's "
+                          f"{', '.join(sources) or 'no vector'}")
+        for name, v in absences:
+            self.check_absence_vector(name, v)
+        for name in MARKER_SET_VECTORS:
+            if name not in blocks:
+                self.fail(f"no vector {name}")
+        empty = self.marker_sets.get("marker-set-empty")
+        if empty is not None and empty != marker_set_genesis():
+            self.fail("vector marker-set-empty: the set holds more than the sentinel")
+
+    def check_absence_vector(self, name, v):
+        leaves = self.marker_sets.get(v.get("set"))
+        if leaves is None:
+            self.fail(f"vector {name}: set '{v.get('set')}' is not a marker-set vector")
+            return
+        root = marker_set_root(leaves)
+        if v.get("root") != root.hex():
+            self.fail(f"vector {name}: root is {v.get('root')}, the root of {v.get('set')} is "
+                      f"{root.hex()}")
+        marker = self._hex32(name, "marker", v.get("marker"))
+        raw = v.get("absence", "")
+        if marker is None or not HEX_RE.match(raw) or len(raw) % 2:
+            self.fail(f"vector {name}: marker or absence is not hex")
+            return
+        witness = bytes.fromhex(raw)
+        if len(witness) != ABSENCE_BYTES:
+            self.fail(f"vector {name}: absence is {len(witness)} bytes, expected {ABSENCE_BYTES}")
+            return
+        try:
+            expect = absence_witness(leaves, marker)
+        except MarkerRejected as e:
+            self.fail(f"vector {name}: no absence witness for the marker ({e})")
+            return
+        if witness != expect:
+            self.fail(f"vector {name}: absence differs from the witness recomputed from the set")
+        position = int.from_bytes(witness[69:74], "big")
+        low = (witness[0:32], witness[32:64], int.from_bytes(witness[64:69], "big"))
+        if v.get("low-position") != str(position):
+            self.fail(f"vector {name}: low-position is {v.get('low-position')}, the witness says "
+                      f"{position}")
+        if v.get("low-leaf") != self._leaf_text(low):
+            self.fail(f"vector {name}: low-leaf differs from the witness")
+        reason = check_absence(root, marker, witness)
+        if (reason is None) != (v.get("valid") == "yes"):
+            self.fail(f"vector {name}: valid is {v.get('valid')}, the witness check gives "
+                      f"{'yes' if reason is None else reason}")
+        value, next_value, _ = low
+        relations = {"reject-equal": lambda m: m == value,
+                     "reject-below": lambda m: m < value,
+                     "reject-above-next": lambda m: next_value != bytes(32) and m > next_value}
+        for key in ABSENCE_REJECTS:
+            m = self._hex32(name, key, v.get(key))
+            if m is None:
+                continue
+            if not relations[key](m):
+                self.fail(f"vector {name}: {key} does not have its relation to the low leaf")
+            if check_absence(root, m, witness) is None:
+                self.fail(f"vector {name}: the witness is accepted for {key}")
+
     def parse_header_fields(self, name, v):
         fields = {}
         for field, kind, size in HEADER:
@@ -879,12 +1143,20 @@ class Checker:
             for tree, field in (("coin", "coinTreeRoot"), ("data", "dataTreeRoot")):
                 if fields[field] not in self.roots[tree]:
                     self.fail(f"vector {name}: {field} is not the root of any {tree} tree vector")
+            if fields[MARKER_FIELD] not in self.marker_roots:
+                self.fail(f"vector {name}: {MARKER_FIELD} is not the root of any marker-set vector")
         genesis = self.headers.get("header-genesis-example")
         one = self.headers.get("header-block-one-example")
         if genesis is None or one is None:
             self.fail("header vectors header-genesis-example and header-block-one-example are required")
-        elif one["parentHash"] != keccak256(encode_header(genesis)):
-            self.fail("header-block-one-example: parentHash is not the genesis example's hash")
+        else:
+            if one["parentHash"] != keccak256(encode_header(genesis)):
+                self.fail("header-block-one-example: parentHash is not the genesis example's hash")
+            for header, fields, vector in (("header-genesis-example", genesis, "marker-set-empty"),
+                                           ("header-block-one-example", one, "marker-set-two-markers")):
+                want = self.marker_sets.get(vector)
+                if want is not None and fields[MARKER_FIELD] != marker_set_root(want):
+                    self.fail(f"{header}: {MARKER_FIELD} is not the root of {vector}")
         faults = set()
         for name, v in negatives:
             base = self.headers.get(v.get("base"))
@@ -989,7 +1261,8 @@ class Checker:
         if not known:
             self.fail("no tag table found in spec 01")
             return
-        for tag in (TAG_COIN_NODE, TAG_DATA_NODE, TAG_EMPTY_LEAF):
+        for tag in (TAG_COIN_NODE, TAG_DATA_NODE, TAG_EMPTY_LEAF, TAG_MARKER_SET_LEAF,
+                    TAG_MARKER_SET_NODE):
             if tag not in known:
                 self.fail(f"tree tag {tag} is not in the tag table of spec 01")
         for tag in sorted(set(TAG_RE.findall(self.text))):

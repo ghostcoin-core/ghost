@@ -244,7 +244,9 @@ the tag as well as the inputs.
 | `ghost/data-marker/v2` | Keccak-256 | One-time marker of a data commitment (section 3) | `r`, `b`, `salt` | 101 | 1 |
 | `ghost/coin-tree-node/v1` | Keccak-256 | Inner node of the coin tree | level as 1 byte, left child, right child | 89 | 1 per level |
 | `ghost/data-tree-node/v1` | Keccak-256 | Inner node of the data tree | level as 1 byte, left child, right child | 89 | 1 per level |
-| `ghost/empty-leaf/v1` | Keccak-256 | The value of an unused leaf position in either tree | none | 20 | a constant |
+| `ghost/empty-leaf/v1` | Keccak-256 | The value of an unused leaf position in either tree and in the data marker-set tree | none | 20 | a constant |
+| `ghost/data-marker-set-leaf/v1` | Keccak-256 | Leaf of the data marker-set tree ([spec 05](05-trees-and-headers.md), section 6) | `value`, `nextValue`, `nextIndex` as 5 bytes | 99 | 1 |
+| `ghost/data-marker-set-node/v1` | Keccak-256 | Inner node of the data marker-set tree ([spec 05](05-trees-and-headers.md), section 6) | level as 1 byte, left child, right child | 95 | 1 per level |
 | `ghost/coin-reveal-binding/v1` | Keccak-256 | Binding digest of a coin reveal ([spec 03](03-coin-rules.md), section 7, step 6) | fixed by the proof-statement specification | | |
 | `ghost/data-reveal-binding/v1` | Keccak-256 | Binding digest of a data reveal or revocation ([spec 04](04-data-commitments.md), section 6) | fixed by the proof-statement specification | | |
 | `ghost/hold-binding/v1` | Keccak-256 | Binding digest of a proof of holding ([spec 04](04-data-commitments.md), section 5) | fixed by the proof-statement specification | | |
@@ -263,6 +265,11 @@ Notes on the table:
   carries its own tag, so a node can never be presented as a leaf or a leaf as a
   node. The tree's shape, rollover and root rules are for the tree and header
   specification; this document fixes only the node and empty-leaf hashes.
+- **Data marker-set tree.** Its leaf `(value, nextValue, nextIndex)` and its
+  node (level 0 up to 39, depth 40) have their own tags, so neither can be
+  presented as a node or leaf of the coin or data tree. The tree's shape,
+  insert and non-membership rules are in [spec 05](05-trees-and-headers.md),
+  section 6, with its vectors.
 - **Binding digests.** The three binding tags are reserved here so that the
   table is complete; their input layouts belong to the proof statements, and
   this document gives no vectors for them.

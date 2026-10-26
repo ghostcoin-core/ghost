@@ -45,7 +45,7 @@ It chooses nothing inside the proof system beyond what the statements need.
 | Range constraints in the proof | Six 16-bit limbs per amount, limb-wise conservation with bounded carries | **Proposed** (section 10, question 6) |
 | Remainder note | Bound by the coin reveal's binding digest | **Proposed** (question 3) |
 | Proof of holding for coins | Same statement with `COIN`; rejected until the founder settles it | **Proposed** (fail closed, question 2) |
-| Spent-marker-set non-membership | Required by S3; its set structure belongs to the tree and header specification; until then every proof of holding is rejected | Fail closed (spec 04, question 2) |
+| Spent-marker-set non-membership | Required by S3; the data set is the indexed tree of [spec 05](05-trees-and-headers.md), section 6, with its root `dataMarkerRoot` in every header; every proof of holding stays rejected until the proof circuit checks constraint 4 | Structure settled (spec 04, question 2); proofs fail closed |
 
 ## 2. Conventions
 
@@ -287,9 +287,12 @@ publishes no marker and writes no state. Its binding tag is
 `ghost/hold-binding/v1`.
 
 The statement is the same for both types. **Proposed:** version 1 accepts it
-for `DATA`; for `COIN` it is rejected until the founder settles question 2,
-and in both cases it is rejected until the spent-marker-set structure and its
-place in the header are fixed (section 13).
+for `DATA`; for `COIN` it is rejected until the founder settles question 2.
+The data spent-marker set and its header root are fixed by
+[spec 05](05-trees-and-headers.md), section 6 ("The data marker-set tree") and
+section 10 (`dataMarkerRoot`, field 18); there is no coin marker-set root. In
+both cases a proof of holding is rejected until the proof circuit checks
+constraint 4 (section 13, item 2).
 
 **Public inputs.**
 
@@ -328,7 +331,7 @@ fingerprint of the content it shows anyway.
 | `position` | 4 | Position of `C` in the tree of `type` |
 | `path` | 1024 | The 32 sibling hashes from `C` to `root` |
 | `marker` | 32 | The commitment's own marker, computed in the proof |
-| `absence` | set-defined | The witness that `marker` is not in the set under `marker_set_root` |
+| `absence` | 1354 | The witness that `marker` is not in the set under `marker_set_root`: the low leaf (69), its position (5) and its 40 siblings (1280), as [spec 05](05-trees-and-headers.md), section 6 fixes |
 
 **Constraints.**
 
@@ -1039,10 +1042,13 @@ and C43) are pending, not met.
    verifier still rejects every data reveal at the fee step, and every proof
    of holding (item 2), whatever the proof.
 2. **Spent-marker-set structure and header root.** S3 needs non-membership
-   under an authenticated set root taken from a header. The set's structure,
-   its node hashes and tags, and whether its root is in the header belong to
-   the tree and header specification. Until they are fixed, every proof of
-   holding is rejected (spec 04, question 2).
+   under an authenticated set root taken from a header. Settled for data by
+   [spec 05](05-trees-and-headers.md), section 6 ("The data marker-set tree":
+   an append-only indexed Keccak-256 tree of depth 40, its leaf and node tags
+   and the 1,354-byte `absence` witness) and section 10 (its root
+   `dataMarkerRoot` in every header), answering spec 04, question 2. What is
+   not yet settled is the proof circuit that checks constraint 4 against it;
+   until it exists, every proof of holding is rejected.
 3. **Proof of holding for coins.** S3 with `COIN` is rejected (question 2).
 4. **Non-empty rules.** Rejected in S1 and S2 (spec 03, section 7, step 11;
    spec 04, question 9).

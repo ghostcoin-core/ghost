@@ -146,6 +146,8 @@ TAG_DATA_MARKER_V2 = "ghost/data-marker/v2"
 TAG_COIN_TREE_NODE = "ghost/coin-tree-node/v1"
 TAG_DATA_TREE_NODE = "ghost/data-tree-node/v1"
 TAG_EMPTY_LEAF = "ghost/empty-leaf/v1"
+TAG_DATA_MARKER_SET_LEAF = "ghost/data-marker-set-leaf/v1"
+TAG_DATA_MARKER_SET_NODE = "ghost/data-marker-set-node/v1"
 TAG_COIN_REVEAL_BINDING = "ghost/coin-reveal-binding/v1"
 TAG_DATA_REVEAL_BINDING = "ghost/data-reveal-binding/v1"
 TAG_HOLD_BINDING = "ghost/hold-binding/v1"
@@ -167,6 +169,8 @@ ALL_TAGS = {
     TAG_COIN_TREE_NODE,
     TAG_DATA_TREE_NODE,
     TAG_EMPTY_LEAF,
+    TAG_DATA_MARKER_SET_LEAF,
+    TAG_DATA_MARKER_SET_NODE,
     TAG_COIN_REVEAL_BINDING,
     TAG_DATA_REVEAL_BINDING,
     TAG_HOLD_BINDING,
@@ -207,6 +211,10 @@ TAG_LAYOUTS = {
     TAG_COIN_TREE_NODE: (1, 32, 32),
     TAG_DATA_TREE_NODE: (1, 32, 32),
     TAG_EMPTY_LEAF: (),
+    # The data marker-set tree of spec 05, section 6: a leaf (value,
+    # nextValue, nextIndex as 5 bytes) and a node (level, left, right).
+    TAG_DATA_MARKER_SET_LEAF: (32, 32, 5),
+    TAG_DATA_MARKER_SET_NODE: (1, 32, 32),
 }
 KECCAK_RATE = 136
 
@@ -771,7 +779,7 @@ def check_tag_table(text):
                           f"recomputed {total}")
         perms = row.get("Keccak permutations", "")
         expect = total // KECCAK_RATE + 1
-        if tag in (TAG_COIN_TREE_NODE, TAG_DATA_TREE_NODE):
+        if tag in (TAG_COIN_TREE_NODE, TAG_DATA_TREE_NODE, TAG_DATA_MARKER_SET_NODE):
             expect_text = f"{expect} per level"
         elif tag == TAG_EMPTY_LEAF:
             expect_text = "a constant"
