@@ -18,6 +18,12 @@ check_commitment_vectors.py. It checks that:
      marker-set vector is recomputed with this script's own indexed tree
      (insertions, leaves, root, the absence witness and its rejected markers),
      and each header's dataMarkerRoot is the root of a marker-set vector;
+     every witness-extension vector is recomputed with this script's own tree
+     code (the page-root tail must hash to the header root, the witness after
+     must be the one recomputed and hash to it), and every marker-query vector
+     is served only with exactly 64 distinct markers, each "spent" answer
+     carried by a receipt; section 8 states the tail read, the status query
+     and their cost, and its "Forbidden." paragraph and TH-19 name the reads;
   6. every header vector re-encodes byte for byte with this script's own RLP
      code, every negative vector is re-derived and rejected for the stated
      reason, and the header vectors equal the output of the separately written
@@ -104,6 +110,36 @@ SPEC_01_MARKERS = {
 # The rejected markers of an absence vector, with the relation each must have
 # to the low leaf.
 ABSENCE_REJECTS = ("reject-equal", "reject-below", "reject-above-next")
+
+# Witness extension and the marker status query of section 8. A page-root
+# tail starts at a multiple of TAIL_PAGES pages, a page read whole is read with
+# decoys PAGE_READ pages a request, and a status query holds exactly
+# MARKER_QUERY_SIZE markers.
+WITNESS_EXTENSION_VECTORS = ("witness-extension-same-page", "witness-extension-new-pages")
+MARKER_QUERY_VECTORS = ("marker-query-one-real", "marker-query-rejects-wrong-count")
+TAIL_PAGES = 65536
+PAGE_READ = 8
+MARKER_QUERY_SIZE = 64
+# Section 8's subsections on restore at scale, with the words each must use.
+RESTORE_SUBSECTIONS = {
+    "Reading the tail of the page roots": (
+        "65,536 pages", "about a month", "2 MiB", "header root", "Z_12", "8 pages",
+        "7 decoy pages", "reused on retry", "no new witness endpoint"),
+    "Marker status query": (
+        "exactly 64 markers", "one real", "63 decoys", "uniformly random 32-byte value",
+        "reused on every retry", "spent needs a receipt", "7 decoy blocks",
+        "not spent cannot be authenticated", "unchecked, not reported spent",
+        "refused by every node", "never make a real unspent coin look spent",
+        "no absence-witness read"),
+    "Cost against the restore ceilings": (
+        "modeled", "restore_sim.py", "stage1-verdict.md", "611.8 MB", "298 days", "500 MB",
+        "50 MB a month", "10 minutes", "not feasible as designed", "header-chain proof"),
+}
+# The reads the "Forbidden." paragraph and TH-19 must allow, the bucket read
+# among them.
+ALLOWED_READS = ("bucket read", "page-root tail", "8-page read", "64-marker status query",
+                 "block-range receipts request")
+UNCHECKED_STATUS = "unchecked, not reported spent"
 
 PARAMETERS = ("TREE_DEPTH", "LEAVES_PER_TREE", "PAGE_LEAVES", "LEAF_BYTES", "NOTE_BYTES",
               "MARKER_BYTES", "TREE_INDEX_MAX")
@@ -241,6 +277,28 @@ def vector_blocks(lines):
     return blocks
 
 
+def subsection(lines, title):
+    """The lines under the '### title' heading, to the next '### ', or None."""
+    out, inside = None, False
+    for line in lines:
+        if line.startswith("### "):
+            inside = line[4:].strip() == title
+            if inside:
+                out = []
+        elif inside:
+            out.append(line)
+    return out
+
+
+def paragraph(lines, start):
+    """The paragraph whose first line starts with `start`, on one line."""
+    for i, line in enumerate(lines):
+        if line.startswith(start):
+            end = next((j for j in range(i, len(lines)) if not lines[j].strip()), len(lines))
+            return " ".join(" ".join(lines[i:end]).split())
+    return None
+
+
 def number(cell):
     try:
         return int(cell.replace(",", "").strip().strip("`"))
@@ -299,6 +357,53 @@ def tree_root(tag, leaves, offset=0):
 
 def page_root(tag, leaves, page_depth):
     return sparse_root(tag, dict(enumerate(leaves)), 0, page_depth)
+
+
+def path_siblings(tag, nodes, start_level, at, top_level=DEPTH):
+    """The siblings, from start_level up to top_level, of the node at index
+    `at` of start_level, over `nodes` (index -> value at start_level)."""
+    z = empty_roots(tag)
+    layer, out = dict(nodes), []
+    for level in range(start_level, top_level):
+        out.append(layer.get(at ^ 1, z[level]))
+        layer = {pos: node(tag, level, layer.get(2 * pos, z[level]), layer.get(2 * pos + 1, z[level]))
+                 for pos in sorted({p // 2 for p in layer})}
+        at //= 2
+    return out
+
+
+def fold(tag, value, at, siblings, start_level=0):
+    """The node reached from `value` at index `at` of start_level, hashed up
+    with `siblings` one level each."""
+    for i, sibling in enumerate(siblings):
+        level = start_level + i
+        if (at >> i) & 1:
+            value = node(tag, level, sibling, value)
+        else:
+            value = node(tag, level, value, sibling)
+    return value
+
+
+def witness(tag, page_leaves, page_roots, position, page_depth):
+    """The 32 siblings of the leaf at `position`: page_depth from the leaves of
+    its page (a list from the page's first position), the rest from the
+    page-root list."""
+    in_page = path_siblings(tag, dict(enumerate(page_leaves)), 0,
+                            position % (1 << page_depth), page_depth)
+    return in_page + path_siblings(tag, dict(enumerate(page_roots)), page_depth,
+                                   position >> page_depth)
+
+
+def query_reject(markers):
+    """None when a marker status query (hex strings) may be served, else the
+    reason a node refuses it."""
+    if len(markers) != MARKER_QUERY_SIZE:
+        return "marker-count"
+    if any(not HEX_RE.match(m) or len(m) != 64 for m in markers):
+        return "marker-size"
+    if len(set(markers)) != len(markers):
+        return "duplicate-marker"
+    return None
 
 
 def append(index, count, filled_this_block):
@@ -589,6 +694,9 @@ class Checker:
         self.check_spec01_leaves()
         self.check_append_vectors()
         self.check_marker_set_vectors()
+        self.check_witness_extension_vectors()
+        self.check_marker_query_vectors()
+        self.check_restore_reads()
         self.check_header_vectors()
         self.check_encoder()
         self.check_genesis_values()
@@ -1090,6 +1198,228 @@ class Checker:
                 self.fail(f"vector {name}: {key} does not have its relation to the low leaf")
             if check_absence(root, m, witness) is None:
                 self.fail(f"vector {name}: the witness is accepted for {key}")
+
+    def _hex_list(self, name, key, v, count=None):
+        values = [self._hex32(name, key, x) for x in v.get(key, "").split()]
+        if None in values:
+            return None
+        if count is not None and len(values) != count:
+            self.fail(f"vector {name}: '{key}' holds {len(values)} values, expected {count}")
+            return None
+        return values
+
+    def check_witness_extension_vectors(self):
+        blocks = self.blocks()
+        page_leaves = self.params.get("PAGE_LEAVES", 0)
+        if page_leaves > 1 and not page_leaves & (page_leaves - 1):
+            for name, lines in blocks.items():
+                v = dict(lines)
+                if v.get("kind") == "witness-extension":
+                    self.check_witness_extension(name, v, page_leaves)
+        for name in WITNESS_EXTENSION_VECTORS:
+            if name not in blocks:
+                self.fail(f"no vector {name}")
+
+    def check_witness_extension(self, name, v, page_leaves):
+        """A stored witness extended from count-before to count-after: the
+        page-root list (the stored roots below the tail, then the tail) must
+        hash to the header root, and the witness after must be the one
+        recomputed from it and hash to that root."""
+        depth = page_leaves.bit_length() - 1
+        tag = NODE_TAGS.get(v.get("tree"))
+        ints = {k: number(v.get(k, "")) for k in ("position", "count-before", "count-after",
+                                                   "scan-start", "tail-start")}
+        if tag is None or None in ints.values():
+            self.fail(f"vector {name}: malformed witness-extension vector")
+            return
+        position, before, after = ints["position"], ints["count-before"], ints["count-after"]
+        if not 0 <= position < before <= after <= LEAVES:
+            self.fail(f"vector {name}: position and counts out of range")
+            return
+        start, scan = ints["tail-start"], ints["scan-start"]
+        if start != scan // TAIL_PAGES * TAIL_PAGES:
+            self.fail(f"vector {name}: tail-start is {start}, expected the scan start {scan} "
+                      f"rounded down to a multiple of {TAIL_PAGES} pages")
+        stored = self._hex_list(name, "stored-page-roots", v)
+        tail = self._hex_list(name, "page-roots", v)
+        before_w = self._hex_list(name, "witness-before", v, DEPTH)
+        after_w = self._hex_list(name, "witness-after", v, DEPTH)
+        root_before = self._hex32(name, "header-root-before", v.get("header-root-before"))
+        root = self._hex32(name, "header-root", v.get("header-root"))
+        if None in (stored, tail, before_w, after_w, root_before, root):
+            return
+        if len(stored) != start:
+            self.fail(f"vector {name}: stored-page-roots holds {len(stored)} roots, expected the "
+                      f"{start} below the tail")
+            return
+        roots, page = stored + tail, position // page_leaves
+        if len(roots) != (after - 1) // page_leaves + 1:
+            self.fail(f"vector {name}: the page-root list holds {len(roots)} pages, the tree at "
+                      f"count-after {after} has {(after - 1) // page_leaves + 1}")
+            return
+        list_root = sparse_root(tag, dict(enumerate(roots)), depth)
+        if list_root != root:
+            self.fail(f"vector {name}: the page-root tail does not hash to the header root; the "
+                      f"list and Z_{depth} give {list_root.hex()}")
+        first = page * page_leaves
+        if "leaves-after" in v:
+            # The leaf's page is not full: it is read whole, with decoy pages.
+            leaves_before = self._hex_list(name, "leaves-before", v)
+            leaves_after = self._hex_list(name, "leaves-after", v)
+            if leaves_before is None or leaves_after is None:
+                return
+            if (len(leaves_before) != before - first or len(leaves_after) != min(after - first, page_leaves)
+                    or leaves_after[:len(leaves_before)] != leaves_before):
+                self.fail(f"vector {name}: leaves-before and leaves-after are not page {page} at "
+                          "count-before and count-after")
+                return
+            if len(leaves_after) == page_leaves:
+                self.fail(f"vector {name}: page {page} is full; give its in-page siblings instead")
+                return
+            self.check_page_read(name, v, page, after, page_leaves)
+            leaf = leaves_after[position - first]
+            own = page_root(tag, leaves_after, depth)
+            if roots[page] != own:
+                self.fail(f"vector {name}: page-roots: the root of page {page} is not the root of "
+                          f"the page read whole, {own.hex()}")
+            expect = witness(tag, leaves_before, roots[:page] + [page_root(tag, leaves_before, depth)],
+                             position, depth)
+            if before_w != expect:
+                self.fail(f"vector {name}: witness-before differs from the witness at count-before, "
+                          f"recomputed {' '.join(x.hex() for x in expect)}")
+            expect = witness(tag, leaves_after, roots, position, depth)
+        else:
+            # The leaf's page is full: its in-page siblings are final.
+            leaf = self._hex32(name, "leaf", v.get("leaf"))
+            in_page = self._hex_list(name, "in-page-siblings", v, depth)
+            if leaf is None or in_page is None:
+                return
+            if before < first + page_leaves:
+                self.fail(f"vector {name}: page {page} is not full at count-before; it is read whole")
+                return
+            if before_w[:depth] != in_page:
+                self.fail(f"vector {name}: witness-before does not start with the in-page siblings")
+            climbed = fold(tag, leaf, position % page_leaves, in_page)
+            if roots[page] != climbed:
+                self.fail(f"vector {name}: page-roots: the root of page {page} is not the root "
+                          f"climbed from the leaf, {climbed.hex()}")
+            expect = in_page + path_siblings(tag, dict(enumerate(roots)), depth, page)
+        at = fold(tag, leaf, position, before_w)
+        if at != root_before:
+            self.fail(f"vector {name}: witness-before does not hash to header-root-before; it "
+                      f"gives {at.hex()}")
+        if after_w != expect:
+            self.fail(f"vector {name}: witness-after differs from the witness recomputed from the "
+                      f"page roots, {' '.join(x.hex() for x in expect)}")
+        if fold(tag, leaf, position, after_w) != root:
+            self.fail(f"vector {name}: witness-after does not hash to the header root at "
+                      "count-after")
+
+    def check_page_read(self, name, v, page, count, page_leaves):
+        """The 8-page read: the leaf's page and decoy full pages, distinct, in
+        page order; every page when the tree has fewer than 8."""
+        pages = [number(x) for x in v.get("pages-read", "").split()]
+        want = min(PAGE_READ, (count - 1) // page_leaves + 1)
+        full = count // page_leaves
+        if (None in pages or len(set(pages)) != want or pages != sorted(set(pages))
+                or page not in pages or any(p != page and not 0 <= p < full for p in pages)):
+            self.fail(f"vector {name}: pages-read is not {want} distinct pages in page order, page "
+                      f"{page} and {want - 1} full decoy pages")
+
+    def check_marker_query_vectors(self):
+        blocks = self.blocks()
+        spent = {value.hex() for leaves in self.marker_sets.values() for value, _, _ in leaves[1:]}
+        for name, lines in blocks.items():
+            v = dict(lines)
+            if v.get("kind") == "marker-query":
+                self.check_marker_query(name, v, spent)
+        for name in MARKER_QUERY_VECTORS:
+            if name not in blocks:
+                self.fail(f"no vector {name}")
+
+    def check_marker_query(self, name, v, spent):
+        """A status query is served only with exactly 64 distinct markers; a
+        "spent" answer needs a reveal receipt of its block, and "not spent"
+        leaves the real marker unchecked."""
+        if v.get("type") not in NODE_TAGS:
+            self.fail(f"vector {name}: type '{v.get('type')}' is not coin or data")
+        markers = v.get("markers", "").split()
+        reason = query_reject(markers)
+        if (reason is None) != (v.get("valid") == "yes"):
+            self.fail(f"vector {name}: valid is {v.get('valid')}, a query of {len(markers)} "
+                      f"markers gives {'yes' if reason is None else reason}")
+            return
+        if reason is not None:
+            if v.get("reject") != reason:
+                self.fail(f"vector {name}: rejected as {reason}, the vector says {v.get('reject')}")
+            return
+        real = v.get("real")
+        if markers.count(real) != 1:
+            self.fail(f"vector {name}: real is not one of the markers")
+            return
+        for m in markers:
+            if m != real and m in spent:
+                self.fail(f"vector {name}: decoy {m} is a spent marker of a marker-set vector")
+        answers = v.get("answers", "").split()
+        if len(answers) != len(markers):
+            self.fail(f"vector {name}: {len(answers)} answers for {len(markers)} markers")
+            return
+        checked = {}
+        for m, answer in zip(markers, answers):
+            if answer == "not-spent":
+                continue
+            block = number(answer[len("spent-"):]) if answer.startswith("spent-") else None
+            if block is None:
+                self.fail(f"vector {name}: answer '{answer}' is not spent-N or not-spent")
+                continue
+            checked[m] = m in v.get(f"receipt-markers-{block}", "").split()
+            if not checked[m]:
+                self.fail(f"vector {name}: the answer spent-{block} for {m} has no receipt: no "
+                          f"reveal receipt of block {block} carries it")
+        if real not in checked:
+            status = "unchecked-not-reported-spent"
+        else:
+            status = "spent" if checked[real] else "rejected"
+        if v.get("status") != status:
+            self.fail(f"vector {name}: status is {v.get('status')}, the answer for the real marker "
+                      f"gives {status}")
+
+    def check_restore_reads(self):
+        """Section 8 states the tail read, the status query and their cost, and
+        its "Forbidden." paragraph, TH-19, the "Marker status." Rule and
+        section 12, item 4 follow them."""
+        lines = self.section("Wallet tree data")
+        if lines is None:
+            return
+        for title, words in RESTORE_SUBSECTIONS.items():
+            body = subsection(lines, title)
+            if body is None:
+                self.fail(f"section 'Wallet tree data' has no subsection '{title}'")
+                continue
+            text = " ".join(" ".join(body).split()).lower()
+            for word in words:
+                if word.lower() not in text:
+                    self.fail(f"subsection '{title}' does not mention '{word}'")
+        forbidden = paragraph(lines, "**Forbidden.**")
+        th19 = next((body for n, _, body in entries(lines, TH_RE) if n == 19), None)
+        for label, text in (("the 'Forbidden.' paragraph", forbidden), ("TH-19", th19)):
+            if text is None:
+                self.fail(f"section 'Wallet tree data' has no {label}")
+                continue
+            for read in ALLOWED_READS:
+                if read not in text.lower():
+                    self.fail(f"{label} does not name the {read}")
+            if "exactly 64 distinct" not in text.lower():
+                self.fail(f"{label} does not refuse a status query that is not exactly 64 "
+                          "distinct markers")
+        status = paragraph(lines, "**Marker status.**")
+        settled = self.section("Not settled")
+        item4 = next((body for n, _, body in entries(settled or [], CONFLICT_RE) if n == 4), None)
+        for label, text in (("the 'Marker status.' Rule", status), ("section 12, item 4", item4)):
+            text = (text or "").lower()
+            if UNCHECKED_STATUS not in text or "marker pages" not in text:
+                self.fail(f"{label} does not keep 'unknown' for marker pages and give "
+                          f"'{UNCHECKED_STATUS}' for a 64-marker query")
 
     def parse_header_fields(self, name, v):
         fields = {}
