@@ -1,6 +1,7 @@
 // A block header as the endpoint returns it, re-encoded so its hash can be
-// recomputed: the RLP list of the 18 fields of spec 05, section 10 (fields
-// 0 to 14 of the base header, the base fee, coinTreeRoot, dataTreeRoot),
+// recomputed: the RLP list of the 19 fields of spec 05, section 10 (fields
+// 0 to 14 of the base header, the base fee, coinTreeRoot, dataTreeRoot,
+// dataMarkerRoot),
 // whose keccak256 is the block hash. The worker's header chain adopts a
 // header only when that hash is the one the endpoint returned and its
 // difficulty and proof-of-work seal check (lib.rs, ghost_chain_add).
@@ -64,6 +65,7 @@ export const HEADER_FIELDS = [
   ["baseFeePerGas", "int", 256],
   ["coinTreeRoot", "fixed", 32],
   ["dataTreeRoot", "fixed", 32],
+  ["dataMarkerRoot", "fixed", 32],
 ];
 
 // The big-endian bytes of an integer, with no leading zero byte; zero is empty.

@@ -883,7 +883,7 @@ async function prefixRootsOf(prover, depth, leaves, from, to) {
 }
 
 // A block header as the endpoint's JSON gives it (or as the page saved it):
-// its fields, its 18-field RLP (spec 05, section 10), the hash it claims,
+// its fields, its 19-field RLP (spec 05, section 10), the hash it claims,
 // and its record, the fields of HEADER_FIELDS and the hash only, which is
 // all the page saves of a header. Throws on a missing or malformed field.
 function parseHeader(raw) {
@@ -995,7 +995,7 @@ export function createFlow({
 
   // --- The chain, from the endpoint ---
 
-  // Block `number` as the endpoint returns it: its fields, its 18-field RLP
+  // Block `number` as the endpoint returns it: its fields, its 19-field RLP
   // (spec 05, section 10) and the hash it claims. Nothing here is trusted
   // yet: the worker's chain checks the hash, the difficulty and the seal.
   // `number` "latest" is the endpoint's tip, whatever its number.

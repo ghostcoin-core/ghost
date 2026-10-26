@@ -6,8 +6,9 @@ import test from "node:test";
 
 import { concat, fromHex, toHex, word } from "../src/bytes.mjs";
 import { receiptBytes } from "../src/flow.mjs";
-import { readHeader } from "../src/header.mjs";
+import { HEADER_FIELDS, readHeader, rlpList, rlpString } from "../src/header.mjs";
 import { loadModule } from "./support/env.mjs";
+import { TEST_CHAIN_PARAMS } from "./support/fake-node.mjs";
 
 const ghost = await loadModule();
 
@@ -33,7 +34,7 @@ test("tree roots match spec 05, section 11", () => {
 
 // Spec 05, vector header-block-one-example, as the JSON-RPC names its fields.
 const BLOCK_ONE = {
-  parentHash: "0xffc501cc30c42da020a29cce3823251ca1c110c250bfed5a3d752e262bb86af7",
+  parentHash: "0x039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4",
   sha3Uncles: "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
   miner: "0x00000000000000000000000000000000000004d2",
   stateRoot: `0x${"11".repeat(32)}`,
@@ -51,22 +52,76 @@ const BLOCK_ONE = {
   baseFeePerGas: "0x342770c0",
   coinTreeRoot: "0x142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5",
   dataTreeRoot: "0xdfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a",
+  dataMarkerRoot: "0xf121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f",
 };
+const BLOCK_ONE_HASH = "0x81ca961404b518ee3ded78ebee1c4e23eba18b7c86515b6471e970cfed8538f4";
 
 test("a header's RLP and hash match spec 05, section 11", () => {
   const { rlp, values } = readHeader(BLOCK_ONE);
   assert.equal(values.number, 1n);
   assert.equal(values.baseFeePerGas, 875_000_000n);
-  assert.match(toHex(rlp), /^0xf90243a0ffc501cc/);
-  assert.match(toHex(rlp), /84342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a$/);
-  assert.equal(toHex(ghost.keccak256(rlp)), "0x943182f201b34dae77dc5c8efb5c84083dda907eac51f8ac3fc6f6c36a791c23");
+  assert.match(toHex(rlp), /^0xf90264a0039d14f5/);
+  assert.match(toHex(rlp), /84342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f$/);
+  assert.equal(toHex(ghost.keccak256(rlp)), BLOCK_ONE_HASH);
   // Any changed field changes the hash: a coin root, a base fee.
   const otherRoot = { ...BLOCK_ONE, coinTreeRoot: BLOCK_ONE.coinTreeRoot.replace(/5$/, "4") };
-  assert.notEqual(toHex(ghost.keccak256(readHeader(otherRoot).rlp)), "0x943182f201b34dae77dc5c8efb5c84083dda907eac51f8ac3fc6f6c36a791c23");
+  assert.notEqual(toHex(ghost.keccak256(readHeader(otherRoot).rlp)), BLOCK_ONE_HASH);
   assert.throws(() => readHeader({ ...BLOCK_ONE, dataTreeRoot: undefined }), /no dataTreeRoot/);
   assert.throws(() => readHeader({ ...BLOCK_ONE, coinTreeRoot: BLOCK_ONE.coinTreeRoot.slice(0, -2) }), /expected 32 bytes/);
   assert.throws(() => readHeader({ ...BLOCK_ONE, extraData: `0x${"00".repeat(33)}` }), /longer than 32/);
   assert.throws(() => readHeader({ ...BLOCK_ONE, number: `0x1${"0".repeat(16)}` }), /out of range/);
+});
+
+// Spec 05, vector header-genesis-example, as the JSON-RPC names its fields.
+const GENESIS = {
+  parentHash: `0x${"00".repeat(32)}`,
+  sha3Uncles: "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+  miner: `0x${"00".repeat(20)}`,
+  stateRoot: "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+  transactionsRoot: "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+  receiptsRoot: "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+  logsBloom: `0x${"00".repeat(256)}`,
+  difficulty: "0x1000000",
+  number: "0x0",
+  gasLimit: "0x1c9c380",
+  gasUsed: "0x0",
+  timestamp: "0x6b3703f0",
+  extraData: "0x000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f",
+  mixHash: `0x${"00".repeat(32)}`,
+  nonce: "0x0000000000000000",
+  baseFeePerGas: "0x3b9aca00",
+  coinTreeRoot: "0x8e66512042388a7863d500c4f96861466ae48b9d64ea1e10ec382c31aa61b5a8",
+  dataTreeRoot: "0x3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03",
+  dataMarkerRoot: "0x0ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3",
+};
+const GENESIS_HASH = "0x039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4";
+
+test("the header RLP has 19 items with dataMarkerRoot as field 18", () => {
+  assert.equal(HEADER_FIELDS.length, 19);
+  assert.deepEqual(HEADER_FIELDS[18], ["dataMarkerRoot", "fixed", 32]);
+  assert.equal(HEADER_FIELDS[17][0], "dataTreeRoot");
+
+  // The last item of the RLP is the 32-byte marker root.
+  const { rlp, values } = readHeader(BLOCK_ONE);
+  assert.equal(toHex(values.dataMarkerRoot), BLOCK_ONE.dataMarkerRoot);
+  assert.equal(toHex(rlp.slice(-33)), `0xa0${BLOCK_ONE.dataMarkerRoot.slice(2)}`);
+  const otherMarkers = { ...BLOCK_ONE, dataMarkerRoot: BLOCK_ONE.dataMarkerRoot.replace(/f$/, "e") };
+  assert.notEqual(toHex(ghost.keccak256(readHeader(otherMarkers).rlp)), BLOCK_ONE_HASH, "the marker root is in the hash");
+  assert.throws(() => readHeader({ ...BLOCK_ONE, dataMarkerRoot: undefined }), /no dataMarkerRoot/);
+  assert.throws(() => readHeader({ ...BLOCK_ONE, dataMarkerRoot: BLOCK_ONE.dataMarkerRoot.slice(0, -2) }), /expected 32 bytes/);
+
+  // The client library's header chain starts from the 19-item genesis and
+  // refuses it with 18 items (no marker root) or 20.
+  const params = { ...TEST_CHAIN_PARAMS, startDifficulty: 0x1000000 };
+  const genesis = readHeader(GENESIS).rlp;
+  assert.equal(toHex(ghost.keccak256(genesis)), GENESIS_HASH);
+  assert.equal(toHex(ghost.chainStart({ params, start: { header: genesis } })), GENESIS_HASH);
+  const payload = genesis.slice(3);
+  const eighteen = rlpList([payload.slice(0, -33)]);
+  const twenty = rlpList([payload, rlpString(new Uint8Array(32))]);
+  for (const header of [eighteen, twenty]) {
+    assert.throws(() => ghost.chainStart({ params, start: { header } }), /the header does not have 19 fields/);
+  }
 });
 
 test("the tree check accepts matching data and refuses a changed leaf or root", () => {

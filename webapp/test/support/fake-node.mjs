@@ -43,6 +43,8 @@ const NOTE_BYTES = 156;
 const GWEI = 1_000_000_000n;
 // Spec 05, vector empty-data-tree: no data commitment is ever made here.
 const EMPTY_DATA_ROOT = "0x3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03";
+// Spec 05, vector marker-set-empty: no data marker is ever spent here.
+const EMPTY_DATA_MARKER_ROOT = "0x0ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3";
 // Spec 05, section 10: the hash of the empty list.
 const EMPTY_LIST_HASH = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347";
 // The internal network's test constants (spec 06, section 4.2, with
@@ -102,11 +104,11 @@ function invalid(index, reason) {
 }
 
 // The header RLP of spec 05, section 10, written apart from the app's: the
-// 18 fields in order, as the base client's JSON-RPC names them.
+// 19 fields in order, as the base client's JSON-RPC names them.
 const HEADER_ORDER = [
   "parentHash", "sha3Uncles", "miner", "stateRoot", "transactionsRoot", "receiptsRoot", "logsBloom",
   "difficulty", "number", "gasLimit", "gasUsed", "timestamp", "extraData", "mixHash", "nonce",
-  "baseFeePerGas", "coinTreeRoot", "dataTreeRoot",
+  "baseFeePerGas", "coinTreeRoot", "dataTreeRoot", "dataMarkerRoot",
 ];
 const HEADER_INTS = new Set(["difficulty", "number", "gasLimit", "gasUsed", "timestamp", "baseFeePerGas"]);
 
@@ -253,8 +255,10 @@ export async function startFakeNode({
   // reorder pages; `markers(list)` replaces the
   // spent markers (hex) it serves as of an anchor, before they are cut into
   // pages; `receipts(number, list)` replaces the receipts (JSON) it serves
-  // for block `number`, null for none.
+  // for block `number`, null for none; `header(json)` replaces the header
+  // JSON it serves (a copy, with its hash), to drop or change a field.
   const dishonest = {
+    header: null,
     note: null,
     withhold: null,
     forge: null,
@@ -377,6 +381,7 @@ export async function startFakeNode({
       baseFeePerGas: q(baseFee),
       coinTreeRoot: toHex(coinTreeRoot),
       dataTreeRoot: EMPTY_DATA_ROOT,
+      dataMarkerRoot: EMPTY_DATA_MARKER_ROOT,
     };
   }
 
@@ -398,7 +403,7 @@ export async function startFakeNode({
   function header(block) {
     const json = { ...block.json, hash: toHex(block.hash) };
     if (forged(block)) json.coinTreeRoot = toHex(rootOf(served(block)));
-    return json;
+    return dishonest.header ? dishonest.header(json) : json;
   }
 
   // One new block holding `apply`'s changes and every transaction waiting
