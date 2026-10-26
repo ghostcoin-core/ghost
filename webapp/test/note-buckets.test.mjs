@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { TAG_BATCH, createBucketReader, restoreByBuckets, tagPrefix } from "../src/buckets.mjs";
+import { BucketRefused, TAG_BATCH, createBucketReader, restoreByBuckets, restoreTreesByBuckets, tagPrefix } from "../src/buckets.mjs";
 import { concat, toHex } from "../src/bytes.mjs";
 import { DEFAULT_COMMIT_ENTRY, createFlow } from "../src/flow.mjs";
 import { createProver } from "../src/prover.mjs";
@@ -404,10 +404,72 @@ test("a bucket that disagrees with the pages read is dropped for the full page s
       byPages,
       "a salt left out that the pages hold",
     );
+    // A bucket is not covered by a root: one that leaves out a note the
+    // pages hold of its prefix would hide coins, so it is dropped too.
+    await scan(() => [], byPages, "an empty bucket");
+    await scan((entries) => entries.filter((e) => Number(BigInt(e.position)) !== ours), byPages, "the key's own note withheld");
+    await scan((entries) => entries.filter((e) => Number(BigInt(e.position)) !== ours + 1), byPages, "a stranger's note withheld");
+    await scan((entries) => entries.slice(0, -1), byPages, "the bucket's last note withheld");
     // The key is never tried on a bucket that disagrees: no restoreAt ran
     // in those scans, and the next honest scan reads buckets again.
     await scan(null, byBuckets, "honest again");
   } finally {
     await done();
+  }
+
+  // Withholding the last coin of a batch would stop the restore before the
+  // next batch: a key with numbers 0 to 16 among strangers' notes, buckets
+  // of 4 bits checked against its pages.
+  const key = ghost.newKey(randomBytes(32));
+  const tags = ghost.noteTags({ key, first: 0, count: 17 });
+  // Position 17 is a stranger's note in number 0's bucket.
+  const notes = [
+    ...tags.map((tag) => concat([tag, new Uint8Array(153)])),
+    concat([tags[0], Uint8Array.from(randomBytes(153))]),
+    ...Array.from({ length: 20 }, () => Uint8Array.from(randomBytes(156))),
+  ];
+  const tree = {
+    treeIndex: 0,
+    count: notes.length,
+    records: concat(notes.flatMap((note, i) => [new Uint8Array(32).fill(i + 1), note])),
+    salts: notes.map(() => null),
+  };
+  const rpc = (withhold) => ({
+    call: async (method, [kind, treeIndex, bits, prefix]) => {
+      assert.equal(method, "ghost_getNoteBucket");
+      const entries = notes
+        .map((note, position) => ({ position, note }))
+        .filter(({ position, note }) => position !== withhold && tagPrefix(note, Number(bits)) === Number(prefix))
+        .map(({ position, note }) => ({ position: `0x${position.toString(16)}`, leaf: toHex(new Uint8Array(32).fill(position + 1)), note: toHex(note) }));
+      return { kind, treeIndex, bits, prefix, count: `0x${entries.length.toString(16)}`, entries };
+    },
+  });
+  // The coins of the numbers 0 to 16 whose notes (at position = number)
+  // the restore was given.
+  const owner = () => {
+    const calls = [];
+    return {
+      calls,
+      async request(op, args) {
+        calls.push(op);
+        if (op === "bucketBits") return { bits: 4 };
+        if (op === "noteTags") return { tags: ghost.noteTags(args) };
+        if (op === "restoreAt") {
+          const given = new Set(args.entries.map((e) => e.position));
+          return { found: tags.map((_, n) => n).filter((n) => given.has(n)).map((n) => ({ number: BigInt(n), position: n })) };
+        }
+        throw new Error(`no ${op}`);
+      },
+    };
+  };
+  const restore = (prover, withhold) =>
+    restoreTreesByBuckets({ prover, rpc: rpc(withhold), anchorHash: `0x${"00".repeat(32)}`, key, chainId: 7n, trees: [tree], spent: new Uint8Array(0) });
+  const honest = owner();
+  assert.equal((await restore(honest, null)).length, 17, "every coin, over two batches");
+  assert.equal(honest.calls.filter((op) => op === "restoreAt").length, 2);
+  for (const withhold of [15, 16, 0, 17]) {
+    const prover = owner();
+    await assert.rejects(restore(prover, withhold), (err) => err instanceof BucketRefused && /leaves out/.test(err.message), `position ${withhold} withheld`);
+    assert.ok(!prover.calls.includes("restoreAt") || withhold === 16, "the key is not tried on a bucket that leaves a note out");
   }
 });

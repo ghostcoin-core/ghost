@@ -726,14 +726,17 @@ app makes no data commitments.
    its position. A bucket is a hint, not completeness: no header root covers
    it, and a node can withhold a note. So each entry must be the leaf, note
    and salt the pages read (and checked against the tip's root and the block
-   receipts) hold at its position, before the key is tried on it. The full
+   receipts) hold at its position, and each bucket must hold every position
+   whose page-read note starts with its prefix, none withheld, before the
+   key is tried on it. The full
    page scan stays the fallback, and a scan's coins are wholly from one or
    the other, never partly: a node that answers "method not found"
    (`-32601`) is not asked again for the life of the flow, and a node that
    answers any other error, or serves a bucket that is malformed (not the
    kind, tree, bits, prefix or count asked for, positions not strictly
    increasing, a field of the wrong length, a note of another bucket) or
-   that disagrees with the pages, gets the full page scan for that scan
+   that disagrees with the pages (an entry they do not hold, or a note of
+   the bucket left out, an empty bucket included), gets the full page scan for that scan
    only. The pages are still read whole for the root and receipt checks, so
    the buckets do not yet save a page read.
 2. **Same requests after restore.** On a reveal or claim, every path after
