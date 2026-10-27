@@ -39,7 +39,7 @@ test("release-key.pub is the ghost-node release key, an ed25519 public key", () 
   const pem = read("../release-key.pub");
   assert.equal(
     pem,
-    "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAaXYrmAQBL2GOex7Gk5uAi/2q/0DxRZwTbYyVPGQVHfE=\n-----END PUBLIC KEY-----\n",
+    "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/5nNW/CysxPVl+S5p5VJxi2ywNlEl3HQ1/BzHSAQZ3A=\n-----END PUBLIC KEY-----\n",
   );
   assert.equal(createPublicKey(pem).asymmetricKeyType, "ed25519");
 });
