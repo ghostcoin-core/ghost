@@ -1,6 +1,13 @@
-Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter)
+The fonts in this folder are the latin-subset woff2 files of the
+@fontsource-variable/instrument-sans and @fontsource/ibm-plex-mono packages.
 
-This Font Software is licensed under the SIL Open Font License, Version 1.1.
+instrument-sans-latin-wght-normal.woff2 (Instrument Sans):
+Copyright 2022 The Instrument Sans Project Authors (https://github.com/Instrument/instrument-sans)
+
+ibm-plex-mono-latin-400-normal.woff2 and ibm-plex-mono-latin-600-normal.woff2 (IBM Plex Mono):
+Copyright 2017 IBM Corp. All rights reserved.
+
+Both Font Software are licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
 http://scripts.sil.org/OFL
 

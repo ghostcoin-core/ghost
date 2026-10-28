@@ -46,7 +46,7 @@ rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
 threads_initial_memory=67108864
 threads_max_memory=4294967296
 # The page's own files, in the order they are copied.
-files=(index.html style.css)
+files=(index.html style.css favicon.svg)
 modules=(app bytes chain flow header keyimage local-node popup-wallet prover rpc thread threads wallet-connect wasm worker worker-core)
 
 if ! rustup run "$toolchain" rustc --version >/dev/null 2>&1; then
@@ -103,7 +103,7 @@ for m in "${modules[@]}"; do
 done
 cp "$module" "$dist/ghost_webapp_wasm.wasm"
 cp "$threads_module" "$dist/ghost_webapp_wasm_threads.wasm"
-# The self-hosted Inter font and its licence.
+# The self-hosted Instrument Sans and IBM Plex Mono fonts and their licence.
 cp -R "$here/fonts" "$dist/fonts"
 
 (

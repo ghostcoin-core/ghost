@@ -1,7 +1,7 @@
 // The page's layout, read from index.html and style.css as text: the folder
 // tabs, the wallet button, the Vanish amount box, the Network and About
-// panels, Claim kept in a hidden container, the Midnight violet colors as
-// CSS variables in one dark theme, and the CSP. No browser and no module
+// panels, Claim kept in a hidden container, the light brand colors as
+// CSS variables in one light theme, and the CSP. No browser and no module
 // build are needed.
 
 import assert from "node:assert/strict";
@@ -264,18 +264,19 @@ test("neither the page nor the style names an external URL", () => {
   assert.doesNotMatch(html, /\sstyle="/i, "no inline style");
 });
 
-test("the Midnight violet colors are CSS variables of one dark theme", () => {
+test("the light brand colors are CSS variables of one light theme", () => {
   const root = /:root\s*\{([^}]*)\}/.exec(css);
   assert.ok(root, "a :root block");
   const vars = Object.fromEntries([...root[1].matchAll(/(--[\w-]+):\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
-  assert.equal(vars["--bg"].toUpperCase(), "#0A0A12");
-  for (const name of ["--surface", "--surface-behind", "--violet", "--text", "--muted", "--glow", "--font", "--ease"]) {
+  assert.equal(vars["--bg"].toUpperCase(), "#F5F5F8");
+  for (const name of ["--surface", "--surface-behind", "--violet", "--text", "--muted", "--shadow", "--font", "--mono", "--ease"]) {
     assert.ok(vars[name], `${name} is set`);
   }
-  assert.match(vars["--font"], /^"Inter", system-ui/);
-  assert.match(root[1], /color-scheme:\s*dark;/);
+  assert.match(vars["--font"], /^"Instrument Sans", system-ui/);
+  assert.match(vars["--mono"], /^"IBM Plex Mono", ui-monospace/);
+  assert.match(root[1], /color-scheme:\s*light;/);
   assert.equal(css.match(/:root\b/g).length, 1, "one theme");
-  assert.doesNotMatch(css, /color-scheme:\s*[^;]*light/);
+  assert.doesNotMatch(css, /color-scheme:\s*[^;]*dark/);
   // No second theme behind a color-scheme media query.
   assert.doesNotMatch(css, /prefers-color-[s]cheme/);
   // The inactive tab is darker than the card it sits behind.
@@ -286,13 +287,13 @@ test("the Midnight violet colors are CSS variables of one dark theme", () => {
   assert.match(css, /\.card\s*\{[^}]*background:\s*var\(--surface\)/);
 });
 
-test("the glow and motion turn off under reduced motion", () => {
+test("motion turns off under reduced motion; the card's soft shadow stays", () => {
   const at = css.indexOf("@media (prefers-reduced-motion: no-preference)");
   assert.notEqual(at, -1);
   const outside = css.slice(0, at);
   assert.doesNotMatch(outside, /\b(transition|animation)\s*:/);
-  assert.doesNotMatch(outside, /box-shadow:\s*var\(--glow\)/);
-  assert.match(css.slice(at), /\.card,[^{]*\{\s*box-shadow:\s*var\(--glow\)/);
+  assert.doesNotMatch(css, /var\(--glow\)/);
+  assert.match(outside, /\.card\s*\{[^}]*box-shadow:\s*var\(--shadow\)/);
   assert.match(css.slice(at), /transition/);
 });
 
