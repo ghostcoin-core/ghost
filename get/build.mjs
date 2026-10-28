@@ -5,6 +5,7 @@
 //   dist/install.sh  the Mac and Linux script (curl -fsSL https://get.ghostcoin.com | sh)
 //   dist/win         the PowerShell script (irm https://get.ghostcoin.com/win | iex)
 //   dist/cmd         the CMD script
+//   dist/fonts/      the self-hosted fonts, copied from get/fonts
 //
 // The release comes from GET_RELEASE_DIR (a local folder) or, when that is
 // unset, from the release's latest/download URLs; never from a branch. Each
@@ -19,7 +20,7 @@
 // Usage: node get/build.mjs [out]   (out defaults to get/dist)
 
 import { createPublicKey, verify } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -49,7 +50,10 @@ export const SCRIPTS = [
 ];
 
 // The page's own files, copied as they are; index.html also gets data-ready.
-export const PAGE_FILES = ["index.html", "style.css", "src/page.mjs"];
+export const PAGE_FILES = ["index.html", "style.css", "favicon.svg", "src/page.mjs"];
+// The self-hosted fonts and their licence, every file of fonts/ copied
+// byte for byte.
+export const FONT_DIR = "fonts";
 const READY_PLACEHOLDER = 'data-ready="sh"';
 
 // A release read from a local folder. A file that is not there is null.
@@ -134,6 +138,11 @@ export async function build({ release, publicKey, out, log = () => {} }) {
         text = text.replace(READY_PLACEHOLDER, `data-ready="${ready.join(" ")}"`);
       }
       await writeFile(join(staging, file), text);
+    }
+    await mkdir(join(staging, FONT_DIR));
+    for (const entry of await readdir(join(here, FONT_DIR), { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      await writeFile(join(staging, FONT_DIR, entry.name), await readFile(join(here, FONT_DIR, entry.name)));
     }
     for (const s of served) await writeFile(join(staging, s.serve), s.bytes);
 
