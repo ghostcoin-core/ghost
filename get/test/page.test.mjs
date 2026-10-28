@@ -233,6 +233,37 @@ test("index.html has the page's elements, one module script and no inline script
   assert.match(page, /<html lang="en" data-ready="sh">/);
 });
 
+// The text of an element in index.html, found by id, with tags dropped and
+// whitespace collapsed.
+function textOf(id) {
+  const m = page.match(new RegExp(`<(\\w+)[^>]*\\sid="${id}"[^>]*>([\\s\\S]*?)</\\1>`));
+  assert.ok(m, `#${id} is on the page`);
+  return m[2].replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+}
+
+test("a notice near the top says it is the public test network, with test coins and a possible reset", () => {
+  assert.equal(
+    textOf("test-network"),
+    "This is the Ghost public test network. Its coins are test coins with no value, and the network may be reset; if it is, nodes move to the new chain on their own.",
+  );
+  // Near the top: after the heading and before the install line.
+  const at = page.indexOf('id="test-network"');
+  assert.ok(page.indexOf("<h1>") < at && at < page.indexOf('id="primary-label"'));
+});
+
+test("under the install line, both systems' lines mine to the visitor's Ghost wallet", () => {
+  assert.equal(textOf("wallet-sh"), "curl -fsSL https://get.ghostcoin.com | GHOST_MINE_TO=0xYOUR_WALLET_ADDRESS sh");
+  assert.equal(textOf("wallet-win"), `$env:GHOST_MINE_TO='0xYOUR_WALLET_ADDRESS'; ${LINES.win}`);
+  assert.equal(textOf("wallet-sh"), LINES.sh.replace("| sh", "| GHOST_MINE_TO=0xYOUR_WALLET_ADDRESS sh"));
+  assert.match(textOf("wallet-note"), /^Mines straight to your Ghost wallet, so the coins show up in the web app\./);
+  const primary = page.indexOf('id="primary-line"');
+  const others = page.indexOf('id="others-label"');
+  for (const id of ["wallet-note", "wallet-sh", "wallet-win"]) {
+    const at = page.indexOf(`id="${id}"`);
+    assert.ok(primary < at && at < others, `${id} sits under the install line`);
+  }
+});
+
 test("the page loads nothing from another origin", () => {
   const refs = [...page.matchAll(/\s(?:src|href)="([^"]+)"/g)].map((m) => m[1]);
   for (const ref of refs) {

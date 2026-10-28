@@ -30,6 +30,7 @@
       </svg>
       <h1>Run a Ghost node</h1>
       <p class="lede">Paste one line into a terminal. When it finishes, your node is installed, on the network, syncing and mining. There is nothing else to do.</p>
+      <p class="notice" id="test-network" role="note">This is the Ghost public test network. Its coins are test coins with no value, and the network may be reset; if it is, nodes move to the new chain on their own.</p>
 
       <section class="primary" aria-labelledby="primary-label">
         <h2 id="primary-label">macOS and Linux</h2>
@@ -38,6 +39,15 @@
           <button type="button" id="copy" hidden>Copy</button>
         </div>
         <p class="soon" id="primary-soon" hidden>Coming soon: the installer for this system is not published yet.</p>
+      </section>
+
+      <section class="wallet" aria-labelledby="wallet-label">
+        <h2 id="wallet-label">Use the Ghost web app?</h2>
+        <p id="wallet-note">Mines straight to your Ghost wallet, so the coins show up in the web app. Put your wallet address in place of 0xYOUR_WALLET_ADDRESS.</p>
+        <ul>
+          <li><span class="label">macOS and Linux</span><code id="wallet-sh">curl -fsSL https://get.ghostcoin.com | GHOST_MINE_TO=0xYOUR_WALLET_ADDRESS sh</code></li>
+          <li><span class="label">Windows (PowerShell)</span><code id="wallet-win">$env:GHOST_MINE_TO='0xYOUR_WALLET_ADDRESS'; irm https://get.ghostcoin.com/win | iex</code></li>
+        </ul>
       </section>
 
       <section class="others" aria-labelledby="others-label">
