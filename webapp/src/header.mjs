@@ -32,11 +32,22 @@ import { concat, fromHex, quantity } from "./bytes.mjs";
 // heavier. Headers below the pin are not authenticated. Each release ships
 // its own pin, a host step taken from the launch network; the headers the
 // page saved in its own storage are kept per chain and start, so a new pin
-// starts them afresh. The table is empty: no launch network and no pinned
-// start exist yet, so this build shows no confirmations on any network
-// until one is added. createFlow takes another table (the tests add their
-// own network).
-export const NETWORKS = Object.freeze({});
+// starts them afresh. The table lists the public test network, the one the
+// one-line installer joins; the launch network, and a pinned start, are
+// still to come. createFlow takes another table (the tests add their own
+// network).
+export const NETWORKS = Object.freeze({
+  // The public test network (ghost-node params/ghost/testnet.go): chain id
+  // 6777972, the 30-second launch preset with its own start and minimum
+  // difficulty. Its chain is short, so the page checks every header from
+  // genesis.
+  "6777972": Object.freeze({
+    params: Object.freeze({ blockTime: 30, halfLife: 3600, startDifficulty: 16384, minDifficulty: 4096, futureDrift: 30 }),
+    genesisTimestamp: 1793124000,
+    genesisHash: "0xdfe4271fd12d302e15c68e381ade8076207f70d3778eebd69604566fb6979436",
+    pin: null,
+  }),
+});
 
 // The entry of `chainId` in `networks`, or null.
 export function networkOf(networks, chainId) {
