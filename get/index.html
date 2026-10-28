@@ -3,15 +3,31 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'">
     <meta name="referrer" content="no-referrer">
+    <meta name="theme-color" content="#FFFFFF">
+    <meta name="color-scheme" content="light">
     <title>Run a Ghost node</title>
     <meta name="description" content="One line installs a Ghost node: on the network, syncing and mining, with nothing else to do.">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/style.css">
     <script type="module" src="/src/page.mjs"></script>
   </head>
   <body>
     <main>
+      <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Ghost">
+        <g fill="#0E0D1A">
+          <rect x="0" y="0" width="26" height="26"/>
+          <rect x="37" y="0" width="26" height="26"/>
+          <rect x="74" y="0" width="26" height="26"/>
+          <rect x="0" y="37" width="26" height="26"/>
+          <rect x="74" y="37" width="26" height="26"/>
+          <rect x="0" y="74" width="26" height="26"/>
+          <rect x="37" y="74" width="26" height="26"/>
+          <rect x="74" y="74" width="26" height="26"/>
+        </g>
+        <path fill="#6B4CFF" d="M37 50a13 13 0 0 1 26 0v13l-6.5-5.2-6.5 5.2-6.5-5.2-6.5 5.2z"/>
+      </svg>
       <h1>Run a Ghost node</h1>
       <p class="lede">Paste one line into a terminal. When it finishes, your node is installed, on the network, syncing and mining. There is nothing else to do.</p>
 

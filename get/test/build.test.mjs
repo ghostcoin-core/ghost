@@ -7,8 +7,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createPublicKey } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +19,14 @@ const getDir = fileURLToPath(new URL("..", import.meta.url));
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const keys = keyPair();
 const other = keyPair();
+
+// The self-hosted fonts and their licence, served from dist/fonts.
+const FONT_FILES = [
+  "fonts/LICENSE.txt",
+  "fonts/ibm-plex-mono-latin-400-normal.woff2",
+  "fonts/instrument-sans-latin-400-normal.woff2",
+  "fonts/instrument-sans-latin-600-normal.woff2",
+];
 
 async function buildFrom(options, publicKey = keys.publicPem) {
   const rel = makeRelease({ privateKey: keys.privateKey, ...options });
@@ -56,7 +64,22 @@ test("a full signed release is served byte for byte and the page lists every scr
   assert.match(html, /<html lang="en" data-ready="sh win cmd">/);
   assert.equal(readFileSync(join(r.out, "src/page.mjs"), "utf8"), read("../src/page.mjs"));
   assert.equal(readFileSync(join(r.out, "style.css"), "utf8"), read("../style.css"));
+  assert.equal(readFileSync(join(r.out, "favicon.svg"), "utf8"), read("../favicon.svg"));
+  for (const file of FONT_FILES) {
+    assert.deepEqual(readFileSync(join(r.out, file)), readFileSync(join(getDir, file)), file);
+  }
   assert.ok(!existsSync(`${r.out}.partial`));
+});
+
+test("dist holds the page, its favicon and fonts, and the three scripts, and nothing else", async (t) => {
+  const r = await buildFrom({});
+  t.after(r.cleanup);
+  assert.ifError(r.error);
+  const files = readdirSync(r.out, { recursive: true, withFileTypes: true })
+    .filter((e) => e.isFile())
+    .map((e) => relative(r.out, join(e.parentPath, e.name)))
+    .toSorted();
+  assert.deepEqual(files, ["cmd", "favicon.svg", ...FONT_FILES, "index.html", "install.sh", "src/page.mjs", "style.css", "win"].toSorted());
 });
 
 test("without install.ps1 and install.cmd the build succeeds and serves the not-published stubs", async (t) => {

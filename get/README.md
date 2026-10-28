@@ -23,6 +23,20 @@ The page finds the visitor's system from the user agent (Windows, macOS,
 otherwise Linux), shows that system's line with one copy button, and lists
 the other systems below it.
 
+## Look
+
+One light theme, matching the web app and brand: the palette is the set of
+tokens in `style.css`'s `:root` (white page, `#6B4CFF` violet accent, the
+install line in a dark `#0E0D1A` box), and every text color meets WCAG AA
+on its background. The logo, inline in `index.html` and as `favicon.svg`,
+is the nine-square block with the ghost in the center cell.
+
+The fonts are self-hosted from `fonts/`: the latin-subset woff2 files of
+the `@fontsource/instrument-sans` (400, 600) and `@fontsource/ibm-plex-mono`
+(400) packages, unmodified, under the SIL Open Font License
+(`fonts/LICENSE.txt`). `test/brand.test.mjs` checks the palette, the
+contrast, the logo's geometry and the fonts.
+
 ## Build
 
 ```sh
@@ -59,7 +73,8 @@ vercel deploy --prebuilt --prod
 
 Scripts are served as `text/plain; charset=utf-8` with
 `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`. The page
-carries a strict Content-Security-Policy and has no inline script.
+carries a strict Content-Security-Policy and has no inline script; it loads
+only its own script, stylesheet, favicon and fonts.
 
 ## Test
 
