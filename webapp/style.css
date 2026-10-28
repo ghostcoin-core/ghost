@@ -1,67 +1,85 @@
-/* Inter 4.1 (variable, latin subset), served from this origin.
+/* Instrument Sans (variable, latin subset) and IBM Plex Mono 400 and 600
+   (latin subset), served from this origin.
    Licence: fonts/LICENSE.txt (SIL Open Font License 1.1). */
 @font-face {
-  font-family: "Inter";
+  font-family: "Instrument Sans";
   font-style: normal;
-  font-weight: 100 900;
+  font-weight: 400 700;
   font-display: swap;
-  src: url("fonts/InterVariable-latin.woff2") format("woff2");
+  src: url("fonts/instrument-sans-latin-wght-normal.woff2") format("woff2");
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
-/* Midnight violet: one dark theme. */
-:root {
-  color-scheme: dark;
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
 
-  /* Page and the two glow circles behind the card */
-  --bg: #0A0A12;
-  --glow-violet: #6B4CFF;
-  --glow-violet-opacity: 0.35;
-  --glow-cyan: #2EC5FF;
-  --glow-cyan-opacity: 0.18;
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("fonts/ibm-plex-mono-latin-600-normal.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* The light brand look: one light theme. */
+:root {
+  color-scheme: light;
+
+  /* Page (Mist) and the header bar */
+  --bg: #F5F5F8;
+  --header: #FFFFFF;
+  --header-line: #E4E3EC;
 
   /* The card and the tab in front; the tab behind */
-  --surface: #15142A;
-  --border: #2A2850;
-  --surface-behind: #0E0D1C;
-  --border-behind: #1E1C38;
-  --text-behind: #6E6A99;
+  --surface: #FFFFFF;
+  --border: #E4E3EC;
+  --shadow: 0 12px 32px rgba(14, 13, 26, 0.06);
+  --surface-behind: #ECEBF2;
+  --border-behind: #E4E3EC;
+  --text-behind: #5F5D73;
 
-  /* Input boxes and the GHOST token label */
-  --input: #0E0D1C;
-  --input-border: #23214A;
-  --placeholder: #4E4A7A;
-  --token: #1F1D3D;
+  /* Input boxes and the GHOST token chip */
+  --input: #F5F5F8;
+  --input-border: #E4E3EC;
+  --placeholder: #6E6C82;
+  --tint: #EEEAFF;
+  --token: #EEEAFF;
 
-  /* Text, accent and errors */
-  --text: #ECEBFF;
-  --muted: #8C88B8;
-  --accent: #A78BFF;
-  --danger: #FF7A9A;
-  --caution: #FBBF24;
+  /* Text (Ink), accent and warnings */
+  --text: #0E0D1A;
+  --muted: #4A4860;
+  --quiet: #6E6C82;
+  --accent: #6B4CFF;
+  --danger: #C8264B;
+  --caution: #A15C00;
 
-  /* The main button's gradient and the wallet button */
+  /* The main button, the wallet button and Summon's success fill */
   --violet: #6B4CFF;
-  --violet-end: #A64CFF;
+  --violet-hover: #5A3BEE;
   --on-violet: #FFFFFF;
-  --wallet-tint: rgba(167, 139, 255, 0.12);
-  --wallet-border: rgba(167, 139, 255, 0.3);
-  --wallet-text: #CFC3FF;
+  --wallet-bg: #FFFFFF;
+  --wallet-border: #E4E3EC;
+  --wallet-text: #0E0D1A;
+  --mint: #4FF0C8;
 
-  --raised: #1F1D3D;
-  --border-strong: #3A3770;
-  --glow: 0 0 0 1px rgba(107, 76, 255, 0.25), 0 12px 48px rgba(107, 76, 255, 0.22);
-  --shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-  --glow-focus: 0 0 0 3px rgba(167, 139, 255, 0.45);
+  --raised: #FFFFFF;
+  --border-strong: #C9C7D6;
+  --focus-ring:0 0 0 3px rgba(107, 76, 255, 0.3);
 
-  --font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font: "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --radius: 18px;
   --radius-small: 10px;
   --card-width: 420px;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --speed: 200ms;
-  --drift: 20s;
 
   background: var(--bg);
   color: var(--text);
@@ -88,39 +106,9 @@ body {
   background: var(--bg);
   display: flex;
   flex-direction: column;
-  isolation: isolate;
   margin: 0;
   min-height: 100vh;
   overflow-x: hidden;
-}
-
-/* The glow: two large blurred circles behind the card. */
-body::before,
-body::after {
-  border-radius: 50%;
-  content: "";
-  filter: blur(110px);
-  pointer-events: none;
-  position: fixed;
-  z-index: -1;
-}
-
-body::before {
-  background: var(--glow-violet);
-  height: 560px;
-  left: calc(50% - 440px);
-  opacity: var(--glow-violet-opacity);
-  top: 8vh;
-  width: 560px;
-}
-
-body::after {
-  background: var(--glow-cyan);
-  height: 460px;
-  left: calc(50% - 20px);
-  opacity: var(--glow-cyan-opacity);
-  top: 34vh;
-  width: 460px;
 }
 
 h2,
@@ -163,12 +151,14 @@ a {
   width: 1.25em;
 }
 
-.ghost-body {
+/* The nine-square logo: one color (currentColor) unless the ghost in the
+   center cell is given its own with --logo-ghost. */
+.logo-squares {
   fill: currentColor;
 }
 
-.ghost-eye {
-  fill: var(--bg);
+.logo-ghost {
+  fill: var(--logo-ghost, currentColor);
 }
 
 .line {
@@ -230,7 +220,7 @@ textarea:focus,
 button:focus-visible,
 .tab-panel:focus-visible {
   border-color: var(--accent);
-  box-shadow: var(--glow-focus);
+  box-shadow: var(--focus-ring);
   outline: none;
 }
 
@@ -254,11 +244,8 @@ button:disabled {
   opacity: 0.45;
 }
 
-/* White on the gradient's light end is 4.1:1, so the main button's text is
-   large and bold (WCAG large text from 18.66px bold); on the dark end and
-   the middle, where the text sits, it is above 4.5:1. */
 button.primary {
-  background: linear-gradient(90deg, var(--violet), var(--violet-end));
+  background: var(--violet);
   border-color: transparent;
   color: var(--on-violet);
   font-size: 1.2rem;
@@ -266,8 +253,8 @@ button.primary {
 }
 
 button.primary:hover:not(:disabled) {
+  background: var(--violet-hover);
   border-color: transparent;
-  filter: brightness(1.08);
 }
 
 button.wide {
@@ -306,6 +293,8 @@ button.link:hover:not(:disabled) {
 
 .top {
   align-items: center;
+  background: var(--header);
+  border-bottom: 1px solid var(--header-line);
   display: flex;
   gap: 1rem;
   justify-content: space-between;
@@ -321,8 +310,10 @@ button.link:hover:not(:disabled) {
   letter-spacing: 0.01em;
 }
 
+/* Ink squares, violet ghost. */
 .icon-brand {
-  color: var(--accent);
+  --logo-ghost: var(--accent);
+  color: var(--text);
   height: 1.6em;
   width: 1.6em;
 }
@@ -333,7 +324,7 @@ button.link:hover:not(:disabled) {
 
 .wallet-button {
   align-items: center;
-  background: var(--wallet-tint);
+  background: var(--wallet-bg);
   border: 1px solid var(--wallet-border);
   border-radius: 999px;
   color: var(--wallet-text);
@@ -430,6 +421,7 @@ button.link:hover:not(:disabled) {
 }
 
 .balance-big {
+  font-family: var(--mono);
   font-size: 1.25rem;
   font-weight: 600;
   margin-top: 0.15rem;
@@ -485,13 +477,14 @@ main {
 }
 
 .tab:focus-visible {
-  box-shadow: var(--glow-focus);
+  box-shadow: var(--focus-ring);
 }
 
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: var(--shadow);
   padding: 1.25rem;
   position: relative;
   z-index: 1;
@@ -520,7 +513,7 @@ main {
 
 .amount-box:focus-within {
   border-color: var(--accent);
-  box-shadow: var(--glow-focus);
+  box-shadow: var(--focus-ring);
 }
 
 .amount-box input {
@@ -529,6 +522,7 @@ main {
   box-shadow: none;
   color: var(--text);
   flex: 1;
+  font-family: var(--mono);
   font-size: 2rem;
   font-weight: 600;
   margin: 0;
@@ -659,7 +653,7 @@ main {
 }
 
 .bar span {
-  background: linear-gradient(90deg, var(--violet), var(--violet-end));
+  background: var(--violet);
   border-radius: 999px;
   display: block;
   height: 100%;
@@ -693,6 +687,16 @@ main {
   height: 3rem;
   margin: 0.5rem auto 0.25rem;
   width: 3rem;
+}
+
+/* Summon's success moment: the logo in ink on a mint fill. Mint is never
+   used as text on white. */
+#summon-done .icon-done {
+  background: var(--mint);
+  border-radius: var(--radius-small);
+  box-sizing: content-box;
+  color: var(--text);
+  padding: 0.6rem;
 }
 
 .error-line {
@@ -938,14 +942,8 @@ main {
   text-decoration: underline;
 }
 
-/* Glow and motion only where the user has not asked for less motion. */
+/* Motion only where the user has not asked for less motion. */
 @media (prefers-reduced-motion: no-preference) {
-  .card,
-  .popover,
-  .sheet {
-    box-shadow: var(--glow);
-  }
-
   .tab {
     transition:
       background-color var(--speed) var(--ease),
@@ -953,23 +951,14 @@ main {
       transform var(--speed) var(--ease);
   }
 
-  /* The two glow circles drift slowly, in opposite directions. */
-  body::before {
-    animation: drift var(--drift) ease-in-out infinite;
-  }
-
-  body::after {
-    animation: drift var(--drift) ease-in-out infinite reverse;
-  }
-
   button,
   input,
   textarea,
   .amount-box {
     transition:
+      background-color var(--speed) var(--ease),
       border-color var(--speed) var(--ease),
-      box-shadow var(--speed) var(--ease),
-      filter var(--speed) var(--ease);
+      box-shadow var(--speed) var(--ease);
   }
 
   /* The coin fades out when it vanishes and fades in when it is summoned. */
@@ -1022,21 +1011,6 @@ main {
     from {
       opacity: 0;
       transform: translate(-50%, 8px);
-    }
-  }
-
-  @keyframes drift {
-    0%,
-    100% {
-      transform: translate(0, 0);
-    }
-
-    33% {
-      transform: translate(8vw, 6vh);
-    }
-
-    66% {
-      transform: translate(-6vw, 3vh);
     }
   }
 
