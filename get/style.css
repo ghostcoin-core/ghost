@@ -81,6 +81,15 @@ h2 {
   margin: 0 0 2.5rem;
 }
 
+.notice {
+  color: var(--text);
+  background: var(--highlight);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin: 0 0 2.5rem;
+}
+
 .primary {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -142,18 +151,30 @@ button:focus-visible {
   margin: 0;
 }
 
+.wallet {
+  margin-bottom: 2.5rem;
+}
+
+.wallet p {
+  color: var(--muted);
+  margin: 0 0 1rem;
+}
+
+.wallet ul,
 .others ul {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
+.wallet li,
 .others li {
   display: grid;
   gap: 0.35rem;
   margin-bottom: 1rem;
 }
 
+.wallet code,
 .others code {
   display: block;
 }

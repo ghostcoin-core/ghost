@@ -23,6 +23,17 @@ The page finds the visitor's system from the user agent (Windows, macOS,
 otherwise Linux), shows that system's line with one copy button, and lists
 the other systems below it.
 
+A notice near the top says this is the Ghost public test network: its coins
+are test coins with no value, and the network may be reset, in which case
+nodes move to the new chain on their own. Under the install line, for people
+who use the Ghost web app, the same install mines straight to their Ghost
+wallet with `GHOST_MINE_TO` set to the wallet's address:
+
+```text
+curl -fsSL https://get.ghostcoin.com | GHOST_MINE_TO=0xYOUR_WALLET_ADDRESS sh
+$env:GHOST_MINE_TO='0xYOUR_WALLET_ADDRESS'; irm https://get.ghostcoin.com/win | iex
+```
+
 ## Look
 
 One light theme, matching the web app and brand: the palette is the set of
