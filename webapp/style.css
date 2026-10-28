@@ -71,7 +71,7 @@
 
   --raised: #FFFFFF;
   --border-strong: #C9C7D6;
-  --focus-ring:0 0 0 3px rgba(107, 76, 255, 0.3);
+  --focus-ring: 0 0 0 3px rgba(107, 76, 255, 0.3);
 
   --font: "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
