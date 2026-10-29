@@ -151,14 +151,15 @@ a {
   width: 1.25em;
 }
 
-/* The nine-square logo: one color (currentColor) unless the ghost in the
-   center cell is given its own with --logo-ghost. */
-.logo-squares {
-  fill: currentColor;
+/* The pixel-ghost logo: by default the body alone in one color
+   (currentColor), the eyes as holes, which reads at icon sizes; a mark that
+   sets --logo-body and --logo-cells shows the full logo with its cells. */
+.logo-body {
+  fill: var(--logo-body, currentColor);
 }
 
-.logo-ghost {
-  fill: var(--logo-ghost, currentColor);
+.logo-cells {
+  display: var(--logo-cells, none);
 }
 
 .line {
@@ -310,9 +311,10 @@ button.link:hover:not(:disabled) {
   letter-spacing: 0.01em;
 }
 
-/* Ink squares, violet ghost. */
+/* The full logo: lavender body, outlined cells. */
 .icon-brand {
-  --logo-ghost: var(--accent);
+  --logo-body: #C9BCFF;
+  --logo-cells: inline;
   color: var(--text);
   height: 1.6em;
   width: 1.6em;

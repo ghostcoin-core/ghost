@@ -39,8 +39,9 @@ $env:GHOST_MINE_TO='0xYOUR_WALLET_ADDRESS'; irm https://get.ghostcoin.com/win | 
 One light theme, matching the web app and brand: the palette is the set of
 tokens in `style.css`'s `:root` (white page, `#6B4CFF` violet accent, the
 install line in a dark `#0E0D1A` box), and every text color meets WCAG AA
-on its background. The logo, inline in `index.html` and as `favicon.svg`,
-is the nine-square block with the ghost in the center cell.
+on its background. The logo is the pixel ghost: inline in `index.html` the
+full logo (outlined cells on a lavender body, the eyes left empty), and as
+`favicon.svg` its small cut for 16 to 32 px (the body alone in violet).
 
 The fonts are self-hosted from `fonts/`: the latin-subset woff2 files of
 the `@fontsource/instrument-sans` (400, 600) and `@fontsource/ibm-plex-mono`

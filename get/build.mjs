@@ -5,7 +5,7 @@
 //   dist/install.sh  the Mac and Linux script (curl -fsSL https://get.ghostcoin.com | sh)
 //   dist/win         the PowerShell script (irm https://get.ghostcoin.com/win | iex)
 //   dist/cmd         the CMD script
-//   dist/favicon.svg the nine-square logo, copied from get/favicon.svg
+//   dist/favicon.svg the pixel-ghost logo's small cut, copied from get/favicon.svg
 //   dist/fonts/      the self-hosted fonts, copied from get/fonts
 //
 // The release comes from GET_RELEASE_DIR (a local folder) or, when that is

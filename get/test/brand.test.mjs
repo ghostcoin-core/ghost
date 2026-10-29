@@ -1,11 +1,12 @@
 // The light brand look: style.css's palette tokens, WCAG AA contrast for
-// every text color on the background it sits on, the nine-square logo (in
-// the page and as the favicon) drawn to its exact geometry, the
+// every text color on the background it sits on, the pixel-ghost logo (in
+// the page, and its small cut as the favicon) drawn to its exact geometry, the
 // self-hosted fonts, and one light theme. Files are read as text.
 
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
+import { BODY_FILL, CELLS, glyphProblems, showsGlyph, smallProblems, viewBox } from "../../scripts/check-pixel-ghost-logo.mjs";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const css = read("../style.css");
@@ -143,61 +144,39 @@ test("every text color meets WCAG AA (4.5:1) on its background", () => {
   }
 });
 
-// The nine-square block: a 100-unit box, squares of side 26 at 0, 37 and
-// 74 (a gap of 11), the center cell holding the ghost.
-const GHOST = "M37 50a13 13 0 0 1 26 0v13l-6.5-5.2-6.5 5.2-6.5-5.2-6.5 5.2z";
-const SQUARES = [0, 37, 74]
-  .flatMap((y) => [0, 37, 74].map((x) => `${x},${y}`))
-  .filter((p) => p !== "37,37")
-  .toSorted();
-
-const attrs = (tag) => Object.fromEntries([...tag.matchAll(/([\w:-]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
-
-function assertLogo(svg, where) {
-  const open = attrs(svg.match(/<svg\b[^>]*>/)[0]);
-  assert.equal(open.viewBox, "0 0 100 100", where);
-  assert.doesNotMatch(svg, /stroke/i, `${where}: no strokes`);
-  assert.doesNotMatch(svg, /<(?:circle|ellipse|line|polyline|polygon|image|text|use|style)\b/, where);
-
-  const rects = [...svg.matchAll(/<rect\b[^>]*>/g)].map((m) => attrs(m[0]));
-  assert.equal(rects.length, 8, `${where}: eight squares`);
-  for (const r of rects) {
-    assert.equal(r.width, "26", where);
-    assert.equal(r.height, "26", where);
-    assert.ok(!("rx" in r) && !("ry" in r) && !("transform" in r), where);
-  }
-  assert.deepEqual(rects.map((r) => `${r.x},${r.y}`).toSorted(), SQUARES, where);
-  // The squares are ink, by their own fill or their group's.
-  const group = svg.match(/<g\b[^>]*>([\s\S]*?)<\/g>/);
-  assert.ok(group, `${where}: the squares are grouped`);
-  assert.equal(attrs(group[0].match(/<g\b[^>]*>/)[0]).fill, "#0E0D1A", where);
-  assert.equal([...group[1].matchAll(/<rect\b/g)].length, 8, where);
-
-  const paths = [...svg.matchAll(/<path\b[^>]*>/g)].map((m) => attrs(m[0]));
-  assert.equal(paths.length, 1, `${where}: one ghost`);
-  assert.equal(paths[0].d, GHOST, where);
-  assert.equal(paths[0].fill, "#6B4CFF", where);
-  assert.ok(!("transform" in paths[0]), where);
-}
-
-test("the squares of the block are side 26 at 0, 37 and 74, with the center cell left for the ghost", () => {
-  assert.equal(SQUARES.length, 8);
-  assert.ok(!SQUARES.includes("37,37"));
-  assert.equal(37 - 26, 11);
-  assert.equal(74 + 26, 100);
+// The pixel ghost: a 124-unit glyph of 19 outlined cells on a lavender body
+// that overflows it by 3, the eyes left empty; and its small cut for 16 to
+// 32 px. The geometry is the brand kit's, from scripts/check-pixel-ghost-logo.mjs.
+test("the cells sit on a pitch of 26 with the eyes left empty", () => {
+  assert.equal(CELLS.length, 19);
+  const at = CELLS.map(([x, y]) => `${x},${y}`);
+  assert.ok(!at.includes("26,26") && !at.includes("78,26"), "the eyes");
+  for (const [x, y] of CELLS) assert.ok(x % 26 === 0 && y % 26 === 0 && x <= 104 && y <= 104);
+  assert.equal(BODY_FILL, "#C9BCFF");
 });
 
-test("favicon.svg is the nine-square logo", () => {
-  assertLogo(favicon, "favicon.svg");
+test("favicon.svg is the logo's small cut, with no outlines", () => {
+  assert.deepEqual(smallProblems(favicon, "favicon.svg"), []);
   assert.match(favicon, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+  assert.doesNotMatch(favicon, /<rect\b/);
   assert.match(page, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml">/);
 });
 
-test("the page shows the nine-square logo", () => {
+test("the page shows the full pixel-ghost logo, body overflow in view", () => {
   const svgs = page.match(/<svg\b[\s\S]*?<\/svg>/g);
   assert.equal(svgs.length, 1);
-  assertLogo(svgs[0], "index.html");
+  assert.deepEqual(glyphProblems(svgs[0], "index.html"), []);
+  assert.ok(showsGlyph(viewBox(svgs[0])), "the viewBox shows the body's overflow");
   assert.match(svgs[0], /role="img" aria-label="Ghost"/);
+  assert.equal([...svgs[0].matchAll(/<rect\b/g)].length, 38, "19 cells and their outlines");
+});
+
+test("the logo check rejects a moved cell, a wrong fill and a missing outline", () => {
+  const svg = page.match(/<svg\b[\s\S]*?<\/svg>/)[0];
+  assert.notDeepEqual(glyphProblems(svg.replace('<rect x="26" y="0"', '<rect x="26" y="26"'), "moved"), []);
+  assert.notDeepEqual(glyphProblems(svg.replace('rx="2" fill="#EEEAFF"', 'rx="2" fill="#0E0D1A"'), "fill"), []);
+  assert.notDeepEqual(glyphProblems(svg.replace('stroke-width="4"', 'stroke-width="2"'), "outline"), []);
+  assert.notDeepEqual(glyphProblems(svg.replace('fill-rule="evenodd" ', ""), "eyes filled"), []);
 });
 
 test("the fonts are Instrument Sans and IBM Plex Mono, self-hosted, with their OFL notices", () => {
