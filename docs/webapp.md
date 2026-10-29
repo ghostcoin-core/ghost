@@ -223,6 +223,11 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
   what the app stores, where proofs are made and what still links a reveal
   to its commit.
 
+The logo is the brand kit's pixel ghost, one `#icon-ghost` symbol: the
+header mark shows it in full (outlined cells on the lavender body), and the
+smaller ghost icons show only its body in one color, the eyes cut out, since
+the outlines blur under 24 px. The favicon is the kit's small cut.
+
 The icons are inline SVG in `index.html`; no font, script, style or image
 comes from anywhere but the page's own origin. The CSP stays
 `default-src 'none'`, with `font-src 'self'` for a later self-hosted font.

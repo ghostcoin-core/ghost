@@ -2,12 +2,13 @@
 // vercel/config.json as text: the light palette as CSS variables and the
 // rules that use them, WCAG AA (4.5:1) for every text color on the
 // background it sits on, one light theme with no dark variant, the
-// nine-square logo's exact geometry in the page and the favicon, and motion
+// pixel-ghost logo's exact geometry in the page and its small cut as the favicon, and motion
 // only inside `prefers-reduced-motion: no-preference`. No browser is needed.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { BODY_FILL, CELLS, glyphProblems, showsGlyph, smallProblems } from "../../scripts/check-pixel-ghost-logo.mjs";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const css = read("../style.css").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -242,99 +243,38 @@ test("one light theme only: no dark variant and no color-scheme media query", ()
   assert.doesNotMatch(html, /\bdark\b/i);
 });
 
-// The logo: eight squares of side 26 at 0/37/74 and the ghost in the center cell.
-const SQUARES = [
-  [0, 0],
-  [37, 0],
-  [74, 0],
-  [0, 37],
-  [74, 37],
-  [0, 74],
-  [37, 74],
-  [74, 74],
-];
-const GHOST = "M37 50a13 13 0 0 1 26 0v13l-6.5-5.2-6.5 5.2-6.5-5.2-6.5 5.2z";
+// The logo: the pixel ghost's geometry is the brand kit's, checked with the
+// helpers of scripts/check-pixel-ghost-logo.mjs.
 
-// The bounding box of the ghost path: the relative commands it uses, with
-// the half-circle arc's top point.
-function ghostBox(d) {
-  const tokens = d.match(/[a-zA-Z]|-?[\d.]+/g);
-  let i = 0;
-  let cmd = "";
-  let [x, y] = [0, 0];
-  const xs = [];
-  const ys = [];
-  const at = () => {
-    xs.push(x);
-    ys.push(y);
-  };
-  const num = () => Number(tokens[i++]);
-  while (i < tokens.length) {
-    if (/[a-zA-Z]/.test(tokens[i])) cmd = tokens[i++];
-    if (cmd === "M") [x, y] = [num(), num()];
-    else if (cmd === "a") {
-      const r = num();
-      num();
-      num();
-      num();
-      const sweep = num();
-      const [dx, dy] = [num(), num()];
-      assert.equal(dy, 0, "a horizontal half circle");
-      assert.equal(Math.abs(dx), 2 * r, "a half circle");
-      // Left to right with sweep 1 bulges upward.
-      assert.equal(sweep, dx > 0 ? 1 : 0);
-      xs.push(x + dx / 2);
-      ys.push(y - r);
-      x += dx;
-    } else if (cmd === "v") y += num();
-    else if (cmd === "l") [x, y] = [x + num(), y + num()];
-    else if (cmd === "z") continue;
-    else assert.fail(`an unexpected command ${cmd}`);
-    at();
-  }
-  return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
-}
-
-function checkLogo(svg, where) {
-  const rects = [...svg.matchAll(/<rect\b([^>]*)\/?>/g)].map((m) => {
-    const a = (n) => Number(new RegExp(`\\b${n}="([^"]+)"`).exec(m[1])[1]);
-    return [a("x"), a("y"), a("width"), a("height")];
-  });
-  assert.deepEqual(
-    rects,
-    SQUARES.map(([x, y]) => [x, y, 26, 26]),
-    `${where}: eight squares of side 26 at 0/37/74, the center left free`,
-  );
-  const paths = [...svg.matchAll(/<path\b[^>]*\bd="([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(paths, [GHOST], `${where}: one ghost path`);
-  assert.deepEqual(ghostBox(GHOST), { x: 37, y: 37, w: 26, h: 26 }, "the ghost fills the center cell");
-  assert.doesNotMatch(svg, /stroke/, `${where}: no strokes`);
-  assert.doesNotMatch(svg, /<(ellipse|circle)\b/, `${where}: no eyes or other shapes`);
-  assert.match(svg, /<g\b[^>]*fill="#0E0D1A"/, `${where}: ink squares`);
-  assert.match(svg, /<path\b[^>]*fill="#6B4CFF"/, `${where}: violet ghost`);
-}
-
-test("the page's logo symbol is the nine-square block with the ghost in the center", () => {
-  const symbol = /<symbol id="icon-ghost" viewBox="0 0 100 100">([\s\S]*?)<\/symbol>/.exec(html);
-  assert.ok(symbol, "#icon-ghost has a 100-unit box");
-  checkLogo(symbol[1], "#icon-ghost");
+test("the page's logo symbol is the pixel ghost: 19 outlined cells on the lavender body", () => {
+  const symbol = /<symbol id="icon-ghost" viewBox="([^"]+)">([\s\S]*?)<\/symbol>/.exec(html);
+  assert.ok(symbol, "#icon-ghost is a symbol with a viewBox");
+  assert.ok(showsGlyph(symbol[1].split(/\s+/).map(Number)), "the viewBox shows the body's 3-unit overflow");
+  assert.deepEqual(glyphProblems(symbol[2], "#icon-ghost"), []);
+  assert.equal([...symbol[2].matchAll(/<rect\b/g)].length, 2 * CELLS.length);
+  // The cells are grouped so small icons can hide them.
+  const cells = /<g class="logo-cells">([\s\S]*?)<\/g>/.exec(symbol[2]);
+  assert.ok(cells, "the cells sit in .logo-cells");
+  assert.equal([...cells[1].matchAll(/<rect\b/g)].length, 2 * CELLS.length);
+  assert.match(symbol[2], /<path class="logo-body" fill="#C9BCFF" fill-rule="evenodd" d="[^"]+"\/>/);
 });
 
-test("the header mark has ink squares and a violet ghost; small icons use one color", () => {
-  assert.equal(rule(".logo-squares").fill, "currentColor");
-  assert.equal(rule(".logo-ghost").fill, "var(--logo-ghost, currentColor)");
+test("the header mark shows the full logo; small icons the body alone in one color", () => {
+  assert.equal(rule(".logo-body").fill, "var(--logo-body, currentColor)");
+  assert.equal(rule(".logo-cells").display, "var(--logo-cells, none)");
   const brand = rule(".icon-brand");
-  assert.equal(upper(brand.color), "#0E0D1A");
-  assert.equal(upper(brand["--logo-ghost"]), "#6B4CFF");
-  // Only the header mark gives the ghost its own color.
-  assert.equal(css.match(/--logo-ghost:/g).length, 1);
+  assert.equal(upper(brand["--logo-body"]), BODY_FILL);
+  assert.equal(brand["--logo-cells"], "inline");
+  // Only the header mark turns the cells on.
+  assert.equal(css.match(/--logo-cells:/g).length, 1);
+  assert.equal(css.match(/--logo-body:/g).length, 1);
   assert.match(html, /<svg class="icon icon-brand"[^>]*><use href="#icon-ghost"><\/use><\/svg>/);
 });
 
-test("the favicon is the logo on a transparent background, linked and built", () => {
-  assert.match(favicon, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 100 100">/);
-  assert.doesNotMatch(favicon, /<rect\b[^>]*width="100"/, "no background square");
-  checkLogo(favicon, "favicon.svg");
+test("the favicon is the logo's small cut on a transparent background, linked and built", () => {
+  assert.match(favicon, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 16 16">/);
+  assert.doesNotMatch(favicon, /<rect\b/, "no background square and no cells");
+  assert.deepEqual(smallProblems(favicon, "favicon.svg"), []);
   assert.match(html, /<link rel="icon" href="favicon\.svg" type="image\/svg\+xml">/);
   assert.match(build, /^files=\([^)]*\bfavicon\.svg\b[^)]*\)$/m);
 });
