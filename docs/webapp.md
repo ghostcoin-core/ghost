@@ -11,9 +11,10 @@ sees a wallet's seed or key (see Wallet). It does three things.
 - **Vanish.** It creates a new Phantom Key of 24 words and shows them, in a
   numbered grid, for the user to write down (the flow can also write the
   same key as 21 groups of four digits; the Vanish card shows the words
-  only). Copying the key and downloading it as an image are conveniences,
-  never the only backup:
-  before the commit is sent, the **save check** asks for three of the key's
+  only). Copying the key is a convenience, never the only backup, and the
+  page clears the clipboard 60 seconds after a copy; the key is not offered
+  as an image file (see Key copies). Before the commit is sent, the **save
+  check** asks for three of the key's
   24 words, chosen at random with `crypto.getRandomValues`, shown by
   position and asked in order, whichever view is shown. A word is compared
   in any case and only whole; the connected wallet is asked to sign the
@@ -89,8 +90,9 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
   1. **Save your Phantom Key.** "These 24 words are the only way to summon
      your *amount* GHOST. Anyone with them can take it. If you lose them,
      no one can get it back." The 24 words in a numbered grid of three
-     columns, put in as text only; Copy and Download (the key image of
-     `keyimage.mjs`); the main button "I saved it".
+     columns, put in as text only; Copy, with a line under it once copied:
+     "Copied. The clipboard is cleared in 60 seconds: paste it now, and
+     write the words down."; the main button "I saved it".
   2. **Check your key.** "Type these three words from your saved key."
      Three inputs, each labelled with its word's position. A wrong word
      shows "Those words don't match your key. Check what you saved and try
@@ -263,13 +265,35 @@ Anything uncertain about a typed key is refused, never guessed, and no
 refusal holds a word or a digit of the key: it names at most a position or
 a count.
 
+### Key copies
+
+A Phantom Key is a bearer key with no recovery: whoever reads it once can
+take the coin. The page shows the 24 words on screen to be written down and
+offers no image of the key to save. On a phone a saved image usually lands
+in the photo library and from there in its cloud backup, and
+gallery-scanning malware (the SparkCat and SparkKitty families, found in
+both app stores in 2025) reads recovery phrases out of photos with OCR. A
+warning to keep the image offline does not stop the phone from syncing it,
+so the page has no Download button and draws no key image.
+
+Copy stays, for Vanish and Claim, because pasting into a password manager
+is a common way to save a key; but clipboard stealers read or swap what is
+copied. The page writes an empty text over the clipboard 60 seconds after
+the latest copy and says so under the button ("Copied. The clipboard is
+cleared in 60 seconds …", then "The clipboard was cleared."). A browser may
+refuse that write while the page is not in front; the line then reads "The
+clipboard could not be cleared. Copy something else over the key." The
+clear also replaces anything else copied in those 60 seconds, and it
+cannot reach a clipboard history or a stealer that already read the key:
+these stay risks of the holder's device (threat model, A7).
+
 ## Layout
 
 | Path | What it is |
 |---|---|
 | `webapp/index.html`, `style.css` | The page; loads one same-origin module and names no external URL |
 | `webapp/src/flow.mjs` | The flow controller: every step above, with no DOM |
-| `webapp/src/app.mjs`, `keyimage.mjs` | The thin DOM layer and the key image drawn on a canvas |
+| `webapp/src/app.mjs` | The thin DOM layer |
 | `webapp/src/chain.mjs` | The fee of spec 07, the base fee rule, the settled height, amounts |
 | `webapp/src/header.mjs` | The header's 19-field RLP of spec 05, section 10 (`dataMarkerRoot` last), the table of networks this build knows, with the start of each one's header chain, and the IndexedDB store of the headers the page checked |
 | `webapp/src/header-store.mjs` | The name the header store is imported by in tests (`createHeaderStore`); its code is in `header.mjs`, which the build ships |
@@ -1316,9 +1340,15 @@ app makes no data commitments.
   look changes nothing else on the page, writes nothing to the console and
   is not tried again. The other tests that run `app.mjs` pass a look that
   finds no node without reaching the network.
+- `key-clipboard.test.mjs`, with nothing built: `app.mjs` on a stand-in
+  page with a stand-in clipboard and a hand-driven clock. Vanish's Copy
+  writes the key and shows the 60-second line; the clipboard is still the
+  key just before 60 seconds and an empty text at 60; a second copy
+  restarts the 60 seconds; a refused clear is said on screen. Claim's Copy
+  goes through the same code, and the page has no Download button and no
+  image code.
 
-The key image download, drawn on a canvas in the page, and Claim's
-digit-view button are not covered by the headless tests; the flow's digit
+Claim's digit-view button is not covered by the headless tests; the flow's digit
 view is. Neither are the panel and Max wiring of `app.mjs`, which needs a
 browser.
 

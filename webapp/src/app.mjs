@@ -6,7 +6,6 @@ import { formatGhost, parseAddress, parseGhost } from "./chain.mjs";
 import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, WALLET_APPROVAL, createFlow, normalKey, wrongWords } from "./flow.mjs";
 // header.mjs, which build.sh ships, holds header-store.mjs's code.
 import { createHeaderStore } from "./header.mjs";
-import { downloadKeyImage } from "./keyimage.mjs";
 import { INSTALL_LINES, INSTALL_SITE, probeLocalNode, systemOf } from "./local-node.mjs";
 import { browserProver } from "./prover.mjs";
 import { popupConnector } from "./popup-wallet.mjs";
@@ -103,7 +102,6 @@ function vanishErrorText(err, step) {
     start: "The key could not be made. Try again.",
     send: "The network refused the commit. Try again.",
     copy: "The key could not be copied. Write it down instead.",
-    download: "The image could not be made. Write the key down instead.",
     recheck: "The commit could not be checked. Try again.",
   };
   return fixed[step] || "Something went wrong. Try again.";
@@ -702,8 +700,37 @@ setInterval(() => {
   if (flow.state.progress) render(flow.state);
 }, 1000);
 
-// `view(v)` shows the key as "words" or "digits". Copy and the image take
-// the key as it is shown; both are conveniences beside writing it down.
+// A copied key stays on the clipboard for 60 seconds, then the page writes
+// an empty text over it: clipboard stealers read or swap what is copied, and
+// a Phantom Key there is the whole coin. There is no image of the key to
+// save, because a phone puts a saved image in its photo library and cloud
+// backup, where gallery-scanning malware reads it (docs/webapp.md).
+const CLIPBOARD_CLEAR_MS = 60_000;
+const COPIED = "Copied. The clipboard is cleared in 60 seconds: paste it now, and write the words down.";
+let clipboardTimer = null;
+
+// Copies `text` and says so in `note`; one clear for the latest copy. The
+// note changes again only while it still says Copied.
+async function copyKey(text, note) {
+  await navigator.clipboard.writeText(text);
+  note.textContent = COPIED;
+  clearTimeout(clipboardTimer);
+  clipboardTimer = setTimeout(() => {
+    clipboardTimer = null;
+    const say = (line) => {
+      if (note.textContent === COPIED) note.textContent = line;
+    };
+    Promise.resolve()
+      .then(() => navigator.clipboard.writeText(""))
+      .then(
+        () => say("The clipboard was cleared."),
+        () => say("The clipboard could not be cleared. Copy something else over the key."),
+      );
+  }, CLIPBOARD_CLEAR_MS);
+}
+
+// `view(v)` shows the key as "words" or "digits". Copy takes the key as it
+// is shown; it is a convenience beside writing it down.
 function wireKeyButtons(prefix, holder, view) {
   $(`${prefix}-show`).addEventListener("click", () => {
     const text = $(`${prefix}-key-text`);
@@ -722,14 +749,7 @@ function wireKeyButtons(prefix, holder, view) {
     "click",
     act(async () => {
       const h = holder();
-      if (h && h.key) await navigator.clipboard.writeText(shownKey(h));
-    }),
-  );
-  $(`${prefix}-download`).addEventListener(
-    "click",
-    act(async () => {
-      const h = holder();
-      if (h && h.key) await downloadKeyImage(shownKey(h));
+      if (h && h.key) await copyKey(shownKey(h), $(`${prefix}-copy-note`));
     }),
   );
 }
@@ -763,6 +783,7 @@ $("wallet-disconnect").addEventListener(
 // the three words match, nothing has been sent.
 function forgetVanish() {
   $("vanish-words").replaceChildren();
+  $("vanish-copy-note").textContent = "";
   clearCheck($("vanish-check-groups"));
   vanishShowAgain = false;
   vanishError = null;
@@ -794,20 +815,12 @@ $("vanish-max").addEventListener("click", () => {
   const w = flow.state.wallet;
   if (w && w.balance !== null) $("vanish-amount").value = formatGhost(maxVanish(w.balance));
 });
-// Copy and Download take the 24 words; both are conveniences beside writing
-// them down.
+// Copy takes the 24 words; it is a convenience beside writing them down.
 $("vanish-copy").addEventListener(
   "click",
   vanishAct("copy", async () => {
     const v = flow.state.vanish;
-    if (v && v.key) await navigator.clipboard.writeText(v.key);
-  }),
-);
-$("vanish-download").addEventListener(
-  "click",
-  vanishAct("download", async () => {
-    const v = flow.state.vanish;
-    if (v && v.key) await downloadKeyImage(v.key);
+    if (v && v.key) await copyKey(v.key, $("vanish-copy-note"));
   }),
 );
 $("vanish-saved").addEventListener(
