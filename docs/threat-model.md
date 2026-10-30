@@ -1,6 +1,6 @@
 # Threat model
 
-Status: first version, written before the lifecycle specification. It covers the design in the [outline](ghost-outline.md) and the [base client decision](decisions/0001-base-client.md). It must be updated whenever the outline changes a claim, and checked again against the lifecycle specification when that is written. Updated 2026-10-20 for quantum-safe accounts from genesis and the one security target of [specification 09](spec/09-quantum-safe-accounts.md), and 2026-10-21 for the per-commitment salt (C20).
+Status: first version, written before the lifecycle specification. It covers the design in the [outline](ghost-outline.md) and the [base client decision](decisions/0001-base-client.md). It must be updated whenever the outline changes a claim, and checked again against the lifecycle specification when that is written. Updated 2026-10-20 for quantum-safe accounts from genesis and the one security target of [specification 09](spec/09-quantum-safe-accounts.md), and 2026-10-21 for the per-commitment salt (C20). Updated 2026-10-30 for rented and redirected hashrate: A4 and T4 now say a majority can be rented cheaply at launch, and section 9 gives the cost estimate, the confirmation depth by amount and the reorg guard decision.
 
 The main network is labelled experimental at launch. All review so far is done with AI models, with no outside audit and no paid review. This document says what we think the design protects, what it does not, and what each protection depends on. It is a statement of intent to be tested, not a proof.
 
@@ -10,6 +10,7 @@ The main network is labelled experimental at launch. All review so far is done w
 - **Assumptions** (A1 to A12) are the things that must be true for a protection to hold. If one fails, every claim that lists it fails with it.
 - **Claims** (C1 to C48) are the privacy and security claims the outline makes, each mapped to the attackers it defends against and the assumptions it rests on.
 - Section 6 lists claims that cannot be defended as the outline words them today, with the wording we can defend.
+- Section 9 estimates what a majority of mining power costs to rent at launch, gives the confirmation depth a recipient should wait for by amount, and records the decision on a reorg guard.
 - [Privacy under a hostile, low-volume network](research/privacy-under-attack.md) works through amount matching, timing, spam cover, hostile endpoints and network observers with numbers, and separates settlement depth from privacy cover.
 
 ## 1. What is protected
@@ -44,7 +45,7 @@ Stated plainly, so nobody relies on it by mistake.
 | T1 | **Chain observer** | Reads every block, header, transaction, state value, marker and encrypted note, forever. Builds indexes. Joins chain data with outside data such as an exchange account that funded a commit. | See inside a commitment, tell which commitment a marker belongs to, or read a note without the digits. |
 | T2 | **Network observer** | Sees which network address sent or fetched what, and when: an internet provider, a node or endpoint operator, many hostile peers, a hosting provider. Can first-see a transaction at its entry point. | Read proofs' hidden inputs, or forge a transaction. Learns nothing about the digits from the traffic. |
 | T3 | **Malicious miner** (less than half of mining power) | Chooses which transactions to include and in what order, delays or omits a reveal, sees the pending pool, bends timestamps within the allowed range, withholds blocks (selfish mining), mines a short private fork. Sees the first sender address of anything sent directly to it. | Mint outside the rules, include an invalid proof (other nodes reject the block), redirect a proof to another recipient, or reveal a commitment without the digits. |
-| T4 | **Majority miner** (more than half) | Everything T3 can do, plus rewrite recent history, censor any transaction indefinitely, and reverse settlement. Can make a reveal vanish so the same commitment can be revealed again elsewhere (a double spend against a recipient). Can pick the heaviest chain at will. | Create a valid proof for a statement that is false, mint outside the rules (full nodes still reject it), reveal a commitment it holds no digits for, or change rules on nodes that do not upgrade. |
+| T4 | **Majority miner** (more than half) | Everything T3 can do, plus rewrite recent history, censor any transaction indefinitely, and reverse settlement. Can make a reveal vanish so the same commitment can be revealed again elsewhere (a double spend against a recipient). Can pick the heaviest chain at will. On a young RandomX chain this is not only a large mining operation: anyone who rents or redirects RandomX hashrate for an hour or so can be it, at an estimated cost of about a dollar an hour at the expected launch hashrate (section 9). | Create a valid proof for a statement that is false, mint outside the rules (full nodes still reject it), reveal a commitment it holds no digits for, or change rules on nodes that do not upgrade. |
 | T5 | **Malicious web host or endpoint** | Serves altered app code that steals digits or shows a wrong amount. Runs a node endpoint that lies about the chain, shows stale or forked tree states, withholds history, or logs which commitments and witnesses a wallet asks for. | Break the proof system, or alter what is on the canonical chain. |
 | T6 | **Anyone shown a Phantom Key** | Reveals first, sweeps the remainder, reads the encrypted note, derives the data key and decrypts the off-chain data, copies shown data. Includes the sender who keeps a copy, a backup service, someone who photographs the screen. | Be stopped by the chain once they hold the digits. |
 | T7 | **Future quantum attacker** | Forges elliptic-curve and RSA signatures wherever they remain: web certificates, and contracts that implement such checks in their own bytecode. Ghost's accounts, node identities and node handshake use none (specification 09). Runs Grover-style search at roughly square-root cost against hashes and keys, and a quantum collision search with some further saving. May mine faster if quantum speedups apply to the work function. | Break a well-chosen hash by more than the square-root effect, or the zero-knowledge and soundness of a hash-based proof in the quantum random oracle model (see A1 and A2). |
@@ -65,7 +66,7 @@ The founder and maintainers are not a separate attacker class on the chain: they
 | A1 | **Hash security.** The hash used inside proofs and trees, and the standard hash used for derivation, resist collision, preimage and second-preimage attacks at the stated level, with every use separately tagged. Standard authenticated encryption is secure. Against a quantum attacker, preimage search costs about the square root of the classical effort, so levels are stated after that reduction. | Fake membership, links or forged commitments become possible. |
 | A2 | **Proof-system soundness.** The hash-based proof system is sound at a stated security level, including in the quantum random oracle model, and the library implementing it is correct. Soundness comes before browser speed in the choice. | A false statement can be proved: counterfeit coins, theft. |
 | A3 | **Zero knowledge.** The proof system's privacy mode is on in the shipped configuration, and proof size, shape and timing leak nothing about the hidden inputs. | A proof can reveal which commitment it spends. |
-| A4 | **Honest-majority hashrate, probabilistic settlement.** Honest miners hold the majority of mining power, and a reveal is treated as final only after enough blocks. The work function has no large special-hardware, rented-hashrate or quantum advantage for one party. | Reorganisations and double reveals become cheap. |
+| A4 | **Honest-majority hashrate, probabilistic settlement.** Honest miners hold the majority of mining power for as long as a payment needs to stay settled, and a recipient treats a reveal or transfer as final only after the depth section 9 gives for its amount. **Not expected to hold at launch for anyone who pays to break it.** RandomX hashrate can be rented (NiceHash) or redirected from Monero, as the Qubic pool did against Monero in August 2025, and Ghost starts thousands of times smaller than Monero: a majority of the expected launch hashrate is estimated to rent for about a dollar an hour (section 9). What the assumption can honestly rest on is cost: a reorganisation of `z` blocks costs the attacker about `z` block times of more than the whole network's hashrate, so depth protects a payment only up to the rental cost of that time. The work function is assumed to give no large quantum advantage to one party, and RandomX is designed so that ordinary CPUs are the efficient hardware; whether dedicated RandomX machines now sold for Monero change that is not established here. | Reorganisations and double reveals become cheap. Below the depth in section 9 they already are cheap at launch. |
 | A5 | **Correct custom code.** The commit and reveal statements, the coin accounting and origin rule, the private transaction and fee formula, key derivation from the digits, header encoding and the RandomX integration do what the specification says. The review behind this is model-based, with different models writing and reviewing, adversarial tests and written properties. There is no outside audit. | Any claim can fail in ways nothing else here covers. |
 | A6 | **Secure randomness.** Every Phantom Key, and every commitment's salt, is generated by the app from a secure random source on an uncompromised device. | Keys can be guessed. A repeated or predictable salt brings back the guess-once-check-many shortcut for the leaves that share it (C20). |
 | A7 | **Holder custody.** The holder keeps the digits secret, shows them only to someone they would trust with full control, and the device and screen they use are not compromised. | Bearer control is lost. |
@@ -162,3 +163,103 @@ These are places where the outline's wording promises more than this model suppo
 - Add the stall scenario and the invalid-header flood to the first-milestone tests, with the limits in the base client plan.
 - Re-read this model before each release, and before any launch date is announced.
 - Treat C4, C6, C11, C13, C36 and C43 as pending, not met, until the fail-closed points listed in specification 02, section 13 are settled (review 01, F7). Rejecting an unsettled case keeps it safe; it does not deliver the claim.
+- Before mainnet, replace the estimates of section 9 with the measured launch hashrate and a current NiceHash price, and take the reorg guard decision again (section 9, "Reorg guard decision").
+
+## 9. Majority hashrate at launch
+
+A majority miner (T4) can undo a payment after the recipient has delivered something for it, and spend the same coins or reveal the same commitment again elsewhere. That double spend against exchanges and merchants is the main way small proof-of-work chains have been robbed. Ghost's work function, RandomX, is the one Monero uses, so the hashrate that could attack Ghost already exists, is for rent, and is far larger than Ghost's own network will be. This section estimates the cost, turns it into a confirmation depth by amount, and records the decision on a reorg guard.
+
+Every figure here is an **estimate** from public sources, read on 2026-10-30. Rental prices move daily, and Ghost's launch hashrate is a planning figure until the launch miners are lined up (specification 06, section 4.5). Replace them with measured figures before mainnet.
+
+### Cost to rent a majority
+
+**Inputs (estimates).**
+
+| Input | Figure | Source |
+|---|---|---|
+| Ghost's expected launch hashrate | about 560,000 hashes a second (560 kH/s), roughly fifty desktop CPUs; the spec's own table runs from 500 kH/s to 3 MH/s, and 25 MH/s for "a large pool or redirected hashrate" | Specification 06, section 4.5: `D_START = 2^24` for 30-second blocks. A planning assumption, not a measurement |
+| Block time | 30 seconds, so 120 blocks an hour | Specification 06 |
+| NiceHash price for RandomX | $0.0223 to $0.0418 per kH/s for a day, across the snapshots seen; $0.0418 on 2026-10-30 | NiceHash marketplace prices as shown by [miningboard.com, RandomX](https://miningboard.com/algorithms/RandomX); [NiceHash marketplace](https://www.nicehash.com/marketplace) |
+| Monero's network hashrate | about 6.3 GH/s, over 11,000 times the launch figure | [miningboard.com, RandomX](https://miningboard.com/algorithms/RandomX), 2026-10-30 |
+| Hashrate one party has already pointed at Monero | Qubic claimed a peak of about 2.77 GH/s and a majority of Monero's hashrate in August 2025, and a six-block reorganisation followed. Whether it held a lasting majority or was lucky is disputed; one analysis counts 63 of 122 blocks in the window | [CoinDesk, 2025-08-12](https://coindesk.com/business/2025/08/12/monero-s-51-attack-problem-inside-qubic-s-controversial-network-takeover); [Halborn](https://www.halborn.com/blog/post/explained-the-monero-51-percent-attack-august-2025); [Qubic's selfish mining campaign on Monero, arXiv 2512.01437](https://arxiv.org/html/2512.01437v2) |
+
+**Cost for one hour (estimates).** Renting as much hashrate as the whole honest network gives the attacker half; renting a little more gives a majority. The cost of one hour is the hashrate in kH/s times the daily price, divided by 24.
+
+| Ghost network hashrate | Rent the same again for one hour, at $0.0223 | at $0.0418 | Rent twice the network (two thirds of all mining) for one hour, at $0.0418 |
+|---|---|---|---|
+| 560 kH/s (spec 06 planning figure) | $0.52 | $0.98 | $1.95 |
+| 3 MH/s (spec 06, 300 desktop CPUs) | $2.79 | $5.23 | $10.45 |
+| 25 MH/s (spec 06, a large pool) | $23 | $44 | $87 |
+| 630 MH/s (a tenth of Monero) | $585 | $1,097 | $2,195 |
+
+So at the expected launch hashrate a majority for an hour is estimated at **about one dollar**, and it stays under about a hundred dollars an hour until Ghost's network is around 25 MH/s. Even a tenth of Monero's hashrate costs only hundreds to about two thousand dollars an hour, and Qubic has already shown one party can direct several times that.
+
+What the estimate leaves out:
+
+- **Marketplace depth.** Whether NiceHash has enough RandomX orders on offer at those prices at a given moment is not checked here. At the launch figures it needs a tiny fraction of Monero's hashrate, so supply is unlikely to be the limit. For the 630 MH/s row it may be, and an attacker would turn to a pool or botnet instead.
+- **Rented or redirected, the result is the same.** A pool such as Qubic, or a botnet, pays no rental price at all; it gives up Monero rewards for the hour, which at Ghost's scale is even less.
+- **Block rewards.** The attacker also keeps the rewards of the blocks it mines on the winning chain (120 blocks an hour at about 6.92 GHOST each). The figures above are gross rental cost, so they overstate what the attack costs and understate the depth a recipient needs.
+
+**What past attacks show (public write-ups).**
+
+- **Bitcoin Gold, May 2018:** about 388,000 BTG, around $18 million at the time, double spent against exchanges by a party holding a majority of the hashrate ([BleepingComputer](https://bleepingcomputer.com/news/security/hacker-makes-over-18-million-in-double-spend-attack-on-bitcoin-gold-network)).
+- **Ethereum Classic, January 2019:** about $1.1 million double spent through deep reorganisations, reported first by Coinbase ([The Next Web, Hard Fork](https://thenextweb.com/hardfork/2020/01/27/bitcoin-gold-51-percent-attack-blockchain-reorg-cryptocurrency-binance-exchange/)).
+- **Bitcoin Gold, January 2020:** two reorganisations up to 16 blocks deep double spent about 7,167 BTG (about $72,000), deep enough to pass an exchange's confirmation window. The rented hashrate was estimated at about $1,200 per attack ([The Next Web, Hard Fork](https://thenextweb.com/hardfork/2020/01/27/bitcoin-gold-51-percent-attack-blockchain-reorg-cryptocurrency-binance-exchange/)).
+- **Ethereum Classic, August 2020:** reorganisations of 3,693 blocks (1 August; 807,260 ETC, about $5.6 million, double spent by Bitquery's count, though ETC's developers put it down to a miner's stale software), over 4,000 blocks (6 August, about $1.68 million) and over 7,000 blocks (29 August) ([The Block, 6 August](https://www.theblock.co/news/ecosystems/2020-08-06-ethereum-classic-another-51-attack-74130); [The Block, 31 August](https://www.theblock.co/news/ecosystems/2020-08-31-ethereum-classic-etc-third-51-attack-76431)).
+
+In each case the attack paid because the amount double spent was far larger than the rental, and the recipient waited a fixed number of blocks that did not grow with the amount.
+
+### Confirmation depth by amount
+
+A double spend pays when the amount it can take is larger than the cost of out-mining the honest network for as long as the recipient waits. To undo a payment with `z` blocks on top, an attacker renting twice the honest hashrate gains on the honest chain one block per block time, so it needs about `z` block times of that rental. The cost per block of depth is therefore about:
+
+`cost per block = 2 x H x p x 30 / 86,400 = H x p / 1,440` dollars
+
+with `H` the network hashrate in kH/s and `p` the NiceHash price in dollars per kH/s per day. The depth that makes the attack cost more than it gains is:
+
+`z = V / (cost per block)`, never fewer than 6 blocks
+
+where `V` is the **total** value that can be double spent in one reorganisation: one reorganisation can undo every payment in its window at once, so an exchange counts all deposits in flight, not one. The floor of 6 blocks covers an attacker who does not rent and holds 10% of the mining power: 0.02% chance of overtaking ([privacy under attack](research/privacy-under-attack.md), section 2).
+
+The table uses the low price of $0.0223 rounded down to $0.02, the cheapest rental seen, so that it errs towards waiting longer. It is an **estimate**, and it ignores the rewards the attacker keeps, which make a real attack cheaper still. Time is at 30 seconds a block.
+
+| Amount at stake `V` | 560 kH/s (expected launch) | 3 MH/s | 25 MH/s | 630 MH/s (a tenth of Monero) |
+|---|---|---|---|---|
+| Cost per block of depth | $0.0078 | $0.042 | $0.35 | $8.75 |
+| $10 | 1,286 blocks (about 11 hours) | 240 blocks (2 hours) | 29 blocks (15 minutes) | 6 blocks (3 minutes) |
+| $100 | 12,858 blocks (about 4.5 days) | 2,400 blocks (20 hours) | 288 blocks (2.4 hours) | 12 blocks (6 minutes) |
+| $1,000 | 128,572 blocks (about 45 days) | 24,000 blocks (about 8 days) | 2,880 blocks (24 hours) | 115 blocks (about 1 hour) |
+| $10,000 | about 1.29 million blocks (about 15 months) | 240,000 blocks (about 83 days) | 28,800 blocks (10 days) | 1,143 blocks (about 9.5 hours) |
+| $100,000 | about 12.9 million blocks (about 12 years) | 2.4 million blocks (about 2.3 years) | 288,000 blocks (100 days) | 11,429 blocks (about 4 days) |
+
+How to read it:
+
+- **At the expected launch hashrate, no practical depth protects more than a few dollars.** Ten dollars needs about half a day. An exchange or merchant that accepts GHOST for something it cannot take back is exposed to anyone who rents an hour of RandomX, whatever depth it picks. Exchanges should not list GHOST, or should cap deposits in flight, until the network's hashrate has grown enough that the table gives a depth they can live with.
+- **Use the network's real hashrate, not this table's columns.** A recipient reads `H` from the current difficulty (about difficulty divided by 30 seconds, in hashes a second, then divided by 1,000 for kH/s), takes today's NiceHash price for RandomX, and applies the formula. A sudden drop in hashrate, or a jump in difficulty that nobody expected, is itself a warning.
+- **Depth counts from the recipient's own trusted chain.** A verifier who sees only headers, or who may be eclipsed, also needs A9: a private fork (T9) shown only to the victim costs the same per block, so the same depth applies to it.
+- **The web app's "Done"** is first inclusion, not settlement ([privacy under attack](research/privacy-under-attack.md), section 2). Anyone receiving value through it applies this table themselves.
+
+### Reorg guard decision
+
+**Decision (2026-10-30): keep plain proof of work at launch, publish the confirmation-depth table above, and revisit a reorg guard (ECBP-1100 or similar) before mainnet.** The guard already in the Core-Geth base stays switched off in Ghost's chain parameters, as decision 0001 and the [Ethereum Classic family survey](surveys/etc-family.md) left it; specification 05, section 7 adds no reorganisation depth limit of its own. Decision 0001 records only standard proof of work for the chosen base, with no finality rule. No decision in `docs/decisions/` rules otherwise. This section records the decision and its trade-offs; it does not design a guard, a finality layer or checkpoints, which the outline keeps out of scope.
+
+**What ECBP-1100 is.** ECBP-1100, "MESS" (Modified Exponential Subjective Scoring), is the rule Ethereum Classic adopted after the 2020 attacks, activated at block 11,380,000. A node running it refuses to switch to a competing chain that forks from its own some time back unless the competing chain has more total work by a factor that grows with the age of the fork point, up to a cap. A deep private fork must then carry many times the honest work, not just a little more. Ethereum Classic later switched it off again with ECIP-1110 ([ECBP index](https://ecips.ethereumclassic.org/ecbp); [ECIP-1110](https://ecips.ethereumclassic.org/ECIPs/ecip-1110); [ETC core developers' ECBP-1100 Q&A](https://ethereumclassic.org/blog/2020-09-23-core-devs-presentation-ecbp-1100-qa)).
+
+**For a guard:**
+
+- It raises the cost of exactly the attack this section prices: a deep reorganisation built in private and released later. For a fork old enough to reach the guard's cap, the depths above would shrink by roughly that factor, because each block of the attack would need that many times the honest work.
+- The code is already in the base client and was run on Ethereum Classic mainnet, so it would be switched on, not written.
+- It needs no trusted party: no signer, committee or checkpoint authority, so C1 and C46 (no one has power over the chain) still hold.
+
+**Against a guard, compared with plain proof of work:**
+
+- **Fork choice stops being objective.** Plain proof of work (C38) lets any node, at any time, pick the same chain: the one with the most work. Under a guard, two nodes that saw blocks in a different order or at a different time can each refuse the other's chain and stay split until people step in by hand. An attacker can try to cause that split on purpose by releasing a competing chain timed so part of the network sees it first.
+- **New and returning nodes see a different rule.** A node that syncs from scratch has no "own chain" to protect and follows most work; a node that was online follows the guard. The web app's header check (A13) follows the chain with the most work from its pinned start, so pages and nodes could disagree about which chain is real.
+- **It does little for shallow depths.** The guard's factor starts near one for a young fork and grows with its age. Exchange deposits a few blocks deep, where most small-chain theft has happened, are barely protected, and a majority miner can still censor (T4) without any reorganisation.
+- **It is unproven on Ghost.** It was tuned for Ethereum Classic's 13-second blocks and Etchash, not 30-second blocks, RandomX and Ghost's difficulty rule (specification 06), and Ethereum Classic itself removed it. Turning it on is a consensus change that needs its own specification and tests on the test network.
+
+**Compared with the finality layers kept out of scope:** checkpoints or a signed finality layer give hard finality after a set depth, which a guard cannot, but they add a party that decides which chain counts, against "no administrator" (C1) and "maintainers have no power over the chain" (C46). A guard keeps the chain free of such a party and in return gives only soft, local protection. Neither is adopted here.
+
+**Why plain proof of work now.** The network is labelled experimental, the coins on the public test network are test coins, and the honest response to a cheap majority is to say so and to tell recipients how long to wait, which the table does. A guard would not change the launch conclusion (at about a dollar an hour, a few dollars of protection), and it would add split and disagreement risks before Ghost has tested them.
+
+**Before mainnet, revisit with:** the measured launch hashrate and a current NiceHash price in the tables above; how much RandomX hashrate the NiceHash marketplace actually offers; a test-network trial of the guard, including a deliberate split and the web app's chain rule; and whether a different rule fits better. If the decision changes, it goes in `docs/decisions/` and this section is updated.
