@@ -1,5 +1,5 @@
 // The Vanish screens inside the card: Save your Phantom Key (the 24-word
-// grid, Copy, Download, "I saved it"), Check your key (three labelled word
+// grid, Copy, "I saved it"), Check your key (three labelled word
 // inputs, the wrong-answer line, "Show key again", the send) and Done.
 // index.html and app.mjs are read as text; app.mjs runs against a small
 // stand-in page and a stand-in flow, so no browser and no module build are
@@ -279,7 +279,7 @@ const right = POSITIONS.map((p) => KEY.split(" ")[p - 1]);
 
 // --- The wording of the three screens ---
 
-test("Save your Phantom Key: the warning, the 24-word grid, Copy, Download and I saved it", () => {
+test("Save your Phantom Key: the warning, the 24-word grid, Copy and I saved it", () => {
   const screen = element("vanish-key");
   assert.match(screen, /<h2>Save your Phantom Key<\/h2>/);
   assert.ok(
@@ -290,7 +290,6 @@ test("Save your Phantom Key: the warning, the 24-word grid, Copy, Download and I
   );
   assert.match(element("vanish-words"), /^<ol\b[^>]*class="word-grid"/);
   assert.match(element("vanish-copy"), />Copy</);
-  assert.match(element("vanish-download"), />Download</);
   assert.match(element("vanish-saved"), /class="primary[^"]*"[^>]*>I saved it</);
   // No digit form of the key in the card.
   assert.doesNotMatch(element("panel-vanish"), /digits/i);

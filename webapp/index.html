@@ -120,8 +120,8 @@
             <ol id="vanish-words" class="word-grid" aria-label="Your Phantom Key's 24 words"></ol>
             <p class="row">
               <button id="vanish-copy" type="button">Copy</button>
-              <button id="vanish-download" type="button">Download</button>
             </p>
+            <p id="vanish-copy-note" class="note" role="status"></p>
             <button id="vanish-saved" class="primary wide big" type="button">I saved it</button>
           </div>
           <form id="vanish-check" class="screen" hidden>
@@ -213,15 +213,15 @@
               <p>Move the remaining value, minus the fee, to a new key. The claim shows Sent as soon as the node takes it and Done at the first block that holds it; from that block on the received key shows claimed. If the chain is later reorganised and drops that block, Refresh says so and you can claim again. Confirmation comes only from blocks this page checked itself, proof-of-work seal and difficulty included.</p>
               <button id="claim-start" type="button">Claim to a new key</button>
               <div id="claim-key" class="key-panel" hidden>
-                <p>Your new Phantom Key: 24 words. Write them down in order: after the claim it is the only authority over the coin. Copying it or downloading it as an image is a convenience, not a backup on its own.</p>
+                <p>Your new Phantom Key: 24 words. Write them down in order: after the claim it is the only authority over the coin. Copying it is a convenience, not a backup on its own: the clipboard is cleared 60 seconds after a copy.</p>
                 <p id="claim-key-text" class="secret blurred"></p>
                 <p class="row">
                   <button id="claim-show" type="button">Show</button>
                   <button id="claim-digits" type="button">Show as digits</button>
                   <button id="claim-copy" type="button">Copy</button>
-                  <button id="claim-download" type="button">Download image</button>
                   <button id="claim-saved" type="button">I have written it down</button>
                 </p>
+                <p id="claim-copy-note" class="note" role="status"></p>
               </div>
               <form id="claim-check" class="check" hidden>
                 <p>Save check: type these words of the new key. The claim is sent only when all three match.</p>

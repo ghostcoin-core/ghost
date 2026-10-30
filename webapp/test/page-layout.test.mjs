@@ -39,10 +39,10 @@ const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
 test("every id the app's wiring uses is in the page, once", () => {
   const source = readFileSync(new URL("../src/app.mjs", import.meta.url), "utf8");
   const used = new Set([...source.matchAll(/\$\("([\w-]+)"\)/g)].map((m) => m[1]));
-  for (const part of ["key", "key-text", "check", "check-groups", "show", "digits", "copy", "download", "saved"]) {
+  for (const part of ["key", "key-text", "check", "check-groups", "show", "digits", "copy", "copy-note", "saved"]) {
     used.add(`claim-${part}`);
   }
-  for (const part of ["key", "words", "check", "check-groups", "copy", "download", "saved", "back", "done-button"]) {
+  for (const part of ["key", "words", "check", "check-groups", "copy", "copy-note", "saved", "back", "done-button"]) {
     used.add(`vanish-${part}`);
   }
   for (const t of ["vanish", "summon"]) used.add(`tab-${t}`).add(`panel-${t}`);
