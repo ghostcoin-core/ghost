@@ -23,7 +23,10 @@
 # Anyone can run it on the same commit and compare SHA256SUMS with a
 # published one; webapp/README.md explains how.
 #
-# Usage: webapp/build.sh
+# Usage: webapp/build.sh [--modules]
+#
+# With --modules it prints the page's modules (see page_modules below), one
+# per line, and builds nothing.
 set -euo pipefail
 
 toolchain="1.99.1"
@@ -47,7 +50,48 @@ threads_initial_memory=67108864
 threads_max_memory=4294967296
 # The page's own files, in the order they are copied.
 files=(index.html style.css favicon.svg)
-modules=(app bytes chain flow header local-node popup-wallet prover rpc thread threads wallet-connect wasm worker worker-core)
+
+# The page's modules, the names in src without .mjs, into `modules`: those
+# index.html loads and, in turn, every module one of them names by a relative
+# path, in an import or an export ... from "./x.mjs", an import("./x.mjs"),
+# or a new URL("./x.mjs", import.meta.url), which is how the page starts its
+# worker and the worker its prover threads. Followed rather than listed, so
+# a module the page or a worker loads cannot be left out of dist.
+modules=()
+page_modules() {
+  local q="[\"']" name='[A-Za-z0-9_-]+'
+  local queue=() seen=" " i=0 m found
+  while read -r m; do
+    queue+=("$m")
+  done < <(grep -oE "<script[^>]* src=${q}src/${name}\.mjs${q}" "$here/index.html" \
+    | sed -E "s|.*src/(${name})\.mjs.*|\1|")
+  if [ "${#queue[@]}" -eq 0 ]; then
+    echo "index.html loads no module from src" >&2
+    return 1
+  fi
+  while [ "$i" -lt "${#queue[@]}" ]; do
+    m="${queue[$i]}"
+    i=$((i + 1))
+    if [[ "$seen" == *" $m "* ]]; then
+      continue
+    fi
+    if [ ! -f "$here/src/$m.mjs" ]; then
+      echo "the page loads src/$m.mjs, which does not exist" >&2
+      return 1
+    fi
+    seen="$seen$m "
+    modules+=("$m")
+    while read -r found; do
+      queue+=("$found")
+    done < <(grep -oE "(from|import)[[:space:]]*\(?[[:space:]]*${q}\./${name}\.mjs${q}|new URL\([[:space:]]*${q}\./${name}\.mjs${q}" \
+      "$here/src/$m.mjs" | sed -E "s|.*\./(${name})\.mjs.*|\1|")
+  done
+}
+page_modules
+if [ "${1:-}" = "--modules" ]; then
+  printf '%s\n' "${modules[@]}"
+  exit 0
+fi
 
 if ! rustup run "$toolchain" rustc --version >/dev/null 2>&1; then
   echo "Rust $toolchain is not installed. Install it with:" >&2
