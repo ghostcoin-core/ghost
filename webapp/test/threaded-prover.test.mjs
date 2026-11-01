@@ -2,11 +2,14 @@
 // isolated (so it can share WebAssembly memory between workers), the build
 // of the threaded module beside the single-thread one, how the worker picks
 // between them, and the browser results it is held to. Files are read as
-// text and nothing is built; only threads.mjs's thread count is run.
+// text and nothing is built; only threads.mjs's thread count and
+// build.sh --modules, which lists the modules build.sh copies, are run.
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   INITIAL_MEMORY_BYTES,
@@ -49,8 +52,10 @@ function header(name) {
   return headers[key];
 }
 
-test("every path is served cross-origin isolated", () => {
-  assert.equal(header("Cross-Origin-Opener-Policy"), "same-origin");
+test("every path carries the opener and embedder policies the page is served with", () => {
+  // Pop-ups keep their opener (hosting.test.mjs): the pop-up wallet on its
+  // own origin answers the page over postMessage, which same-origin cuts.
+  assert.equal(header("Cross-Origin-Opener-Policy"), "same-origin-allow-popups");
   assert.equal(header("Cross-Origin-Embedder-Policy"), "require-corp");
   const route = config.routes.find((r) => r.src === "/(.*)");
   assert.equal(config.routes.indexOf(route), 0, "the header route comes first");
@@ -111,7 +116,15 @@ test("build.sh ships both modules and the thread modules, and links the memory t
   assert.match(build, /cp "\$module" "\$dist\/ghost_webapp_wasm\.wasm"/);
   assert.match(build, /cp "\$threads_module" "\$dist\/ghost_webapp_wasm_threads\.wasm"/);
   assert.match(build, /threads_module="\$threads_target\/wasm32-unknown-unknown\/release\/ghost_webapp_wasm\.wasm"/);
-  const modules = build.match(/^modules=\(([^)]*)\)$/m)[1].split(/\s+/);
+  // The modules build.sh copies, as it lists them; it builds nothing then.
+  const option = build.indexOf('"--modules"');
+  assert.ok(option > 0 && option < build.indexOf("rustup run"), "--modules stops before the toolchain");
+  const listed = spawnSync("bash", [fileURLToPath(new URL("../build.sh", import.meta.url)), "--modules"], {
+    encoding: "utf8",
+    timeout: 20000,
+  });
+  assert.equal(listed.status, 0, listed.stderr);
+  const modules = listed.stdout.split("\n").filter(Boolean);
   for (const m of ["thread", "threads", "worker", "worker-core", "wasm"]) assert.ok(modules.includes(m), m);
   assert.equal(Number(build.match(/^threads_initial_memory=(\d+)$/m)[1]), INITIAL_MEMORY_BYTES);
   assert.equal(Number(build.match(/^threads_max_memory=(\d+)$/m)[1]), MAXIMUM_MEMORY_BYTES);
