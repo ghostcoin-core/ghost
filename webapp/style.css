@@ -916,7 +916,7 @@ main {
 
 /* The local node lines of the Network panel */
 
-.local-node-found {
+.node-in-use strong {
   color: var(--accent);
 }
 

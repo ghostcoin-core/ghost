@@ -45,7 +45,9 @@ The design, the node methods it calls and its limits are in
   words or key for it either.
 - It downloads no proving key. The prover needs none: the statement is
   built into the WebAssembly module, which proves in a background worker.
-- It talks to one thing only: the node endpoint you choose (JSON-RPC). No
+- It talks to one node at a time (JSON-RPC): the endpoint you type, or with
+  none typed your own Ghost node on this computer, or when none answers
+  there a public test node (see Run it). No
   request names your key, your commitment, its position or its marker. The
   connected wallet signs; the page then sends the signed transaction to the
   endpoint, after checking it is from the connected account and that its
@@ -176,15 +178,27 @@ two small panels: **About**, on what the app keeps and sends, and
 the local internal network at `http://127.0.0.1:8545`; type another JSON-RPC
 URL to use another node. The node must allow requests from the page's origin
 (its CORS setting; the Ghost installer allows the hosted page and wallet).
-On load, while the endpoint is still the default, the page asks
+On load, while no endpoint is typed, the page asks
 `http://127.0.0.1:8545` once for its `rpc_modules` (no parameters, no
 cookie, nothing else). A node that lists the `ghost` module is used as is,
-and Network shows "Connected to your Ghost node"; nothing is set or stored.
-Anything else, or no answer within 1.5 seconds, shows nothing but a
-**Run a node** block in Network: the one-line install for your system
-(macOS, Linux or Windows, from the browser's user agent) with a Copy
-button, and a link to get.ghostcoin.com. The page never asks again until
-it is reloaded. The commit entry address is a setting next to it; it
+and Network shows "Node in use: Your Ghost node"; nothing is set or stored.
+Anything else, or no answer within 1.5 seconds, and the page tries the
+two public test-network nodes listed in `webapp/src/rpc.mjs`
+(`PUBLIC_ENDPOINTS`), in order, Spark then the VM: a node is used only if its `eth_chainId` is 6777972
+within 4 seconds. Network then shows "Node in use: Public test node", with
+a line on what such a node sees, and the endpoint box shows its URL. Every
+answer of a public node goes through the same header-chain seal and
+difficulty checks and receipt checks as any endpoint's. When none answers,
+the page stays on the default endpoint. In both cases Network shows a
+**Run a node** block: the one-line install for your system (macOS, Linux
+or Windows, from the browser's user agent) with a Copy button, and a link
+to get.ghostcoin.com. The node found stays for the page load; if a public
+node later stops answering, the next request that fails moves the page to
+the next public node in the list that answers (one pass, no polling). Every
+request gives up after 30 seconds, so a request held by the browser (as
+Chrome's local network access prompt can hold one) fails instead of
+hanging the page. A typed endpoint is never replaced. The page never looks
+again until it is reloaded. The commit entry address is a setting next to it; it
 defaults to the internal network's, `0x67686f7374000000000000000000000000000005`.
 
 ## Test it

@@ -346,6 +346,8 @@ function startPage({ polls = 2 } = {}) {
     };
     return {
       state,
+      // No public test node is asked.
+      usePublicNode: async () => null,
       async summonOpen(text) {
         state.summon = { key: text.trim(), format: "words", groups: 21, coins: [], claim: null, lastReveal: null, pinned: null };
         coin(state.summon, true);

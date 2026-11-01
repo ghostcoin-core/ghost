@@ -163,6 +163,8 @@ function startPage({ wallet = true, fresh = () => FRESH, matches = 50, vanishedF
     const emit = () => onChange(state);
     return {
       state,
+      // No public test node is asked.
+      usePublicNode: async () => null,
       async newReceiveAddress() {
         log.fresh++;
         return fresh();

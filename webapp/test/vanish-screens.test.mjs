@@ -177,6 +177,8 @@ function startPage({ refuse = null } = {}) {
     const emit = () => onChange(state);
     return {
       state,
+      // No public test node is asked.
+      usePublicNode: async () => null,
       // The smallest Vanish: well under every amount these tests send.
       async minVanish() {
         return 10n ** 15n;

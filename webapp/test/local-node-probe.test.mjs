@@ -253,6 +253,9 @@ function startPage({ fetch, userAgent = UA.Linux, endpoint = ENDPOINT }) {
   const copied = [];
   const settings = [];
   const flows = [];
+  // Each time the page turned to the public test nodes: none answers here
+  // (public-nodes.test.mjs drives them).
+  const publicLooks = [];
   function createFlow(options) {
     flows.push(options);
     const state = {
@@ -270,6 +273,10 @@ function startPage({ fetch, userAgent = UA.Linux, endpoint = ENDPOINT }) {
       state,
       setEndpoint: (value) => settings.push(["endpoint", value]),
       setCommitEntry: (value) => settings.push(["commitEntry", value]),
+      usePublicNode: async () => {
+        publicLooks.push(state.endpoint);
+        return null;
+      },
       vanishCancel() {},
       summonClose() {},
     };
@@ -309,7 +316,7 @@ function startPage({ fetch, userAgent = UA.Linux, endpoint = ENDPOINT }) {
   // Every element's visible state, for comparing the page before and after.
   const snapshot = () =>
     Object.fromEntries([...tags.keys()].map((id) => [id, { hidden: $(id).hidden, text: $(id).textContent, value: $(id).value }]));
-  return { $, copied, settings, flows, snapshot };
+  return { $, copied, settings, flows, publicLooks, snapshot };
 }
 
 // Runs `run` with the console watched; returns what was written to it.
@@ -328,13 +335,14 @@ async function watchConsole(run) {
   return said;
 }
 
-test("the Network panel holds the found line and the Run a node block, both hidden at first", () => {
+test("the Network panel holds the node in use line and the Run a node block, both hidden at first", () => {
   const network = element("network-panel");
-  assert.ok(network.includes('id="local-node-found"'));
+  assert.ok(network.includes('id="node-in-use"'));
   assert.ok(network.includes('id="local-node-run"'));
-  assert.match(tags.get("local-node-found"), /\bhidden\b/);
+  assert.match(tags.get("node-in-use"), /\bhidden\b/);
+  assert.match(tags.get("public-node-note"), /\bhidden\b/);
   assert.match(tags.get("local-node-run"), /\bhidden\b/);
-  assert.match(element("local-node-found"), />Connected to your Ghost node</);
+  assert.match(element("node-in-use"), /Node in use: <strong id="node-name"><\/strong>/);
   const block = element("local-node-run");
   assert.match(block, /<h3>Run a node<\/h3>/);
   assert.match(element("local-node-line"), /^<code\b/);
@@ -354,13 +362,16 @@ test("a stubbed Ghost node on 127.0.0.1:8545 is used as the default endpoint wit
     await settle();
     await settle();
   });
-  const { $, settings, flows } = page;
+  const { $, settings, flows, publicLooks } = page;
   assert.equal(calls.length, 1, "one look");
   assertProbeRequest(calls[0]);
   assert.equal(flows[0].endpoint, ENDPOINT, "the flow uses the default endpoint");
   assert.equal($("endpoint").value, ENDPOINT);
   assert.deepEqual(settings, [], "no setting written");
-  assert.equal($("local-node-found").hidden, false);
+  assert.deepEqual(publicLooks, [], "no public node asked");
+  assert.equal($("node-in-use").hidden, false);
+  assert.equal($("node-name").textContent, "Your Ghost node");
+  assert.equal($("public-node-note").hidden, true);
   assert.equal($("local-node-run").hidden, true);
   assert.equal($("error").textContent, "");
   assert.deepEqual(said, []);
@@ -374,10 +385,11 @@ test("no node: the Network panel shows Run a node, the visitor's line with its C
     const page = startPage({ fetch, userAgent: UA[system] });
     await settle();
     await settle();
-    const { $, copied, settings } = page;
+    const { $, copied, settings, publicLooks } = page;
     assert.equal(calls.length, 1, "one look");
+    assert.equal(publicLooks.length, 1, "then the public test nodes, once");
     assert.equal($("local-node-run").hidden, false, system);
-    assert.equal($("local-node-found").hidden, true);
+    assert.equal($("node-in-use").hidden, true);
     assert.equal($("local-node-line").textContent, INSTALL_LINES[system]);
     assert.equal($("local-node-system").textContent, system);
     assert.equal($("local-node-site").href, "https://get.ghostcoin.com");
@@ -413,7 +425,7 @@ test("a failed look shows the Run a node block and nothing else: no error, no me
       before = page.snapshot();
       // Hidden until the look has failed.
       assert.equal(before["local-node-run"].hidden, true);
-      assert.equal(before["local-node-found"].hidden, true);
+      assert.equal(before["node-in-use"].hidden, true);
       answer();
       for (let i = 0; i < 5; i++) await settle();
     });
@@ -425,17 +437,31 @@ test("a failed look shows the Run a node block and nothing else: no error, no me
     assert.equal(page.$("progress").textContent, "");
     assert.deepEqual(said, [], "nothing on the console");
     assert.equal(calls.length, 1, "no second try");
+    assert.equal(page.publicLooks.length, 1, "the public test nodes asked once");
   }
 });
 
-test("no look when the endpoint is not the default", async () => {
-  const { fetch, calls } = stubFetch(() => reply({ jsonrpc: "2.0", id: 1, result: GHOST_MODULES }));
-  const page = startPage({ fetch, endpoint: "http://192.0.2.7:8545" });
-  await settle();
-  await settle();
-  assert.equal(calls.length, 0);
-  assert.equal(page.$("local-node-found").hidden, true);
-  assert.equal(page.$("local-node-run").hidden, true);
+test("an endpoint typed before the look ends hides the node lines and is not replaced", async () => {
+  for (const found of [true, false]) {
+    let answer;
+    const gate = new Promise((resolve) => (answer = resolve));
+    const { fetch, calls } = stubFetch(async () => {
+      await gate;
+      return found ? reply({ jsonrpc: "2.0", id: 1, result: GHOST_MODULES }) : reply({ error: "boom" }, 500);
+    });
+    const page = startPage({ fetch });
+    await settle();
+    page.$("endpoint").value = "http://192.0.2.7:8545";
+    page.$("network-form").fire("submit");
+    await settle();
+    answer();
+    for (let i = 0; i < 5; i++) await settle();
+    assert.equal(calls.length, 1);
+    assert.deepEqual(page.settings[0], ["endpoint", "http://192.0.2.7:8545"]);
+    assert.deepEqual(page.publicLooks, [], "no public node asked once one is typed");
+    assert.equal(page.$("node-in-use").hidden, true);
+    assert.equal(page.$("local-node-run").hidden, true);
+  }
 });
 
 test("the look reaches the probe once, from page load, and nothing is stored", () => {
