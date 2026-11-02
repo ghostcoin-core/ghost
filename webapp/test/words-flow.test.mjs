@@ -100,7 +100,7 @@ test("the save check takes three typed words", async () => {
     assert.equal(flow.state.vanish.stage, "done");
     assert.equal(flow.state.vanish.key, null, "the key is dropped once sent");
     assert.equal(flow.state.vanish.digits, null, "and its digit view with it");
-    assert.equal(node.accountTxs[0].data.length, 206, "a salted commit");
+    assert.equal(node.accountTxs[0].data.length, 430, "a salted commit with its 380-byte note");
     assertNothingOfKey(node, key);
   } finally {
     await done();

@@ -1,6 +1,6 @@
-// The per-coin salt: the commit the app sends is version 2, 206 bytes, a
-// fresh salt in the clear beside F; the node keeps it with the leaf and
-// serves it as `salt`; the app reads it with the leaf and hands it to
+// The per-coin salt: the commit the app sends is version 0x0003, 430 bytes,
+// a fresh salt in the clear beside F and the 380-byte note after it; the node
+// keeps it with the leaf and serves it as `salt`; the app reads it with the leaf and hands it to
 // restore, which finds each coin with its salt and refuses a coin whose salt
 // beside the leaf is not the one in its note.
 
@@ -19,14 +19,15 @@ const random = (n) => crypto.getRandomValues(new Uint8Array(n));
 const KEY =
   "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth various";
 
-test("the commit is 206 bytes of version 2", async () => {
-  // The module: version 0x0002, F, the salt, the note.
+test("the commit is 430 bytes of version 3", async () => {
+  // The module: version 0x0003, F, the salt, the 380-byte note.
   const a = ghost.commit({ chainId: 7n, amount: GHOST, seed: random(32), key: KEY });
   const b = ghost.commit({ chainId: 7n, amount: GHOST, seed: random(32), key: KEY });
-  assert.equal(COMMIT_DATA_BYTES, 206);
+  assert.equal(COMMIT_DATA_BYTES, 430);
   for (const commit of [a, b]) {
-    assert.equal(commit.payload.length, 206);
-    assert.equal(toHex(commit.payload.slice(0, 2)), "0x0002");
+    assert.equal(commit.payload.length, 430);
+    assert.equal(toHex(commit.payload.slice(0, 2)), "0x0003");
+    assert.equal(commit.payload.slice(50).length, 380);
     assert.equal(toHex(ghost.coinCommitment(commit.payload.slice(2, 34), GHOST, 2)), toHex(commit.commitment));
   }
   assert.notEqual(toHex(a.payload.slice(34, 50)), toHex(b.payload.slice(34, 50)), "each coin its own salt");
@@ -46,9 +47,10 @@ test("the commit is 206 bytes of version 2", async () => {
     assert.equal(sent.ok, true);
     assert.equal(node.accountTxs.length, 1);
     const data = node.accountTxs[0].data;
-    assert.equal(data.length, 206);
-    assert.equal(toHex(data.slice(0, 2)), "0x0002");
+    assert.equal(data.length, 430);
+    assert.equal(toHex(data.slice(0, 2)), "0x0003");
     const leaf = node.leaves.at(-1);
+    assert.equal(leaf.note.length, 380);
     assert.equal(toHex(leaf.commitment), toHex(ghost.coinCommitment(data.slice(2, 34), GHOST, 2)));
     assert.equal(toHex(leaf.salt), toHex(data.slice(34, 50)));
     assert.equal(toHex(leaf.note), toHex(data.slice(50)));
@@ -63,7 +65,18 @@ test("the commit is 206 bytes of version 2", async () => {
         method: "eth_sendTransaction",
         params: [{ from: "0x1111111111111111111111111111111111111111", to: DEFAULT_COMMIT_ENTRY, value: "0x1", data: toHex(bytes) }],
       });
-    for (const bytes of [data.slice(0, 205), concat([data, Uint8Array.of(0)]), concat([Uint8Array.of(0, 1), data.slice(2)])]) {
+    // A note of any other length than 380 bytes, the 206-byte commit of
+    // version 0x0002 with its 156-byte note among them, and any other
+    // version are refused.
+    const oldLayout = concat([Uint8Array.of(0, 2), data.slice(2, 50), data.slice(50, 50 + 156)]);
+    assert.equal(oldLayout.length, 206);
+    for (const bytes of [
+      data.slice(0, 429),
+      concat([data, Uint8Array.of(0)]),
+      concat([Uint8Array.of(0, 2), data.slice(2)]),
+      concat([Uint8Array.of(0, 1), data.slice(2)]),
+      oldLayout,
+    ]) {
       await assert.rejects(send(bytes), (err) => err.message === `${COMMIT_DATA_ERROR}: ${bytes.length} bytes`);
     }
   } finally {
@@ -77,7 +90,7 @@ test("restore reads the salt beside the leaf", async () => {
   const commit = ghost.commit({ chainId, amount: GHOST, seed: random(32), key: KEY });
   const salt = commit.payload.slice(34, 50);
   const note = commit.payload.slice(50);
-  const stranger = new Uint8Array(188).fill(3);
+  const stranger = new Uint8Array(32 + 380).fill(3);
   const records = concat([stranger, commit.commitment, note]);
   const restore = (salts) => ghost.restore({ chainId, key: KEY, records, salts, markers: new Uint8Array(0) });
 
@@ -134,7 +147,7 @@ test("restore reads the salt beside the leaf", async () => {
     let s = await flow.summonOpen(key);
     assert.equal(s.status, "unclaimed");
     const asked = restored.at(-1);
-    assert.equal(asked.salts.length, asked.records.length / 188, "one salt (or none) per leaf");
+    assert.equal(asked.salts.length, asked.records.length / (32 + 380), "one salt (or none) per leaf");
     assert.equal(toHex(asked.salts[position]), toHex(served), "handed to restore beside its leaf");
 
     // An endpoint that serves another salt beside the leaf: the salt is not

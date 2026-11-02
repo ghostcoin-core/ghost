@@ -154,7 +154,7 @@ const record = (treeIndex, position, fill, salt = bytes(16, fill + 2)) => ({
   treeIndex,
   position,
   leaf: bytes(32, fill),
-  note: bytes(156, fill + 1),
+  note: bytes(380, fill + 1),
   salt,
   marker: null,
   v: 1n,
@@ -172,7 +172,7 @@ test("findRecord returns the one record at a tree index and position and refuses
 
 test("checkRecord accepts the coin leaf, note and salt and refuses a changed leaf, note or salt", () => {
   const held = record(0, 7, 1);
-  const coin = { leaf: bytes(32, 1), note: bytes(156, 2), salt: bytes(16, 3) };
+  const coin = { leaf: bytes(32, 1), note: bytes(380, 2), salt: bytes(16, 3) };
   assert.doesNotThrow(() => checkRecord(held, coin));
   // A salt null on both sides is equal.
   assert.doesNotThrow(() => checkRecord(record(0, 7, 1, null), { ...coin, salt: null }));
@@ -183,6 +183,10 @@ test("checkRecord accepts the coin leaf, note and salt and refuses a changed lea
   };
   assert.throws(() => checkRecord(held, { ...coin, leaf: changed(coin.leaf, 31) }), /the leaf at position 7 of coin tree 0 differs/);
   assert.throws(() => checkRecord(held, { ...coin, note: changed(coin.note, 100) }), /the note at position 7 of coin tree 0 differs/);
+  // A change in the note's last bytes, past the old 156, is seen too.
+  assert.throws(() => checkRecord(held, { ...coin, note: changed(coin.note, 379) }), /the note at position 7 of coin tree 0 differs/);
+  // So is a note cut to the old 156 bytes.
+  assert.throws(() => checkRecord(held, { ...coin, note: coin.note.slice(0, 156) }), /the note at position 7 of coin tree 0 differs/);
   assert.throws(() => checkRecord(held, { ...coin, salt: changed(coin.salt, 0) }), /the salt at position 7 of coin tree 0 differs/);
   assert.throws(() => checkRecord(held, { ...coin, salt: null }), /the salt at position 7 of coin tree 0 differs/);
   assert.throws(() => checkRecord(record(0, 7, 1, null), coin), /the salt at position 7 of coin tree 0 differs/);
@@ -309,18 +313,22 @@ test("a coin record changed, dropped or repeated in its own block's receipts is 
       assert.ok(!opened.ops.includes("prove"), "nothing is proved");
       assert.ok(!opened.requests.some((r) => r.method === "eth_sendRawTransaction"), "nothing is sent");
     };
-    // The key's note changed in its commit log.
-    node.dishonest.receipts = (number, list) => {
-      if (number !== block) return list;
-      const data = list[0].logs[0].data;
-      const at = 2 + 2 * 120;
-      list[0].logs[0].data = `${data.slice(0, at)}${data[at] === "0" ? "1" : "0"}${data.slice(at + 1)}`;
-      return list;
-    };
-    refusedAfterRestore(
-      await openOnFreshPage(node, key, { standDown: true }),
-      new RegExp(`the note at position ${position} of coin tree 0 differs from its receipt`),
-    );
+    // The key's note changed in its commit log: in its first bytes, and in
+    // its last ones, past the 156 bytes of the old layout (the 468-byte log
+    // holds the 380-byte note at bytes 72 to 451).
+    for (const byte of [120, 440]) {
+      node.dishonest.receipts = (number, list) => {
+        if (number !== block) return list;
+        const data = list[0].logs[0].data;
+        const at = 2 + 2 * byte;
+        list[0].logs[0].data = `${data.slice(0, at)}${data[at] === "0" ? "1" : "0"}${data.slice(at + 1)}`;
+        return list;
+      };
+      refusedAfterRestore(
+        await openOnFreshPage(node, key, { standDown: true }),
+        new RegExp(`the note at position ${position} of coin tree 0 differs from its receipt`),
+      );
+    }
     // The key's commit dropped from its block.
     node.dishonest.receipts = (number, list) => (number === block ? [] : list);
     refusedAfterRestore(await openOnFreshPage(node, key, { standDown: true }), new RegExp(`no record at position ${position} of coin tree 0`));
