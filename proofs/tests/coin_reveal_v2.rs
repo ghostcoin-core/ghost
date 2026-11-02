@@ -322,7 +322,7 @@ fn the_gate_holds_the_new_trace() {
     assert_eq!((perms * 24).next_power_of_two(), 2048);
 
     let config = shipped_configuration().expect("the security gate takes every statement");
-    assert_eq!(config.statements.len(), 5);
+    assert_eq!(config.statements.len(), 7);
     let (first, v1) = config.statements[0];
     assert_eq!(first, Statement::SaltedCoinReveal);
     let (last, v2) = config.statements[3];

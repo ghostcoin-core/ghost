@@ -699,15 +699,25 @@ pub enum Statement {
     /// a zero-value remainder with the empty rule, 47 permutations and 3,856
     /// columns.
     PolicyReveal,
+    /// `KNOW_ACTION_v1`, the proof of a policy action (spec 10, section 8.2):
+    /// knowledge of `action_root` under the slot's `action_tag` and
+    /// `action_salt`, four permutations, 128 rows by 3,722 columns.
+    KnowAction,
+    /// `KNOW_PREIMAGE_v1` (spec 10, section 9.2): knowledge of `x` with
+    /// `y = K("ghost/policy-preimage/v1", x)`, three permutations, 128 rows
+    /// by 3,722 columns.
+    KnowPreimage,
 }
 
 impl Statement {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::SaltedCoinReveal,
         Self::SaltedDataReveal,
         Self::SaltedHold,
         Self::CoinRevealV2,
         Self::PolicyReveal,
+        Self::KnowAction,
+        Self::KnowPreimage,
     ];
 
     /// The coin reveal, [`Self::SaltedCoinReveal`], under the name of the
@@ -725,6 +735,18 @@ impl Statement {
             Self::SaltedHold => 2,
             Self::CoinRevealV2 => 3,
             Self::PolicyReveal => 4,
+            Self::KnowAction => 5,
+            Self::KnowPreimage => 6,
+        }
+    }
+
+    /// The bytes a proof of the statement may take: [`PROOF_FIELD_BYTES`] for
+    /// the reveals and the proof of holding, [`crate::ACTION_PROOF_BYTES`] for
+    /// the native statements of spec 10, section 9.
+    pub const fn proof_field_bytes(self) -> usize {
+        match self {
+            Self::KnowAction | Self::KnowPreimage => crate::native::ACTION_PROOF_BYTES,
+            _ => PROOF_FIELD_BYTES,
         }
     }
 
@@ -736,6 +758,8 @@ impl Statement {
             Self::SaltedHold => crate::hold::schedule(),
             Self::CoinRevealV2 => crate::reveal_v2::schedule(),
             Self::PolicyReveal => crate::policy_reveal::schedule(),
+            Self::KnowAction => crate::native::action_schedule(),
+            Self::KnowPreimage => crate::native::preimage_schedule(),
         }
     }
 
@@ -809,8 +833,25 @@ pub(crate) fn gate(statement: Statement) -> Result<SecurityEstimate, ProofError>
     static PLANS: [OnceLock<Result<SecurityEstimate, ProofError>>; Statement::ALL.len()] =
         [const { OnceLock::new() }; Statement::ALL.len()];
     PLANS[statement.index()]
-        .get_or_init(|| check(&shipped_parameters(), &statement.air()))
+        .get_or_init(|| {
+            let est = check(&shipped_parameters(), &statement.air())?;
+            fits_proof_field(statement, &est)?;
+            Ok(est)
+        })
         .clone()
+}
+
+/// A statement whose longest proof could outgrow its own proof field is
+/// refused: the native statements travel in [`crate::ACTION_PROOF_BYTES`],
+/// not in [`PROOF_FIELD_BYTES`].
+fn fits_proof_field(statement: Statement, est: &SecurityEstimate) -> Result<(), ProofError> {
+    if proof_length_bound(est.trace_height, est.trace_width) > statement.proof_field_bytes() {
+        return Err(ProofError::TraceOverBudget {
+            height: est.trace_height,
+            width: est.trace_width,
+        });
+    }
+    Ok(())
 }
 
 /// The proof-size budget: a statement whose trace is taller or wider than the
@@ -1022,6 +1063,22 @@ mod tests {
                 width: MAX_TRACE_WIDTH + 1
             })
         );
+    }
+
+    /// The native statements are held to their own, smaller proof field: the
+    /// small trace fits it, a reveal-sized trace does not.
+    #[test]
+    fn the_native_statements_are_held_to_their_own_field() {
+        for statement in [Statement::KnowAction, Statement::KnowPreimage] {
+            assert_eq!(statement.proof_field_bytes(), crate::native::ACTION_PROOF_BYTES);
+            assert_eq!(fits_proof_field(statement, &trace(128, 3722)), Ok(()));
+            assert_eq!(
+                fits_proof_field(statement, &trace(256, 3722)),
+                Err(ProofError::TraceOverBudget { height: 256, width: 3722 })
+            );
+            assert!(gate(statement).is_ok(), "{statement:?}");
+        }
+        assert_eq!(fits_proof_field(Statement::PolicyReveal, &trace(MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH)), Ok(()));
     }
 
     /// Each extra column adds its two out-of-domain challenges and one base
