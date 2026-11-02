@@ -33,7 +33,8 @@
 //!    switch is 1.
 //! 6. Carried columns never change; conservation holds on their limbs; a
 //!    carried switch is boolean, and when it is on the bytes it guards are
-//!    not all zero (S1 version 2 only).
+//!    not all zero (S1 version 2 only); the carried columns a schedule fixes
+//!    at zero are zero (the limbs of `v'`, S4 only).
 //! 7. The ordering test of an absence witness (S3 only), on the last row of
 //!    the marker's permutation, whose `BITS` nothing else reads: the marker
 //!    (that row's digest) against the low leaf's `value` and `nextValue` (the
@@ -551,6 +552,11 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
         }
         for &(k, value) in &self.schedule.public_consts {
             builder.when_first_row().assert_eq(p(k), c(u32::from(value)));
+        }
+        // Carried columns fixed at zero; they never change, so the first row
+        // is enough.
+        for &col in &self.schedule.zero_carried {
+            builder.when_first_row().assert_zero(local[CARRY + col]);
         }
         // The switch, on every row (its columns never change): boolean, and
         // when on, the guarded bytes' sum times its inverse is one.

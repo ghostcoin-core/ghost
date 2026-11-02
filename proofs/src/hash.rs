@@ -53,6 +53,8 @@ pub const TAG_COIN_REVEAL_BINDING_V2: &str = "ghost/coin-reveal-binding/v2";
 pub const TAG_REVEAL_POLICY_V2: &str = "ghost/reveal-policy/v2";
 /// The override hash of spec 10, section 3.1.
 pub const TAG_POLICY_OVERRIDE_V1: &str = "ghost/policy-override/v1";
+/// The binding of the policy class, S4 (spec 10, section 5.1).
+pub const TAG_POLICY_REVEAL_BINDING_V1: &str = "ghost/policy-reveal-binding/v1";
 pub const TAG_DATA_REVEAL_BINDING: &str = "ghost/data-reveal-binding/v1";
 pub const TAG_HOLD_BINDING: &str = "ghost/hold-binding/v1";
 pub const TAG_DATA_MARKER_SET_LEAF: &str = "ghost/data-marker-set-leaf/v1";

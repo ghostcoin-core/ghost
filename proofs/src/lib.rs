@@ -17,6 +17,10 @@
 //!   which checks the opening, the marker and its absence from the
 //!   spent-marker set, and the verifier's [`ChallengeBook`]. Holding of coins
 //!   is not settled and `COIN_V2` is refused.
+//! - S4, the policy reveal of the policy class (spec 10, section 5):
+//!   [`prove_policy_reveal`] and [`verify_policy_reveal`]. The rule is opened
+//!   from its five public fields and a private override hash, the remainder
+//!   holds no value and the empty rule, and `v = out + fee`.
 //!
 //! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`] and
 //! [`verify_coin_reveal_v2`], with its header in `include/ghost_proofs.h`.
@@ -63,6 +67,7 @@ mod binding;
 mod data;
 mod hash;
 mod hold;
+mod policy_reveal;
 mod reveal;
 mod reveal_v2;
 mod schedule;
@@ -76,8 +81,9 @@ pub use amount::{
 };
 pub use binding::{
     Binding, COIN_REVEAL_LAYOUT, COIN_REVEAL_V2_LAYOUT, ChainParams, DATA_REVEAL_LAYOUT, HOLD_LAYOUT, LayoutField,
-    PROTOCOL_VERSION_1, PROTOCOL_VERSION_2, PURPOSE_HOLD, PURPOSE_REVEAL, PURPOSE_REVOKE, PURPOSE_SPEND,
-    STATEMENT_COIN_REVEAL, STATEMENT_DATA_REVEAL, STATEMENT_HOLD, STATEMENT_VERSION_1, STATEMENT_VERSION_2,
+    POLICY_REVEAL_LAYOUT, PROTOCOL_VERSION_1, PROTOCOL_VERSION_2, PURPOSE_HOLD, PURPOSE_POLICY_SPEND, PURPOSE_REVEAL,
+    PURPOSE_REVOKE, PURPOSE_SPEND, STATEMENT_COIN_REVEAL, STATEMENT_DATA_REVEAL, STATEMENT_HOLD,
+    STATEMENT_POLICY_REVEAL, STATEMENT_VERSION_1, STATEMENT_VERSION_2,
 };
 pub use data::{
     DataPurpose, DataReveal, DataRevealRequest, SaltedDataOpening, prove_salted_data_reveal,
@@ -88,10 +94,10 @@ pub use data::prove_salted_data_reveal_claiming;
 pub use hash::{
     COIN_V2, DATA_RESERVE, DATA_RESERVE_WORD, DATA_V2, EMPTY_RULE, MARKER_SET_DEPTH, MARKER_SET_INDEX_BYTES,
     POLICY_ADDRESS_BYTES, RATE_BYTES, SALT_BYTES, TAG_COIN_REVEAL_BINDING_V2, TAG_POLICY_OVERRIDE_V1,
-    TAG_REVEAL_POLICY_V2, TREE_DEPTH, Tree, coin_commitment_v2, coin_fingerprint_v2, coin_marker_v2,
-    data_commitment_v2, data_fingerprint_v2, data_marker_v2, empty_leaf, keccak256, marker_set_leaf, marker_set_node,
-    marker_set_root, merkle_root, padded_policy_address, permutations, policy_override_hash, reveal_policy_rule,
-    tag_bytes, tagged, tree_node,
+    TAG_POLICY_REVEAL_BINDING_V1, TAG_REVEAL_POLICY_V2, TREE_DEPTH, Tree, coin_commitment_v2, coin_fingerprint_v2,
+    coin_marker_v2, data_commitment_v2, data_fingerprint_v2, data_marker_v2, empty_leaf, keccak256, marker_set_leaf,
+    marker_set_node, marker_set_root, merkle_root, padded_policy_address, permutations, policy_override_hash,
+    reveal_policy_rule, tag_bytes, tagged, tree_node,
 };
 pub use hold::{AbsenceWitness, ChallengeBook, HoldContext, SaltedHoldOpening, hold_binding, verify_hold};
 #[cfg(feature = "unsettled-points-test")]
@@ -99,6 +105,11 @@ pub use hold::{prove_salted_hold, test_absence_witness, verify_hold_unsettled, v
 #[cfg(feature = "unsettled-points-test")]
 #[doc(hidden)]
 pub use hold::{prove_salted_hold_claiming, prove_salted_hold_claiming_zero_next};
+pub use policy_reveal::{
+    PolicyReveal, PolicyRevealRequest, policy_reveal_binding, prove_policy_reveal, verify_policy_reveal,
+};
+#[doc(hidden)]
+pub use policy_reveal::{policy_reveal_public_values, prove_policy_reveal_claiming};
 pub use reveal::{
     CoinReveal, NOTE_BYTES, RevealRequest, SaltedCoinOpening, SaltedCoinRemainder, prove_salted_coin_reveal,
     salted_coin_reveal_binding, verify_salted_coin_reveal,
@@ -141,6 +152,10 @@ pub enum ProofError {
     ReusedBlinding,
     /// The commitment is not the leaf at the position under the root.
     NotInTree,
+    /// A policy reveal whose remainder amount is not zero: the policy class
+    /// moves the whole value to the escrow slot and the fee (spec 10,
+    /// section 5.4, P3).
+    RemainderNotZero,
     /// A version 2 coin reveal's `use_override` other than 0 or 1.
     OverrideSwitchNotBit,
     /// A version 2 coin reveal through the override of a rule whose
@@ -212,6 +227,7 @@ impl fmt::Display for ProofError {
             Self::ConservationFails => f.write_str("v is not out + remainder + fee"),
             Self::ReusedBlinding => f.write_str("the remainder reuses the input's blinding"),
             Self::NotInTree => f.write_str("the commitment is not under the root"),
+            Self::RemainderNotZero => f.write_str("the remainder of a policy reveal holds value"),
             Self::OverrideSwitchNotBit => f.write_str("the override switch is neither 0 nor 1"),
             Self::OverrideNotSet => f.write_str("the rule has no override"),
             Self::WrongOverrideSecret => f.write_str("the override secret does not match the rule"),
