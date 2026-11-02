@@ -24,9 +24,13 @@ const SEAL_TRUST =
 const IN_A_BLOCK =
   "Marked Done when a block holds it. One block is not final: each block after it makes it harder to undo, and blocks add no privacy.";
 
-// What the one look for a Ghost node on this computer found: null until it
-// answers, then "found" or "none" (see findLocalNode).
-let localNode = null;
+// The node the page found for itself while no endpoint is typed: null until
+// the look ends, then "local" (a Ghost node on this computer), "public" (a
+// public test node) or "none" (neither answered). See findNode.
+let node = null;
+// Whether an endpoint was typed under Network: it is used as typed and the
+// look never replaces it.
+let typed = false;
 
 // The headers this page checked are kept in its own IndexedDB (public
 // header fields only), so a later visit checks only the seals above them.
@@ -631,13 +635,22 @@ function renderVanish(v, approving) {
   $("vanish-error").textContent = vanishError || (wrong ? WRONG_WORDS : "");
 }
 
-// The Network panel's local node lines, while the endpoint is the default:
-// "Connected to your Ghost node" once a node answered, the Run a node block
-// once none did, neither before the look ends.
-function renderLocalNode(state) {
-  const atDefault = state.endpoint === DEFAULT_ENDPOINT;
-  $("local-node-found").hidden = !(atDefault && localNode === "found");
-  $("local-node-run").hidden = !(atDefault && localNode === "none");
+// The Network panel's node lines, while no endpoint is typed: which node is
+// in use once the look found one ("Your Ghost node" or "Public test node"),
+// the Run a node block once no Ghost node on this computer answered, neither
+// before the look ends. The endpoint box follows the node in use unless it
+// was edited.
+const NODE_NAMES = { local: "Your Ghost node", public: "Public test node" };
+let shownEndpoint = null;
+
+function renderNode(state) {
+  const name = typed ? undefined : NODE_NAMES[node];
+  $("node-in-use").hidden = !name;
+  $("node-name").textContent = name ?? "";
+  $("public-node-note").hidden = typed || node !== "public";
+  $("local-node-run").hidden = typed || (node !== "public" && node !== "none");
+  if (shownEndpoint !== null && !typed && $("endpoint").value === shownEndpoint) $("endpoint").value = state.endpoint;
+  shownEndpoint = state.endpoint;
 }
 
 function render(state) {
@@ -670,7 +683,7 @@ function render(state) {
     $("claim-start").disabled = Boolean((c && c.stage !== "done" && c.stage !== "dropped") || s.wait);
   }
 
-  renderLocalNode(state);
+  renderNode(state);
   $("chain-status").textContent = state.chainRefused ? `No confirmations: ${state.chainRefused}.` : "";
   $("network-button").classList.toggle("attention", Boolean(state.chainRefused));
 
@@ -757,9 +770,17 @@ function wireKeyButtons(prefix, holder, view) {
 $("network-form").addEventListener(
   "submit",
   act(() => {
-    flow.setEndpoint($("endpoint").value);
+    // An endpoint box left as the page filled it keeps the node the page
+    // found (and the public nodes to move to); one edited is typed, used as
+    // typed from then on.
+    const text = $("endpoint").value;
+    if (typed || text !== flow.state.endpoint) {
+      flow.setEndpoint(text);
+      typed = true;
+    }
     flow.setCommitEntry($("commit-entry").value);
     $("endpoint").value = flow.state.endpoint;
+    render(flow.state);
   }),
 );
 // The Ghost pop-up wallet, the only wallet: its window opens from this
@@ -1186,17 +1207,32 @@ $("local-node-copy").addEventListener("click", () => {
     );
 });
 
-// One look for a Ghost node on this computer, on page load and only while
-// the endpoint is still the default: a node that answers is simply that
-// endpoint, so nothing is set or stored. A failed look is silent: no error
-// line, no message, no second try.
-function findLocalNode() {
-  if (flow.state.endpoint !== DEFAULT_ENDPOINT) return;
-  probeLocalNode(fetch, DEFAULT_ENDPOINT).then((found) => {
-    localNode = found ? "found" : "none";
-    renderLocalNode(flow.state);
-  });
+// One look for a node, on page load and only while no endpoint is typed:
+// first a Ghost node on this computer, which is simply the default endpoint
+// the flow already uses, so nothing is set or stored; when none answers, the
+// public test nodes in order (flow.usePublicNode), each used only if it
+// names the public test network within a short time. Whatever it finds
+// stays for the page load; a typed endpoint is never replaced. A failed look
+// is silent: no error line, no message, no second try.
+function findNode() {
+  if (typed) return;
+  probeLocalNode(fetch, DEFAULT_ENDPOINT)
+    .then(async (found) => {
+      if (found) return "local";
+      if (typed) return null;
+      return (await flow.usePublicNode()) ? "public" : "none";
+    })
+    .then(
+      (found) => {
+        node = found;
+        renderNode(flow.state);
+      },
+      () => {
+        node = "none";
+        renderNode(flow.state);
+      },
+    );
 }
 
 render(flow.state);
-findLocalNode();
+findNode();

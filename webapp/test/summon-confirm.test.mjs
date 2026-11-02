@@ -167,6 +167,8 @@ function startPage({ hold = false, fresh = FRESH } = {}) {
     };
     const flow = {
       state,
+      // No public test node is asked.
+      usePublicNode: async () => null,
       async newReceiveAddress() {
         return fresh;
       },

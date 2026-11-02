@@ -59,7 +59,7 @@ import {
 } from "./chain.mjs";
 import { HEADER_FIELDS, NETWORKS, networkOf, readHeader, rlpList, rlpString } from "./header.mjs";
 import { blockOfPosition, checkRecord, createBlockSets, findRecord } from "./receipts-at.mjs";
-import { DEFAULT_ENDPOINT, SERVER_ERROR, createRpc } from "./rpc.mjs";
+import { DEFAULT_ENDPOINT, PUBLIC_ENDPOINTS, SERVER_ERROR, answersChain, createRpc, validateEndpoint } from "./rpc.mjs";
 import { WalletRejected, WalletSignFailed, isWalletRejection } from "./wallet-connect.mjs";
 
 // The coin commit entry address of the internal network ("ghost" in ASCII,
@@ -2325,6 +2325,43 @@ export function createFlow({
       state.chainRefused = null;
       emit();
       return state.endpoint;
+    },
+
+    // With no endpoint typed and no Ghost node on this computer: uses the
+    // first of `endpoints` (the public test nodes, in order) whose
+    // eth_chainId is the public test network's within a short time, keeping
+    // the ones after it to move to, once each, if it stops answering. Returns
+    // its URL, or null when none answers or an endpoint was typed (set with
+    // setEndpoint) meanwhile, which is never replaced. It does not wait for
+    // a running step: no Ghost node answered, so that step's requests are
+    // failing anyway, and every answer of the new node is checked as any is.
+    async usePublicNode(endpoints = PUBLIC_ENDPOINTS) {
+      const asked = rpc;
+      const list = endpoints.map(validateEndpoint);
+      for (let i = 0; i < list.length; i++) {
+        if (rpc !== asked) return null;
+        if (!(await answersChain(fetch, list[i]))) continue;
+        if (rpc !== asked) return null;
+        const chosen = createRpc(list[i], {
+          fetch,
+          fallbacks: list.slice(i + 1),
+          // The node in use stopped answering and the next one does: the
+          // page shows it, and its chain is checked against the page's
+          // header chain as a new endpoint's is.
+          onMove: (url) => {
+            if (rpc !== chosen) return;
+            state.endpoint = url;
+            state.chainRefused = null;
+            emit();
+          },
+        });
+        rpc = chosen;
+        state.endpoint = rpc.url;
+        state.chainRefused = null;
+        emit();
+        return state.endpoint;
+      }
+      return null;
     },
 
     setCommitEntry(text) {

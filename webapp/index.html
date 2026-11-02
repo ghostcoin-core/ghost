@@ -263,7 +263,10 @@
       </label>
       <button class="primary wide" type="submit">Use this network</button>
     </form>
-    <p id="local-node-found" class="local-node-found" role="status" hidden>Connected to your Ghost node</p>
+    <div id="node-in-use" class="node-in-use" role="status" hidden>
+      <p>Node in use: <strong id="node-name"></strong></p>
+      <p id="public-node-note" class="note" hidden>No Ghost node answered on this computer, so the page uses a public test node of the test network. That node sees the page's requests and your network address, as any node would; none of them names your key or your coin, and the page still checks every block itself. Run your own node to keep your requests to yourself.</p>
+    </div>
     <div id="local-node-run" class="local-node" hidden>
       <h3>Run a node</h3>
       <p>Paste this line into a terminal on <span id="local-node-system"></span> and a Ghost node installs, joins the network, syncs and mines, with nothing else to do.</p>
@@ -284,7 +287,7 @@
     </div>
     <p><strong>Vanish</strong> commits GHOST from your wallet to a new Phantom Key of 24 words. The key is the only authority over the coin: write it down before anything is sent. Each coin's commit carries its own random salt, and the 24 words hold a 256-bit secret, so the key stays strong even against a quantum computer. The commit comes from the wallet you connect, which holds your account's quantum-safe key (ML-DSA-44) and asks you to approve it; a Phantom Key is not your wallet's backup, and the two are kept apart.</p>
     <p><strong>Summon</strong> opens a pasted Phantom Key, finds its coin and sends any amount of it to your connected wallet. The rest, less the network fee, stays under the same key. A key whose check fails is refused before anything is derived from it; a wrong word is named by its position, never corrected.</p>
-    <p>No key or wallet seed is stored: not in the browser, not in a file, not on a server. This page never sees your wallet's seed or account key, and it does not remember the connection: connect again after a reload. Proofs are made in this browser in a background worker; there is no proving key to download. Every request goes to the endpoint set under Network, and none names your key or your coin; your wallet is asked only for its account and to sign the commit.</p>
+    <p>No key or wallet seed is stored: not in the browser, not in a file, not on a server. This page never sees your wallet's seed or account key, and it does not remember the connection: connect again after a reload. Proofs are made in this browser in a background worker; there is no proving key to download. Every request goes to the node shown under Network (your own Ghost node, a public test node when none answers on this computer, or the endpoint you set), and none names your key or your coin; your wallet is asked only for its account and to sign the commit.</p>
     <p>Amounts, timing and your network address can still link a reveal to its commit, and one block holding a transaction is neither final settlement nor privacy.</p>
   </section>
 </body>

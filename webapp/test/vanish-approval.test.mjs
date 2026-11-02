@@ -279,7 +279,12 @@ function startPage(make) {
   const $ = (id) => document.getElementById(id);
   const visible = () => ["form", "key", "check", "waiting", "done", "after"].filter((s) => !$(`vanish-${s}`).hidden);
   let flow = null;
-  const pageFlow = ({ onChange }) => (flow = make(onChange));
+  // The page stays on the fake node: no public test node is asked.
+  const pageFlow = ({ onChange }) => {
+    flow = make(onChange);
+    flow.usePublicNode = async () => null;
+    return flow;
+  };
 
   const body = source.replace(/^import .*;$/gm, "");
   const names = ["document", "window", "navigator", "setInterval", "formatGhost", "parseGhost", "createFlow", "normalKey"];

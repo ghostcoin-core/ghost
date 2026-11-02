@@ -220,8 +220,8 @@ text is large bold text (AA 3:1), and 4.5:1 or more where it sits.
 - **Footer.** One short line: experimental and unaudited. Under it,
   **Network** opens a small panel with the node endpoint, the commit entry
   address and the chain status (the Network link carries a red dot while
-  the endpoint's chain is refused), the local node line or the Run a node
-  block (see Node endpoint, A node on this computer), and **About** opens the wording on
+  the endpoint's chain is refused), the node in use line or the Run a node
+  block (see Node endpoint, A node on this computer, Public test nodes), and **About** opens the wording on
   what the app stores, where proofs are made and what still links a reveal
   to its commit.
 
@@ -313,7 +313,12 @@ way the module's bytes are loaded differs.
 ## Node endpoint
 
 The user types the endpoint's JSON-RPC URL; the default is the local internal
-network, `http://127.0.0.1:8545`. The app sends only these requests:
+network, `http://127.0.0.1:8545`. With none typed, the page uses a Ghost
+node on this computer, or a public test node when none answers there (see A
+node on this computer, Public test nodes). Every request carries a 30-second
+`AbortSignal.timeout` (`REQUEST_TIMEOUT_MS`), so one the browser holds or a
+node never answers fails rather than hanging the page. The app sends only
+these requests:
 
 | Method | Parameters | Result |
 |---|---|---|
@@ -365,7 +370,7 @@ says.
 
 ### A node on this computer
 
-On load, and only while the flow's endpoint is still the default, the page
+On load, and only while no endpoint is typed, the page
 looks once for a Ghost node at `http://127.0.0.1:8545`
 (`src/local-node.mjs`, `probeLocalNode`): one POST whose whole body is
 `{"jsonrpc":"2.0","id":1,"method":"rpc_modules","params":[]}`, with
@@ -376,10 +381,13 @@ registers the `ghost` namespace, while its `web3_clientVersion` names the
 base client and this build pins no chain id to compare with.
 
 - **Found.** The node is the default endpoint the flow already uses, so
-  nothing is set and nothing is stored; Network shows one line, "Connected
-  to your Ghost node".
+  nothing is set and nothing is stored; Network shows one line, "Node in
+  use: Your Ghost node". The page does not move from it to a public node if
+  it later stops answering: requests the visitor kept to their own node stay
+  there.
 - **Not found.** An HTTP error, a JSON-RPC error, an answer without
-  `ghost`, a network or CORS failure, or no answer in time. Network shows
+  `ghost`, a network or CORS failure, or no answer in time. The page tries
+  the public test nodes (below), and Network shows
   the Run a node block: one sentence, the install line for the visitor's
   system in a `code` element with one Copy button, and a link to
   `https://get.ghostcoin.com` (`rel="noopener noreferrer"`). The system is
@@ -391,11 +399,46 @@ base client and this build pins no chain id to compare with.
 A failed look shows nothing else: no error line, no message on the console
 from the page, no retry, no polling and no reconnect button; the page looks
 again only when it is reloaded. Both lines stay hidden until the look ends,
-and both hide while another endpoint is set. The link's address and the
+and both hide once an endpoint is typed. The link's address and the
 lines are set by `app.mjs`, so `index.html` still names no external URL.
 For the look to succeed from the hosted page, the node's CORS setting must
 allow `https://ghost-webapp-alpha.vercel.app` and
 `https://ghost-wallet-nine.vercel.app`; the installer sets that.
+
+### Public test nodes
+
+When no Ghost node answers on this computer, the flow
+(`usePublicNode`) tries the two public test-network nodes listed in
+`PUBLIC_ENDPOINTS` in `webapp/src/rpc.mjs`, in that order: Spark, then the
+VM (the Ghost Wallet app lists the same two). Each is asked one `eth_chainId` (body
+`{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}`, no cookie,
+not cached) with a 4-second `AbortSignal.timeout` (`NODE_CHECK_MS`), and is
+used only if it answers `6777972`, the public test network whose genesis
+this build pins; another chain, an error or no answer in time and the next
+one is tried. The first that passes is the flow's endpoint; Network shows
+"Node in use: Public test node", a line saying the node sees the page's
+requests and the visitor's network address (none names a key or a coin)
+and that every block is still checked here, and the Run a node block. The
+endpoint box shows the node's URL. When none passes, the flow stays on the
+default endpoint and the page reads as with no node at all: the Run a node
+block, and "The network could not be read" when a step needs the chain.
+
+The node found stays for the page load. When a request to it gets no
+answer (a network failure, an HTTP error, or nothing within its 30
+seconds; a JSON-RPC error is an answer), that request fails as before, and
+the client moves to the next node of the list that passes the same
+`eth_chainId` check, so the next request goes there. Each node is tried at
+most once (one pass, no polling, never back to an earlier one). On a Mac
+on the tailnet the `ts.net` names resolve to private `100.x` addresses, and
+Chrome may hold the request behind its local network access prompt; the
+time limits make that a failure that falls through to the next node.
+
+A public node is not trusted more than any endpoint. The header chain's
+seal and difficulty checks from the pinned genesis and the receipt checks
+apply to it unchanged; they are what make a node the page does not run
+safe to read from. A typed endpoint overrides all of this: it is used as
+typed, never replaced and never moved from. An endpoint box saved unchanged
+keeps the node the page found. Nothing about the choice is stored.
 
 ### Coin trees
 
@@ -995,7 +1038,11 @@ app makes no data commitments.
   for its origin was written only by this page in an earlier session. It
   holds public header fields only, never a key; whoever can write the page's
   storage can already run code on its origin and read the wallet in it.
-- **One endpoint.** The page asks one endpoint. Asking several and refusing
+- **One endpoint.** The page asks one endpoint at a time (with none typed,
+  each public test node it tries is asked only `eth_chainId` before it is
+  used, and a move to the next one happens only after a failure). A public
+  test node sees the page's requests and the visitor's network address, as
+  any endpoint does. Asking several and refusing
   on conflict is not built; agreement between endpoints would be extra
   evidence, never a substitute for the checks of Headers.
 - **The chain lives as long as the page; its headers outlive it.** The
@@ -1338,8 +1385,19 @@ app makes no data commitments.
   default endpoint with no setting written; no node shows the Run a node
   block with the visitor's line, its Copy button and the link; a failed
   look changes nothing else on the page, writes nothing to the console and
-  is not tried again. The other tests that run `app.mjs` pass a look that
-  finds no node without reaching the network.
+  is not tried again; an endpoint typed before the look ends hides both
+  lines. The other tests that run `app.mjs` pass a look that finds no node
+  and a flow that asks no public node, without reaching the network.
+- `public-nodes.test.mjs`, with nothing built: the public list (Spark, then
+  the VM) and its `eth_chainId` check over an injected fetch (another
+  chain, an error, an HTTP 502 or no answer in time is no node); every
+  request bounded by its time limit; the client moving from a node that
+  stops answering to the next that passes the check, once, never back; the
+  flow and `app.mjs` on a stand-in page with the real flow: a local Ghost
+  node used with no public node asked, Spark used with no local node and
+  the wallet's balance read from it, the VM when Spark fails its check,
+  the Run a node block and "The network could not be read" when all fail,
+  the move to the VM mid-session, and a typed endpoint never replaced.
 - `key-clipboard.test.mjs`, with nothing built: `app.mjs` on a stand-in
   page with a stand-in clipboard and a hand-driven clock. Vanish's Copy
   writes the key and shows the 60-second line; the clipboard is still the

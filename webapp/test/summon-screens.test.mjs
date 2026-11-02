@@ -213,6 +213,8 @@ function startPage({ amount = 2n * GHOST, wallet = true, refuse = null, popup = 
     };
     return {
       state,
+      // No public test node is asked.
+      usePublicNode: async () => null,
       // As the real flow: the connector's address, then its balance.
       async walletConnect(connector) {
         log.connects.push(connector.name);

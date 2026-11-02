@@ -162,6 +162,8 @@ function startPage({ refuseClear = false } = {}) {
     const emit = () => onChange(state);
     return {
       state,
+      // No public test node is asked.
+      usePublicNode: async () => null,
       async minVanish() {
         return 10n ** 15n;
       },
