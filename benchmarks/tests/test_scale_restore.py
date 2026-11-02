@@ -51,12 +51,22 @@ class Inputs(unittest.TestCase):
         self.assertEqual(rs.PHONE_STORAGE_CEILING_BYTES, int(storage) * 10 ** 6)
 
     def test_target_and_encoding_match_workload(self):
-        self.assertIn("| 188 bytes |", self.row("Leaf and note a wallet downloads"))
-        self.assertEqual(rs.LEAF_AND_NOTE_BYTES, 188)
+        self.assertIn("| 412 bytes |", self.row("Leaf and note a wallet downloads"))
+        self.assertEqual(rs.LEAF_AND_NOTE_BYTES, 412)
         self.assertEqual(rs.NEW_LEAVES_PER_DAY, 10_000_000)
         self.assertEqual(rs.SPENDS_PER_DAY, 10_000_000)
         self.assertEqual(rs.BLOCKS_PER_DAY, 2_880)
         self.assertIn("| 2,880 |", self.row("Blocks a day"))
+
+    def test_note_length_of_spec_10(self):
+        # The 380-byte note of spec 10, section 3.2; the 4-byte tag stays, so
+        # the buckets design fetches the other 376 bytes of a note.
+        self.assertEqual(rs.NOTE_BYTES, 380)
+        self.assertEqual(rs.LEAF_BYTES + rs.NOTE_BYTES, 412)
+        self.assertEqual(rs.TAG_BYTES, 4)
+        self.assertEqual(rs.NOTE_REST_BYTES, 376)
+        self.assertEqual(len(rs.make_note(rs.TEST_KEY, bytes(32), bytes(32), 1)), 380)
+        self.assertEqual(rs.STREAM_BUFFER_BYTES, 4_096 * 412 + 4_096 * 32)
 
     def test_phone_cost_inputs(self):
         self.assertEqual(rs.TRIAL_DECRYPT_NS_PHONE, 1_148)
@@ -75,7 +85,7 @@ class Chain(unittest.TestCase):
     def test_sizes(self):
         self.assertEqual(CHAIN.count, 100_000)
         self.assertEqual(len(CHAIN.leaves), 100_000 * 32)
-        self.assertEqual(len(CHAIN.notes), 100_000 * 156)
+        self.assertEqual(len(CHAIN.notes), 100_000 * 380)
         self.assertEqual(CHAIN.pages, 25)
         self.assertEqual(sorted(CHAIN.owned), list(rs.TEST_OWNED))
 
@@ -126,14 +136,15 @@ class Recovery(unittest.TestCase):
 
 
 class Bytes(unittest.TestCase):
-    def test_baseline_bytes_are_leaves_times_188(self):
+    def test_baseline_bytes_are_leaves_times_412(self):
         c = run(rs.BASELINE).costs
-        self.assertEqual(c["leaf_and_note_bytes"], CHAIN.count * 188)
-        self.assertEqual(c["leaf_and_note_bytes"], 18_800_000)
+        self.assertEqual(c["leaf_and_note_bytes"], CHAIN.count * 412)
+        self.assertEqual(c["leaf_and_note_bytes"], 41_200_000)
         self.assertEqual(c["trial_decryptions"], CHAIN.count)
         self.assertEqual(c["page_root_bytes"], 25 * 32)
         self.assertEqual(c["marker_bytes"], CHAIN.count * 32)
-        self.assertEqual(c["download_bytes"], 22_000_800)
+        self.assertEqual(c["download_bytes"], 44_400_800)
+        self.assertEqual(c["peak_memory_bytes"], 2_868_000)
         self.assertEqual(c["label"], "modeled")
 
     def test_alternatives_never_download_more_than_the_baseline(self):
@@ -159,8 +170,12 @@ class Bytes(unittest.TestCase):
         self.assertEqual(small["trial_decryptions"], len(rs.TEST_OWNED))
         checkpoint = run(SIM_CHECKPOINT).costs
         self.assertEqual(checkpoint["scan_start"], 49_152)
-        self.assertEqual(checkpoint["leaf_and_note_bytes"], 50_848 * 188)
-        self.assertEqual(checkpoint["download_bytes"], 11_187_360)
+        self.assertEqual(checkpoint["leaf_and_note_bytes"], 50_848 * 412)
+        self.assertEqual(checkpoint["download_bytes"], 22_577_312)
+        # With one decoy and four pages: every leaf and tag, the other 376
+        # bytes of each note on the fetched pages.
+        self.assertEqual(small["leaf_and_note_bytes"], 100_000 * 36 + small["anonymity_set"] * 376)
+        self.assertEqual(small["download_bytes"], 27_459_744)
         # At the default decoys the request covers all 25 pages: no saving.
         self.assertEqual(run(rs.BUCKETS).costs["leaf_and_note_bytes"], base["leaf_and_note_bytes"])
 
@@ -259,25 +274,26 @@ class Analytic(unittest.TestCase):
         year = rs.analytic(rs.BASELINE, rs.leaves_after(365), 52)
         self.assertEqual(day["label"], "modeled")
         self.assertEqual(year["label"], "modeled")
-        self.assertEqual(day["leaf_and_note_bytes"], 1_880_000_000)
-        self.assertEqual(year["leaf_and_note_bytes"], 686_200_000_000)
-        self.assertEqual(round(year["leaf_and_note_bytes"] / 1e9, 1), 686.2)
+        self.assertEqual(day["leaf_and_note_bytes"], 4_120_000_000)
+        self.assertEqual(year["leaf_and_note_bytes"], 1_503_800_000_000)
+        self.assertEqual(round(year["leaf_and_note_bytes"] / 1e9, 1), 1_503.8)
 
     def test_one_year(self):
         leaves = 3_650_000_000
         base = rs.analytic(rs.BASELINE, leaves, 52)
         self.assertEqual(base["page_root_bytes"], 891_114 * 32)
         self.assertEqual(base["marker_bytes"], 116_800_000_000)
-        self.assertEqual(base["download_bytes"], 803_028_515_648)
-        self.assertAlmostEqual(base["elapsed_seconds"], 167_277.9031296, places=3)
-        self.assertEqual(base["peak_memory_bytes"], 36_232_512)
+        self.assertEqual(base["download_bytes"], 1_620_628_515_648)
+        self.assertAlmostEqual(base["elapsed_seconds"], 330_797.9031296, places=3)
+        self.assertEqual(base["peak_memory_bytes"], 37_150_016)
         self.assertEqual(base["storage_bytes"], 35_331_392)
         buckets = rs.analytic(rs.BUCKETS, leaves, 52)
-        self.assertEqual(buckets["leaf_and_note_bytes"], 131_927_958_016)
-        self.assertEqual(buckets["download_bytes"], 248_756_473_664)
+        self.assertEqual(buckets["leaf_and_note_bytes"], 132_706_001_408)
+        self.assertEqual(buckets["leaf_and_note_bytes"], leaves * 36 + buckets["anonymity_set"] * 376)
+        self.assertEqual(buckets["download_bytes"], 249_534_517_056)
         self.assertEqual(buckets["trial_decryptions"], 53)
         self.assertEqual(buckets["anonymity_set"], 3_473_408)
-        self.assertAlmostEqual(buckets["elapsed_seconds"], 54_715.29479, places=3)
+        self.assertAlmostEqual(buckets["elapsed_seconds"], 54_870.90347, places=3)
         checkpoint = rs.analytic(rs.CHECKPOINT, leaves, 52, key_birth=0)
         self.assertEqual(checkpoint["download_bytes"], base["download_bytes"])
 
@@ -285,23 +301,23 @@ class Analytic(unittest.TestCase):
         leaves = 18_250_000_000
         base = rs.analytic(rs.BASELINE, leaves, 52)
         self.assertEqual(base["page_root_bytes"], 142_578_144)
-        self.assertEqual(base["download_bytes"], 4_015_142_578_144)
-        self.assertAlmostEqual(base["elapsed_seconds"], 836_389.5156, places=3)
-        self.assertEqual(base["peak_memory_bytes"], 150_295_008)
+        self.assertEqual(base["download_bytes"], 8_103_142_578_144)
+        self.assertAlmostEqual(base["elapsed_seconds"], 1_653_989.5156, places=3)
+        self.assertEqual(base["peak_memory_bytes"], 151_212_512)
         self.assertEqual(base["storage_bytes"], 149_393_888)
         buckets = rs.analytic(rs.BUCKETS, leaves, 52)
-        self.assertEqual(buckets["download_bytes"], 1_241_710_382_048)
+        self.assertEqual(buckets["download_bytes"], 1_242_547_145_696)
         self.assertEqual(buckets["anonymity_set"], 3_735_552)
-        self.assertAlmostEqual(buckets["elapsed_seconds"], 273_162.0765, places=3)
+        self.assertAlmostEqual(buckets["elapsed_seconds"], 273_329.4292, places=3)
         checkpoint = rs.analytic(rs.CHECKPOINT, leaves, 52, key_birth=14_600_000_000)
         self.assertEqual(checkpoint["scan_start"], 14_400_000_000)
-        self.assertEqual(checkpoint["download_bytes"], 847_142_578_144)
+        self.assertEqual(checkpoint["download_bytes"], 1_709_542_578_144)
         self.assertEqual(checkpoint["anonymity_set"], 3_850_000_000)
-        self.assertAlmostEqual(checkpoint["elapsed_seconds"], 176_466.3156, places=3)
+        self.assertAlmostEqual(checkpoint["elapsed_seconds"], 348_946.3156, places=3)
 
     def test_simulated_size(self):
-        self.assertAlmostEqual(rs.analytic(rs.BASELINE, 100_000, 8)["elapsed_seconds"], 4.58296)
-        self.assertAlmostEqual(rs.analytic(SIM_CHECKPOINT, 100_000, 8, 50_000)["elapsed_seconds"], 2.330422144)
+        self.assertAlmostEqual(rs.analytic(rs.BASELINE, 100_000, 8)["elapsed_seconds"], 9.06296)
+        self.assertAlmostEqual(rs.analytic(SIM_CHECKPOINT, 100_000, 8, 50_000)["elapsed_seconds"], 4.608412544)
 
     def test_ceilings(self):
         year = rs.analytic(rs.BASELINE, rs.leaves_after(365), 52)
@@ -311,9 +327,9 @@ class Analytic(unittest.TestCase):
 
     def test_catch_up_and_headers(self):
         month = rs.catch_up_bytes(rs.BASELINE, 30, 5)
-        self.assertEqual(month["leaf_and_note_bytes"], 56_400_000_000)
+        self.assertEqual(month["leaf_and_note_bytes"], 123_600_000_000)
         self.assertEqual(month["marker_bytes"], 9_600_000_000)
-        self.assertEqual(rs.catch_up_bytes(rs.BUCKETS, 30, 5)["leaf_and_note_bytes"], 10_849_807_360)
+        self.assertEqual(rs.catch_up_bytes(rs.BUCKETS, 30, 5)["leaf_and_note_bytes"], 10_923_207_680)
         self.assertEqual(rs.header_bytes(365), 611_798_400)
         self.assertEqual(rs.header_bytes(5 * 365), 3_058_992_000)
 
@@ -323,7 +339,7 @@ class Analytic(unittest.TestCase):
             rs.main(["--leaves", "20000"])
         text = out.getvalue()
         self.assertIn("Modeled", text)
-        self.assertIn("803,028,515,648", text)
+        self.assertIn("1,620,628,515,648", text)
 
 
 if __name__ == "__main__":

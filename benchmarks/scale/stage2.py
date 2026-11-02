@@ -85,7 +85,7 @@ INPUTS = {
 
     # Wallet restore: the lookup data.
     "leaf_bytes": 32,
-    "note_bytes": 156,
+    "note_bytes": 380,  # spec 10, section 3.2
     "lookup_tag_bytes": 16,
     "marker_bytes": 32,
     "position_bytes": 5,

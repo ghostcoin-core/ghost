@@ -26,12 +26,12 @@ The Poseidon2 comparison above is on the benchmark statement only (both of its r
 
 ## Restore and catch-up
 
-A clean restore today downloads every leaf and note from page 0, 188 bytes each (modeled: spec 05, section 8), trial-decrypts every note and checks notes and markers against bulk receipts; at 10 million new leaves a day that is 1.88 GB a day and 686.2 GB a year before receipts, markers and public commits (modeled, workload.md). Below are the baseline and two candidate alternatives, simulated on a chain of 100,000 leaves and extrapolated to one and five years at the target (all modeled). None of them is chosen here.
+A clean restore today downloads every leaf and note from page 0, 412 bytes each (modeled: a 32-byte leaf, spec 05, section 8, and a 380-byte note, spec 10, section 3.2), trial-decrypts every note and checks notes and markers against bulk receipts; at 10 million new leaves a day that is 4.12 GB a day and 1,503.8 GB a year before receipts, markers and public commits (modeled, workload.md). Below are the baseline and two candidate alternatives, simulated on a chain of 100,000 leaves and extrapolated to one and five years at the target (all modeled). None of them is chosen here.
 
 ### The designs
 
 - **Baseline.** Spec 05, section 8 as written: the page-root list, every page from page 0, every note trial-decrypted, every spent marker from the scan start read in bulk. Its requests are the same for every wallet (tested), so an endpoint learns nothing about which commitment is the wallet's: the privacy set is the whole chain. <!-- no-figure -->
-- **Buckets: note tags with fixed decoy pages.** The design C of docs/research/recovery-cost.md, a candidate. A 4-byte tag, bound to the leaf, takes the first bytes of the note's nonce, so the note stays 156 bytes (modeled). The wallet reads the leaf and the tag of every leaf in bulk (36 bytes a leaf, modeled), finds its hits, then fetches the other 152 bytes of the notes only by whole pages (modeled): each hit page together with 15 decoy pages derived from the key and the page number, and at least 64 pages in all (both model inputs, modeled), in one request in page order. It needs a tag column with its own header root, a change to the note and header formats (a founder decision). It never downloads more than the baseline: it skips 152 bytes of each note it does not fetch (tested).
+- **Buckets: note tags with fixed decoy pages.** The design C of docs/research/recovery-cost.md, a candidate. A 4-byte tag, bound to the leaf, takes the first bytes of the note's nonce, so the note stays 380 bytes (modeled). The wallet reads the leaf and the tag of every leaf in bulk (36 bytes a leaf, modeled), finds its hits, then fetches the other 376 bytes of the notes only by whole pages (modeled): each hit page together with 15 decoy pages derived from the key and the page number, and at least 64 pages in all (both model inputs, modeled), in one request in page order. It needs a tag column with its own header root, a change to the note and header formats (a founder decision). It never downloads more than the baseline: it skips 376 bytes of each note it does not fetch (tested).
 - **Checkpoint: scan from the key's birth epoch.** Design F of the same page, a candidate. The wallet holds a coarse birth epoch with the key (30 days of leaves at the target, a model input, modeled) and scans whole pages from the start of that epoch. It needs the epoch carried with the key: inside the digits it changes the key format (spec 01); outside them, "the digits are all you need" holds only with a fallback to the baseline when the epoch is lost.
 
 Why these two: they are the two candidates of recovery-cost.md that cut volume or processing with no new trust in a service and no elliptic-curve part. Single-server PIR (design H there) hides the fetch better than decoys, but its cost for these records is not yet established, so it is not modeled here.
@@ -50,11 +50,11 @@ Spent status: every design reads every canonical spent marker from its scan star
 
 | Input | Value | Label |
 |---|---|---|
-| Leaf and note | 32 + 156 = 188 bytes | modeled: spec 05, section 8 |
+| Leaf and note | 32 + 380 = 412 bytes | modeled: the leaf of spec 05, section 8, and the note of spec 10, section 3.2 (156 bytes before it) |
 | Page and page root | 4,096 leaves, 32 bytes | modeled: spec 05, section 8 |
 | New leaves and spends a day | 10,000,000 each | modeled: the target, workload.md |
 | Phone link | 5,000,000 bytes a second (50 Mbit/s at 80 percent) | not yet established: workload.md states no phone link speed; the assumption of recovery-cost.md |
-| Trial decryption of one note on the phone | 1,148 ns | not yet established on a phone: 287 ns measured on the build machine (the slowest of three runs of the client crate's real `restore_coins`, an aarch64 Linux virtual machine on the Mac Studio, 2026-10-20, recovery-cost.md) times its assumed phone slowdown of 4 |
+| Trial decryption of one note on the phone | 1,148 ns | not yet established on a phone: 287 ns measured on the build machine (the slowest of three runs of the client crate's real `restore_coins`, an aarch64 Linux virtual machine on the Mac Studio, 2026-10-20, recovery-cost.md) times its assumed phone slowdown of 4; that run used 156-byte notes, and the cost at 380 bytes is kept unchanged as the input, not yet established |
 | One hash a leaf (page root, tag check) on the phone | 680 ns | not yet established on a phone: 170 ns a leaf measured on the same machine for the page root (the client's tagged Keccak-256), times 4 |
 | Notes of the key | 52 a year, each on its own page, the key one year old | not yet established: the assumption of recovery-cost.md (one a week) |
 | Simulated chain | 100,000 leaves, 8 notes of the key on 8 pages from leaf 50,000, epoch of 16,384 leaves | modeled: the module's test chain, seed fixed |
@@ -67,15 +67,15 @@ Elapsed time is the download at the phone link plus the processing, one after th
 
 | Design and chain (all modeled) | Leaf and note bytes | Total download, with page roots and markers | Trial decryptions | Elapsed time | Peak memory | Storage | Privacy: smallest set, fraction learned not needed |
 |---|---|---|---|---|---|---|---|
-| Baseline, simulated 100,000 leaves (modeled) | 18,800,000 | 22,000,800 (22.0 MB) | 100,000 | 4.58 s | 1.95 MB | 1.05 MB | the whole chain, 0 |
-| Buckets, simulated (modeled) | 18,800,000: the request covers all 25 pages | 22,000,800 (22.0 MB) | 8 found, at most 9 | 4.54 s | 1.95 MB | 1.05 MB | the whole chain, 0 |
-| Checkpoint, simulated (modeled) | 9,559,424 | 11,187,360 (11.2 MB) | 50,848 | 2.33 s | 1.95 MB | 1.05 MB | 50,848 leaves, 49.2 percent |
-| Baseline, one year (modeled) | 686,200,000,000 (686.2 GB) | 803,028,515,648 (803.0 GB) | 3,650,000,000 | 167,278 s (46.5 hours) | 36.2 MB | 35.3 MB | the whole chain, 0 |
-| Buckets, one year (modeled) | 131,927,958,016 (131.9 GB) | 248,756,473,664 (248.8 GB) | 53 | 54,715 s (15.2 hours) | 36.2 MB | 35.3 MB | 3,473,408 leaves (848 pages), 99.9 percent |
-| Checkpoint, one year, key made at genesis (modeled) | 686,200,000,000 (686.2 GB) | 803,028,515,648 (803.0 GB) | 3,650,000,000 | 167,278 s (46.5 hours) | 36.2 MB | 35.3 MB | the whole chain, 0 |
-| Baseline, five years (modeled) | 3,431,000,000,000 (3.43 TB) | 4,015,142,578,144 (4.02 TB) | 18,250,000,000 | 836,390 s (9.7 days) | 150.3 MB | 149.4 MB | the whole chain, 0 |
-| Buckets, five years (modeled) | 657,567,803,904 (657.6 GB) | 1,241,710,382,048 (1.24 TB) | 57 | 273,162 s (75.9 hours) | 150.3 MB | 149.4 MB | 3,735,552 leaves (912 pages), 99.98 percent |
-| Checkpoint, five years, key one year old (modeled) | 723,800,000,000 (723.8 GB) | 847,142,578,144 (847.1 GB) | 3,850,000,000 | 176,466 s (49.0 hours) | 150.3 MB | 149.4 MB | 3,850,000,000 leaves, 78.9 percent |
+| Baseline, simulated 100,000 leaves (modeled) | 41,200,000 | 44,400,800 (44.4 MB) | 100,000 | 9.06 s | 2.87 MB | 1.05 MB | the whole chain, 0 |
+| Buckets, simulated (modeled) | 41,200,000: the request covers all 25 pages | 44,400,800 (44.4 MB) | 8 found, at most 9 | 9.02 s | 2.87 MB | 1.05 MB | the whole chain, 0 |
+| Checkpoint, simulated (modeled) | 20,949,376 | 22,577,312 (22.6 MB) | 50,848 | 4.61 s | 2.87 MB | 1.05 MB | 50,848 leaves, 49.2 percent |
+| Baseline, one year (modeled) | 1,503,800,000,000 (1,503.8 GB) | 1,620,628,515,648 (1,620.6 GB) | 3,650,000,000 | 330,798 s (91.9 hours) | 37.2 MB | 35.3 MB | the whole chain, 0 |
+| Buckets, one year (modeled) | 132,706,001,408 (132.7 GB) | 249,534,517,056 (249.5 GB) | 53 | 54,871 s (15.2 hours) | 37.2 MB | 35.3 MB | 3,473,408 leaves (848 pages), 99.9 percent |
+| Checkpoint, one year, key made at genesis (modeled) | 1,503,800,000,000 (1,503.8 GB) | 1,620,628,515,648 (1,620.6 GB) | 3,650,000,000 | 330,798 s (91.9 hours) | 37.2 MB | 35.3 MB | the whole chain, 0 |
+| Baseline, five years (modeled) | 7,519,000,000,000 (7.52 TB) | 8,103,142,578,144 (8.10 TB) | 18,250,000,000 | 1,653,990 s (19.1 days) | 151.2 MB | 149.4 MB | the whole chain, 0 |
+| Buckets, five years (modeled) | 658,404,567,552 (658.4 GB) | 1,242,547,145,696 (1.24 TB) | 57 | 273,329 s (75.9 hours) | 151.2 MB | 149.4 MB | 3,735,552 leaves (912 pages), 99.98 percent |
+| Checkpoint, five years, key one year old (modeled) | 1,586,200,000,000 (1.59 TB) | 1,709,542,578,144 (1.71 TB) | 3,850,000,000 | 348,946 s (96.9 hours) | 151.2 MB | 149.4 MB | 3,850,000,000 leaves, 78.9 percent |
 
 The buckets design's trial decryptions are its tag hits: the key's notes plus the expected false hits of a 4-byte tag, one in 2^32 leaves, rounded up (modeled). The simulated rows of the baseline and the checkpoint equal the simulation exactly; the buckets row is the analytic upper bound, and the simulation stays at or under it (tested). At the simulated size the buckets design gains nothing: 16 pages for each of 8 hits is more than the chain's 25 pages, so it fetches every note (modeled); with one decoy a hit and at least four pages it fetches 16 pages or fewer and saves bytes (tested).
 
@@ -83,7 +83,7 @@ Catch-up and headers (modeled):
 
 | Item | Baseline | Buckets | Checkpoint |
 |---|---|---|---|
-| Keeping up for 30 days: leaf and note bytes (modeled) | 56,400,000,000 (56.4 GB) | 10,849,807,360 (10.8 GB), with 5 hit pages | 56,400,000,000: an up-to-date wallet already scans from its last page |
+| Keeping up for 30 days: leaf and note bytes (modeled) | 123,600,000,000 (123.6 GB) | 10,923,207,680 (10.9 GB), with 5 hit pages | 123,600,000,000: an up-to-date wallet already scans from its last page |
 | Keeping up for 30 days: marker bytes (modeled) | 9,600,000,000 (9.6 GB) | the same | the same |
 | Headers from genesis on a clean device, one year (modeled) | 611,798,400 (611.8 MB): 2,880 blocks a day of 582 bytes, for every design alike | the same | the same |
 | The same, five years (modeled) | 3,058,992,000 (3.06 GB) | the same | the same |
@@ -96,13 +96,13 @@ The ceilings are the proposals of workload.md, each not yet established; the tar
 
 | Ceiling (workload.md) | Baseline | Buckets | Checkpoint |
 |---|---|---|---|
-| Full restore download, proposed 500 MB (not yet established) | met on the simulated chain; missed at one year (803.0 GB) and five (4.02 TB), modeled | met on the simulated chain; missed at one year (248.8 GB) and five (1.24 TB), modeled | met on the simulated chain; missed at one year (803.0 GB) and five (847.1 GB), modeled |
-| Keeping up, proposed 50 MB a month (not yet established) | missed: 66.0 GB a month with markers, modeled | missed: 20.4 GB a month with markers, modeled | missed, as the baseline, modeled |
-| Restore time, proposed 10 minutes (not yet established) | met on the simulated chain; missed at one year (46.5 hours) and five (9.7 days), modeled | met on the simulated chain; missed at one year (15.2 hours) and five (75.9 hours), modeled | met on the simulated chain; missed at one year (46.5 hours) and five (49.0 hours), modeled |
-| Memory, proposed 1 GiB for the whole tab (not yet established) | met at every size: at most 150.3 MB, modeled | met, as the baseline, modeled | met, as the baseline, modeled |
+| Full restore download, proposed 500 MB (not yet established) | met on the simulated chain; missed at one year (1,620.6 GB) and five (8.10 TB), modeled | met on the simulated chain; missed at one year (249.5 GB) and five (1.24 TB), modeled | met on the simulated chain; missed at one year (1,620.6 GB) and five (1.71 TB), modeled |
+| Keeping up, proposed 50 MB a month (not yet established) | missed: 133.2 GB a month with markers, modeled | missed: 20.5 GB a month with markers, modeled | missed, as the baseline, modeled |
+| Restore time, proposed 10 minutes (not yet established) | met on the simulated chain; missed at one year (91.9 hours) and five (19.1 days), modeled | met on the simulated chain; missed at one year (15.2 hours) and five (75.9 hours), modeled | met on the simulated chain; missed at one year (91.9 hours) and five (96.9 hours), modeled |
+| Memory, proposed 1 GiB for the whole tab (not yet established) | met at every size: at most 151.2 MB, modeled | met, as the baseline, modeled | met, as the baseline, modeled |
 | Storage, proposed 200 MB of wallet data (not yet established) | met at one year (35.3 MB) and five (149.4 MB), modeled; the page-root list grows 28.5 MB a year, so it passes 200 MB at about 6.8 years (modeled) | the same, modeled | the same, modeled |
 
-So, modeled: no candidate keeps "the digits are all you need" within the proposed download and time ceilings on a chain of a year or more at the target. Volume, not processing, sets the cost: the download is about 96 percent of the baseline's elapsed time at one year (modeled: 160,606 s of 167,278 s). The buckets design cuts the full-restore download about 3.2 times at one year (modeled: 803.0 GB to 248.8 GB) and leaves the spent markers as the larger part; the checkpoint helps only a key much younger than the chain. Meeting the download ceiling needs a further cut of about 500 times (modeled: 248.8 GB against 500 MB), which none of these designs gives; what to do about it is for the later verdict, not this page.
+So, modeled: no candidate keeps "the digits are all you need" within the proposed download and time ceilings on a chain of a year or more at the target. Volume, not processing, sets the cost: the download is about 98 percent of the baseline's elapsed time at one year (modeled: 324,126 s of 330,798 s). The buckets design cuts the full-restore download about 6.5 times at one year (modeled: 1,620.6 GB to 249.5 GB) and leaves the spent markers as the larger part; the checkpoint helps only a key much younger than the chain. Meeting the download ceiling needs a further cut of about 500 times (modeled: 249.5 GB against 500 MB), which none of these designs gives; what to do about it is for the later verdict, not this page.
 
 ### What is not yet established
 

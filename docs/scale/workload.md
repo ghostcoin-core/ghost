@@ -55,7 +55,7 @@ Every kind is signed by an account. The signature budget below takes every publi
 | Aggregator payment field | none; the fixed tip goes to the block finder | modeled: spec 07 has no such field (no figure to measure) |
 | Public scheme, key and signature, ML-DSA-44 | 3,734 bytes | modeled: 2 + 1,312 + 2,420 (spec 09, section 8) |
 | Message cap of the base client's eth protocol | 10 MiB, 10,485,760 bytes | modeled: spec 09, section 8.4 |
-| Leaf and note a wallet downloads | 188 bytes | modeled: 32-byte leaf and 156-byte note (spec 05, section 8) |
+| Leaf and note a wallet downloads | 412 bytes | modeled: 32-byte leaf (spec 05, section 8) and 380-byte note (spec 10, section 3.2) |
 | Leaves a tree holds | 2^32 | modeled: spec 05, section 3 |
 
 ## Resource ceilings
@@ -135,8 +135,8 @@ Modeled from benchmarks/scale/budget.py at the target, with today's encodings:
 | Over the 10,485,760-byte message cap by | 3,797,740 | modeled |
 | Gas per block under today's rule | 73,816,302,000 | modeled: 3,500 x 21,090,372 |
 | Multiple of the 30,000,000 gas limit | 2,460.5434 | modeled |
-| Leaves and notes a wallet downloads per day | 1,880,000,000 (1.88 GB) | modeled: 10,000,000 x 188 |
-| Per year | 686,200,000,000 (686 GB) | modeled: x 365, before receipts, markers and public commits |
+| Leaves and notes a wallet downloads per day | 4,120,000,000 (4.12 GB) | modeled: 10,000,000 x 412 |
+| Per year | 1,503,800,000,000 (1,504 GB) | modeled: x 365, before receipts, markers and public commits |
 | Spent markers kept per year | 116,800,000,000 (116.8 GB) | modeled: 10,000,000 x 32 bytes x 365, kept forever (spec 05, "Who keeps what") |
 | Days until a coin tree fills at 10,000,000 new leaves a day | 429.5 | modeled: 2^32 / 10,000,000 |
 

@@ -73,16 +73,19 @@ class Public(unittest.TestCase):
 
 class RestoreAndState(unittest.TestCase):
     def test_restore_volume(self):
-        self.assertEqual(budget.restore_bytes_per_day(), 1_880_000_000)
-        self.assertEqual(budget.restore_bytes_per_year(), 686_200_000_000)
+        # A 32-byte leaf and its 380-byte note (spec 10, section 3.2).
+        self.assertEqual(budget.INPUTS["leaf_and_note_bytes"], 32 + 380)
+        self.assertEqual(budget.restore_bytes_per_day(), 4_120_000_000)
+        self.assertEqual(budget.restore_bytes_per_year(), 1_503_800_000_000)
 
     def test_markers_and_trees(self):
         self.assertEqual(budget.marker_bytes_per_year(), 116_800_000_000)
         self.assertEqual(budget.days_to_fill_tree(), 429.4967296)
 
     def test_changing_an_input_changes_the_output(self):
-        self.assertEqual(budget.restore_bytes_per_day(changed(new_leaves_per_day=1)), 188)
-        self.assertEqual(budget.restore_bytes_per_year(changed(days_per_year=1)), 1_880_000_000)
+        self.assertEqual(budget.restore_bytes_per_day(changed(new_leaves_per_day=1)), 412)
+        self.assertEqual(budget.restore_bytes_per_year(changed(days_per_year=1)), 4_120_000_000)
+        self.assertEqual(budget.restore_bytes_per_day(changed(leaf_and_note_bytes=188)), 1_880_000_000)
         self.assertEqual(budget.days_to_fill_tree(changed(new_leaves_per_day=2 ** 31)), 2)
 
 
