@@ -1,9 +1,9 @@
 """Wallet restore and catch-up of an old key against a simulated mature chain.
 
 A tested model, not a benchmark. It builds a chain of N leaves, each a 32-byte
-leaf with its 156-byte note (spec 05, section 8), with one wallet's notes at
-known positions and one canonical spent marker per leaf, and restores that
-wallet under three candidate designs:
+leaf (spec 05, section 8) with its 380-byte note (spec 10, section 3.2), 412
+bytes in all, with one wallet's notes at known positions and one canonical
+spent marker per leaf, and restores that wallet under three candidate designs:
 
 - baseline: spec 05, section 8 as written. Every page from page 0, every note
   trial-decrypted, every marker from the scan start read in bulk.
@@ -42,9 +42,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import budget  # noqa: E402
 
-# Wallet tree data (spec 05, section 8).
+# Wallet tree data (spec 05, section 8), with the note of spec 10, section 3.2:
+# 156 bytes before it, 380 with the policy capsule.
 LEAF_BYTES = 32
-NOTE_BYTES = 156
+NOTE_BYTES = 380
 LEAF_AND_NOTE_BYTES = LEAF_BYTES + NOTE_BYTES
 PAGE_LEAVES = 4096
 PAGE_ROOT_BYTES = 32
@@ -73,7 +74,8 @@ PHONE_STORAGE_CEILING_BYTES = 200_000_000
 # 50 Mbit/s link at 80 percent use. The per-leaf costs are that page's
 # measurements on the build machine (the client crate's real restore_coins, the
 # slowest of three runs, and the page-root hashing), times the same page's
-# assumed phone slowdown of 4. None is established on a phone.
+# assumed phone slowdown of 4. None is established on a phone. The trial
+# decryption was measured on 156-byte notes and is kept for the 380-byte note.
 PHONE_LINK_BYTES_PER_SECOND = 5_000_000
 TRIAL_DECRYPT_NS_BUILD_MACHINE = 287
 LEAF_HASH_NS_BUILD_MACHINE = 170
@@ -162,7 +164,7 @@ def marker(key, leaf):
 
 
 def make_note(key, leaf, blind, amount):
-    """A 156-byte note: tag, MAC, then the encrypted blinding and amount."""
+    """A 380-byte note: tag, MAC, then the encrypted blinding and amount."""
     body_len = NOTE_BYTES - TAG_BYTES - 16
     payload = (blind + amount.to_bytes(8, "big")).ljust(body_len, b"\0")
     body = bytes(a ^ b for a, b in zip(payload, _keystream(key, leaf, body_len)))

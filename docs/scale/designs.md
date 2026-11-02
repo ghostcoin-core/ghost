@@ -50,7 +50,7 @@ A design for public transactions meets every requirement below at 3,500 public t
 A design for wallet restore meets every requirement below against a mature chain at the target (10,000,000 new leaves a day, modeled from the target).
 
 1. "The digits are all you need" stays true: a wallet restores from its secret alone on the reference phone of workload.md, within its restore download, time and storage ceilings (not yet established), against a chain of at least one year at the target.
-2. Today's method (download every leaf and note from the start, 188 bytes each, and trial-decrypt) needs 1,880,000,000 bytes a day and 686,200,000,000 bytes a year before receipts, markers and public commits (modeled); the design states its own bytes per day and per year of chain, and the phone's download for a full restore.
+2. Today's method (download every leaf and note from the start, 412 bytes each with the 380-byte note of spec 10, section 3.2, and trial-decrypt) needs 4,120,000,000 bytes a day and 1,503,800,000,000 bytes a year before receipts, markers and public commits (modeled); the design states its own bytes per day and per year of chain, and the phone's download for a full restore.
 3. No endpoint learns which commitment is the wallet's: the wallet fetches data in bulk or under a scheme whose privacy the design states, never one commitment at a time (spec 05, section 8). A test shows two wallets with different coins make indistinguishable requests.
 4. Every downloaded item is checked against canonical headers before use, as spec 05, section 8 does for pages, and a missing or wrong item is rejected, never guessed.
 5. The wallet learns the spent status of its coins on the canonical chain by rule 2, without revealing which marker it asks about.

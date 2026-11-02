@@ -249,9 +249,29 @@ class Restore(unittest.TestCase):
 
     def test_node_storage_turns_with_the_ceiling(self):
         s = stage2.node_storage_per_year()
-        self.assertTrue(s["meets"])
+        self.assertFalse(s["meets"])
+        roomy = stage2._with(None, node_storage_ceiling_per_year=s["total"])
+        self.assertTrue(stage2.node_storage_per_year(roomy)["meets"])
         tight = stage2._with(None, node_storage_ceiling_per_year=s["total"] - 1)
         self.assertFalse(stage2.node_storage_per_year(tight)["meets"])
+
+    def test_the_380_byte_note_turns_node_storage(self):
+        # At the 156-byte note the year's growth met the proposed 2 TB; the
+        # 380-byte note of spec 10, section 3.2 adds 224 bytes a leaf and misses it.
+        self.assertEqual(stage2.INPUTS["note_bytes"], 380)
+        s = stage2.node_storage_per_year()
+        self.assertEqual(s["today"], 3_650_000_000 * (32 + 380) + 3_650_000_000 * 32)
+        self.assertEqual(s["total"], 2_412_750_915_200)
+        old = stage2.node_storage_per_year(stage2._with(None, note_bytes=156))
+        self.assertTrue(old["meets"])
+        self.assertEqual(s["total"] - old["total"], 3_650_000_000 * 224)
+
+    def test_the_note_database_follows_the_note_length(self):
+        queries, _ = stage2.restore_queries(365)
+        note = next(db for name, db, _ in queries if name == "note")
+        self.assertEqual(note, 3_650_000_000 * 380)
+        shorter = stage2.restore(365, stage2._with(None, note_bytes=156))
+        self.assertLess(shorter["total_bytes"], stage2.restore(365)["total_bytes"])
 
 
 class Aggregation(unittest.TestCase):

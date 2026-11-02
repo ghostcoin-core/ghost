@@ -4,11 +4,11 @@ This page is the design of the second stage of the scale work. The first stage's
 
 Every figure carries one of the labels of workload.md: **measured** (actually run, the machine named), **modeled** (a formula or stated inputs) or **not yet established** (with what would produce it). Nothing on this page was run: the only measured inputs are the recursion proxy records of docs/scale/recursion-proxy.jsonl and the timings quoted from docs/benchmarks/reveal-parameters.md and docs/research/recovery-cost.md, and every figure built on them is modeled. The arithmetic is benchmarks/scale/stage2.py, whose `INPUTS` dict at the top holds every input with its source; benchmarks/tests/test_scale_stage2.py checks that every table row on this page is exactly what the model prints, and that each ceiling comparison turns when its input crosses the ceiling.
 
-**Result.** Each limit has a chosen design whose modeled figures meet the ceilings it is judged against, with three exceptions stated plainly and passed to the founder below (all modeled): the 40-machine aggregator fleet that workload.md proposes is enough only if a Poseidon2 permutation costs at most 93 ns on an aggregator core, and the 0.3 s merge budget behind it only at 122 ns, where this page's input is 400 ns (not yet established); keeping a wallet up to date within 50 MB a month allows two authenticated status checks a month at one year of chain and one at five; and the whole-bundle bound reaches 135.80 classical and 66.05 quantum bits only as a modeled sum, proven once the proof obligations listed under its section are discharged (not yet established). Every ceiling of the reference phone is still a proposal (not yet established in workload.md).
+**Result.** Each limit has a chosen design whose modeled figures meet the ceilings it is judged against, with four exceptions stated plainly and passed to the founder below (all modeled): an ordinary full node grows 2,412.8 GB a year with the restore design's trees at the 380-byte note of spec 10, section 3.2, over the proposed 2 TB (it met the proposal at the 156-byte note); the 40-machine aggregator fleet that workload.md proposes is enough only if a Poseidon2 permutation costs at most 93 ns on an aggregator core, and the 0.3 s merge budget behind it only at 122 ns, where this page's input is 400 ns (not yet established); keeping a wallet up to date within 50 MB a month allows two authenticated status checks a month at one year of chain and one at five; and the whole-bundle bound reaches 135.80 classical and 66.05 quantum bits only as a modeled sum, proven once the proof obligations listed under its section are discharged (not yet established). Every ceiling of the reference phone is still a proposal (not yet established in workload.md).
 
 | Limit the first stage named | Chosen design | Against its ceilings (all modeled) | Label |
 |---|---|---|---|
-| Wallet restore volume | Private lookups by key-derived lookup tags, by single-server lattice PIR, checked against header-committed indexed trees; a work-sampled proof of the header chain | Full restore 187.7 MB at one year and 404.4 MB at five against a proposed 500 MB; 264 s and 462 s against a proposed 10 minutes; keeping up within 50 MB a month at two checks a month at one year, one at five | modeled; every ceiling a proposal, not yet established |
+| Wallet restore volume | Private lookups by key-derived lookup tags, by single-server lattice PIR, checked against header-committed indexed trees; a work-sampled proof of the header chain | Full restore 193.6 MB at one year and 417.6 MB at five against a proposed 500 MB; 264 s and 462 s against a proposed 10 minutes; keeping up within 50 MB a month at two checks a month at one year, one at five; full-node growth 2,412.8 GB a year against a proposed 2 TB, missed | modeled; every ceiling a proposal, not yet established |
 | Aggregation cost | Architecture (c) of security.md, Poseidon2 leaves and layers, with wide layers: batches of 32 reveals, a root, a shrink | 0.0377 US cents a reveal against 0.1; p99 delay 244.3 s against 5 minutes; 104 machines against the proposed 40, which suffice only at 93 ns a Poseidon2 permutation or less | modeled; the Poseidon2 cost not yet established |
 | Whole-bundle proven security bound | A 279-bit Poseidon2 digest, a degree-8 extension of BabyBear, 96 queries in the Johnson regime, three recursive layers | 135.80 classical and 66.05 quantum bits against 128 and 64, the proven extension-field terms included | modeled; proven only with the obligations below, not yet established |
 | Public signature size | Signatures leave the block: ML-DSA-44 verifications proven in chunks and folded by the same layers into one public root a block | 5,003,444 bytes a block before bodies against the 10,485,760-byte cap, 5,482,316 bytes of headroom | modeled |
@@ -17,7 +17,7 @@ Every figure carries one of the labels of workload.md: **measured** (actually ru
 
 **Chosen:** private lookups by key-derived lookup tags, served by single-server lattice PIR over databases any full node can build from public data, every answer checked against header-committed indexed trees, with a work-sampled proof of the header chain in place of every header from genesis (all figures below modeled).
 
-Why this one. The first stage found that volume, not processing, sets the cost, and that no scan of the whole chain fits: the best design it considered downloads 248.8 GB at one year against a proposed 500 MB (modeled in phone-results.md). A wallet that knows what to ask for and asks privately downloads in proportion to its own coins and the logarithm of the chain, not to the chain. It can know: a key's commitments are numbered 0, 1, 2 and on with no gaps, each a remainder of the one before (spec 01, section 8), so the wallet can compute an identifier for each of them from the digits before it asks (modeled: no figure beyond the counts below). What is left to hide is which record is fetched, which PIR does; what is left to check is that every answer belongs to the canonical chain, which header roots do; and the header chain itself is checked by sampling, so the phone no longer downloads 611.8 MB of headers a year of chain (modeled in phone-results.md).
+Why this one. The first stage found that volume, not processing, sets the cost, and that no scan of the whole chain fits: the best design it considered downloads 249.5 GB at one year against a proposed 500 MB (modeled in phone-results.md). A wallet that knows what to ask for and asks privately downloads in proportion to its own coins and the logarithm of the chain, not to the chain. It can know: a key's commitments are numbered 0, 1, 2 and on with no gaps, each a remainder of the one before (spec 01, section 8), so the wallet can compute an identifier for each of them from the digits before it asks (modeled: no figure beyond the counts below). What is left to hide is which record is fetched, which PIR does; what is left to check is that every answer belongs to the canonical chain, which header roots do; and the header chain itself is checked by sampling, so the phone no longer downloads 611.8 MB of headers a year of chain (modeled in phone-results.md).
 
 ### What changes on the chain
 
@@ -56,17 +56,17 @@ Inputs (all from the repository or stated here; labels as given): a phone link o
 |---|---|---|---|
 | Header proof: sampled headers, tail headers, RandomX keys (modeled) | 599, 64, 86 | 702, 64, 175 | none |
 | Header proof bytes (modeled) | 1.2 MB | 1.7 MB | none |
-| PIR queries and their bytes (modeled) | 31 queries, 182.7 MB | 31 queries, 397.7 MB | none |
+| PIR queries and their bytes (modeled) | 31 queries, 188.6 MB | 31 queries, 410.9 MB | none |
 | Bulk tree tops and the blocks after the snapshot (modeled) | 3.7 MB | 5.0 MB | none |
-| Full-restore download (modeled) | 187.7 MB, met | 404.4 MB, met | proposed 500 MB (not yet established) |
-| Restore time: the header check beside the download and the server's work (modeled) | 264 s (header 264 s; download 38 s and server 15 s), met | 462 s (header 462 s; download 81 s and server 75 s), met | proposed 10 minutes (not yet established) |
-| Server work a restore (modeled) | 479 core-seconds | 2,394 core-seconds | none |
+| Full-restore download (modeled) | 193.6 MB, met | 417.6 MB, met | proposed 500 MB (not yet established) |
+| Restore time: the header check beside the download and the server's work (modeled) | 264 s (header 264 s; download 39 s and server 17 s), met | 462 s (header 462 s; download 84 s and server 85 s), met | proposed 10 minutes (not yet established) |
+| Server work a restore (modeled) | 546 core-seconds | 2,732 core-seconds | none |
 | Phone memory at its peak (modeled) | 258.2 MiB, met | 259.5 MiB, met | proposed 1 GiB (not yet established) |
 | Phone storage (modeled) | 2.3 MB, met | 3.7 MB, met | proposed 200 MB (not yet established) |
 | Keeping up, 2 status checks a month (modeled) | 38.3 MB (19.1 MB a check), met | 73.7 MB (36.8 MB a check), missed | proposed 50 MB a month (not yet established) |
 | Most status checks a month within 50 MB (modeled) | 2 | 1 | none |
 
-Against the first stage (both modeled): the full-restore download falls from 248.8 GB at one year with buckets to 187.7 MB, and the restore time from 15.2 hours to 264 s. Keeping up is no longer a download of the chain: a wallet's witness against an old root stays valid, because historical roots stay valid forever (spec 05, section 5), so keeping up is only learning whether another holder of the digits spent the coin, one authenticated check at a time, with the headers since the last check sampled the same way (modeled: about 19.1 MB a check at one year). The ceiling of 50 MB a month then fixes how often a wallet may check, which is a decision for the founder: two checks a month at one year of chain, one at five (modeled). The restore time is dominated by the RandomX cache builds of the sampled headers' key blocks: 86 caches at one year and 175 at five (modeled), single-threaded Argon2d at the assumed 2.08 s each (not yet established on a phone).
+Against the first stage (both modeled): the full-restore download falls from 249.5 GB at one year with buckets to 193.6 MB, and the restore time from 15.2 hours to 264 s. Keeping up is no longer a download of the chain: a wallet's witness against an old root stays valid, because historical roots stay valid forever (spec 05, section 5), so keeping up is only learning whether another holder of the digits spent the coin, one authenticated check at a time, with the headers since the last check sampled the same way (modeled: about 19.1 MB a check at one year). The ceiling of 50 MB a month then fixes how often a wallet may check, which is a decision for the founder: two checks a month at one year of chain, one at five (modeled). The restore time is dominated by the RandomX cache builds of the sampled headers' key blocks: 86 caches at one year and 175 at five (modeled), single-threaded Argon2d at the assumed 2.08 s each (not yet established on a phone).
 
 Header sampling against a stronger attacker. The samples are set for an attacker whose valid work after its fork is at most half the honest work, about a third of the hashrate before luck (modeled: the input). Against a stronger attacker the same samples give less (all modeled):
 
@@ -83,15 +83,17 @@ Growth of a full node, and what a restore server keeps beyond it:
 
 | Full-node growth a year (all modeled) | Bytes |
 |---|---|
-| Leaves, notes and spent markers, as the first stage counted (modeled) | 803.0 GB |
+| Leaves, notes and spent markers, as the first stage counted (modeled) | 1,620.6 GB |
 | Lookup tags (modeled) | 58.4 GB |
 | Lookup index tree (modeled) | 346.8 GB |
 | Coin spent-marker set tree (modeled) | 386.9 GB |
 | Header MMR (modeled) | 0.1 GB |
-| Total, against the proposed 2 TB a year (modeled) | 1,595.2 GB, met |
+| Total, against the proposed 2 TB a year (modeled) | 2,412.8 GB, missed |
 | A restore server's hint tables at one year of chain, beyond a full node (modeled) | 403.3 GB |
 
-The trees are counted with every inner node stored (modeled: 64 bytes a leaf), the most a node keeps; receipts are left out, as the first stage left them out (spec 05, section 12; not yet established). The 4 TB disk of the ordinary full node holds about two and a half years of this growth (modeled: 4 TB over 1,595.2 GB a year).
+The trees are counted with every inner node stored (modeled: 64 bytes a leaf), the most a node keeps; receipts are left out, as the first stage left them out (spec 05, section 12; not yet established). The 4 TB disk of the ordinary full node holds about 1.7 years of this growth (modeled: 4 TB over 2,412.8 GB a year).
+
+Full-node growth misses the proposed 2 TB a year by 412.8 GB (modeled). The 380-byte note of spec 10, section 3.2 makes the first stage's own count of leaves, notes and markers 1,620.6 GB a year, under 2 TB on its own, and this design's lookup tags, trees and header MMR add 792.2 GB (all modeled). At the 156-byte note the total was 1,595.2 GB and met the proposal (modeled). The ceiling is a proposal of workload.md (not yet established), and what to do about it is listed for the founder below.
 
 ### What is not yet established for restore
 
@@ -234,7 +236,8 @@ None of these changes the target. Each is needed for the design above, and each 
 - **The aggregator fleet:** 104 machines a block at the stated Poseidon2 cost, 156 with the 50 percent spare, against the 40 workload.md proposes; or keep 40, which holds only if a Poseidon2 permutation measures at 93 ns or less (modeled; the cost not yet established).
 - **The direct path of a single reveal:** a proof field of at least 2,330,908 bytes in a new transaction version of spec 07, or a single reveal always bundled by someone (modeled).
 - **Proven quantum security of recursion:** if no theorem covers recursion with the hash inside the circuit in the quantum random oracle model before mainnet, whether the requirement of spec 09, section 4.1 stays a launch condition (not yet established).
-- **The restore ceilings themselves** stay proposals of workload.md; this design meets the download, time, memory and storage proposals on a chain of one and five years at the target (modeled), so none of them needs to change for it.
+- **The restore ceilings themselves** stay proposals of workload.md; this design meets the download, time, memory and phone storage proposals on a chain of one and five years at the target (modeled), so none of them needs to change for it.
+- **Full-node storage growth:** at the 380-byte note of spec 10, section 3.2, an ordinary full node grows 2,412.8 GB a year with this design's trees, against the 2 TB a year workload.md proposes, and its 4 TB disk holds about 1.7 years of it (modeled); whether to raise the proposal to fit it is the founder's decision (the proposal itself not yet established).
 
 ## Carried into the third stage
 

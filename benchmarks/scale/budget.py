@@ -29,8 +29,9 @@ INPUTS = {
     "public_auth_bytes": 3_734,
     # The base client's cap on one eth protocol message (spec 09, section 8.4).
     "message_cap_bytes": 10 * 1024 * 1024,
-    # Wallet restore: a 32-byte leaf and its 156-byte note (spec 05, section 8).
-    "leaf_and_note_bytes": 188,
+    # Wallet restore: a 32-byte leaf (spec 05, section 8) and its 380-byte note
+    # (spec 10, section 3.2).
+    "leaf_and_note_bytes": 412,
     "new_leaves_per_day": 10_000_000,
     # One spent marker (spec 05, "Who keeps what").
     "marker_bytes": 32,

@@ -1,6 +1,8 @@
 # Research: what it costs a holder to recover a coin without a service
 
-Status: research plus measurements, 2026-10-20. Write-up only; no program code
+Status: research plus measurements, 2026-10-20; the page and note figures
+updated 2026-11-02 for the 380-byte note of spec 10, section 3.2 (section 3.2
+says which figures moved). Write-up only; no program code
 is added to this repository. Every measured number comes from one machine
 (section 2) and from code already in this repository; every number that needs a
 phone or a real network is an assumption and is marked as one. Nothing here
@@ -13,7 +15,11 @@ The question: if honest self-recovery costs hundreds of GB, holders will use a
 few big service operators in practice, and the trust and privacy exposure that
 the protocol removes comes back. [Specification 05](../spec/05-trees-and-headers.md)
 (section 9, and section 14, question 4) puts a full scan at 188 bytes per leaf, about 807 GB
-for a full tree. This write-up measures that and compares ways to cut it.
+for a full tree. With the 380-byte note of [spec 10](../spec/10-private-reveal-policies.md),
+section 3.2 the same pages are 412 bytes per leaf, about 1.77 TB for a full tree
+(modeled, `benchmarks/scale/restore_sim.py`). This write-up measures that and
+compares ways to cut it; its receipt figures were computed at the 156-byte note
+(section 3.2).
 
 What we found:
 
@@ -53,7 +59,7 @@ What we found:
    then pays a private fetch for every note it finds: about 2.5 MB each with
    PIR (an assumption from published figures) or about 20 MB each with 16
    decoys (section 4.1). It uses
-   only hashing (quantum-safe), adds no bytes to the 156-byte note, and keeps
+   only hashing (quantum-safe), adds no bytes to the note, and keeps
    the bulk-scan privacy of spec 05. It must be decided before the note layout
    and the header are frozen (section 5, design C; section 6). A cheaper
    variant with no leaf in the column (4 bytes per leaf) was found to break
@@ -154,14 +160,27 @@ are not counted here.
 
 | Scan design | Bytes per leaf | Full tree of 2^32 leaves |
 |---|---|---|
-| Spec 05 as written (pages plus receipts), A | 188 + 0.008 + 285 = about 473 | 2.0 TB |
-| Receipts only, B | 285 + 0.008 = about 285 | 1.2 TB |
-| Pages only, notes authenticated by a header root (section 5, design D) | 188 + 0.008 | 807 GB |
+| Spec 05 as written (pages plus receipts), A, at the 156-byte note | 188 + 0.008 + 285 = about 473 | 2.0 TB |
+| Receipts only, B, at the 156-byte note | 285 + 0.008 = about 285 | 1.2 TB |
+| Pages only, notes authenticated by a header root (section 5, design D) | 412 + 0.008 (modeled: 32 + 380) | about 1.77 TB (modeled: 1,769,526,525,952 bytes of leaves and notes) |
 | Leaf column plus tag column, C | 32 + 4 = 36 | 154.6 GB |
 
-Spec 05's own 807 GB is the third row and holds only if a header carries a root
-over the notes, which spec 05 does not have (review F3 is why the receipts are
-fetched instead).
+Spec 05's own 807 GB is the third row at the 156-byte note, and holds only if a
+header carries a root over the notes, which spec 05 does not have (review F3 is
+why the receipts are fetched instead).
+
+**The 380-byte note.** Spec 10, section 3.2 grows every note from 156 to 380
+bytes after this write-up was made, so a leaf with its note is 412 bytes. The
+figures that are pages of leaves and notes are re-derived at 412 bytes by
+`benchmarks/scale/restore_sim.py` (modeled): the third row above, design D in
+section 5 and the tree sizes of design E. The receipts carry the note too, so
+the receipt sizes of this section (276, 366 and 285 bytes), rows A and B above,
+every A and B figure of sections 4 and 6, and the decoy fetch of design C, which
+fetches receipts, were computed at the 156-byte note and grow with it by an
+amount not yet established here (the receipt layout is itself an assumption,
+spec 05, section 12). Design C's columns carry no note and do not change, so its
+lead over A and B only grows. The scale model's restore figures at 380 bytes are
+in `docs/scale/phone-results.md` (modeled).
 
 ### 3.3 Headers
 
@@ -401,7 +420,7 @@ group is shown as excluded.
 | B. Receipts only, pages for the witness only | about 285 | The same | Yes | No | No |
 | C. 4-byte note tag bound to the leaf, tag root in the header | 36 (leaf and tag), plus per hit 2.5 MB by PIR or 19.8 MB with 16 decoys | The scan start; then a fetch for the hits, hidden by PIR or by a fixed set of decoys | Yes (SHA3-256) | Yes: the note's nonce layout, two header roots (four with marker roots) | Partly: 8 times less than B, and a copied tag gains nothing |
 | C4. 4-byte tag by commitment number, no leaf column | 4, plus the hits | The same | Yes | Yes, as C | No: a copied tag forces fetches (see notes) |
-| D. Header root over the notes (pages only) | about 188 | The same as A | Yes | Yes: two header roots, a second frontier | No |
+| D. Header root over the notes (pages only) | about 412 (modeled; 188 at the 156-byte note) | The same as A | Yes | Yes: two header roots, a second frontier | No |
 | E. Smaller trees or epochs | The same per leaf; totals unchanged | Nothing new | Yes | Yes: depth is frozen at 32 (TH-1) | No (see below) |
 | F. Birth hint with the key | Cuts the span, not the per-leaf cost | The age bucket of the key | Yes | No, if the hint stays outside the key digits | No |
 | G. Detection key given to a service | Near 0 on the phone | The service sees every hit of the key | Yes (hash tag) | Same as C | Yes, by moving it to the service |
@@ -421,7 +440,8 @@ leaf of a page (the spec lets a wallet start earlier, never later). It then
 needs only the page-root list (32 bytes per 4,096 leaves) for the 20 levels
 above the pages, and a page only for the part of the tree below its scan
 start. A fetch by block range names no commitment, exactly as the receipt fetch
-of spec 05 already does. This removes the 188-byte page download from the
+of spec 05 already does. This removes the 412-byte page download (modeled; 188
+bytes at the 156-byte note) from the
 scan with no change to any consensus rule or to what an endpoint learns. It
 leaves the receipts, which are most of the cost.
 
@@ -430,8 +450,8 @@ the key can recognise. Proposed form: a new derived key `k_tag =
 S("ghost/note-tag-key/v1", key bytes)` (spec 01, section 7 style) and, for the
 leaf `C` a note is stored with, `tag` = the first 4 bytes of
 `S("ghost/note-tag/v1", k_tag, C)`. The 12-byte nonce of the note becomes the
-4 tag bytes at offsets 0 to 3 followed by 8 random bytes, so the note stays 156
-bytes and the tag costs the chain nothing. The writer knows `C` when it writes
+4 tag bytes at offsets 0 to 3 followed by 8 random bytes, so the note keeps its
+length (380 bytes since spec 10, section 3.2) and the tag costs the chain nothing. The writer knows `C` when it writes
 the note, so it can compute the tag. Consensus takes bytes 0 to 3 of the note
 as the tag, with no check (it cannot check a key it does not have), and appends
 it to a third incremental tree per type whose root is a new header field.
@@ -502,14 +522,16 @@ is not a rule that holds.
 
 **D (header root over the notes).** If the header carried a root over (leaf,
 note) records, the pages alone would authenticate the notes and the receipts
-would be needed only for markers. That reaches spec 05's 188 bytes per leaf and
-no further, 1.5 times better than B, for two header roots and a second
-frontier. Not worth it alone; C includes the same property (a root over what
+would be needed only for markers. That reaches the pages' 412 bytes per leaf
+(modeled: 32 + 380) and no further, for two header roots and a second
+frontier. At the 156-byte note it was 188 bytes, 1.5 times better than B; at
+380 bytes B's receipts carry the larger note too, and the ratio is not yet
+established. Not worth it alone; C includes the same property (a root over what
 the wallet reads).
 
 **E (smaller trees or epochs).** A tree of depth 20 holds 1,048,576 leaves
-(197 MB of leaves and notes), depth 24 holds 16.7 million (3.2 GB), depth 28 holds
-268 million (50 GB). A smaller tree does not cut a restore: the holder still
+(432.0 MB of leaves and notes, modeled at 412 bytes a leaf), depth 24 holds 16.7
+million (6.9 GB, modeled), depth 28 holds 268 million (110.6 GB, modeled). A smaller tree does not cut a restore: the holder still
 scans every tree from its first (the sum is the same), and a flood fills more
 of them (1,240 trees a year at depth 20). It helps only together with a hint
 that names the first tree of the key, and then it is the same as design F with
@@ -555,7 +577,8 @@ without learning which they are. As published, the server cost is about 7.3
 thread-milliseconds per message for the first PerfOMR variant, so one full tree of
 4.29 billion messages costs one recipient about 31 million thread-seconds (a
 year of one core is 31.5 million), and each message needs a clue of about 2.2
-KB on the chain, 14 times the 156-byte note. Usable for a window of recent
+KB on the chain, more than five times the 380-byte note (14 times the 156-byte
+note this was written against). Usable for a window of recent
 messages; not for a full history, and far heavier than a tag. Not recommended
 for the core.
 
@@ -620,7 +643,8 @@ per year, and the flood year's 52 notes by PIR (130 MB) fit in that margin;
 
 1. *Now, no format change (design B plus F):* restate spec 05, section 9 and
    question 4 with the receipt cost (about 285 bytes per leaf, about 544 with the
-   bloom, plus 582 bytes per header), so the figure of 188 bytes stops being the
+   bloom, at the 156-byte note, plus 582 bytes per header), so the figure of 188
+   bytes (412 with the 380-byte note, modeled) stops being the
    quoted cost; let a wallet scan receipts only and take a page only for the
    witness below its scan start; show a date bucket beside the key (outside
    the digits). Together these cut the 1-week and 1-month rows by about 35
@@ -702,7 +726,7 @@ parent of this change builds on.
    and the data of section 3.2, using the base client's rule for lengths
    (one byte below 56, otherwise a length-of-length prefix).
 4. *Tables.* Bytes are the products in sections 3.2 and 3.3 with the leaf
-   counts of section 3.4: for A, `leaves * (188 + 32/4096 + 285) + blocks *
+   counts of section 3.4, at the 156-byte note: for A, `leaves * (188 + 32/4096 + 285) + blocks *
    582`; for B, `leaves * (285 + 32/4096) + blocks * 582`; for C, `leaves *
    36 + blocks * (582 + 128) + blocks * 32` (C4 uses 4 in place of 36). In
    section 4.2 `blocks` is the span; in section 4.3 the header term uses the
