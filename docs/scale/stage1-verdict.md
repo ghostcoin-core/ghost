@@ -50,6 +50,8 @@ What would have to change (any one route, and the target stays as it is):
 
 Other ceilings missed, by modeled numbers, but not for every design considered, so not limiting on their own (each carried below): the aggregator ceilings of workload.md for architecture (a) (recursion.md), and with them the 40-machine fleet, the 5-minute p99 delay and, above 0.1662 US dollars a machine-hour, the cost ceiling (throughput.md); the 10 MiB cap for raw ML-DSA-44 signatures, which the proof encoding meets on bytes (public-encoding.md). Architectures (b) and (c) and the public verification proof have no cost figure (not yet established), so they could not be judged.
 
+The design the next stage chose for each limit named here, judged against the same ceilings, is in stage2-design.md, with the decisions it leaves to the founder.
+
 ## Requirements carried into stage 3
 
 Every integrated requirement not yet verified, each to be shown in the third stage before the design is chosen:
