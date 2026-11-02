@@ -506,9 +506,17 @@ fn proof_budget_holds_for_every_statement() {
             Statement::SaltedDataReveal,
             Statement::SaltedHold,
             Statement::CoinRevealV2,
-            Statement::PolicyReveal
+            Statement::PolicyReveal,
+            Statement::KnowAction,
+            Statement::KnowPreimage
         ]
     );
+    // The native statements of spec 10, section 9: the Keccak circuit's
+    // 3,722 columns and no carried one, over 128 rows.
+    for statement in [Statement::KnowAction, Statement::KnowPreimage] {
+        assert_eq!(statement_trace(statement).trace_width, 3722, "{statement:?}");
+        assert_eq!(statement_trace(statement).trace_height, 128, "{statement:?}");
+    }
     let config = shipped_configuration().expect("the shipped configuration builds");
     let reported: Vec<Statement> = config.statements.iter().map(|(s, _)| *s).collect();
     assert_eq!(reported, Statement::ALL);

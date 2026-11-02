@@ -55,6 +55,18 @@ pub const TAG_REVEAL_POLICY_V2: &str = "ghost/reveal-policy/v2";
 pub const TAG_POLICY_OVERRIDE_V1: &str = "ghost/policy-override/v1";
 /// The binding of the policy class, S4 (spec 10, section 5.1).
 pub const TAG_POLICY_REVEAL_BINDING_V1: &str = "ghost/policy-reveal-binding/v1";
+/// The binding of `KNOW_ACTION_v1` (spec 10, section 8.2).
+pub const TAG_ACTION_BINDING_V1: &str = "ghost/action-binding/v1";
+/// The binding of `KNOW_PREIMAGE_v1` (spec 10, section 9.2).
+pub const TAG_PREIMAGE_BINDING_V1: &str = "ghost/preimage-binding/v1";
+/// The action tag of a slot: `K(tag, action_root, action_salt)` (spec 10,
+/// section 8.2).
+pub const TAG_POLICY_ACTION_V1: &str = "ghost/policy-action/v1";
+/// The preimage hash of `KNOW_PREIMAGE_v1`: `y = K(tag, x)` (spec 10,
+/// section 9.2).
+pub const TAG_POLICY_PREIMAGE_V1: &str = "ghost/policy-preimage/v1";
+/// The calldata hash of an action (spec 10, section 8.2).
+pub const TAG_ACTION_CALLDATA_V1: &str = "ghost/action-calldata/v1";
 pub const TAG_DATA_REVEAL_BINDING: &str = "ghost/data-reveal-binding/v1";
 pub const TAG_HOLD_BINDING: &str = "ghost/hold-binding/v1";
 pub const TAG_DATA_MARKER_SET_LEAF: &str = "ghost/data-marker-set-leaf/v1";
@@ -324,6 +336,18 @@ pub fn policy_override_hash(override_secret: &[u8; 32]) -> [u8; 32] {
     tagged(TAG_POLICY_OVERRIDE_V1, &[override_secret])
 }
 
+/// `action_tag = K("ghost/policy-action/v1", action_root, action_salt)`
+/// (spec 10, section 8.2), 87 input bytes, one permutation.
+pub fn policy_action_tag(action_root: &[u8; 32], action_salt: &[u8; 32]) -> [u8; 32] {
+    tagged(TAG_POLICY_ACTION_V1, &[action_root, action_salt])
+}
+
+/// `y = K("ghost/policy-preimage/v1", x)` (spec 10, section 9.2), 57 input
+/// bytes, one permutation.
+pub fn policy_preimage_hash(x: &[u8; 32]) -> [u8; 32] {
+    tagged(TAG_POLICY_PREIMAGE_V1, &[x])
+}
+
 /// An inner node at `level` (0 just above the leaves, 31 for the root).
 pub fn tree_node(tree: Tree, level: u8, left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     tagged(tree.node_tag(), &[&[level], left, right])
@@ -430,6 +454,11 @@ mod tests {
         assert_eq!(tag_bytes(TAG_REVEAL_POLICY_V2).len() + 6 * 32, 215);
         assert_eq!(tag_bytes(TAG_POLICY_OVERRIDE_V1).len() + 32, 57);
         assert_eq!((permutations(215), permutations(57)), (2, 1));
+        assert_eq!(tag_bytes(TAG_POLICY_ACTION_V1).len() + 64, 87);
+        assert_eq!(tag_bytes(TAG_POLICY_PREIMAGE_V1).len() + 32, 57);
+        assert_eq!(tag_bytes(TAG_ACTION_BINDING_V1).len(), 24);
+        assert_eq!(tag_bytes(TAG_PREIMAGE_BINDING_V1).len(), 26);
+        assert_eq!(permutations(87), 1);
     }
 
     /// The rule hash takes the address left-padded with zeros, and each field

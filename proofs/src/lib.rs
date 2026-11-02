@@ -21,6 +21,13 @@
 //!   [`prove_policy_reveal`] and [`verify_policy_reveal`]. The rule is opened
 //!   from its five public fields and a private override hash, the remainder
 //!   holds no value and the empty rule, and `v = out + fee`.
+//! - `KNOW_ACTION_v1`, the proof of a policy action (spec 10, section 8.2):
+//!   [`prove_know_action`] and [`verify_know_action`]. It shows knowledge of
+//!   `action_root` under the slot's `action_tag` and `action_salt`, bound to
+//!   the action's nonce, amounts, expiry and calldata hash.
+//! - `KNOW_PREIMAGE_v1`, the statement checker's statement (spec 10, section
+//!   9.2): [`prove_know_preimage`] and [`verify_know_preimage`], knowledge of
+//!   `x` with `y = K("ghost/policy-preimage/v1", x)`.
 //!
 //! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`] and
 //! [`verify_coin_reveal_v2`], with its header in `include/ghost_proofs.h`.
@@ -67,6 +74,7 @@ mod binding;
 mod data;
 mod hash;
 mod hold;
+mod native;
 mod policy_reveal;
 mod reveal;
 mod reveal_v2;
@@ -80,9 +88,10 @@ pub use amount::{
     conservation_carries, conservation_holds,
 };
 pub use binding::{
-    Binding, COIN_REVEAL_LAYOUT, COIN_REVEAL_V2_LAYOUT, ChainParams, DATA_REVEAL_LAYOUT, HOLD_LAYOUT, LayoutField,
-    POLICY_REVEAL_LAYOUT, PROTOCOL_VERSION_1, PROTOCOL_VERSION_2, PURPOSE_HOLD, PURPOSE_POLICY_SPEND, PURPOSE_REVEAL,
-    PURPOSE_REVOKE, PURPOSE_SPEND, STATEMENT_COIN_REVEAL, STATEMENT_DATA_REVEAL, STATEMENT_HOLD,
+    ACTION_LAYOUT, Binding, COIN_REVEAL_LAYOUT, COIN_REVEAL_V2_LAYOUT, ChainParams, DATA_REVEAL_LAYOUT, HOLD_LAYOUT,
+    LayoutField, POLICY_REVEAL_LAYOUT, PREIMAGE_LAYOUT, PROTOCOL_VERSION_1, PROTOCOL_VERSION_2, PURPOSE_ACTION,
+    PURPOSE_HOLD, PURPOSE_POLICY_SPEND, PURPOSE_PREIMAGE, PURPOSE_REVEAL, PURPOSE_REVOKE, PURPOSE_SPEND,
+    STATEMENT_COIN_REVEAL, STATEMENT_DATA_REVEAL, STATEMENT_HOLD, STATEMENT_KNOW_ACTION, STATEMENT_KNOW_PREIMAGE,
     STATEMENT_POLICY_REVEAL, STATEMENT_VERSION_1, STATEMENT_VERSION_2,
 };
 pub use data::{
@@ -93,11 +102,21 @@ pub use data::{
 pub use data::prove_salted_data_reveal_claiming;
 pub use hash::{
     COIN_V2, DATA_RESERVE, DATA_RESERVE_WORD, DATA_V2, EMPTY_RULE, MARKER_SET_DEPTH, MARKER_SET_INDEX_BYTES,
-    POLICY_ADDRESS_BYTES, RATE_BYTES, SALT_BYTES, TAG_COIN_REVEAL_BINDING_V2, TAG_POLICY_OVERRIDE_V1,
-    TAG_POLICY_REVEAL_BINDING_V1, TAG_REVEAL_POLICY_V2, TREE_DEPTH, Tree, coin_commitment_v2, coin_fingerprint_v2,
-    coin_marker_v2, data_commitment_v2, data_fingerprint_v2, data_marker_v2, empty_leaf, keccak256, marker_set_leaf,
-    marker_set_node, marker_set_root, merkle_root, padded_policy_address, permutations, policy_override_hash,
-    reveal_policy_rule, tag_bytes, tagged, tree_node,
+    POLICY_ADDRESS_BYTES, RATE_BYTES, SALT_BYTES, TAG_ACTION_BINDING_V1, TAG_ACTION_CALLDATA_V1,
+    TAG_COIN_REVEAL_BINDING_V2, TAG_POLICY_ACTION_V1, TAG_POLICY_OVERRIDE_V1, TAG_POLICY_PREIMAGE_V1,
+    TAG_POLICY_REVEAL_BINDING_V1, TAG_PREIMAGE_BINDING_V1, TAG_REVEAL_POLICY_V2, TREE_DEPTH, Tree, coin_commitment_v2,
+    coin_fingerprint_v2, coin_marker_v2, data_commitment_v2, data_fingerprint_v2, data_marker_v2, empty_leaf,
+    keccak256, marker_set_leaf, marker_set_node, marker_set_root, merkle_root, padded_policy_address, permutations,
+    policy_action_tag, policy_override_hash, policy_preimage_hash, reveal_policy_rule, tag_bytes, tagged, tree_node,
+};
+pub use native::{
+    ACTION_CALLDATA_MAX, ACTION_PROOF_BYTES, KnowAction, KnowPreimage, PREIMAGE_CONTEXT_BYTES, action_calldata_hash,
+    know_action_binding, know_preimage_binding, prove_know_action, prove_know_preimage, verify_know_action,
+    verify_know_preimage,
+};
+#[doc(hidden)]
+pub use native::{
+    know_action_public_values, know_preimage_public_values, prove_know_action_claiming, prove_know_preimage_claiming,
 };
 pub use hold::{AbsenceWitness, ChallengeBook, HoldContext, SaltedHoldOpening, hold_binding, verify_hold};
 #[cfg(feature = "unsettled-points-test")]
@@ -168,6 +187,13 @@ pub enum ProofError {
     /// siblings along its position, does not give the context's
     /// `marker_set_root`, or its position is not below 2^40.
     NotInMarkerSet,
+    /// A native statement's private value does not hash to its public one:
+    /// an `action_root` that does not give the slot's `action_tag` under its
+    /// `action_salt`, or an `x` that does not give `y`.
+    NotThePreimage,
+    /// Action calldata over `ACTION_CALLDATA_MAX` bytes (spec 10, section
+    /// 8.1).
+    CalldataTooLong,
     /// A type tag version 1 does not know.
     UnknownType,
     /// A purpose code other than the statement's.
@@ -232,6 +258,8 @@ impl fmt::Display for ProofError {
             Self::OverrideNotSet => f.write_str("the rule has no override"),
             Self::WrongOverrideSecret => f.write_str("the override secret does not match the rule"),
             Self::NotInMarkerSet => f.write_str("the low leaf of the absence witness is not under the marker-set root"),
+            Self::NotThePreimage => f.write_str("the private value does not hash to the public one"),
+            Self::CalldataTooLong => f.write_str("action calldata over 1,024 bytes"),
             Self::UnknownType => f.write_str("unknown type tag"),
             Self::UnknownPurpose => f.write_str("unknown purpose code"),
             Self::WrongContentFingerprint => {
