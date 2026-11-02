@@ -505,13 +505,15 @@ mod tests {
     }
 
     /// The trace width: the 3,808 columns of a reveal without a salt and 16
-    /// carried salt columns, the widest the budget allows.
+    /// carried salt columns, 3,824, inside the budget the version 2 coin
+    /// reveal sets 66 columns wider.
     #[test]
     fn the_salt_adds_sixteen_carried_columns() {
         use p3_air::BaseAir;
         let width = BaseAir::<F>::width(&Statement::SaltedCoinReveal.air());
         assert_eq!(width, 3808 + SALT_BYTES);
-        assert_eq!(width, stark::MAX_TRACE_WIDTH);
+        assert_eq!(width, 3824);
+        assert_eq!(width + 66, stark::MAX_TRACE_WIDTH);
     }
 
     #[test]

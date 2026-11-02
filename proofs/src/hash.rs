@@ -47,6 +47,12 @@ pub const TAG_COIN_TREE_NODE: &str = "ghost/coin-tree-node/v1";
 pub const TAG_DATA_TREE_NODE: &str = "ghost/data-tree-node/v1";
 pub const TAG_EMPTY_LEAF: &str = "ghost/empty-leaf/v1";
 pub const TAG_COIN_REVEAL_BINDING: &str = "ghost/coin-reveal-binding/v1";
+/// The binding of the ordinary class, S1 version 2 (spec 10, section 4.2).
+pub const TAG_COIN_REVEAL_BINDING_V2: &str = "ghost/coin-reveal-binding/v2";
+/// The rule hash of spec 10, section 3.1.
+pub const TAG_REVEAL_POLICY_V2: &str = "ghost/reveal-policy/v2";
+/// The override hash of spec 10, section 3.1.
+pub const TAG_POLICY_OVERRIDE_V1: &str = "ghost/policy-override/v1";
 pub const TAG_DATA_REVEAL_BINDING: &str = "ghost/data-reveal-binding/v1";
 pub const TAG_HOLD_BINDING: &str = "ghost/hold-binding/v1";
 pub const TAG_DATA_MARKER_SET_LEAF: &str = "ghost/data-marker-set-leaf/v1";
@@ -59,6 +65,9 @@ pub const MARKER_SET_DEPTH: usize = 40;
 /// Width of a marker-set `nextIndex` and of a position in the `absence`
 /// witness: a 40-bit big-endian integer.
 pub const MARKER_SET_INDEX_BYTES: usize = 5;
+
+/// Width of a policy address (spec 10, section 3.1).
+pub const POLICY_ADDRESS_BYTES: usize = 20;
 
 /// One tree per commitment type, each with its own node tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -272,6 +281,47 @@ pub fn data_marker_v2(r: &[u8; 32], b: &[u8; 32], salt: &[u8; SALT_BYTES]) -> [u
     tagged(TAG_DATA_MARKER_V2, &[r, b, salt])
 }
 
+/// The policy address as the rule hash takes it: 12 zero bytes, then the 20
+/// address bytes.
+pub fn padded_policy_address(policy_address: &[u8; POLICY_ADDRESS_BYTES]) -> [u8; 32] {
+    let mut word = [0u8; 32];
+    word[32 - POLICY_ADDRESS_BYTES..].copy_from_slice(policy_address);
+    word
+}
+
+/// The rule of spec 10, section 3.1:
+/// `K("ghost/reveal-policy/v2", policy_address (left-padded to 32),
+/// policy_codehash, params_hash, override_hash, action_tag, action_salt)`,
+/// 215 input bytes, two permutations. Never zero for any known input, so
+/// never the empty rule.
+pub fn reveal_policy_rule(
+    policy_address: &[u8; POLICY_ADDRESS_BYTES],
+    policy_codehash: &[u8; 32],
+    params_hash: &[u8; 32],
+    override_hash: &[u8; 32],
+    action_tag: &[u8; 32],
+    action_salt: &[u8; 32],
+) -> [u8; 32] {
+    tagged(
+        TAG_REVEAL_POLICY_V2,
+        &[
+            &padded_policy_address(policy_address),
+            policy_codehash,
+            params_hash,
+            override_hash,
+            action_tag,
+            action_salt,
+        ],
+    )
+}
+
+/// `override_hash = K("ghost/policy-override/v1", override_secret)` (spec 10,
+/// section 3.1), 57 input bytes, one permutation. A rule with no override
+/// carries 32 zero bytes instead.
+pub fn policy_override_hash(override_secret: &[u8; 32]) -> [u8; 32] {
+    tagged(TAG_POLICY_OVERRIDE_V1, &[override_secret])
+}
+
 /// An inner node at `level` (0 just above the leaves, 31 for the root).
 pub fn tree_node(tree: Tree, level: u8, left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     tagged(tree.node_tag(), &[&[level], left, right])
@@ -375,5 +425,31 @@ mod tests {
         assert_eq!(tag_bytes(TAG_DATA_MARKER_SET_LEAF).len() + 64 + MARKER_SET_INDEX_BYTES, 99);
         assert_eq!(tag_bytes(TAG_DATA_MARKER_SET_NODE).len() + 1 + 64, 95);
         assert_eq!((permutations(99), permutations(95)), (1, 1));
+        assert_eq!(tag_bytes(TAG_REVEAL_POLICY_V2).len() + 6 * 32, 215);
+        assert_eq!(tag_bytes(TAG_POLICY_OVERRIDE_V1).len() + 32, 57);
+        assert_eq!((permutations(215), permutations(57)), (2, 1));
+    }
+
+    /// The rule hash takes the address left-padded with zeros, and each field
+    /// changes it.
+    #[test]
+    fn the_rule_hash_pads_the_address_on_the_left() {
+        let address = [0xab; POLICY_ADDRESS_BYTES];
+        let fields = [[1u8; 32], [2; 32], [3; 32], [4; 32], [5; 32]];
+        let mut padded = [0u8; 32];
+        padded[12..].copy_from_slice(&address);
+        let mut msg = tag_bytes(TAG_REVEAL_POLICY_V2);
+        msg.extend_from_slice(&padded);
+        for field in &fields {
+            msg.extend_from_slice(field);
+        }
+        assert_eq!(msg.len(), 215);
+        let rule = reveal_policy_rule(&address, &fields[0], &fields[1], &fields[2], &fields[3], &fields[4]);
+        assert_eq!(rule, keccak256(&msg));
+        assert_ne!(rule, EMPTY_RULE);
+        let mut other = address;
+        other[0] ^= 1;
+        assert_ne!(reveal_policy_rule(&other, &fields[0], &fields[1], &fields[2], &fields[3], &fields[4]), rule);
+        assert_eq!(policy_override_hash(&[7; 32]), tagged(TAG_POLICY_OVERRIDE_V1, &[&[7; 32]]));
     }
 }

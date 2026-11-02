@@ -131,7 +131,7 @@ fn the_header_agrees_with_the_crate() {
             Some((words.next()?, words.next()?.parse().ok()?))
         })
         .collect();
-    let expected: [(&str, i64); 8] = [
+    let expected: [(&str, i64); 9] = [
         ("GHOST_PROOFS_ACCEPTED", GHOST_PROOFS_ACCEPTED.into()),
         ("GHOST_PROOFS_REJECTED", GHOST_PROOFS_REJECTED.into()),
         ("GHOST_PROOFS_MALFORMED_INPUT", GHOST_PROOFS_MALFORMED_INPUT.into()),
@@ -139,14 +139,18 @@ fn the_header_agrees_with_the_crate() {
         ("GHOST_PROOFS_PANICKED", GHOST_PROOFS_PANICKED.into()),
         ("GHOST_PROOFS_CHAIN_PARAMS_BYTES", CHAIN_PARAMS_BYTES as i64),
         ("GHOST_PROOFS_COIN_REVEAL_BYTES", COIN_REVEAL_BYTES as i64),
+        ("GHOST_PROOFS_COIN_REVEAL_V2_BYTES", COIN_REVEAL_V2_BYTES as i64),
         ("GHOST_PROOFS_PROOF_MAX_BYTES", PROOF_MAX_BYTES as i64),
     ];
     assert_eq!(defines, BTreeMap::from(expected));
     assert_eq!((CHAIN_PARAMS_BYTES, COIN_REVEAL_BYTES, PROOF_MAX_BYTES), (42, 368, 2_097_152));
+    assert_eq!(COIN_REVEAL_V2_BYTES, 32 + 32 + 32 + 380 + 20 + 32 + 32);
+    assert_eq!(COIN_REVEAL_V2_BYTES, 560);
     assert!(HEADER.contains("#ifndef GHOST_PROOFS_H"));
     assert!(HEADER.contains("#include <stdint.h>"));
     assert!(HEADER.contains("#include <stddef.h>"));
     assert!(HEADER.contains("int32_t ghost_verify_coin_reveal(const uint8_t *params, size_t params_len,"));
+    assert!(HEADER.contains("int32_t ghost_verify_coin_reveal_v2(const uint8_t *params, size_t params_len,"));
 }
 
 #[test]
@@ -349,4 +353,183 @@ fn a_buffer_of_the_wrong_length_is_a_bad_argument() {
     assert_eq!(call(p, &longer, q), GHOST_PROOFS_BAD_ARGUMENT);
     assert_eq!(verify_coin_reveal_bytes(&p[..41], s, q), GHOST_PROOFS_BAD_ARGUMENT);
     assert_eq!(verify_coin_reveal_bytes(p, &s[..367], q), GHOST_PROOFS_BAD_ARGUMENT);
+}
+
+// ---------------------------------------------------------------------------
+// The version 2 coin reveal (statement S1 version 2, the ordinary class).
+
+/// Example chain constants of protocol version 2, not Ghost's.
+fn params_v2() -> ChainParams {
+    ChainParams {
+        version: PROTOCOL_VERSION_2,
+        ..params()
+    }
+}
+
+/// The version 2 statement fields as (name, offset, width), in the
+/// documented order: no rule, the 380-byte note.
+const STATEMENT_V2_FIELDS: [(&str, usize, usize); 7] = [
+    ("root", 0, 32),
+    ("marker", 32, 32),
+    ("remainder", 64, 32),
+    ("remainder_note", 96, 380),
+    ("recipient", 476, 20),
+    ("out", 496, 32),
+    ("fee", 528, 32),
+];
+
+/// One honest version 2 reveal of a coin with a rule, spent through its
+/// override, keeping its rule for the remainder.
+fn fixture_v2() -> &'static Fixture {
+    static FIXTURE: OnceLock<Fixture> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        let mut path = [[0u8; 32]; TREE_DEPTH];
+        let mut empty = empty_leaf();
+        for (level, sibling) in path.iter_mut().enumerate() {
+            *sibling = empty;
+            empty = tree_node(Tree::Coin, level as u8, &empty, &empty);
+        }
+        path[0] = [9; 32];
+        let _one = one_at_a_time();
+        let secret = [0x0e; 32];
+        let policy = || PolicyRule {
+            policy_address: [0x50; POLICY_ADDRESS_BYTES],
+            policy_codehash: [0x51; 32],
+            params_hash: [0x52; 32],
+            override_hash: policy_override_hash(&secret),
+            action_tag: [0; 32],
+            action_salt: [0; 32],
+        };
+        let rule = policy().rule();
+        let opening = SaltedCoinOpening {
+            s: [1; 32],
+            r: [2; 32],
+            b: [3; 32],
+            salt: [0x5c; SALT_BYTES],
+            v: amount_word(1_000_000),
+            position: 5,
+            path,
+        };
+        let f = coin_fingerprint_v2(&opening.s, &opening.r, &opening.b, &opening.salt, &rule);
+        let leaf = coin_commitment_v2(&f, &opening.v);
+        let request = CoinRevealV2Request {
+            root: merkle_root(Tree::Coin, &leaf, opening.position, &opening.path),
+            recipient: [0x11; 20],
+            out: amount_word(600_000),
+            fee: amount_word(21),
+            remainder_note: [0x33; NOTE_V3_BYTES],
+        };
+        let remainder = SaltedCoinRemainder {
+            s: [1; 32],
+            r: [2; 32],
+            b: [4; 32],
+            salt: [0xc5; SALT_BYTES],
+            v: amount_word(1_000_000 - 600_000 - 21),
+        };
+        let input = InputRule::with_override(policy(), secret);
+        // Test-only zero-knowledge randomness.
+        let (tx, proof) = prove_coin_reveal_v2(&params_v2(), &opening, &input, &remainder, &rule, &request, [0x6c; 32])
+            .expect("honest proof");
+        assert_eq!(verify_coin_reveal_v2(&params_v2(), &tx, &proof), Ok(()));
+        Fixture {
+            params: chain_params_to_bytes(&params_v2()).to_vec(),
+            statement: coin_reveal_v2_to_bytes(&tx).to_vec(),
+            proof: proof.into_bytes(),
+        }
+    })
+}
+
+fn call_v2(params: &[u8], statement: &[u8], proof: &[u8]) -> i32 {
+    let status = unsafe {
+        ghost_verify_coin_reveal_v2(
+            params.as_ptr(),
+            params.len(),
+            statement.as_ptr(),
+            statement.len(),
+            proof.as_ptr(),
+            proof.len(),
+        )
+    };
+    assert_ne!(status, GHOST_PROOFS_PANICKED, "the verifier panicked");
+    status
+}
+
+#[test]
+fn the_v2_layout_is_the_documented_one() {
+    let tx = CoinRevealV2 {
+        root: [1; 32],
+        marker: [2; 32],
+        remainder: [3; 32],
+        remainder_note: [4; NOTE_V3_BYTES],
+        recipient: [5; 20],
+        out: [6; 32],
+        fee: [7; 32],
+    };
+    let bytes = coin_reveal_v2_to_bytes(&tx);
+    let mut end = 0;
+    for (k, (name, offset, width)) in STATEMENT_V2_FIELDS.into_iter().enumerate() {
+        assert_eq!(offset, end, "{name}");
+        assert!(bytes[offset..offset + width].iter().all(|&b| b == k as u8 + 1), "{name}");
+        end = offset + width;
+    }
+    assert_eq!(end, COIN_REVEAL_V2_BYTES);
+    assert_eq!(coin_reveal_v2_from_bytes(&bytes), tx);
+}
+
+/// An override reveal is accepted through the C function, zero-padded to
+/// the field too, and the native verifier agrees.
+#[test]
+fn a_valid_v2_proof_is_accepted() {
+    let f = fixture_v2();
+    assert_eq!(f.statement.len(), COIN_REVEAL_V2_BYTES);
+    assert_eq!(call_v2(&f.params, &f.statement, &f.proof), GHOST_PROOFS_ACCEPTED);
+    assert_eq!(verify_coin_reveal_v2_bytes(&f.params, &f.statement, &f.proof), GHOST_PROOFS_ACCEPTED);
+    let mut field = f.proof.clone();
+    field.resize(PROOF_FIELD_BYTES, 0);
+    assert_eq!(call_v2(&f.params, &f.statement, &field), GHOST_PROOFS_ACCEPTED);
+    let tx = coin_reveal_v2_from_bytes(f.statement.as_slice().try_into().unwrap());
+    assert_eq!(verify_coin_reveal_v2(&params_v2(), &tx, &Proof::from_bytes(f.proof.clone())), Ok(()));
+}
+
+/// A version 2 proof is rejected once anything about it changes, and the
+/// two functions do not take each other's proofs: the version 1 function
+/// refuses the version 2 statement by its length.
+#[test]
+fn a_changed_v2_reveal_is_rejected() {
+    let f = fixture_v2();
+    for (name, offset, width) in STATEMENT_V2_FIELDS {
+        let mut statement = f.statement.clone();
+        statement[offset + width - 1] ^= 1;
+        assert_eq!(call_v2(&f.params, &statement, &f.proof), GHOST_PROOFS_REJECTED, "{name}");
+    }
+    for (name, offset, width) in PARAM_FIELDS {
+        let mut p = f.params.clone();
+        p[offset + width - 1] ^= 1;
+        assert_eq!(call_v2(&p, &f.statement, &f.proof), GHOST_PROOFS_REJECTED, "{name}");
+    }
+    let n = f.proof.len();
+    for at in [0, n / 2, n - 1] {
+        let mut flipped = f.proof.clone();
+        flipped[at] ^= 1;
+        let status = call_v2(&f.params, &f.statement, &flipped);
+        assert!(rejects(status), "byte {at} gave {status}");
+    }
+    let mut padded = f.proof.clone();
+    padded.push(1);
+    assert_eq!(call_v2(&f.params, &f.statement, &padded), GHOST_PROOFS_MALFORMED_INPUT);
+    assert_eq!(call(&f.params, &f.statement, &f.proof), GHOST_PROOFS_BAD_ARGUMENT);
+}
+
+#[test]
+fn a_bad_v2_argument_is_refused() {
+    let f = fixture_v2();
+    let (p, s, q) = (&f.params, &f.statement, &f.proof);
+    assert_eq!(call_v2(p, &s[..s.len() - 1], q), GHOST_PROOFS_BAD_ARGUMENT);
+    assert_eq!(call_v2(&p[..p.len() - 1], s, q), GHOST_PROOFS_BAD_ARGUMENT);
+    assert_eq!(call_v2(p, &[0; COIN_REVEAL_BYTES], q), GHOST_PROOFS_BAD_ARGUMENT);
+    assert_eq!(call_v2(p, s, &[]), GHOST_PROOFS_MALFORMED_INPUT);
+    let status = unsafe { ghost_verify_coin_reveal_v2(ptr::null(), p.len(), s.as_ptr(), s.len(), q.as_ptr(), q.len()) };
+    assert_eq!(status, GHOST_PROOFS_BAD_ARGUMENT);
+    let status = unsafe { ghost_verify_coin_reveal_v2(p.as_ptr(), p.len(), ptr::null(), s.len(), q.as_ptr(), q.len()) };
+    assert_eq!(status, GHOST_PROOFS_BAD_ARGUMENT);
 }

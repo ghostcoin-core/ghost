@@ -1,11 +1,14 @@
-//! A C interface to the coin reveal verifier, so a node written in another
-//! language links the same [`verify_salted_coin_reveal`] the prover is
-//! checked against.
+//! A C interface to the coin reveal verifiers, so a node written in another
+//! language links the same [`verify_salted_coin_reveal`] and
+//! [`verify_coin_reveal_v2`] the provers are checked against.
 //!
-//! One function, [`ghost_verify_coin_reveal`], takes the chain parameters, the
-//! public statement and the proof as pointer and length, and returns a status
-//! code. The proof is verified as a salted (version 2) reveal, the only coin
-//! reveal there is. Nothing unwinds into the caller: a panic inside becomes
+//! [`ghost_verify_coin_reveal`] takes the chain parameters, the public
+//! statement and the proof as pointer and length, and returns a status code.
+//! The proof is verified as a salted (version 2) reveal of statement S1
+//! version 1. [`ghost_verify_coin_reveal_v2`] does the same for the coin
+//! reveal of the ordinary class, statement S1 version 2 (spec 10, section 4),
+//! whose statement has no `rule` and a 380-byte note. Nothing unwinds into
+//! the caller: a panic inside becomes
 //! [`GHOST_PROOFS_PANICKED`], which needs the library built with the default
 //! `panic = "unwind"`. Only [`GHOST_PROOFS_ACCEPTED`] accepts; every other
 //! status rejects.
@@ -20,6 +23,10 @@
 //! `remainder` (32), `remainder_note` ([`NOTE_BYTES`]), `recipient` (20),
 //! `out` (32), `fee` (32), `rule` (32), in that order.
 //!
+//! **Version 2 statement**, [`COIN_REVEAL_V2_BYTES`] bytes: `root` (32),
+//! `marker` (32), `remainder` (32), `remainder_note` ([`NOTE_V3_BYTES`]),
+//! `recipient` (20), `out` (32), `fee` (32), in that order.
+//!
 //! **Proof**, 1 to [`PROOF_MAX_BYTES`] bytes: one serialized proof, which may
 //! be followed by zero bytes, so a zero-padded proof field can be passed as it
 //! is. A non-zero byte after the serialization is malformed, so one proof has
@@ -27,7 +34,10 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::{ChainParams, CoinReveal, NOTE_BYTES, Proof, ProofError, stark, verify_salted_coin_reveal};
+use crate::{
+    ChainParams, CoinReveal, CoinRevealV2, NOTE_BYTES, NOTE_V3_BYTES, Proof, ProofError, stark, verify_coin_reveal_v2,
+    verify_salted_coin_reveal,
+};
 
 /// The proof verifies against the statement and the chain parameters.
 pub const GHOST_PROOFS_ACCEPTED: i32 = 0;
@@ -44,6 +54,9 @@ pub const GHOST_PROOFS_PANICKED: i32 = 4;
 pub const CHAIN_PARAMS_BYTES: usize = 8 + 2 + 32;
 /// Length of the coin reveal statement.
 pub const COIN_REVEAL_BYTES: usize = 32 + 32 + 32 + NOTE_BYTES + 20 + 32 + 32 + 32;
+/// Length of the version 2 coin reveal statement: no `rule`, the 380-byte
+/// note.
+pub const COIN_REVEAL_V2_BYTES: usize = 32 + 32 + 32 + NOTE_V3_BYTES + 20 + 32 + 32;
 /// The longest proof buffer accepted, 2 MiB: room above a coin reveal proof
 /// (about 1.19 MB) and a bound on what one call reads.
 pub const PROOF_MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -103,6 +116,40 @@ pub fn coin_reveal_from_bytes(bytes: &[u8; COIN_REVEAL_BYTES]) -> CoinReveal {
     }
 }
 
+/// The version 2 coin reveal statement in the layout of the C interface.
+pub fn coin_reveal_v2_to_bytes(tx: &CoinRevealV2) -> [u8; COIN_REVEAL_V2_BYTES] {
+    let mut out = [0u8; COIN_REVEAL_V2_BYTES];
+    let fields: [&[u8]; 7] = [
+        &tx.root,
+        &tx.marker,
+        &tx.remainder,
+        &tx.remainder_note,
+        &tx.recipient,
+        &tx.out,
+        &tx.fee,
+    ];
+    let mut at = 0;
+    for field in fields {
+        out[at..at + field.len()].copy_from_slice(field);
+        at += field.len();
+    }
+    out
+}
+
+/// A version 2 coin reveal statement from the layout of the C interface.
+pub fn coin_reveal_v2_from_bytes(bytes: &[u8; COIN_REVEAL_V2_BYTES]) -> CoinRevealV2 {
+    let mut r = Reader(bytes);
+    CoinRevealV2 {
+        root: r.take(),
+        marker: r.take(),
+        remainder: r.take(),
+        remainder_note: r.take(),
+        recipient: r.take(),
+        out: r.take(),
+        fee: r.take(),
+    }
+}
+
 /// Reads fixed-width fields in order from a buffer of exactly their total
 /// length.
 struct Reader<'a>(&'a [u8]);
@@ -121,10 +168,34 @@ pub fn verify_coin_reveal_bytes(params: &[u8], statement: &[u8], proof: &[u8]) -
 }
 
 fn verify_unguarded(params: &[u8], statement: &[u8], proof: &[u8]) -> i32 {
-    let (Ok(params), Ok(statement)) = (
-        <&[u8; CHAIN_PARAMS_BYTES]>::try_from(params),
-        <&[u8; COIN_REVEAL_BYTES]>::try_from(statement),
-    ) else {
+    verify_statement::<COIN_REVEAL_BYTES>(params, statement, proof, |params, statement, proof| {
+        verify_salted_coin_reveal(params, &coin_reveal_from_bytes(statement), proof)
+    })
+}
+
+/// The safe core of [`ghost_verify_coin_reveal_v2`], over slices.
+pub fn verify_coin_reveal_v2_bytes(params: &[u8], statement: &[u8], proof: &[u8]) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| verify_v2_unguarded(params, statement, proof))).unwrap_or(GHOST_PROOFS_PANICKED)
+}
+
+fn verify_v2_unguarded(params: &[u8], statement: &[u8], proof: &[u8]) -> i32 {
+    verify_statement::<COIN_REVEAL_V2_BYTES>(params, statement, proof, |params, statement, proof| {
+        verify_coin_reveal_v2(params, &coin_reveal_v2_from_bytes(statement), proof)
+    })
+}
+
+/// What both statements share: the lengths of the parameters and the
+/// statement, the proof's size, encoding and zero padding, then `verify` on
+/// the decoded parameters, the statement bytes and the proof, mapped to a
+/// status.
+fn verify_statement<const N: usize>(
+    params: &[u8],
+    statement: &[u8],
+    proof: &[u8],
+    verify: impl FnOnce(&ChainParams, &[u8; N], &Proof) -> Result<(), ProofError>,
+) -> i32 {
+    let (Ok(params), Ok(statement)) = (<&[u8; CHAIN_PARAMS_BYTES]>::try_from(params), <&[u8; N]>::try_from(statement))
+    else {
         return GHOST_PROOFS_BAD_ARGUMENT;
     };
     if proof.is_empty() || proof.len() > PROOF_MAX_BYTES {
@@ -138,13 +209,51 @@ fn verify_unguarded(params: &[u8], statement: &[u8], proof: &[u8]) -> i32 {
         return GHOST_PROOFS_MALFORMED_INPUT;
     }
     let params = chain_params_from_bytes(params);
-    let tx = coin_reveal_from_bytes(statement);
     let proof = Proof::from_bytes(proof.to_vec());
-    match verify_salted_coin_reveal(&params, &tx, &proof) {
+    match verify(&params, statement, &proof) {
         Ok(()) => GHOST_PROOFS_ACCEPTED,
         Err(ProofError::MalformedProof) => GHOST_PROOFS_MALFORMED_INPUT,
         Err(_) => GHOST_PROOFS_REJECTED,
     }
+}
+
+/// The pointer checks of both C functions, then `core` on the slices.
+///
+/// # Safety
+///
+/// As [`ghost_verify_coin_reveal`].
+#[allow(clippy::too_many_arguments)]
+unsafe fn verify_raw(
+    params: *const u8,
+    params_len: usize,
+    statement: *const u8,
+    statement_len: usize,
+    expected_statement_len: usize,
+    proof: *const u8,
+    proof_len: usize,
+    core: fn(&[u8], &[u8], &[u8]) -> i32,
+) -> i32 {
+    catch_unwind(|| {
+        if params.is_null() || statement.is_null() || proof.is_null() {
+            return GHOST_PROOFS_BAD_ARGUMENT;
+        }
+        if params_len != CHAIN_PARAMS_BYTES || statement_len != expected_statement_len {
+            return GHOST_PROOFS_BAD_ARGUMENT;
+        }
+        if proof_len == 0 || proof_len > PROOF_MAX_BYTES {
+            return GHOST_PROOFS_MALFORMED_INPUT;
+        }
+        // SAFETY: non-null, and the caller guarantees each length is readable.
+        let (params, statement, proof) = unsafe {
+            (
+                std::slice::from_raw_parts(params, params_len),
+                std::slice::from_raw_parts(statement, statement_len),
+                std::slice::from_raw_parts(proof, proof_len),
+            )
+        };
+        core(params, statement, proof)
+    })
+    .unwrap_or(GHOST_PROOFS_PANICKED)
 }
 
 /// Verifies a coin reveal proof against the statement and the chain
@@ -165,25 +274,48 @@ pub unsafe extern "C" fn ghost_verify_coin_reveal(
     proof: *const u8,
     proof_len: usize,
 ) -> i32 {
-    catch_unwind(|| {
-        if params.is_null() || statement.is_null() || proof.is_null() {
-            return GHOST_PROOFS_BAD_ARGUMENT;
-        }
-        if params_len != CHAIN_PARAMS_BYTES || statement_len != COIN_REVEAL_BYTES {
-            return GHOST_PROOFS_BAD_ARGUMENT;
-        }
-        if proof_len == 0 || proof_len > PROOF_MAX_BYTES {
-            return GHOST_PROOFS_MALFORMED_INPUT;
-        }
-        // SAFETY: non-null, and the caller guarantees each length is readable.
-        let (params, statement, proof) = unsafe {
-            (
-                std::slice::from_raw_parts(params, params_len),
-                std::slice::from_raw_parts(statement, statement_len),
-                std::slice::from_raw_parts(proof, proof_len),
-            )
-        };
-        verify_coin_reveal_bytes(params, statement, proof)
-    })
-    .unwrap_or(GHOST_PROOFS_PANICKED)
+    // SAFETY: the caller's guarantees are passed on unchanged.
+    unsafe {
+        verify_raw(
+            params,
+            params_len,
+            statement,
+            statement_len,
+            COIN_REVEAL_BYTES,
+            proof,
+            proof_len,
+            verify_coin_reveal_bytes,
+        )
+    }
+}
+
+/// Verifies a version 2 coin reveal proof (statement S1 version 2, the
+/// ordinary class) against the statement and the chain parameters.
+///
+/// # Safety
+///
+/// As [`ghost_verify_coin_reveal`]: each non-null pointer must point to at
+/// least its length of readable bytes for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ghost_verify_coin_reveal_v2(
+    params: *const u8,
+    params_len: usize,
+    statement: *const u8,
+    statement_len: usize,
+    proof: *const u8,
+    proof_len: usize,
+) -> i32 {
+    // SAFETY: the caller's guarantees are passed on unchanged.
+    unsafe {
+        verify_raw(
+            params,
+            params_len,
+            statement,
+            statement_len,
+            COIN_REVEAL_V2_BYTES,
+            proof,
+            proof_len,
+            verify_coin_reveal_v2_bytes,
+        )
+    }
 }

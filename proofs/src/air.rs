@@ -22,13 +22,18 @@
 //! 3. Continuation block: the output bits recompose the output limbs, the
 //!    input rate is their XOR with the block, the capacity carries over.
 //! 4. Every block byte matches its source: a constant, a public value, a
-//!    carried column, a limb of a carried amount, or the digest of the
+//!    carried column, a carried column times a carried switch, a limb of a
+//!    carried amount, or the digest of the
 //!    permutation just before (for a tree node, on the side `DIR` names).
 //!    Tree-node blocks with their pair at different offsets (25 for a
 //!    commitment tree node, 31 for a data marker-set node) each have their
 //!    own selector, and every node block is checked.
-//! 5. A digest with a public destination equals those public bytes.
-//! 6. Carried columns never change; conservation holds on their limbs.
+//! 5. A digest with a public destination equals those public bytes; a digest
+//!    tied to carried columns equals them, always or only where a carried
+//!    switch is 1.
+//! 6. Carried columns never change; conservation holds on their limbs; a
+//!    carried switch is boolean, and when it is on the bytes it guards are
+//!    not all zero (S1 version 2 only).
 //! 7. The ordering test of an absence witness (S3 only), on the last row of
 //!    the marker's permutation, whose `BITS` nothing else reads: the marker
 //!    (that row's digest) against the low leaf's `value` and `nextValue` (the
@@ -50,7 +55,7 @@ use p3_uni_stark::SubAirBuilder;
 
 use crate::amount::{AMOUNT_LIMBS, limb_bytes};
 use crate::hash::RATE_BYTES;
-use crate::schedule::{Assignment, Execution, Ordering, PermSpec, Schedule, Src};
+use crate::schedule::{Assignment, CarriedOutput, Execution, Ordering, PermSpec, Schedule, Src};
 
 pub(crate) type F = BabyBear;
 
@@ -150,6 +155,8 @@ fn out<T: Copy>(cols: &KeccakCols<T>, i: usize) -> T {
 enum Target {
     Public(usize),
     Carried(usize),
+    /// Carried column `col` times carried column `gate`.
+    Gated { col: usize, gate: usize },
 }
 
 /// The per-permutation checks under one first-row selector.
@@ -177,6 +184,8 @@ pub(crate) struct StatementAir {
     nodes: Vec<(usize, usize)>,
     links: Vec<(usize, usize)>,
     outputs: Vec<(usize, usize)>,
+    /// Digests tied to carried columns, each under its own selector.
+    carried_outputs: Vec<(usize, CarriedOutput)>,
     checks: Vec<PermCheck>,
     /// The ordering test: its selector, the marker's last permutation, and
     /// the offsets of `value` and `nextValue` in the next block.
@@ -218,6 +227,7 @@ impl StatementAir {
         let mut nodes: Vec<(usize, usize)> = Vec::new();
         let mut link_cols: BTreeMap<usize, usize> = BTreeMap::new();
         let mut outputs = Vec::new();
+        let mut carried_outputs = Vec::new();
         let mut checks = Vec::new();
 
         for (p, perm) in perms.iter().enumerate() {
@@ -237,6 +247,7 @@ impl StatementAir {
                     }
                     Src::Public(k) => bytes.push((i, Target::Public(k))),
                     Src::Carried(c) => bytes.push((i, Target::Carried(c))),
+                    Src::Gated { col, gate } => bytes.push((i, Target::Gated { col, gate })),
                     Src::Free | Src::Prev(_) | Src::Node(_) => {}
                 }
             }
@@ -268,6 +279,13 @@ impl StatementAir {
                 let selector = column(&mut periodic);
                 periodic[selector][last_row(p)] = F::ONE;
                 outputs.push((selector, offset));
+            }
+            if let Some(carried) = perm.carried_output {
+                assert!(carried.col + 32 <= schedule.carried, "a carried digest needs 32 carried columns");
+                assert!(carried.gate.is_none_or(|g| g < schedule.carried), "the gate is a carried column");
+                let selector = column(&mut periodic);
+                periodic[selector][last_row(p)] = F::ONE;
+                carried_outputs.push((selector, carried));
             }
         }
         let links = link_cols.into_iter().map(|(at, col)| (col, at)).collect();
@@ -303,6 +321,7 @@ impl StatementAir {
             nodes,
             links,
             outputs,
+            carried_outputs,
             checks,
             ordering,
         }
@@ -478,6 +497,7 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
                 let value = match target {
                     Target::Public(k) => p(k),
                     Target::Carried(col) => e(local[CARRY + col]),
+                    Target::Gated { col, gate } => e(local[CARRY + gate]) * e(local[CARRY + col]),
                 };
                 builder.assert_zero(sel.clone() * (bytes_l[i].clone() - value));
             }
@@ -510,6 +530,20 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
                 builder.assert_zero(sel.clone() * (e(out(kl, j)) - pv_limb(at, j)));
             }
         }
+        // A digest tied to carried columns, limb by limb: two carried bytes,
+        // low first. Where the columns are also read as block bytes they are
+        // bytes, so the limb fixes them.
+        for &(selector, carried) in &self.carried_outputs {
+            let sel = match carried.gate {
+                Some(gate) => s(selector) * e(local[CARRY + gate]),
+                None => s(selector),
+            };
+            for j in 0..DIGEST_LIMBS {
+                let at = CARRY + carried.col + 2 * j;
+                let columns = e(local[at]) + e(local[at + 1]) * c(256);
+                builder.assert_zero(sel.clone() * (e(out(kl, j)) - columns));
+            }
+        }
 
         // 6. Carried columns, public constants and conservation.
         for col in 0..self.schedule.carried {
@@ -517,6 +551,15 @@ impl<AB: AirBuilder<F = F>> Air<AB> for StatementAir {
         }
         for &(k, value) in &self.schedule.public_consts {
             builder.when_first_row().assert_eq(p(k), c(u32::from(value)));
+        }
+        // The switch, on every row (its columns never change): boolean, and
+        // when on, the guarded bytes' sum times its inverse is one.
+        if let Some(switch) = self.schedule.switch {
+            let bit = e(local[CARRY + switch.bit]);
+            builder.assert_bool(local[CARRY + switch.bit]);
+            let sum = (0..switch.nonzero_len).fold(AB::Expr::ZERO, |acc, k| acc + e(local[CARRY + switch.nonzero + k]));
+            let inverse = e(local[CARRY + switch.inverse]);
+            builder.assert_zero(bit * (sum * inverse - AB::Expr::ONE));
         }
         if let Some(cons) = self.schedule.conservation {
             let carry = |j: usize| -> AB::Expr {

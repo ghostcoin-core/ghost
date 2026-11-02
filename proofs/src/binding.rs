@@ -7,10 +7,17 @@
 
 use alloc::vec::Vec;
 
-use crate::hash::{TAG_COIN_REVEAL_BINDING, TAG_DATA_REVEAL_BINDING, TAG_HOLD_BINDING, permutations, tag_bytes, tagged};
+use crate::hash::{
+    TAG_COIN_REVEAL_BINDING, TAG_COIN_REVEAL_BINDING_V2, TAG_DATA_REVEAL_BINDING, TAG_HOLD_BINDING, permutations,
+    tag_bytes, tagged,
+};
+use crate::reveal_v2::NOTE_V3_BYTES;
 
 /// Protocol version 1 as two bytes.
 pub const PROTOCOL_VERSION_1: [u8; 2] = [0x00, 0x01];
+/// Protocol version 2 as two bytes, the version of the ordinary class
+/// (spec 10, section 4).
+pub const PROTOCOL_VERSION_2: [u8; 2] = [0x00, 0x02];
 
 /// Statement codes.
 pub const STATEMENT_COIN_REVEAL: u8 = 0x01;
@@ -18,6 +25,8 @@ pub const STATEMENT_DATA_REVEAL: u8 = 0x02;
 pub const STATEMENT_HOLD: u8 = 0x03;
 /// The statement version of spec 02.
 pub const STATEMENT_VERSION_1: u8 = 0x01;
+/// The statement version of S1 in the ordinary class (spec 10, section 4.3).
+pub const STATEMENT_VERSION_2: u8 = 0x02;
 
 /// Purpose codes. `0x00` and every other value are rejected.
 pub const PURPOSE_SPEND: u8 = 0x01;
@@ -69,6 +78,26 @@ pub const COIN_REVEAL_LAYOUT: [LayoutField; 15] = [
     field("remainder_note", 259, 156),
 ];
 
+/// The coin reveal binding of the ordinary class, S1 version 2 (spec 10,
+/// section 4.2): the fields of [`COIN_REVEAL_LAYOUT`] without `rule`, with
+/// the 380-byte note. 607 bytes; neither rule is a field.
+pub const COIN_REVEAL_V2_LAYOUT: [LayoutField; 14] = [
+    field("chain_id", 0, 8),
+    field("version", 8, 2),
+    field("domain", 10, 32),
+    field("statement", 42, 1),
+    field("statement_version", 43, 1),
+    field("type", 44, 2),
+    field("purpose", 46, 1),
+    field("root", 47, 32),
+    field("marker", 79, 32),
+    field("remainder", 111, 32),
+    field("recipient", 143, 20),
+    field("out", 163, 32),
+    field("fee", 195, 32),
+    field("remainder_note", 227, NOTE_V3_BYTES),
+];
+
 /// The data reveal binding fields. `cf` is the content fingerprint of the
 /// commitment revealed, public so anyone holding the bytes can check them.
 pub const DATA_REVEAL_LAYOUT: [LayoutField; 13] = [
@@ -104,12 +133,14 @@ pub const HOLD_LAYOUT: [LayoutField; 12] = [
     field("cf", 175, 32),
 ];
 
-/// The three bindings, for code that treats them alike.
+/// The bindings, for code that treats them alike.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Binding {
     CoinReveal,
     DataReveal,
     Hold,
+    /// The coin reveal of the ordinary class, S1 version 2.
+    CoinRevealV2,
 }
 
 impl Binding {
@@ -118,6 +149,7 @@ impl Binding {
             Self::CoinReveal => TAG_COIN_REVEAL_BINDING,
             Self::DataReveal => TAG_DATA_REVEAL_BINDING,
             Self::Hold => TAG_HOLD_BINDING,
+            Self::CoinRevealV2 => TAG_COIN_REVEAL_BINDING_V2,
         }
     }
 
@@ -126,6 +158,7 @@ impl Binding {
             Self::CoinReveal => &COIN_REVEAL_LAYOUT,
             Self::DataReveal => &DATA_REVEAL_LAYOUT,
             Self::Hold => &HOLD_LAYOUT,
+            Self::CoinRevealV2 => &COIN_REVEAL_V2_LAYOUT,
         }
     }
 
@@ -169,7 +202,20 @@ pub(crate) struct FieldWriter {
 }
 
 impl FieldWriter {
+    /// A writer for statement version 1 (spec 02).
     pub(crate) fn new(binding: Binding, params: &ChainParams, statement: u8, type_tag: [u8; 2], purpose: u8) -> Self {
+        Self::with_version(binding, params, statement, STATEMENT_VERSION_1, type_tag, purpose)
+    }
+
+    /// A writer for any statement version.
+    pub(crate) fn with_version(
+        binding: Binding,
+        params: &ChainParams,
+        statement: u8,
+        statement_version: u8,
+        type_tag: [u8; 2],
+        purpose: u8,
+    ) -> Self {
         let mut writer = Self {
             binding,
             bytes: alloc::vec![0; binding.fields_len()],
@@ -180,7 +226,7 @@ impl FieldWriter {
             .put("version", &params.version)
             .put("domain", &params.domain)
             .put("statement", &[statement])
-            .put("statement_version", &[STATEMENT_VERSION_1])
+            .put("statement_version", &[statement_version])
             .put("type", &type_tag)
             .put("purpose", &[purpose]);
         writer
@@ -220,12 +266,24 @@ mod tests {
 
     #[test]
     fn layouts_are_contiguous() {
-        for binding in [Binding::CoinReveal, Binding::DataReveal, Binding::Hold] {
+        for binding in [Binding::CoinReveal, Binding::DataReveal, Binding::Hold, Binding::CoinRevealV2] {
             let mut next = 0;
             for f in binding.layout() {
                 assert_eq!(f.offset, next, "{}", f.name);
                 next += f.width;
             }
         }
+    }
+
+    /// Spec 10, section 4.2: 607 bytes, 636 with the tag, five permutations,
+    /// and no `rule` field.
+    #[test]
+    fn the_version_2_coin_reveal_binding_has_no_rule() {
+        let b = Binding::CoinRevealV2;
+        assert_eq!((b.fields_len(), b.input_len(), b.permutations()), (607, 636, 5));
+        assert!(b.layout().iter().all(|f| f.name != "rule"));
+        let v1: alloc::vec::Vec<_> = COIN_REVEAL_LAYOUT.iter().map(|f| f.name).filter(|&n| n != "rule").collect();
+        let v2: alloc::vec::Vec<_> = b.layout().iter().map(|f| f.name).collect();
+        assert_eq!(v1, v2);
     }
 }
