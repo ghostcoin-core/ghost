@@ -24,9 +24,7 @@ import { equalBytes, fromHex, quantity, toHex, toQuantity } from "./bytes.mjs";
 export const TAG_BATCH = 16;
 // The most prefix bits of a bucket: every bit of the 3-byte tag.
 export const MAX_BUCKET_BITS = 24;
-// Every note a bucket serves is 380 bytes: note version 3, or a reveal's
-// 156-byte remainder note zero-padded. A note of any other length is refused.
-const NOTE_BYTES = 380;
+const NOTE_BYTES = 156;
 const SALT_BYTES = 16;
 const LEAF_RECORD_BYTES = 32 + NOTE_BYTES;
 

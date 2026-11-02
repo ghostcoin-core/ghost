@@ -21,9 +21,7 @@
 //!   neither made nor read.
 //! - [`hash`]: the tagged Keccak-256 and SHA3-256 of sections 2 and 4.
 //! - [`note`]: the encrypted note, ChaCha20-Poly1305 under the note key
-//!   (section 9): note version 3, 380 bytes for every commitment, with the
-//!   capsule that opens its rule (spec 10, section 3.2), and the 156-byte
-//!   note version 2 a version 1 reveal's remainder still carries.
+//!   (section 9).
 //! - [`note_tag`]: the key-derived lookup tag at the start of every note's
 //!   nonce, the bucket rule, and restore from the note buckets of the key's
 //!   own tags (sections 8 and 9; spec 05, section 8).
@@ -99,10 +97,7 @@ pub use header_chain::{
     required_difficulty, Added, ChainError, ChainParams, HeaderChain, PinnedStart, StartError, U256,
 };
 pub use key::{check_groups, FormattedKey, KeyError, KeyFormat, PhantomKey};
-pub use note::{
-    decrypt_note, decrypt_note_v2, decrypt_note_with_capsule, encrypt_note, encrypt_note_v2, pad_reveal_note, Capsule,
-    NoteContents, NoteError, CAPSULE_BYTES, NOTE_BYTES, REVEAL_NOTE_BYTES,
-};
+pub use note::{decrypt_note, encrypt_note, NoteContents, NoteError, NOTE_BYTES};
 pub use receipts::{
     check_block_receipts, check_block_receipts_against_header, check_leaves, check_markers, receipts_root,
     AppendedLeaf, CheckedBlock, CoinRecord, ReceiptError,

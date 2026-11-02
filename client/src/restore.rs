@@ -8,21 +8,12 @@
 //! 1. It tries the key's note key on every note. Only the key's own notes
 //!    authenticate; every other note is passed over.
 //! 2. For each note that decrypts, it recomputes `b_i`, `F` and `C` from the
-//!    digits and the note's number, amount, rule and salt: every note carries
-//!    the commitment's salt (type `COIN_V2`), which goes into `F` and the
-//!    marker. A note in the tree is 380 bytes, note version 3: its capsule
-//!    opens its rule (spec 10, section 3.2), and a capsule that is malformed
-//!    or opens another rule discards the note as malformed
-//!    ([`NoteError::BadCapsule`]), never repaired. The one other note read is
-//!    a reveal's 156-byte note version 2 remainder note, zero-padded to 380
-//!    bytes, until the version 2 reveal carries a 380-byte one: only if the
-//!    note does not decrypt as version 3 and its last 224 bytes are zero are
-//!    its first 156 read as version 2, which holds the empty rule alone. A
-//!    note of any other version (version 1, which has no salt, among them)
-//!    is discarded as malformed. A note whose `C` is not the leaf it sits
-//!    with is discarded and reported, never trusted. So is a note whose salt
-//!    is not the one the caller read beside the leaf, when the caller has
-//!    one.
+//!    digits and the note's number, amount, rule and salt: every note is
+//!    version 2 (`COIN_V2`) and carries the commitment's salt, which goes into
+//!    `F` and the marker. A version 1 note, which has no salt, is discarded
+//!    as malformed. A note whose `C` is not the leaf it sits with is discarded
+//!    and reported, never trusted. So is a note whose salt is not the one the
+//!    caller read beside the leaf, when the caller has one.
 //! 3. It computes each found commitment's marker and looks it up in the spent
 //!    markers. The current coin is the found commitment whose marker is
 //!    unspent; the next number to use is one above its number.
@@ -40,11 +31,8 @@ use std::collections::BTreeSet;
 use core::fmt;
 
 use crate::commit::{Amount, Commitment, Marker, Rule, Salt, COIN_V2};
-use crate::derive::NoteKey;
 use crate::key::PhantomKey;
-use crate::note::{
-    decrypt_note_v2, decrypt_note_with_capsule, unpad_reveal_note, Capsule, NoteContents, NoteError, NOTE_BYTES,
-};
+use crate::note::{decrypt_note, NoteError, NOTE_BYTES};
 use crate::reveal::{OwnedCoin, TREE_DEPTH};
 
 /// One filled position of the coin tree: its leaf, the note stored with it
@@ -53,8 +41,7 @@ use crate::reveal::{OwnedCoin, TREE_DEPTH};
 pub struct TreeLeaf {
     /// The leaf `C`.
     pub commitment: Commitment,
-    /// The 380-byte note stored with it: a note version 3, or a reveal's
-    /// 156-byte remainder note followed by 224 zero bytes.
+    /// The 156-byte note stored with it.
     pub note: [u8; NOTE_BYTES],
     /// The salt the caller read beside the leaf: the one a commit published
     /// in the clear. `None` for a leaf without one (a reveal's remainder,
@@ -70,10 +57,8 @@ pub enum DiscardReason {
     LeafMismatch,
     /// The note is for a data commitment, found in the coin tree.
     NotACoin,
-    /// The note authenticated but its contents are not a note restore reads:
-    /// a version 1 note gives `Malformed(NoteError::UnknownVersion)`, a
-    /// capsule that is malformed or does not open the note's rule
-    /// `Malformed(NoteError::BadCapsule)`.
+    /// The note authenticated but its contents are not a note version 2
+    /// reads: a version 1 note gives `Malformed(NoteError::UnknownVersion)`.
     Malformed(NoteError),
 }
 
@@ -106,10 +91,6 @@ pub struct FoundCoin {
     pub amount: Amount,
     /// The rule.
     pub rule: Rule,
-    /// The capsule that opens the rule, read from the note: the empty
-    /// capsule for the empty rule. A remainder that keeps the rule carries it
-    /// again (spec 10, section 3.2).
-    pub capsule: Capsule,
     /// Its salt.
     pub salt: Salt,
     /// The index of the coin tree its leaf is in, the one the caller named.
@@ -254,8 +235,8 @@ fn restore_pairs<'a>(
     let mut found = Vec::new();
     let mut discarded = Vec::new();
     for (position, leaf) in leaves {
-        let (contents, capsule) = match read_note(&note_key, chain_id, leaf) {
-            Ok(read) => read,
+        let contents = match decrypt_note(&note_key, chain_id, &leaf.commitment, &leaf.note) {
+            Ok(contents) => contents,
             Err(NoteError::Unauthentic) => continue,
             Err(error) => {
                 discarded.push(DiscardedNote {
@@ -280,19 +261,13 @@ fn restore_pairs<'a>(
             });
             continue;
         }
-        // A note version 3 opened its rule through its capsule, so any rule
-        // is recomputed; a padded version 2 remainder note has no capsule and
-        // holds the empty rule alone, as before.
-        let commit = match capsule {
-            Some(_) => Ok(key.coin_commit_with_rule(contents.number, contents.amount, contents.rule, salt)),
-            None => key.coin_commit_with_salt(contents.number, contents.amount, contents.rule, salt),
-        };
+        let commit =
+            key.coin_commit_with_salt(contents.number, contents.amount, contents.rule, salt);
         match commit {
             Ok(commit) if commit.commitment == leaf.commitment => found.push(FoundCoin {
                 number: contents.number,
                 amount: contents.amount,
                 rule: contents.rule,
-                capsule: capsule.unwrap_or(Capsule::empty()),
                 salt: commit.salt,
                 tree_index,
                 position,
@@ -322,26 +297,6 @@ fn restore_pairs<'a>(
     }
 }
 
-/// Reads a leaf's 380-byte note under the note key: as a note version 3 with
-/// its capsule first; if that does not authenticate and the note's last 224
-/// bytes are zero, its first 156 bytes as a reveal's note version 2
-/// remainder note, with no capsule. [`NoteError::Unauthentic`] means the
-/// note is not the key's; any other error is a note of the key to discard.
-fn read_note(
-    note_key: &NoteKey,
-    chain_id: u64,
-    leaf: &TreeLeaf,
-) -> Result<(NoteContents, Option<Capsule>), NoteError> {
-    match decrypt_note_with_capsule(note_key, chain_id, &leaf.commitment, &leaf.note) {
-        Ok((contents, capsule)) => Ok((contents, Some(capsule))),
-        Err(NoteError::Unauthentic) => match unpad_reveal_note(&leaf.note) {
-            Some(short) => decrypt_note_v2(note_key, chain_id, &leaf.commitment, &short).map(|contents| (contents, None)),
-            None => Err(NoteError::Unauthentic),
-        },
-        Err(error) => Err(error),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use rand::rngs::StdRng;
@@ -349,7 +304,7 @@ mod tests {
 
     use super::*;
     use crate::key::KeyFormat;
-    use crate::note::encrypt_note;
+    use crate::note::{encrypt_note, NoteContents};
 
     const CHAIN_ID: u64 = 1234;
 
@@ -367,7 +322,7 @@ mod tests {
         let amount = Amount::new(wei).unwrap();
         let commit = key.salted_coin_commit(0, amount, Rule::EMPTY, rng).unwrap();
         let contents = NoteContents::salted_coin(0, amount, Rule::EMPTY, commit.salt);
-        let note = encrypt_note(&key.note_key(), CHAIN_ID, &commit.commitment, &contents, &Capsule::empty(), rng);
+        let note = encrypt_note(&key.note_key(), CHAIN_ID, &commit.commitment, &contents, rng);
         TreeLeaf {
             commitment: commit.commitment,
             note,

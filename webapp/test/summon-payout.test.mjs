@@ -405,9 +405,8 @@ test("the cover text gives no advice to wait, and the page proves no decoy", () 
 test("coinRecord reads a commit's amount v, and none for a reveal", () => {
   const topics = { commit: toHex(new Uint8Array(32).fill(1)), reveal: toHex(new Uint8Array(32).fill(2)) };
   const v = 123n * GHOST + 7n;
-  // A commit log: head, amount, the 380-byte note and the coin's 16-byte
-  // salt. A reveal log keeps the 156-byte note of the version 1 reveal.
-  const data = new Uint8Array(4 + 4 + 32 + 32 + 380 + 16);
+  // A version 2 commit log: head, amount, note and the coin's 16-byte salt.
+  const data = new Uint8Array(4 + 4 + 32 + 32 + 156 + 16);
   const word = BigInt.asUintN(256, v).toString(16).padStart(64, "0");
   for (let i = 0; i < 32; i++) data[40 + i] = parseInt(word.slice(2 * i, 2 * i + 2), 16);
   data.fill(9, data.length - 16);

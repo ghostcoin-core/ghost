@@ -326,7 +326,7 @@ these requests:
 | `eth_blockNumber` | none | The tip |
 | `eth_getBlockByNumber` | height, `false` | A header with its `hash` and the 19 fields of spec 05, section 10, by their base client names (`parentHash` to `nonce`, `baseFeePerGas`, `coinTreeRoot`, `dataTreeRoot`, `dataMarkerRoot`); a header without `dataMarkerRoot` is refused |
 | `ghost_getPageRoots` | `"coin"`, tree index, anchor block hash | An array of 32-byte page roots, of pages 0 to the last page with a leaf (`[]` for an empty tree) |
-| `ghost_getTreePage` | `"coin"`, tree index, page, anchor block hash | `{ kind, treeIndex, page, filled, entries }`: `filled` positions of the page, and `entries`, one `{ leaf, note, salt }` (32, 380 and 16 bytes of hex) per filled position, in order; `salt` beside the leaf of a commit, left out for a reveal's remainder, whose 156-byte note is served zero-padded to 380 bytes |
+| `ghost_getTreePage` | `"coin"`, tree index, page, anchor block hash | `{ kind, treeIndex, page, filled, entries }`: `filled` positions of the page, and `entries`, one `{ leaf, note, salt }` (32, 156 and 16 bytes of hex) per filled position, in order; `salt` beside the leaf of a commit, left out for a reveal's remainder |
 | `ghost_getTreePage` | `"coin-markers"` | Not asked: the app no longer reads the spent marker pages; it takes the spent markers from the block receipts it has checked (see Block receipts) |
 | `ghost_getNoteBucket` | `"coin"`, tree index, bucket bits, prefix, anchor block hash | `{ kind, treeIndex, bits, prefix, count, entries }`: every filled position of the tree at the anchor whose note's lookup tag starts with the `bits`-bit `prefix`, one `{ position, leaf, note, salt }` each in increasing position order; `bits` must be `clamp(floor(log2(n / 4096)), 0, 24)` for the tree's `n` leaves at the anchor (see Summon and Claim, Restore). A node without it answers `-32601` |
 | `eth_getBlockReceipts` | a block hash | The block's receipts in transaction order, each with `type`, `status`, `cumulativeGasUsed`, `logsBloom` and `logs` (`address`, `topics`, `data`) |
@@ -763,36 +763,20 @@ transaction, type `0x52` in ghost-node (`docs/account-transactions.md` there;
 spec 09 proposes `0x51`, which is the node's data reveal), to the commit
 entry address, whose value is the amount and whose data is the commit
 payload of [spec 03](spec/03-coin-rules.md), section 6, as the node reads
-it (ghost-node `core/ghostpriv/commit.go`). The app sends a salted commit
-(`SaltedCommitDataSize`) of data version `0x0003`: the 2-byte version
-`0x0003`, the fingerprint `F` (32 bytes), the coin's salt (16 bytes) and the
-encrypted note of commitment number 0 (380 bytes), 430 bytes in all. The
-salt is fresh for every coin, drawn in the worker from
-`crypto.getRandomValues` through the client library's `salted_coin_commit`;
-it goes into `F` and the marker, travels in the clear beside `F`, and is in
-the note too. The note is note version 3
-([spec 10](spec/10-private-reveal-policies.md), section 3.2): the note
-version 2 fields with version byte `0x03`, then a 224-byte capsule that
-opens the coin's rule. A coin the app makes has the empty rule, so its
-capsule is version 0, all 224 bytes zero, inside the ciphertext; every note
-is 380 bytes whatever the rule, so the length says nothing. The node
-computes the leaf as `K(tag, COIN_V2, F, v)`, keeps the salt beside it and
-serves it back as the page entry's `salt`. The flow checks the payload is
-430 bytes of version `0x0003` before it signs anything. The module makes
-only salted coins (commit version 2) and refuses any other commit version
-(`unknown commit version`); the tests' stand-in node refuses any other
-length or version, the 206-byte commit of version `0x0002` with its
-156-byte note and the 190-byte commit of version `0x0001` included
-(`commit data is not 430 bytes of version 3: N bytes`).
-
-The one note of another length is a reveal's: the version 1 reveal still
-carries its remainder's 156-byte note version 2 (its proof binds that
-slot), and its reveal log holds those 156 bytes. The node stores that note
-in the tree zero-padded to 380 bytes, the stand-in does the same, and the
-app reads a reveal log's note into its record zero-padded likewise. Restore
-reads a 380-byte note as note version 3 first and, only if that fails and
-its last 224 bytes are zero, its first 156 bytes as note version 2; any
-other note of the key is discarded.
+it (ghost-node `core/ghostpriv/commit.go`). The app sends version 2, a
+salted commit (`SaltedCommitDataSize`): the 2-byte version `0x0002`, the
+fingerprint `F` (32 bytes), the coin's salt (16 bytes) and the encrypted
+note of commitment number 0 (156 bytes), 206 bytes in all. The salt is
+fresh for every coin, drawn in the worker from `crypto.getRandomValues`
+through the client library's `salted_coin_commit`; it goes into `F` and
+the marker, travels in the clear beside `F`, and is in the note too (note
+version 2). The node computes the leaf as `K(tag, COIN_V2, F, v)`, keeps the
+salt beside it and serves it back as the page entry's `salt`. The flow
+checks the payload is 206 bytes of version 2 before it signs anything. The
+module makes only version 2 and refuses any other commit version (`unknown
+commit version`); the tests' stand-in node refuses any other length or
+version, the 190-byte commit of version `0x0001` included (`commit data is
+not 206 bytes of version 2: N bytes`).
 
 The connected wallet signs it, as the client library does
 (`client/src/account.rs`): ML-DSA-44 in pure mode with the context
@@ -843,7 +827,7 @@ app makes no data commitments.
    no checked receipt, so its coin shows unspent; every node refuses a reveal
    of it at the marker check (Before a pinned start). With each leaf and its note the app reads the
    salt served beside it, if any, and hands restore one salt (or none) per
-   leaf, beside the leaf (the records stay leaf and note, 412 bytes each).
+   leaf, beside the leaf (the records stay leaf and note, 188 bytes each).
    The worker tries the key's note key on every note and recomputes
    each found commitment (spec 01, section 8): a note carries its coin's
    salt, which goes into `F`, `C` and the marker; a coin whose salt beside
@@ -1218,9 +1202,8 @@ app makes no data commitments.
   a decoder of real proofs refuse it. The default module has none of the
   three test-depth exports and otherwise exports the same, and still refuses with `SMALL_TREE_REVEAL`, sending nothing, and a
   flow of 32 levels proves a STARK and never asks for the test-depth reveal.
-- `salted-coin.test.mjs`: the commit is 430 bytes of version `0x0003` with a
-  fresh salt and a 380-byte note, in the module and as the wallet signs it,
-  the stand-in refuses a note of any other length, and the stand-in keeps
+- `salted-coin.test.mjs`: the commit is 206 bytes of version 2 with a fresh
+  salt, in the module and as the wallet signs it, and the stand-in keeps
   that salt with the leaf; restore reads the salt beside the leaf, finds the
   coin with it (or from its note when none is served), refuses a coin whose
   salt beside the leaf is not its note's, a scan whose served salt is not
@@ -1230,15 +1213,14 @@ app makes no data commitments.
   revealed and claimed, its salt passed to the prover and its remainders
   salted.
 - `wasm.test.mjs`: the module against the golden vectors of spec 05, the
-  header's RLP and hash included, the 430-byte commit and the words key; a
+  header's RLP and hash included, the version 2 commit and the words key; a
   version 1 commit and a coin without a salt refused; restore naming the
   coin tree it was asked about (tree 0 when not told); a receipt's encoding
   and the receipts root; and the receipts check of leaves, notes, salts and
   markers, with its refusals.
-- `commit-layout.test.mjs`: the commit payload of version `0x0003` (430
-  bytes, its note 380) against the node's layout, its note opening with the
-  key at its chain only, a note cut to 156 bytes not read, and the default
-  commit entry address.
+- `commit-layout.test.mjs`: the version 2 commit payload (206 bytes) against
+  the node's layout, its note opening with the key at its chain only, and
+  the default commit entry address.
 - `reveal-fast-node.test.mjs`: a Summon reveal against the stand-in playing
   a fast-mining node: a block every 500 ms (the page checks each seal, so a
   node much faster than that cannot be followed), a send refused because the head
@@ -1265,14 +1247,12 @@ app makes no data commitments.
   refuses every send stops the reveal after 10 minutes, or at 200 proofs, of
   at most 5 sends each.
 - `stand-in.test.mjs`: the stand-in refuses what the node refuses for a
-  commit (not to the commit entry address, data not 430 bytes of version
-  `0x0003`, among them the 206-byte commit of version `0x0002`, the 190-byte
-  commit of version `0x0001` and the old 189-byte layout, in its words) and
-  accepts the salted payload, serving its salt beside its leaf; it serves
-  every block's receipts by hash, in the node's log layout, under its
-  header's `receiptsRoot`. The app refuses a commit log with a note of any
-  length but 380 bytes, or with no salt, and reads the 468-byte one; it
-  reads a reveal log's 156-byte note zero-padded to 380 bytes.
+  commit (not to the commit entry address, data not 206 bytes of version
+  `0x0002`, among them the 190-byte commit of version `0x0001` and the old
+  189-byte layout, in its words) and accepts the salted payload, serving its
+  salt beside its leaf; it serves every block's receipts by hash, in the
+  node's log layout, under its header's `receiptsRoot`. The app refuses a
+  228-byte commit log, with no salt, and reads the 244-byte one.
 - `sent-and-done.test.mjs`: against the stand-in holding each transaction
   in its pool until the next block, Vanish, a partial Summon and a Claim
   show Sent, with the amount and hash, while no block holds the
@@ -1441,7 +1421,7 @@ is connected as the page connects the Ghost wallet; its account is the
 miner's etherbase, so block rewards fund it, and the commit and the
 strangers' commits are account transactions it signs. The keys are 24 words, and the save checks are answered with
 words. It checks on chain that the commit is type `0x52` from the wallet's
-address, the commit's 430 bytes of version `0x0003` and its leaf, the salt
+address, the commit's 206 bytes of version `0x0002` and its leaf, the salt
 the node serves back beside that leaf (and none beside the remainder's),
 the spent marker, the remainder's leaf, the recipient's balance and the
 claimed coin. It also checks the tree-state rule: opened before anyone else

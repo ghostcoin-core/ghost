@@ -1,14 +1,13 @@
 // The commit payload against the node's layouts (ghost-node
-// core/ghostpriv/commit.go). The app sends data format 0x0003, the only one:
-// version 0x0003 (2 bytes), F (32), the coin's salt (16), the 380-byte note
-// of note version 3 (spec 10, section 3.2), 430 bytes (SaltedCommitDataSize).
+// core/ghostpriv/commit.go). The app sends version 2, the only one: version
+// 0x0002 (2 bytes), F (32), the coin's salt (16), the note (156), 206 bytes
+// (SaltedCommitDataSize).
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import { concat, fromHex, toHex } from "../src/bytes.mjs";
-import { COMMIT_DATA_BYTES as APP_COMMIT_DATA_BYTES, COMMIT_DATA_VERSION, DEFAULT_COMMIT_ENTRY } from "../src/flow.mjs";
-import { LEAF_RECORD_BYTES, NOTE_BYTES } from "../src/wasm.mjs";
+import { COMMIT_DATA_BYTES as APP_COMMIT_DATA_BYTES, DEFAULT_COMMIT_ENTRY } from "../src/flow.mjs";
 import { loadModule } from "./support/env.mjs";
 import { SALTED_COMMIT_DATA_BYTES, SALTED_COMMIT_VERSION } from "./support/fake-node.mjs";
 
@@ -22,23 +21,17 @@ const SEED = fromHex(`0x${"09".repeat(32)}`, 32);
 
 const makeCommit = () => ghost.commit({ chainId: CHAIN_ID, amount: AMOUNT, seed: Uint8Array.from(SEED), key: KEY });
 
-test("the module's commit payload is version 3: version, F, salt and a 380-byte note, 430 bytes", () => {
+test("the module's commit payload is version 2: version, F, salt and note, 206 bytes", () => {
   const commit = makeCommit();
-  assert.equal(ghost.constants().commitPayloadBytes, 430);
-  assert.equal(APP_COMMIT_DATA_BYTES, 430, "the size the flow checks before it sends");
-  assert.equal(toHex(COMMIT_DATA_VERSION), "0x0003", "the version the flow checks before it sends");
-  assert.equal(commit.payload.length, 430);
-  assert.equal(toHex(commit.payload.slice(0, 2)), "0x0003");
+  assert.equal(ghost.constants().commitPayloadBytes, 206);
+  assert.equal(APP_COMMIT_DATA_BYTES, 206, "the size the flow checks before it sends");
+  assert.equal(commit.payload.length, 206);
+  assert.equal(toHex(commit.payload.slice(0, 2)), "0x0002");
   const fingerprint = commit.payload.slice(2, 34);
   const salt = commit.payload.slice(34, 50);
   const note = commit.payload.slice(50);
-  assert.equal(note.length, 380);
-  assert.equal(NOTE_BYTES, 380);
-  assert.equal(LEAF_RECORD_BYTES, 32 + 380);
+  assert.equal(note.length, 156);
   assert.notEqual(toHex(salt), toHex(new Uint8Array(16)), "a salt drawn from the seed");
-  // The empty-rule capsule is encrypted with the rest: nothing of the note
-  // is left in the clear, its last 224 bytes no more than the rest.
-  assert.notEqual(toHex(note.slice(156)), toHex(new Uint8Array(224)));
   // The node computes C from F, the amount and the version 2 tag.
   assert.equal(toHex(ghost.coinCommitment(fingerprint, AMOUNT, 2)), toHex(commit.commitment));
   // The same seed gives the same commit: the salt comes from it alone.
@@ -66,19 +59,9 @@ test("the note opens with the key at its chain only", () => {
   assert.equal(ghost.restore({ chainId: CHAIN_ID, key: other, records, markers: new Uint8Array(0) }).length, 0);
 });
 
-test("a note cut to the 156 bytes of the old layout is not read", () => {
-  const commit = makeCommit();
-  // A record of the old length is refused whole by the module.
-  const short = concat([commit.commitment, commit.payload.slice(50, 50 + 156)]);
-  assert.throws(() => ghost.restore({ chainId: CHAIN_ID, key: KEY, records: short, markers: new Uint8Array(0) }));
-  // Its first 156 bytes, zero-padded as a reveal's note is, open nothing.
-  const padded = concat([commit.commitment, commit.payload.slice(50, 50 + 156), new Uint8Array(224)]);
-  assert.equal(ghost.restore({ chainId: CHAIN_ID, key: KEY, records: padded, markers: new Uint8Array(0) }).length, 0);
-});
-
 test("the stand-in reads the same layout", () => {
-  assert.equal(SALTED_COMMIT_DATA_BYTES, 430);
-  assert.equal(toHex(SALTED_COMMIT_VERSION), "0x0003");
+  assert.equal(SALTED_COMMIT_DATA_BYTES, 206);
+  assert.equal(toHex(SALTED_COMMIT_VERSION), "0x0002");
 });
 
 test("the default commit entry is the internal network's coin commit entry", () => {

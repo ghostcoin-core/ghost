@@ -76,8 +76,7 @@ pub fn bucket_prefix(tag: &LookupTag, bits: u32) -> u32 {
     whole >> (MAX_BUCKET_BITS - bits.min(MAX_BUCKET_BITS))
 }
 
-/// The lookup tag a note carries: the first 3 bytes of its nonce, for a note
-/// version 3 and a reveal's padded remainder note alike.
+/// The lookup tag a note carries: the first 3 bytes of its nonce.
 pub fn note_lookup_tag(note: &[u8; NOTE_BYTES]) -> LookupTag {
     let mut tag = [0u8; LOOKUP_TAG_BYTES];
     tag.copy_from_slice(&note[..LOOKUP_TAG_BYTES]);

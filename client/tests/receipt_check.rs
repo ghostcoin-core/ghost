@@ -9,7 +9,7 @@ use ghost_client::receipts::{
     check_block_receipts, check_block_receipts_against_header, check_leaves, check_markers,
     header_receipts_root, receipts_root, CheckedBlock, CoinRecord, ReceiptError, COIN_TREE_ACCOUNT,
 };
-use ghost_client::{pad_reveal_note, Commitment, Marker, Salt, TreeLeaf, NOTE_BYTES, REVEAL_NOTE_BYTES, SALT_BYTES};
+use ghost_client::{Commitment, Marker, Salt, TreeLeaf, NOTE_BYTES, SALT_BYTES};
 
 // ---------------------------------------------------------------- RLP
 
@@ -185,25 +185,8 @@ fn leaf_at(tree: u32, position: u32) -> Commitment {
     Commitment::from_bytes(keccak256(&[tree.to_be_bytes(), position.to_be_bytes()].concat()))
 }
 
-/// The 380-byte note a commit log carries for the leaf at `position`.
 fn note_at(position: u32) -> [u8; NOTE_BYTES] {
     core::array::from_fn(|j| (position as usize * 7 + j) as u8)
-}
-
-/// The 156-byte remainder note a reveal log carries for the leaf at
-/// `position`.
-fn reveal_note_at(position: u32) -> [u8; REVEAL_NOTE_BYTES] {
-    core::array::from_fn(|j| (position as usize * 5 + j + 1) as u8)
-}
-
-/// The note the tree stores with the leaf at `position`: a commit's note, or
-/// a reveal's note zero-padded to 380 bytes.
-fn leaf_note(position: u32, commit: bool) -> [u8; NOTE_BYTES] {
-    if commit {
-        note_at(position)
-    } else {
-        pad_reveal_note(&reveal_note_at(position))
-    }
 }
 
 fn marker_at(position: u32) -> Marker {
@@ -232,7 +215,7 @@ fn reveal_log(tree: u32, position: u32) -> Vec<u8> {
         &tree.to_be_bytes()[..],
         &position.to_be_bytes(),
         leaf_at(tree, position).as_bytes(),
-        &reveal_note_at(position),
+        &note_at(position),
         &[0x22; 20],
         &[0x01; 32],
     ]
@@ -260,7 +243,7 @@ fn block(start: u32, count: usize) -> Block {
     let mut append = |leaves: &mut Vec<TreeLeaf>, commit: bool| {
         let p = position;
         let salt = commit.then(|| salt_at(p));
-        leaves.push(TreeLeaf { commitment: leaf_at(0, p), note: leaf_note(p, commit), salt });
+        leaves.push(TreeLeaf { commitment: leaf_at(0, p), note: note_at(p), salt });
         position += 1;
         p
     };
@@ -367,16 +350,10 @@ fn an_honest_block_checks() {
         assert_eq!(appended.tree_index, 0);
         assert_eq!(appended.position, index as u32);
         assert_eq!(appended.leaf, leaf_at(0, index as u32));
-        assert_eq!(appended.note, honest.leaves[index].note);
+        assert_eq!(appended.note, note_at(index as u32));
         match record {
-            CoinRecord::Commit { v, .. } => {
-                assert_eq!(*v, [0x05; 32]);
-                assert_eq!(appended.note, note_at(index as u32));
-            }
+            CoinRecord::Commit { v, .. } => assert_eq!(*v, [0x05; 32]),
             CoinRecord::Reveal { marker, recipient, out, .. } => {
-                // The 156-byte note of the log, zero-padded to 380 bytes.
-                assert_eq!(appended.note[..REVEAL_NOTE_BYTES], reveal_note_at(index as u32));
-                assert_eq!(appended.note[REVEAL_NOTE_BYTES..], [0u8; NOTE_BYTES - REVEAL_NOTE_BYTES]);
                 assert_eq!(*marker, marker_at(index as u32));
                 assert_eq!(*recipient, [0x22; 20]);
                 assert_eq!(*out, [0x01; 32]);
@@ -439,8 +416,8 @@ fn a_changed_note_is_refused() {
 
     // In a receipt: the root no longer matches.
     let mut receipts = honest.receipts.clone();
-    let note = reveal_note_at(1);
-    let at = receipts[2].windows(REVEAL_NOTE_BYTES).position(|w| w == note).unwrap();
+    let note = note_at(1);
+    let at = receipts[2].windows(NOTE_BYTES).position(|w| w == note).unwrap();
     receipts[2][at + 3] ^= 1;
     assert_eq!(check_block_receipts(&receipts, &root), Err(ReceiptError::RootMismatch));
 }
@@ -591,9 +568,7 @@ fn a_coin_log_off_the_layout_is_refused() {
     let commit_topic = k("ghost/commit-receipt/v1", &[]);
     let reveal_topic = k("ghost/reveal-receipt/v1", &[]);
     let commit_data = [0u8; 4 + 4 + 32 + 32 + NOTE_BYTES + SALT_BYTES];
-    let reveal_data = [0u8; 4 + 4 + 32 + REVEAL_NOTE_BYTES + 20 + 32];
-    assert_eq!(commit_data.len(), 468);
-    assert_eq!(reveal_data.len(), 248);
+    let reveal_data = [0u8; 4 + 4 + 32 + NOTE_BYTES + 20 + 32];
     assert!(single(&[log(&COIN_TREE_ACCOUNT, &[commit_topic], &commit_data)]).is_ok());
     assert!(single(&[log(&COIN_TREE_ACCOUNT, &[reveal_topic, [9; 32]], &reveal_data)]).is_ok());
 
