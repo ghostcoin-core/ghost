@@ -8,8 +8,8 @@
 use alloc::vec::Vec;
 
 use crate::hash::{
-    TAG_COIN_REVEAL_BINDING, TAG_COIN_REVEAL_BINDING_V2, TAG_DATA_REVEAL_BINDING, TAG_HOLD_BINDING, permutations,
-    tag_bytes, tagged,
+    POLICY_ADDRESS_BYTES, TAG_COIN_REVEAL_BINDING, TAG_COIN_REVEAL_BINDING_V2, TAG_DATA_REVEAL_BINDING,
+    TAG_HOLD_BINDING, TAG_POLICY_REVEAL_BINDING_V1, permutations, tag_bytes, tagged,
 };
 use crate::reveal_v2::NOTE_V3_BYTES;
 
@@ -23,7 +23,9 @@ pub const PROTOCOL_VERSION_2: [u8; 2] = [0x00, 0x02];
 pub const STATEMENT_COIN_REVEAL: u8 = 0x01;
 pub const STATEMENT_DATA_REVEAL: u8 = 0x02;
 pub const STATEMENT_HOLD: u8 = 0x03;
-/// The statement version of spec 02.
+/// S4, the policy reveal of the policy class (spec 10, section 5).
+pub const STATEMENT_POLICY_REVEAL: u8 = 0x04;
+/// The statement version of spec 02, and of S4.
 pub const STATEMENT_VERSION_1: u8 = 0x01;
 /// The statement version of S1 in the ordinary class (spec 10, section 4.3).
 pub const STATEMENT_VERSION_2: u8 = 0x02;
@@ -33,6 +35,9 @@ pub const PURPOSE_SPEND: u8 = 0x01;
 pub const PURPOSE_REVEAL: u8 = 0x02;
 pub const PURPOSE_REVOKE: u8 = 0x03;
 pub const PURPOSE_HOLD: u8 = 0x04;
+/// A policy spend: a coin's value moved to its escrow slot (spec 10, section
+/// 5.1).
+pub const PURPOSE_POLICY_SPEND: u8 = 0x05;
 
 /// The chain constants a node or verifier holds. They are always the
 /// verifier's own values, never constants of this crate and never read from a
@@ -98,6 +103,32 @@ pub const COIN_REVEAL_V2_LAYOUT: [LayoutField; 14] = [
     field("remainder_note", 227, NOTE_V3_BYTES),
 ];
 
+/// The policy reveal binding of the policy class, S4 (spec 10, section 5.1):
+/// the opened rule's five public fields and the payout instruction, with no
+/// `recipient`, and the 380-byte note. 767 bytes; `override_hash` is not a
+/// field.
+pub const POLICY_REVEAL_LAYOUT: [LayoutField; 19] = [
+    field("chain_id", 0, 8),
+    field("version", 8, 2),
+    field("domain", 10, 32),
+    field("statement", 42, 1),
+    field("statement_version", 43, 1),
+    field("type", 44, 2),
+    field("purpose", 46, 1),
+    field("root", 47, 32),
+    field("marker", 79, 32),
+    field("remainder", 111, 32),
+    field("out", 143, 32),
+    field("fee", 175, 32),
+    field("policy_address", 207, POLICY_ADDRESS_BYTES),
+    field("policy_codehash", 227, 32),
+    field("params_hash", 259, 32),
+    field("action_tag", 291, 32),
+    field("action_salt", 323, 32),
+    field("instr", 355, 32),
+    field("remainder_note", 387, NOTE_V3_BYTES),
+];
+
 /// The data reveal binding fields. `cf` is the content fingerprint of the
 /// commitment revealed, public so anyone holding the bytes can check them.
 pub const DATA_REVEAL_LAYOUT: [LayoutField; 13] = [
@@ -141,6 +172,8 @@ pub enum Binding {
     Hold,
     /// The coin reveal of the ordinary class, S1 version 2.
     CoinRevealV2,
+    /// The policy reveal of the policy class, S4.
+    PolicyReveal,
 }
 
 impl Binding {
@@ -150,6 +183,7 @@ impl Binding {
             Self::DataReveal => TAG_DATA_REVEAL_BINDING,
             Self::Hold => TAG_HOLD_BINDING,
             Self::CoinRevealV2 => TAG_COIN_REVEAL_BINDING_V2,
+            Self::PolicyReveal => TAG_POLICY_REVEAL_BINDING_V1,
         }
     }
 
@@ -159,6 +193,7 @@ impl Binding {
             Self::DataReveal => &DATA_REVEAL_LAYOUT,
             Self::Hold => &HOLD_LAYOUT,
             Self::CoinRevealV2 => &COIN_REVEAL_V2_LAYOUT,
+            Self::PolicyReveal => &POLICY_REVEAL_LAYOUT,
         }
     }
 
@@ -266,7 +301,13 @@ mod tests {
 
     #[test]
     fn layouts_are_contiguous() {
-        for binding in [Binding::CoinReveal, Binding::DataReveal, Binding::Hold, Binding::CoinRevealV2] {
+        for binding in [
+            Binding::CoinReveal,
+            Binding::DataReveal,
+            Binding::Hold,
+            Binding::CoinRevealV2,
+            Binding::PolicyReveal,
+        ] {
             let mut next = 0;
             for f in binding.layout() {
                 assert_eq!(f.offset, next, "{}", f.name);
@@ -285,5 +326,19 @@ mod tests {
         let v1: alloc::vec::Vec<_> = COIN_REVEAL_LAYOUT.iter().map(|f| f.name).filter(|&n| n != "rule").collect();
         let v2: alloc::vec::Vec<_> = b.layout().iter().map(|f| f.name).collect();
         assert_eq!(v1, v2);
+    }
+
+    /// Spec 10, section 5.1: 767 bytes, 798 with the 31-byte tag, six
+    /// permutations; no `recipient`, no `rule` and no `override_hash`.
+    #[test]
+    fn the_policy_reveal_binding_has_the_spec_shape() {
+        let b = Binding::PolicyReveal;
+        assert_eq!(tag_bytes(b.tag()).len(), 31);
+        assert_eq!((b.fields_len(), b.input_len(), b.permutations()), (767, 798, 6));
+        for name in ["recipient", "rule", "override_hash"] {
+            assert!(b.layout().iter().all(|f| f.name != name), "{name}");
+        }
+        assert_eq!(b.offset("policy_address"), 207);
+        assert_eq!(b.offset("remainder_note"), 387);
     }
 }

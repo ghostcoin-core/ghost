@@ -29,6 +29,9 @@
 //! columns ([`CarriedOutput`]): always, or only when a carried switch is on.
 //! That carries a digest to a hash far away in the trace, into a block it
 //! cannot reach with `Prev`.
+//!
+//! A schedule may also fix some carried columns at zero
+//! ([`Schedule::zero_carried`]): the limbs of a remainder that holds no value.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -139,6 +142,9 @@ pub(crate) struct Schedule {
     pub ordering: Option<Ordering>,
     /// The override switch, S1 version 2 only.
     pub switch: Option<Switch>,
+    /// Carried columns that must be zero: the limbs of `v'` in S4, whose
+    /// remainder holds no value (spec 10, section 5.4, P3).
+    pub zero_carried: Vec<usize>,
 }
 
 /// The source of one byte of a block, after expansion.
@@ -504,6 +510,7 @@ impl ScheduleBuilder {
                 public_consts,
                 ordering: None,
                 switch: None,
+                zero_carried: Vec::new(),
             },
             self.free,
             self.dirs,

@@ -694,14 +694,20 @@ pub enum Statement {
     /// 4): the salted coin reveal with the private override switch and a
     /// private remainder rule, 47 permutations and 3,890 columns.
     CoinRevealV2,
+    /// S4, the policy reveal of the policy class (spec 10, section 5.4): the
+    /// rule opened from its five public fields and a private override hash,
+    /// a zero-value remainder with the empty rule, 47 permutations and 3,856
+    /// columns.
+    PolicyReveal,
 }
 
 impl Statement {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::SaltedCoinReveal,
         Self::SaltedDataReveal,
         Self::SaltedHold,
         Self::CoinRevealV2,
+        Self::PolicyReveal,
     ];
 
     /// The coin reveal, [`Self::SaltedCoinReveal`], under the name of the
@@ -718,6 +724,7 @@ impl Statement {
             Self::SaltedDataReveal => 1,
             Self::SaltedHold => 2,
             Self::CoinRevealV2 => 3,
+            Self::PolicyReveal => 4,
         }
     }
 
@@ -728,6 +735,7 @@ impl Statement {
             Self::SaltedDataReveal => crate::data::schedule(),
             Self::SaltedHold => crate::hold::schedule(),
             Self::CoinRevealV2 => crate::reveal_v2::schedule(),
+            Self::PolicyReveal => crate::policy_reveal::schedule(),
         }
     }
 
@@ -1036,6 +1044,8 @@ mod tests {
         assert_eq!((MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH), (2048, 3890));
         assert_eq!(proof_length_bound(2048, 3824), 1_056_723);
         assert_eq!(proof_length_bound(2048, 3890), 1_070_715);
+        // The policy class, S4 (spec 10, section 5.4).
+        assert_eq!(proof_length_bound(2048, 3856), 1_063_507);
         assert!(proof_length_bound(MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH) <= PROOF_FIELD_BYTES);
         let est = gate(Statement::CoinRevealV2).expect("the gate takes the version 2 coin reveal");
         assert_eq!((est.trace_height, est.trace_width), (MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH));
