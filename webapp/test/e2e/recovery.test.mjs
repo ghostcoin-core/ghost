@@ -83,7 +83,8 @@ const NETNS = process.env.GHOST_RECOVERY_NETNS;
 const RESULTS = process.env.GHOST_RECOVERY_RESULTS;
 const NETWORK_ID = 6_777_971n;
 const GHOST = 10n ** 18n;
-const NOTE_BYTES = 156;
+// Every note is 380 bytes (note version 3); the commit data is version 0x0003.
+const NOTE_BYTES = 380;
 const SALT_BYTES = 16;
 const SETTLE_DEPTH = 2;
 const INTERNAL_CHAIN_PARAMS = { blockTime: 30, halfLife: 3600, startDifficulty: 1, minDifficulty: 1, futureDrift: 30 };
@@ -435,7 +436,7 @@ if (!GETH || !NETNS) {
         const first = BigInt(await A.rpc("eth_getTransactionCount", [TEST_WALLET_ADDRESS, "pending"]));
         let gasLimit = null;
         const sign = async (i) => {
-          const data = concat([Uint8Array.of(0x00, 0x02), randomBytes(32), randomBytes(SALT_BYTES), randomBytes(NOTE_BYTES)]);
+          const data = concat([Uint8Array.of(0x00, 0x03), randomBytes(32), randomBytes(SALT_BYTES), randomBytes(NOTE_BYTES)]);
           const call = { from: TEST_WALLET_ADDRESS, to: DEFAULT_COMMIT_ENTRY, value: toQuantity(value), data: toHex(data) };
           gasLimit ??= BigInt(await A.rpc("eth_estimateGas", [call])) + ACCOUNT_EXTRA_GAS;
           const signed = await testSign({

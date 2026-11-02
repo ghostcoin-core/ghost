@@ -9,13 +9,13 @@
 use std::sync::OnceLock;
 
 use ghost_client::note::{
-    chacha20poly1305_open, chacha20poly1305_seal, note_associated_data, NOTE_PLAINTEXT_BYTES,
+    chacha20poly1305_open, chacha20poly1305_seal, note_associated_data, NOTE_PLAINTEXT_BYTES, NOTE_V2_PLAINTEXT_BYTES,
 };
 use ghost_client::reveal::{ChainParams, CoinReveal, Proof, ProofError, TREE_DEPTH};
 use ghost_client::tree_state::SETTLE_DEPTH;
 use ghost_client::{
-    choose_tree_state, decrypt_note, encrypt_note, full_reveal, partial_reveal,
-    restore_coins, Amount, BuiltReveal, Commitment, Content, ContentFingerprint, Current, DiscardReason,
+    choose_tree_state, decrypt_note, decrypt_note_v2, encrypt_note, full_reveal, pad_reveal_note, partial_reveal,
+    restore_coins, Amount, BuiltReveal, Capsule, Commitment, Content, ContentFingerprint, Current, DiscardReason,
     HeaderRoot, KeyFormat, Marker, NoteContents, NoteError, OwnedCoin, PhantomKey, RevealError,
     RevealTerms, Rule, Salt, TreeLeaf, TreeStateChoice, DATA_V2, NOTE_BYTES,
 };
@@ -94,6 +94,7 @@ impl Chain {
             CHAIN_ID,
             &commit.commitment,
             &NoteContents::salted_coin(0, amount(wei), Rule::EMPTY, commit.salt),
+            &Capsule::empty(),
             rng,
         );
         self.push(commit.commitment, note, Some(commit.salt), commit.salt)
@@ -105,12 +106,14 @@ impl Chain {
         (self.leaves.len() - 1) as u32
     }
 
-    /// Includes a reveal: its marker is spent, its remainder appended with no
-    /// salt beside it (a remainder's salt is only in its note).
+    /// Includes a reveal as the node does: its marker is spent, its remainder
+    /// appended with its 156-byte note zero-padded to 380 bytes and no salt
+    /// beside it (a remainder's salt is only in its note).
     fn include(&mut self, built: &BuiltReveal) -> u32 {
         let reveal: &CoinReveal = &built.reveal;
         self.spent.push(Marker::from_bytes(reveal.marker));
-        self.push(Commitment::from_bytes(reveal.remainder), reveal.remainder_note, None, built.remainder.salt)
+        let note = pad_reveal_note(&reveal.remainder_note);
+        self.push(Commitment::from_bytes(reveal.remainder), note, None, built.remainder.salt)
     }
 
     fn owned(&self, number: u64, wei: u128, position: u32) -> (OwnedCoin, [u8; 32]) {
@@ -227,7 +230,7 @@ fn partial_reveal_proof_verifies_with_proofs_verifier() {
     assert_eq!(reveal.fee, amount(FEE).to_bytes());
 
     // Its note is the remainder's, under the same key, for the new leaf.
-    let note = decrypt_note(&key.note_key(), CHAIN_ID, &remainder.commitment, &reveal.remainder_note)
+    let note = decrypt_note_v2(&key.note_key(), CHAIN_ID, &remainder.commitment, &reveal.remainder_note)
         .unwrap();
     assert_eq!(note.number, 1);
     assert_eq!(note.amount.wei(), s.amounts[1]);
@@ -281,7 +284,7 @@ fn full_reveal_proof_verifies() {
     assert_eq!(built.remainder.number, 4);
     assert_eq!(built.remainder.amount.wei(), 0);
     assert_eq!(&built.reveal.remainder, zero.commitment.as_bytes());
-    let note = decrypt_note(&key.note_key(), CHAIN_ID, &zero.commitment, &built.reveal.remainder_note)
+    let note = decrypt_note_v2(&key.note_key(), CHAIN_ID, &zero.commitment, &built.reveal.remainder_note)
         .unwrap();
     assert_eq!((note.number, note.amount.wei(), note.salt), (4, 0, built.remainder.salt));
 
@@ -332,10 +335,10 @@ fn claim_to_new_key() {
 
     // Its note decrypts under the new key only.
     let leaf = expected.commitment;
-    let note = decrypt_note(&new_key.note_key(), CHAIN_ID, &leaf, &built.reveal.remainder_note).unwrap();
+    let note = decrypt_note_v2(&new_key.note_key(), CHAIN_ID, &leaf, &built.reveal.remainder_note).unwrap();
     assert_eq!((note.number, note.amount.wei()), (0, left));
     assert_eq!(
-        decrypt_note(&key.note_key(), CHAIN_ID, &leaf, &built.reveal.remainder_note).err(),
+        decrypt_note_v2(&key.note_key(), CHAIN_ID, &leaf, &built.reveal.remainder_note).err(),
         Some(NoteError::Unauthentic)
     );
 
@@ -443,7 +446,8 @@ fn restore_ignores_notes_for_other_keys() {
     let mut moved = s.chain.leaves.clone();
     let mut rng = StdRng::seed_from_u64(4);
     let contents = NoteContents::salted_coin(3, amount(s.amounts[3]), Rule::EMPTY, s.chain.salts[current]);
-    moved[elsewhere].note = encrypt_note(&key.note_key(), CHAIN_ID, &moved[elsewhere].commitment, &contents, &mut rng);
+    moved[elsewhere].note =
+        encrypt_note(&key.note_key(), CHAIN_ID, &moved[elsewhere].commitment, &contents, &Capsule::empty(), &mut rng);
     // No salt beside the leaf, so it is the commitment that fails to match.
     moved[elsewhere].salt = None;
     let restored = restore_coins(&key, CHAIN_ID, 0, &moved, &s.chain.spent).unwrap();
@@ -459,7 +463,8 @@ fn restore_ignores_notes_for_other_keys() {
     // A note of the key with a data type tag in the coin tree is reported too.
     let mut data = s.chain.leaves.clone();
     let contents = NoteContents { type_tag: DATA_V2, ..contents };
-    data[elsewhere].note = encrypt_note(&key.note_key(), CHAIN_ID, &data[elsewhere].commitment, &contents, &mut rng);
+    data[elsewhere].note =
+        encrypt_note(&key.note_key(), CHAIN_ID, &data[elsewhere].commitment, &contents, &Capsule::empty(), &mut rng);
     let restored = restore_coins(&key, CHAIN_ID, 0, &data, &s.chain.spent).unwrap();
     assert_eq!(restored.discarded.len(), 1);
     assert_eq!(restored.discarded[0].reason, DiscardReason::NotACoin);
@@ -616,7 +621,7 @@ fn wrong_note_key_rejected() {
     let commit = key.coin_commit_with_salt(2, amount(700), Rule::EMPTY, salt).unwrap();
     let leaf = commit.commitment;
     let contents = NoteContents::salted_coin(2, amount(700), Rule::EMPTY, salt);
-    let note = encrypt_note(&key.note_key(), CHAIN_ID, &leaf, &contents, &mut rng);
+    let note = encrypt_note(&key.note_key(), CHAIN_ID, &leaf, &contents, &Capsule::empty(), &mut rng);
 
     let read = decrypt_note(&key.note_key(), CHAIN_ID, &leaf, &note).unwrap();
     assert!(read == contents);
@@ -624,41 +629,46 @@ fn wrong_note_key_rejected() {
     assert_eq!(decrypt_note(&key.note_key(), CHAIN_ID + 1, &leaf, &note).err(), Some(NoteError::Unauthentic));
     let other_leaf = Commitment::from_bytes([3; 32]);
     assert_eq!(decrypt_note(&key.note_key(), CHAIN_ID, &other_leaf, &note).err(), Some(NoteError::Unauthentic));
-    for byte in [0, 11, 12, 100, NOTE_BYTES - 1] {
+    for byte in [0, 11, 12, 100, 200, 300, NOTE_BYTES - 1] {
         let mut changed = note;
         changed[byte] ^= 0x01;
         assert_eq!(decrypt_note(&key.note_key(), CHAIN_ID, &leaf, &changed).err(), Some(NoteError::Unauthentic));
     }
 
     // Two notes of the same contents differ: a fresh nonce each time.
-    assert_ne!(note, encrypt_note(&key.note_key(), CHAIN_ID, &leaf, &contents, &mut rng));
+    assert_ne!(note, encrypt_note(&key.note_key(), CHAIN_ID, &leaf, &contents, &Capsule::empty(), &mut rng));
 
-    // A note that authenticates but is not one version 2 reads is rejected.
+    // A note that authenticates but is not one version 3 reads is rejected.
     let seal = |plaintext: [u8; NOTE_PLAINTEXT_BYTES]| {
         let mut note = [0u8; NOTE_BYTES];
         note[..12].copy_from_slice(&[1; 12]);
-        note[12..140].copy_from_slice(&plaintext);
+        note[12..NOTE_BYTES - 16].copy_from_slice(&plaintext);
         let tag = chacha20poly1305_seal(
             key.note_key().as_bytes(),
             &[1; 12],
             &note_associated_data(CHAIN_ID, &leaf),
-            &mut note[12..140],
+            &mut note[12..NOTE_BYTES - 16],
         );
-        note[140..].copy_from_slice(&tag);
+        note[NOTE_BYTES - 16..].copy_from_slice(&tag);
         decrypt_note(&key.note_key(), CHAIN_ID, &leaf, &note).err()
     };
-    let good = contents.to_plaintext();
+    let good = contents.to_plaintext(&Capsule::empty());
     assert_eq!(seal(good), None);
-    // Byte 0 set to 0x01 makes a version 1 note, byte 2 set to 0x01 a
-    // version 1 type tag: neither reads.
-    let cases: [(usize, u8, NoteError); 7] = [
-        (0, 0x03, NoteError::UnknownVersion),
+    // Byte 0 set to 0x02 makes a version 2 note and 0x01 a version 1 note,
+    // byte 2 set to 0x01 a version 1 type tag: none reads. A capsule byte
+    // that is not zero for the empty rule is a bad capsule.
+    let cases: [(usize, u8, NoteError); 11] = [
+        (0, 0x02, NoteError::UnknownVersion),
         (0, 0x01, NoteError::UnknownVersion),
+        (0, 0x04, NoteError::UnknownVersion),
         (1, 0x02, NoteError::UnknownScheme),
         (2, 0x01, NoteError::UnknownType),
         (2, 0x03, NoteError::UnknownType),
         (3, 0x03, NoteError::UnknownType),
         (127, 0x01, NoteError::NonZeroPadding),
+        (NOTE_V2_PLAINTEXT_BYTES, 0x01, NoteError::BadCapsule),
+        (NOTE_V2_PLAINTEXT_BYTES, 0x02, NoteError::BadCapsule),
+        (NOTE_PLAINTEXT_BYTES - 1, 0x01, NoteError::BadCapsule),
     ];
     for (offset, value, error) in cases {
         let mut bad = good;
@@ -699,13 +709,24 @@ fn note_plaintext_matches_spec_vectors() {
         .commitment;
     assert_eq!(leaf.as_bytes().to_vec(), hex(&spec_field("note-coin-remainder-salted", "leaf")));
     let coin = NoteContents::salted_coin(1, amount(700_000_000_000_000_000), Rule::EMPTY, coin_salt);
-    let plaintext = coin.to_plaintext();
+    let plaintext = coin.to_plaintext_v2();
     assert_eq!(plaintext.to_vec(), hex(&spec_field("note-coin-remainder-salted", "plaintext")));
     assert_eq!(
         note_associated_data(CHAIN_ID, &leaf).to_vec(),
         hex(&spec_field("note-coin-remainder-salted", "associated-data"))
     );
-    assert!(NoteContents::from_plaintext(&plaintext).unwrap() == coin);
+    assert!(NoteContents::from_plaintext_v2(&plaintext).unwrap() == coin);
+
+    // Note version 3 of the same coin (spec 10, section 3.2): the vector's
+    // 128 bytes with version byte 0x03, then the 224 zero bytes of the empty
+    // capsule.
+    let whole = coin.to_plaintext(&Capsule::empty());
+    let mut expected = hex(&spec_field("note-coin-remainder-salted", "plaintext"));
+    expected[0] = 0x03;
+    expected.resize(NOTE_PLAINTEXT_BYTES, 0);
+    assert_eq!(whole.to_vec(), expected);
+    let (read, capsule) = NoteContents::from_plaintext(&whole).unwrap();
+    assert!(read == coin && capsule == Capsule::empty());
 
     // The data commitment of `legal winner thank ... various`.
     let data_key = PhantomKey::parse(
@@ -729,13 +750,18 @@ fn note_plaintext_matches_spec_vectors() {
         rule: Rule::EMPTY,
         salt: data_salt,
     };
-    let plaintext = data.to_plaintext();
+    let plaintext = data.to_plaintext_v2();
     assert_eq!(plaintext.to_vec(), hex(&spec_field("note-data-commit-salted", "plaintext")));
     assert_eq!(
         note_associated_data(CHAIN_ID, &data_leaf).to_vec(),
         hex(&spec_field("note-data-commit-salted", "associated-data"))
     );
-    assert!(NoteContents::from_plaintext(&plaintext).unwrap() == data);
+    assert!(NoteContents::from_plaintext_v2(&plaintext).unwrap() == data);
+    let whole = data.to_plaintext(&Capsule::empty());
+    assert_eq!(whole[0], 0x03);
+    assert_eq!(whole[1..NOTE_V2_PLAINTEXT_BYTES], plaintext[1..]);
+    assert!(whole[NOTE_V2_PLAINTEXT_BYTES..].iter().all(|&byte| byte == 0));
+    assert!(NoteContents::from_plaintext(&whole).unwrap().0 == data);
 }
 
 #[test]

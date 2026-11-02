@@ -24,8 +24,9 @@
 //
 // A new Phantom Key is 24 words, the client library's default: a 256-bit
 // secret, so it stays strong even against a quantum search. Its coin's
-// commit is version 2 with a fresh per-coin salt in the clear beside `F`
-// (206 bytes); the node serves that salt beside the leaf, the app hands it
+// commit is data format 0x0003: a fresh per-coin salt in the clear beside `F`
+// and the 380-byte note of note version 3, whose capsule is the empty rule's
+// (430 bytes); the node serves that salt beside the leaf, the app hands it
 // to restore, and the reveal and the claim pass the coin's salt to the
 // prover. A key is only ever words or their 21 digit groups: the digit keys
 // of twelve or twenty-four groups are refused.
@@ -78,21 +79,28 @@ export const LEAVES_PER_TREE = 2 ** 32;
 // The coin tree logs of a block's receipts (client/src/receipts.rs, after
 // ghost-node docs/private-transactions.md, "Receipts"): the coin tree
 // account as address; a commit log has the topic K("ghost/commit-receipt/v1")
-// and the tree index (4), position (4), leaf (32), `v` (32), note and the
-// commit's salt (16); a reveal log has K("ghost/reveal-receipt/v1")
+// and the tree index (4), position (4), leaf (32), `v` (32), note (380) and
+// the commit's salt (16); a reveal log has K("ghost/reveal-receipt/v1")
 // and the marker as topics and the tree index, position, remainder (32),
-// note, recipient (20) and amount out (32). The scan of a chain whose coin
-// tree has rolled over reads them here (checkTreesAgainstReceipts).
+// the version 1 reveal's 156-byte remainder note, recipient (20) and amount
+// out (32). The tree stores that remainder note zero-padded to 380 bytes, so
+// its record holds it so. The scan of a chain whose coin tree has rolled
+// over reads them here (checkTreesAgainstReceipts).
 const COIN_TREE_ACCOUNT = "0x67686f7374000000000000000000000000000001";
 const COMMIT_RECEIPT_TAG = "ghost/commit-receipt/v1";
 const REVEAL_RECEIPT_TAG = "ghost/reveal-receipt/v1";
 // Every scan reads the headers from this many blocks below the settled
 // block S (SETTLE_DEPTH below the tip) up to the tip, to find a leaf's block.
 export const LEAF_WINDOW = 32;
-const NOTE_BYTES = 156;
+// Every note in the tree is 380 bytes (note version 3, spec 10, section 3.2);
+// a version 1 reveal's remainder note is 156 bytes, stored zero-padded.
+const NOTE_BYTES = 380;
+const REVEAL_NOTE_BYTES = 156;
 const SALT_BYTES = 16;
-// The commit the app sends: version 0x0002, F, the salt and the note (the
-// node's ghostpriv.SaltedCommitDataSize).
+// The data format of the commit the app sends.
+export const COMMIT_DATA_VERSION = Uint8Array.of(0x00, 0x03);
+// The commit the app sends: version 0x0003, F, the salt and the note (the
+// node's ghostpriv.SaltedCommitDataSize), 430 bytes.
 export const COMMIT_DATA_BYTES = 2 + 32 + SALT_BYTES + NOTE_BYTES;
 // Words the user re-types before a new key is used, out of its 24.
 export const SAVE_CHECK_GROUPS = 3;
@@ -546,11 +554,11 @@ async function askRuleForDecoy(prover, scan) {
   });
 }
 
-// Data bytes of a commit log (tree index, position, leaf, `v`, note, salt)
-// and of a reveal log (tree index, position, remainder, note, recipient,
-// out).
+// Data bytes of a commit log (tree index, position, leaf, `v`, note, salt:
+// 468) and of a reveal log (tree index, position, remainder, 156-byte note,
+// recipient, out: 248).
 const COMMIT_LOG_BYTES = 4 + 4 + 32 + 32 + NOTE_BYTES + SALT_BYTES;
-const REVEAL_LOG_BYTES = 4 + 4 + 32 + NOTE_BYTES + 20 + 32;
+const REVEAL_LOG_BYTES = 4 + 4 + 32 + REVEAL_NOTE_BYTES + 20 + 32;
 
 // The coin tree logs of a block's receipts (eth_getBlockReceipts, each
 // receipt already put through receiptBytes), in receipt and log order: the
@@ -569,7 +577,8 @@ function coinLogsOf(list) {
 }
 
 // The leaf a coin tree log appended, `{ treeIndex, position, leaf, note,
-// salt, marker, v }` (`salt` null but for a commit, `marker` null but for a
+// salt, marker, v }` (`note` 380 bytes, a reveal's zero-padded; `salt` null
+// but for a commit, `marker` null but for a
 // reveal, `v` the committed amount of a commit, null for a
 // reveal), read exactly as client/src/receipts.rs reads it. `topics`
 // are the hex first topics of a commit and a reveal log. A log that is not
@@ -592,7 +601,10 @@ export function coinRecord(log, topics) {
   if (first === topics.reveal) {
     if (log.topics.length !== 2) throw new Error("a reveal log does not have exactly two topics");
     if (data.length !== REVEAL_LOG_BYTES) throw new Error("a reveal log's data is not its length");
-    return { ...head(), note: data.slice(40, 40 + NOTE_BYTES), salt: null, marker: log.topics[1], v: null };
+    // The 156-byte remainder note, zero-padded to 380 as the tree stores it.
+    const note = new Uint8Array(NOTE_BYTES);
+    note.set(data.subarray(40, 40 + REVEAL_NOTE_BYTES));
+    return { ...head(), note, salt: null, marker: log.topics[1], v: null };
   }
   throw new Error("a coin tree log's first topic is neither a commit nor a reveal");
 }
@@ -2483,11 +2495,13 @@ export function createFlow({
         // known to fail until it passes.
         if (state.chainRefused) await syncTip();
         const sentAfter = Number(quantity(await rpc.call("eth_blockNumber")));
-        // Version 2: the worker draws the coin's salt from its secure random
-        // source and the payload carries it beside F (206 bytes).
+        // Version 0x0003: the worker draws the coin's salt from its secure
+        // random source and the payload carries it beside F, then the
+        // 380-byte note (430 bytes).
         const commit = await prover.request("commit", { chainId, amount: v.amount, key: v.key });
-        if (commit.payload.length !== COMMIT_DATA_BYTES || commit.payload[0] !== 0 || commit.payload[1] !== 2) {
-          throw new Error(`the commit is not ${COMMIT_DATA_BYTES} bytes of version 2; nothing was sent`);
+        const version = commit.payload.subarray(0, 2);
+        if (commit.payload.length !== COMMIT_DATA_BYTES || version[0] !== COMMIT_DATA_VERSION[0] || version[1] !== COMMIT_DATA_VERSION[1]) {
+          throw new Error(`the commit is not ${COMMIT_DATA_BYTES} bytes of version 3; nothing was sent`);
         }
         const from = state.wallet && state.wallet.address;
         const txHash = await sendFromWallet({ chainId, to: state.commitEntry, value: v.amount, data: commit.payload, at: sentAfter });

@@ -1,9 +1,10 @@
 // The node stand-in refuses the commits the real node refuses: not to the
-// commit entry address, data not 206 bytes of version 0x0002 (the 190-byte
-// commit of version 0x0001 among it), in the node's words (`commit data is
-// not 206 bytes of version 2: N bytes`). It accepts the salted 206-byte
-// payload the app sends, keeps its salt with its leaf and serves it as
-// `salt`; a refusal adds no leaf.
+// commit entry address, data not 430 bytes of version 0x0003 (the 206-byte
+// commit of version 0x0002 with its 156-byte note and the 190-byte commit of
+// version 0x0001 among it), in the node's words (`commit data is not 430
+// bytes of version 3: N bytes`). It accepts the salted 430-byte payload the
+// app sends, whose note is 380 bytes, keeps its salt with its leaf and serves
+// it as `salt`; a refusal adds no leaf.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -17,15 +18,19 @@ const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const GHOST = 10n ** 18n;
 // A synthetic F and note: the stand-in opens no note.
 const fingerprint = Uint8Array.from({ length: 32 }, (_, i) => 0xa0 + i);
-const note = Uint8Array.from({ length: 156 }, (_, i) => i);
+const note = Uint8Array.from({ length: 380 }, (_, i) => i & 0xff);
+// The 156-byte note of the layouts before note version 3.
+const oldNote = note.slice(0, 156);
 const salt = Uint8Array.from({ length: 16 }, (_, i) => 0x10 + i);
-// A version 2 payload: F, the salt and the note.
-const salted = toHex(concat([Uint8Array.of(0x00, 0x02), fingerprint, salt, note]));
-// Another version 2 payload of the same F under another salt.
+// A version 3 payload: F, the salt and the 380-byte note.
+const salted = toHex(concat([Uint8Array.of(0x00, 0x03), fingerprint, salt, note]));
+// Another version 3 payload of the same F under another salt.
 const otherSalt = Uint8Array.from({ length: 16 }, (_, i) => 0x30 + i);
-const salted2 = toHex(concat([Uint8Array.of(0x00, 0x02), fingerprint, otherSalt, note]));
+const salted2 = toHex(concat([Uint8Array.of(0x00, 0x03), fingerprint, otherSalt, note]));
+// The 206-byte commit of version 0x0002, with its 156-byte note.
+const version2 = toHex(concat([Uint8Array.of(0x00, 0x02), fingerprint, salt, oldNote]));
 // The 190-byte commit of version 0x0001, made before the salt.
-const unsalted = toHex(concat([Uint8Array.of(0x00, 0x01), fingerprint, note]));
+const unsalted = toHex(concat([Uint8Array.of(0x00, 0x01), fingerprint, oldNote]));
 
 async function withNode(check) {
   const ghost = await loadModule();
@@ -45,13 +50,27 @@ const dataError = (err) => err.message === COMMIT_DATA_ERROR || err.message.star
 
 test("the stand-in's refusal is the node's words, with the length", () =>
   withNode(async (_node, wallet) => {
-    assert.equal(COMMIT_DATA_ERROR, "commit data is not 206 bytes of version 2");
-    await assert.rejects(send(wallet, { data: toHex(new Uint8Array(205)) }), (err) => err.message === `${COMMIT_DATA_ERROR}: 205 bytes`);
+    assert.equal(COMMIT_DATA_ERROR, "commit data is not 430 bytes of version 3");
+    await assert.rejects(send(wallet, { data: toHex(new Uint8Array(429)) }), (err) => err.message === `${COMMIT_DATA_ERROR}: 429 bytes`);
+  }));
+
+test("the stand-in refuses the 206-byte commit of version 0x0002 and its 156-byte note", () =>
+  withNode(async (node, wallet) => {
+    assert.equal(fromHex(version2).length, 206);
+    await assert.rejects(send(wallet, { data: version2 }), (err) => err.message === `${COMMIT_DATA_ERROR}: 206 bytes`);
+    // Nor is the 156-byte note taken under version 3, or the 380-byte one
+    // under version 2.
+    const short = concat([Uint8Array.of(0x00, 0x03), fingerprint, salt, oldNote]);
+    await assert.rejects(send(wallet, { data: toHex(short) }), (err) => err.message === `${COMMIT_DATA_ERROR}: 206 bytes`);
+    const mislabelled = concat([Uint8Array.of(0x00, 0x02), fingerprint, salt, note]);
+    await assert.rejects(send(wallet, { data: toHex(mislabelled) }), (err) => err.message === `${COMMIT_DATA_ERROR}: 430 bytes`);
+    assert.equal(node.leaves.length, 0, "no leaf");
+    assert.equal(node.commits.length, 0);
   }));
 
 test("the stand-in refuses the old 189-byte commit of version 0x01", () =>
   withNode(async (node, wallet) => {
-    const old = concat([Uint8Array.of(0x01), fingerprint, note]);
+    const old = concat([Uint8Array.of(0x01), fingerprint, oldNote]);
     assert.equal(old.length, 189);
     await assert.rejects(send(wallet, { data: toHex(old) }), dataError);
     assert.equal(node.leaves.length, 0);
@@ -64,23 +83,23 @@ test("the stand-in refuses the 190-byte commit of version 0x0001", () =>
     await assert.rejects(send(wallet, { data: unsalted }), (err) => err.message === `${COMMIT_DATA_ERROR}: 190 bytes`);
     assert.equal(node.leaves.length, 0, "no leaf");
     assert.equal(node.commits.length, 0);
-    // The same F and note with a salt, as version 2, is taken.
+    // The same F with a salt and a 380-byte note, as version 3, is taken.
     await send(wallet, { data: salted });
     assert.equal(node.leaves.length, 1);
   }));
 
 test("the stand-in refuses a wrong version and a wrong length", () =>
   withNode(async (node, wallet) => {
-    // 190 bytes of any version, 206 bytes of any version but 2.
-    for (const version of [[0x00, 0x01], [0x00, 0x02], [0x01, 0x00], [0x00, 0x00], [0x01, 0x01]]) {
+    // 414 bytes (no salt) of any version, 430 bytes of any version but 3.
+    for (const version of [[0x00, 0x01], [0x00, 0x03], [0x01, 0x00], [0x00, 0x00], [0x01, 0x01]]) {
       await assert.rejects(send(wallet, { data: toHex(concat([Uint8Array.from(version), fingerprint, note])) }), dataError);
     }
-    for (const version of [[0x00, 0x01], [0x02, 0x00], [0x00, 0x03], [0x01, 0x02]]) {
+    for (const version of [[0x00, 0x01], [0x00, 0x02], [0x03, 0x00], [0x00, 0x04], [0x01, 0x03]]) {
       await assert.rejects(send(wallet, { data: toHex(concat([Uint8Array.from(version), fingerprint, salt, note])) }), dataError);
     }
-    const rightSalted = fromHex(salted, 206);
+    const rightSalted = fromHex(salted, 430);
     await assert.rejects(send(wallet, { data: toHex(concat([rightSalted, Uint8Array.of(0)])) }), dataError);
-    await assert.rejects(send(wallet, { data: toHex(rightSalted.slice(0, 205)) }), dataError);
+    await assert.rejects(send(wallet, { data: toHex(rightSalted.slice(0, 429)) }), dataError);
     await assert.rejects(send(wallet, { data: "0x" }), dataError);
     await assert.rejects(send(wallet, { data: null }), dataError);
     await assert.rejects(send(wallet, { data: `${salted}0` }), dataError, "not whole bytes of hex");
@@ -88,7 +107,7 @@ test("the stand-in refuses a wrong version and a wrong length", () =>
     assert.equal(node.commits.length, 0);
   }));
 
-test("the stand-in accepts the 206-byte commit of version 0x0002 and keeps its salt with the leaf", () =>
+test("the stand-in accepts the 430-byte commit of version 0x0003 and keeps its salt with the leaf", () =>
   withNode(async (node, wallet) => {
     await send(wallet, { data: salted });
     assert.equal(node.commits.length, 1);
@@ -118,23 +137,49 @@ test("the stand-in refuses an amount it cannot take", () =>
     assert.equal(node.leaves.length, 0);
   }));
 
-// The app reads a commit log of 244 bytes, its salt last; the 228-byte log of
-// a commit of version 1, with no salt, is refused like any other length.
-test("a version 1 commit log is refused", () => {
+// The app reads a commit log of 468 bytes, its 380-byte note then its salt;
+// the 244-byte log of a commit with a 156-byte note and the 228-byte log of a
+// commit of version 1, with no salt, are refused like any other length.
+test("a commit log with a note of another length is refused", () => {
   const topics = { commit: toHex(new Uint8Array(32).fill(1)), reveal: toHex(new Uint8Array(32).fill(2)) };
-  const head = concat([new Uint8Array(4), Uint8Array.of(0, 0, 0, 3), new Uint8Array(32).fill(7), word(GHOST), note]);
+  const start = concat([new Uint8Array(4), Uint8Array.of(0, 0, 0, 3), new Uint8Array(32).fill(7), word(GHOST)]);
+  const head = concat([start, note]);
   const log = (data) => ({ succeeded: true, topics: [new Uint8Array(32).fill(1)], data });
-  assert.equal(head.length, 228);
+  assert.equal(head.length, 452);
   assert.throws(() => coinRecord(log(head), topics), /commit log's data is not its length/);
   const record = coinRecord(log(concat([head, salt])), topics);
   assert.equal(toHex(record.salt), toHex(salt));
   assert.equal(record.position, 3);
   assert.equal(record.v, GHOST);
   assert.equal(toHex(record.note), toHex(note));
-  // Any other length is refused too.
-  for (const bytes of [concat([head, salt.slice(1)]), concat([head, salt, Uint8Array.of(0)])]) {
+  // Any other length is refused too, the old 156-byte note's among them.
+  for (const bytes of [
+    concat([head, salt.slice(1)]),
+    concat([head, salt, Uint8Array.of(0)]),
+    concat([start, oldNote, salt]),
+    concat([start, oldNote]),
+  ]) {
     assert.throws(() => coinRecord(log(bytes), topics), /commit log's data is not its length/);
   }
+});
+
+// A reveal log carries the version 1 reveal's 156-byte remainder note (248
+// bytes); its record holds that note zero-padded to 380, as the tree does.
+test("a reveal log's 156-byte note is read zero-padded to 380 bytes", () => {
+  const topics = { commit: toHex(new Uint8Array(32).fill(1)), reveal: toHex(new Uint8Array(32).fill(2)) };
+  const marker = new Uint8Array(32).fill(9);
+  const log = (data) => ({ succeeded: true, topics: [new Uint8Array(32).fill(2), marker], data });
+  const tail = concat([new Uint8Array(20).fill(5), word(1n)]);
+  const data = concat([new Uint8Array(4), Uint8Array.of(0, 0, 0, 4), new Uint8Array(32).fill(8), oldNote, tail]);
+  assert.equal(data.length, 248);
+  const record = coinRecord(log(data), topics);
+  assert.equal(record.note.length, 380);
+  assert.equal(toHex(record.note), toHex(concat([oldNote, new Uint8Array(224)])));
+  assert.equal(record.salt, null);
+  assert.equal(toHex(record.marker), toHex(marker));
+  // A reveal log with a 380-byte note is not its length.
+  const long = concat([new Uint8Array(4), Uint8Array.of(0, 0, 0, 4), new Uint8Array(32).fill(8), note, tail]);
+  assert.throws(() => coinRecord(log(long), topics), /reveal log's data is not its length/);
 });
 
 // The stand-in's tree page methods answer in exactly the node's shape
@@ -242,11 +287,11 @@ test("the stand-in serves each block's receipts by hash, in the node's log layou
       }
     }
     assert.equal(node.blocks[0].json.receiptsRoot, "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421", "genesis: the empty trie");
-    // A commit's log: 244 bytes, its salt last.
+    // A commit's log: 468 bytes, its 380-byte note, then its salt last.
     const logOf = async (leaf) => (await rpcCall(node, "eth_getBlockReceipts", [toHex(node.blocks[leaf.block].hash)])).result[0].logs;
     for (const [leaf, position, bytes] of [
-      [first, 0, 244],
-      [second, 1, 244],
+      [first, 0, 468],
+      [second, 1, 468],
     ]) {
       const logs = await logOf(leaf);
       assert.equal(logs.length, 1);
@@ -257,8 +302,8 @@ test("the stand-in serves each block's receipts by hash, in the node's log layou
       assert.equal(toHex(data.slice(0, 8)), toHex(Uint8Array.of(0, 0, 0, 0, 0, 0, 0, position)), "tree 0, its position");
       assert.equal(toHex(data.slice(8, 40)), toHex(leaf.commitment));
       assert.equal(toHex(data.slice(40, 72)), toHex(node.word(GHOST)));
-      assert.equal(toHex(data.slice(72, 228)), toHex(leaf.note));
-      assert.equal(toHex(data.slice(228)), toHex(leaf.salt));
+      assert.equal(toHex(data.slice(72, 452)), toHex(leaf.note));
+      assert.equal(toHex(data.slice(452)), toHex(leaf.salt));
     }
     // A block the stand-in does not know has no receipts.
     assert.equal((await rpcCall(node, "eth_getBlockReceipts", [`0x${"ee".repeat(32)}`])).result, null);
