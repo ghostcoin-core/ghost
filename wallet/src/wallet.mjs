@@ -27,7 +27,7 @@ const INVALID_PARAMS = -32602;
 const INTERNAL_ERROR = -32603;
 
 export const PBKDF2_ITERATIONS = 600_000;
-const MIN_PASSWORD = 12;
+const MIN_PASSWORD = 8;
 const ACCOUNT_INDEX = 0;
 const U32_MAX = 0xffffffff;
 const HKDF_INFO = "ghost wallet vault";

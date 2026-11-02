@@ -566,7 +566,30 @@ test("a short or mistyped password is refused when the wallet is protected", asy
   ];
   const { ask, ui } = setUp({ ui: scriptedUi({ chooseLock: () => locks.shift() }) });
   assert.ok((await ask(ACCOUNT)).result);
-  assert.match(ui.errors[0], /12 characters or more/);
+  assert.match(ui.errors[0], /8 characters or more/);
   assert.match(ui.errors[1], /differ/);
-  assert.match(ui.errors[2], /12 characters or more/, "no passkey without WebAuthn");
+  assert.match(ui.errors[2], /8 characters or more/, "no passkey without WebAuthn");
+});
+
+test("an 8-character password locks the wallet; 7 characters is refused", async () => {
+  const seven = "abcdefg";
+  const eight = "abcdefgh";
+  const locks = [
+    { kind: "password", password: seven, again: seven },
+    { kind: "password", password: eight, again: eight },
+  ];
+  const ui = scriptedUi({ chooseLock: () => locks.shift(), approve: () => ({ password: eight }) });
+  const { ask, idb, spy } = setUp({ ui });
+  assert.ok((await ask(ACCOUNT)).result.address);
+  assert.deepEqual(ui.errors, ["Use a password of 8 characters or more."]);
+  assert.equal(locks.length, 0, "the 8-character password was taken");
+  assert.equal(idb.data.get("vault").kind, "password");
+
+  // The vault opens with the 8-character password, and only with it.
+  let tries = 0;
+  ui.approve = async () => ({ password: ++tries === 1 ? seven : eight });
+  const signed = await ask(SIGN);
+  assert.ok(signed.result.envelope);
+  assert.deepEqual(ui.errors.slice(1), ["Wrong password."]);
+  assert.equal(spy.calls.filter((c) => c === "ghost_wallet_sign_rescue_key").length, 1);
 });
