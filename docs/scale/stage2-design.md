@@ -93,7 +93,7 @@ Growth of a full node, and what a restore server keeps beyond it:
 
 The trees are counted with every inner node stored (modeled: 64 bytes a leaf), the most a node keeps; receipts are left out, as the first stage left them out (spec 05, section 12; not yet established). The 4 TB disk of the ordinary full node holds about two and a half years of this growth (modeled: 4 TB over 1,595.2 GB a year).
 
-### What is not yet established
+### What is not yet established for restore
 
 - The PIR scheme, its parameters at 128 classical bits and NIST Category 1, and its real communication, server time and preprocessing for these databases at the target's size (not yet established: a PIR server built from these databases and timed on named hardware; the 2.5 MB and 12.1 GB a second are published figures for another database).
 - The phone's RandomX hash and cache build (not yet established: the restore timed on named mid-range phones; the 128 ms and 2.08 s are build-machine measurements times an assumed four).
@@ -138,7 +138,7 @@ Against the first stage (both modeled): 0.6781 machine-seconds a reveal against 
 
 The delay model: a reveal waits for its batch to fill and be proven, then for the next block, at which its aggregator starts a root over the batches done; once the root and shrink are proven, it waits for the next block again (modeled: the waits are exponential with a 30 s mean, as throughput.md models block times). Late failures follow a stated rule (designs.md, private bundle requirement 3): a reveal in a bundle whose state-dependent checks fail at execution, its marker already spent or its root not canonical, is skipped and the rest of the bundle executes in order, because the bundle proves proof validity only (designs.md, rule 1). So a late failure costs the fleet its share of one batch, one root and one shrink, about the 0.6781 machine-seconds of an honest reveal (modeled), and nothing is re-proven, against up to 180.49 machine-seconds in the first stage's tree (modeled in throughput.md). Whether a skipped reveal pays a fee is not yet established (designs.md, private bundle requirement 10). Invalid proofs are refused at the aggregator's native check, as in throughput.md (modeled there: 0.000288 machine-seconds each).
 
-### What is not yet established
+### What is not yet established for aggregation
 
 - The seconds of a Poseidon2 permutation of the pinned library on an aggregator core, and of a real batch, root and shrink proof on named hardware (not yet established: the Poseidon2 proxy command of recursion.md, architecture (b), then the real layers).
 - The arithmetic cells of the verifier circuit and the out-of-domain constraint evaluation of the reveal statement (not yet established: counted from the first real layer).
@@ -216,7 +216,7 @@ Why this one. Raw ML-DSA-44 signatures cannot fit: 3,500 of them with the privat
 
 Against the first stage (both modeled): the block before bodies is 5,003,444 bytes against 14,283,500 with raw signatures, and the bodies, headers and framing of the public mix may take 1,566.4 bytes a transaction on average against 1,066.97 in public-encoding.md's proof variant. The public proofs cost 736.6 machine-seconds a block, which the fleet figures under Aggregation cost already include (modeled).
 
-### What is not yet established
+### What is not yet established for public signatures
 
 - The chunk AIR of ML-DSA-44 verification, its real permutation and arithmetic counts, and its proving seconds on named hardware (not yet established).
 - The gas of a public transaction without its signature bytes, and the fee that pays the builder of the public root (not yet established: a change of spec 09, section 8.1).
