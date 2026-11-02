@@ -20,9 +20,8 @@
 //!   the digit view of a key (21 groups for a words key); a typed key, words
 //!   or digits, is read only by `PhantomKey::parse`, so its check is verified
 //!   before anything is derived from it;
-//! - the commit payload sent to the commit entry address: version `0x0003`,
-//!   with a fresh per-coin salt in the clear beside `F` and the 380-byte note
-//!   of note version 3, its capsule the empty rule's (430 bytes);
+//! - the commit payload sent to the commit entry address: version 2, with a
+//!   fresh per-coin salt in the clear beside `F` (206 bytes);
 //! - restore and the reveal over the salt the node serves beside each leaf,
 //!   and restore by note buckets: the bucket bits of a tree, the key's lookup
 //!   tags and restore over leaves given with their positions;
@@ -75,11 +74,10 @@ use ghost_client::header_chain::{
 use ghost_client::seal::header_fields;
 use ghost_client::reveal::{ChainParams, CoinReveal, Proof, TREE_DEPTH};
 use ghost_client::{
-    Amount, Capsule, CheckedBlock, Commitment, HeaderRoot, Marker, NOTE_BYTES, NoteContents, OwnedCoin, PhantomKey,
-    REVEAL_NOTE_BYTES, ReceiptError, RevealTerms, Rule, SALT_BYTES, SALTED_COMMIT_DATA_BYTES,
-    SALTED_COMMIT_FORMAT_VERSION, Salt, TreeLeaf, TreeStateChoice, check_block_receipts_against_header, check_leaves,
-    check_markers, choose_tree_state, claim_to_new_key, encrypt_note, partial_reveal, receipts_root, restore_coins,
-    restore_coins_at, salted_commit_data,
+    Amount, CheckedBlock, Commitment, HeaderRoot, Marker, NOTE_BYTES, NoteContents, OwnedCoin, PhantomKey,
+    ReceiptError, RevealTerms, Rule, SALT_BYTES, SALTED_COMMIT_DATA_BYTES, SALTED_COMMIT_FORMAT_VERSION, Salt,
+    TreeLeaf, TreeStateChoice, check_block_receipts_against_header, check_leaves, check_markers, choose_tree_state,
+    claim_to_new_key, encrypt_note, partial_reveal, receipts_root, restore_coins, restore_coins_at, salted_commit_data,
 };
 use ghost_client::note_tag::{LOOKUP_TAG_BYTES, bucket_bits, lookup_tag};
 use ghost_proofs::{
@@ -99,17 +97,15 @@ const _: () = assert!(PROOF_FIELD_BYTES == ghost_proofs::PROOF_FIELD_BYTES);
 /// The payload fields before the proof: version, chain identifier, marker,
 /// root, remainder, recipient, amount out and fee.
 const HEAD_BYTES: usize = 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32;
-/// Length of the envelope: the type byte and the payload, which ends with the
-/// 156-byte remainder note the version 1 reveal binds.
-pub const ENVELOPE_BYTES: usize = 1 + HEAD_BYTES + PROOF_FIELD_BYTES + REVEAL_NOTE_BYTES;
+/// Length of the envelope: the type byte and the payload.
+pub const ENVELOPE_BYTES: usize = 1 + HEAD_BYTES + PROOF_FIELD_BYTES + NOTE_BYTES;
 
-/// The commit payload, the only one the app makes: the version `0x0003`, `F`,
-/// the coin's salt and the 380-byte note, 430 bytes (the node's
+/// A version 2 commit payload, the only one the app makes: the version `0x0002`,
+/// `F`, the coin's salt and the note, 206 bytes (the node's
 /// `ghostpriv.SaltedCommitDataSize`).
 pub const SALTED_COMMIT_PAYLOAD_BYTES: usize = SALTED_COMMIT_DATA_BYTES;
-const _: () = assert!(SALTED_COMMIT_PAYLOAD_BYTES == 430);
-const _: () = assert!(SALTED_COMMIT_FORMAT_VERSION[1] == 3);
-const _: () = assert!(NOTE_BYTES == 380 && REVEAL_NOTE_BYTES == 156);
+const _: () = assert!(SALTED_COMMIT_PAYLOAD_BYTES == 206);
+const _: () = assert!(SALTED_COMMIT_FORMAT_VERSION[1] == 2);
 /// A salt beside a leaf, as an input carries it: 1 if the leaf has one, else
 /// 0, then the 16 bytes (zero when there is none).
 const SALT_RECORD_BYTES: usize = 1 + SALT_BYTES;
@@ -118,7 +114,7 @@ const SALT_RECORD_BYTES: usize = 1 + SALT_BYTES;
 const PAGE_LEAVES: usize = 4096;
 /// Levels below a page root: a page is a subtree of height 12.
 const PAGE_LEVELS: usize = 12;
-/// One leaf with its 380-byte note, as a page carries it.
+/// One leaf with its note, as a page carries it.
 const LEAF_RECORD_BYTES: usize = 32 + NOTE_BYTES;
 /// One leaf of a note bucket: its position (4), the leaf with its note and
 /// the salt record beside it.
@@ -477,9 +473,8 @@ pub extern "C" fn ghost_key_digits(ptr: *const u8, len: usize) -> u32 {
 /// The commit of a key's first coin. Input: commit version (1: 2, the only
 /// one; any other is refused), chain identifier (8), amount word (32), seed
 /// (32), key text. Output: `C` (32), marker (32), then the commit payload:
-/// `0x0003`, `F`, a fresh salt drawn from the seed's generator and the
-/// 380-byte note of number 0, which carries that salt and the empty capsule
-/// (430 bytes).
+/// `0x0002`, `F`, a fresh salt drawn from the seed's generator and the note
+/// of number 0, which carries that salt (206 bytes).
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_commit(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
@@ -500,7 +495,6 @@ pub extern "C" fn ghost_commit(ptr: *const u8, len: usize) -> u32 {
             chain_id,
             &commit.commitment,
             &NoteContents::salted_coin(0, value, Rule::EMPTY, salt),
-            &Capsule::empty(),
             &mut rng,
         );
         let mut out = Vec::with_capacity(64 + SALTED_COMMIT_PAYLOAD_BYTES);
@@ -513,7 +507,7 @@ pub extern "C" fn ghost_commit(ptr: *const u8, len: usize) -> u32 {
 
 /// Restores a key's coins in one coin tree. Input: chain identifier (8), the
 /// tree's index (4), key text, leaf count (4) and that many leaves with their
-/// notes (32 + 380 each, from position 0), salt count (4, the leaf count) and
+/// notes (32 + 156 each, from position 0), salt count (4, the leaf count) and
 /// the salt read beside each leaf (1 + 16 each: 0 and zeros for a leaf served
 /// without one), marker count (4) and that many spent markers (32 each).
 /// Output: the number found (4), then per coin: number (8), amount word (32),
@@ -566,7 +560,7 @@ fn found_out(found: &[ghost_client::FoundCoin], spent: &[Marker]) -> Vec<u8> {
 /// Restores a key's coins from some leaves of one coin tree, each with its
 /// position, such as the note buckets of the key's own lookup tags. Input:
 /// chain identifier (8), the tree's index (4), key text, leaf count (4) and
-/// that many records of position (4), leaf and note (32 + 380) and the salt
+/// that many records of position (4), leaf and note (32 + 156) and the salt
 /// read beside the leaf (1 + 16), marker count (4) and that many spent
 /// markers (32 each). Output: as [`ghost_restore`]'s, the coins in the order
 /// of the records.
@@ -902,7 +896,7 @@ fn key_for_claim(text: &str) -> Result<PhantomKey, String> {
 /// salted reveal. Input:
 /// chain identifier (8), domain (32), the envelope. Output: transaction hash
 /// (32), marker (32), root (32), remainder (32), recipient (20), amount out
-/// (32), fee (32), remainder note (156).
+/// (32), fee (32), note (156).
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_decode_envelope(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
@@ -1401,8 +1395,7 @@ pub extern "C" fn ghost_receipts_add(ptr: *const u8, len: usize) -> u32 {
 /// header chain to the tip in chain order (count, 32 each), each one's
 /// receipts already checked by [`ghost_receipts_add`]; whether that start
 /// is genesis (1); the leaf count of the start block (4); the leaves from
-/// that position to the tip's last, with their notes (count, 32 + 380 each,
-/// a reveal's 156-byte note zero-padded)
+/// that position to the tip's last, with their notes (count, 32 + 156 each)
 /// and the salt read beside each (count, 1 + 16 each: 0 and zeros for none);
 /// how many of the blocks, from the first, are up to the block the markers
 /// were read at (4); the spent markers read there (count, 32 each).
@@ -1576,7 +1569,6 @@ mod threads {
 #[cfg(feature = "test-tree-depth")]
 mod test_depth {
     use super::*;
-    use ghost_client::encrypt_note_v2;
     use ghost_proofs::{salted_coin_reveal_binding, tagged};
 
     /// Levels of the test node's coin trees: 16,384 leaves each.
@@ -1671,8 +1663,7 @@ mod test_depth {
             let remainder =
                 holder.coin_commit_with_salt(next, left, Rule::EMPTY, remainder_salt).map_err(|e| e.to_string())?;
             let contents = NoteContents::salted_coin(next, left, Rule::EMPTY, remainder_salt);
-            let remainder_note =
-                encrypt_note_v2(&holder.note_key(), chain_id, &remainder.commitment, &contents, &mut rng);
+            let remainder_note = encrypt_note(&holder.note_key(), chain_id, &remainder.commitment, &contents, &mut rng);
 
             let reveal = CoinReveal {
                 root,

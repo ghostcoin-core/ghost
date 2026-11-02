@@ -96,17 +96,11 @@ class Output {
 // Bytes of a salt beside a leaf, and of a salt record (lib.rs).
 export const SALT_BYTES = 16;
 const SALT_RECORD_BYTES = 1 + SALT_BYTES;
-// A note in the tree: note version 3, 380 bytes for every commitment (a
-// reveal's 156-byte remainder note is stored zero-padded to it).
-export const NOTE_BYTES = 380;
-// The remainder note a version 1 reveal carries in its envelope.
-export const REVEAL_NOTE_BYTES = 156;
 // A leaf with its note.
-export const LEAF_RECORD_BYTES = 32 + NOTE_BYTES;
+export const LEAF_RECORD_BYTES = 32 + 156;
 // A note's lookup tag: the first bytes of its nonce.
 export const LOOKUP_TAG_BYTES = 3;
-// The commitment version: 2, salted, the only one. Its commit payload is of
-// data format 0x0003, 430 bytes.
+// The commit version: 2, salted, the only one.
 export const COMMIT_VERSION = 2;
 
 // The salt record of `salt`, a 16-byte salt or null.
@@ -180,9 +174,8 @@ export class Ghost {
     return this.text("ghost_key_digits", encoder.encode(text));
   }
 
-  // The commit of a key's first coin: a salted (version 2) coin, its payload
-  // 0x0003, F, a fresh salt from `seed` and the 380-byte note, 430 bytes. A
-  // `version` other than 2 is refused.
+  // The commit of a key's first coin: version 2, 206 bytes, a fresh salt
+  // from `seed`. A `version` other than 2 is refused.
   commit({ chainId, amount, seed, key, version }) {
     if (version !== undefined && version !== COMMIT_VERSION) throw new Error("unknown commit version");
     const input = new Input().u8(COMMIT_VERSION).u64(chainId).bytes(word(amount)).bytes(seed, 32).text(key).build();
@@ -190,7 +183,7 @@ export class Ghost {
     return { commitment: out.take(32), marker: out.take(32), payload: out.rest() };
   }
 
-  // `records`: leaves with their notes (412 bytes each) from position 0;
+  // `records`: leaves with their notes (188 bytes each) from position 0;
   // `salts`: the salt read beside each leaf (16 bytes, or null), one per
   // leaf, all null when not given; `markers`: spent markers (32 bytes each).
   // `treeIndex`: the coin tree the leaves are of. Each coin found carries
@@ -228,7 +221,7 @@ export class Ghost {
   }
 
   // As restore, over some leaves of tree `treeIndex` each with its position:
-  // `entries` [{ position, leaf, note, salt }] (32 and 380 bytes, a 16-byte
+  // `entries` [{ position, leaf, note, salt }] (32 and 156 bytes, a 16-byte
   // salt or null). The coins found come in the order of `entries`.
   restoreAt({ chainId, key, treeIndex, entries, markers }) {
     if (!Number.isInteger(treeIndex) || treeIndex < 0 || treeIndex > 0xffffffff) throw new Error("a tree index is a 32-bit unsigned integer");
@@ -237,7 +230,7 @@ export class Ghost {
       if (!Number.isInteger(position) || position < 0 || position > 0xffffffff) throw new Error("a position is a 32-bit unsigned integer");
       const at = new Uint8Array(4);
       new DataView(at.buffer).setUint32(0, position);
-      if (leaf.length !== 32 || note.length !== NOTE_BYTES) throw new Error(`a leaf is 32 bytes and its note ${NOTE_BYTES}`);
+      if (leaf.length !== 32 || note.length !== LEAF_RECORD_BYTES - 32) throw new Error("a leaf is 32 bytes and its note 156");
       records.push(at, leaf, note, saltRecord(salt ?? null));
     }
     const input = new Input()
@@ -318,8 +311,7 @@ export class Ghost {
       recipient: out.take(20),
       out: fromWord(out.take(32)),
       fee: fromWord(out.take(32)),
-      // The 156-byte remainder note; the tree stores it zero-padded to 380.
-      note: out.take(REVEAL_NOTE_BYTES),
+      note: out.take(156),
     };
   }
 

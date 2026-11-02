@@ -11,9 +11,8 @@ use ghost_client::note_tag::{
     LookupTag, NoteBuckets, LOOKUP_TAG_BYTES, MAX_BUCKET_BITS, MIN_BUCKET_NOTES, TAG_BATCH,
 };
 use ghost_client::{
-    decrypt_note, encrypt_note, encrypt_note_v2, pad_reveal_note, restore_coins, Amount, Capsule, Commitment,
-    Current, Marker, NoteContents, NoteError, PhantomKey, RestoreError, Rule, Salt, TreeLeaf, MAX_TREE_LEAVES,
-    NOTE_BYTES,
+    decrypt_note, encrypt_note, restore_coins, Amount, Commitment, Current, Marker, NoteContents,
+    NoteError, PhantomKey, RestoreError, Rule, Salt, TreeLeaf, MAX_TREE_LEAVES, NOTE_BYTES,
 };
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -65,9 +64,6 @@ fn random<const N: usize>(rng: &mut StdRng) -> [u8; N] {
 
 /// The key's coins of numbers `0..hops`, each the remainder of the one
 /// before, at the given positions, and the markers of every one but the last.
-/// Number 0 is a commit, its note a 380-byte note version 3; every later
-/// number is a reveal's remainder, its 156-byte note version 2 zero-padded to
-/// 380 bytes as the node stores it.
 fn hops(key: &PhantomKey, positions: &[u32], rng: &mut StdRng) -> (Vec<BucketNote>, Vec<Marker>) {
     let note_key = key.note_key();
     let mut notes = Vec::new();
@@ -78,11 +74,7 @@ fn hops(key: &PhantomKey, positions: &[u32], rng: &mut StdRng) -> (Vec<BucketNot
         let salt = Salt::from_bytes(random(rng));
         let commit = key.coin_commit_with_salt(number, amount, Rule::EMPTY, salt).unwrap();
         let contents = NoteContents::salted_coin(number, amount, Rule::EMPTY, salt);
-        let note = if number == 0 {
-            encrypt_note(&note_key, CHAIN_ID, &commit.commitment, &contents, &Capsule::empty(), rng)
-        } else {
-            pad_reveal_note(&encrypt_note_v2(&note_key, CHAIN_ID, &commit.commitment, &contents, rng))
-        };
+        let note = encrypt_note(&note_key, CHAIN_ID, &commit.commitment, &contents, rng);
         notes.push(BucketNote {
             position,
             leaf: TreeLeaf {
@@ -197,7 +189,7 @@ fn note_tag_matches_the_spec_vectors() {
 }
 
 #[test]
-fn a_sealed_note_carries_its_tag_in_the_nonce_and_is_380_bytes() {
+fn a_sealed_note_carries_its_tag_in_the_nonce_and_stays_156_bytes() {
     let mut rng = StdRng::seed_from_u64(0x7a9);
     let key = key();
     let note_key = key.note_key();
@@ -205,26 +197,22 @@ fn a_sealed_note_carries_its_tag_in_the_nonce_and_is_380_bytes() {
     let amount = Amount::new(700).unwrap();
     let commit = key.coin_commit_with_salt(5, amount, Rule::EMPTY, salt).unwrap();
     let contents = NoteContents::salted_coin(5, amount, Rule::EMPTY, salt);
-    let note = encrypt_note(&note_key, CHAIN_ID, &commit.commitment, &contents, &Capsule::empty(), &mut rng);
-    assert_eq!(NOTE_BYTES, 380);
-    assert_eq!(note.len(), 380);
+    let note = encrypt_note(&note_key, CHAIN_ID, &commit.commitment, &contents, &mut rng);
+    assert_eq!(NOTE_BYTES, 156);
+    assert_eq!(note.len(), 156);
     assert_eq!(note_lookup_tag(&note), lookup_tag(&note_key, 5));
     assert_eq!(&note[..3], &lookup_tag(&note_key, 5)[..]);
     assert!(decrypt_note(&note_key, CHAIN_ID, &commit.commitment, &note).unwrap() == contents);
 
-    // A reveal's padded remainder note carries its tag in the same place.
-    let short = encrypt_note_v2(&note_key, CHAIN_ID, &commit.commitment, &contents, &mut rng);
-    assert_eq!(note_lookup_tag(&pad_reveal_note(&short)), lookup_tag(&note_key, 5));
-
     // Two notes of the same contents share the tag and differ in the 9
     // random bytes after it.
-    let again = encrypt_note(&note_key, CHAIN_ID, &commit.commitment, &contents, &Capsule::empty(), &mut rng);
+    let again = encrypt_note(&note_key, CHAIN_ID, &commit.commitment, &contents, &mut rng);
     assert_eq!(note[..3], again[..3]);
     assert_ne!(note[3..NOTE_NONCE_BYTES], again[3..NOTE_NONCE_BYTES]);
 
     // The tag follows the number, and another key's tag is another.
     let next = NoteContents::salted_coin(6, amount, Rule::EMPTY, salt);
-    let other = encrypt_note(&note_key, CHAIN_ID, &commit.commitment, &next, &Capsule::empty(), &mut rng);
+    let other = encrypt_note(&note_key, CHAIN_ID, &commit.commitment, &next, &mut rng);
     assert_eq!(note_lookup_tag(&other), lookup_tag(&note_key, 6));
     assert_ne!(lookup_tag(&note_key, 5), lookup_tag(&note_key, 6));
     let stranger = PhantomKey::generate(ghost_client::KeyFormat::Words, &mut rng);
@@ -240,7 +228,7 @@ fn a_changed_tag_fails_to_decrypt() {
     let amount = Amount::new(1_000).unwrap();
     let commit = key.coin_commit_with_salt(1, amount, Rule::EMPTY, salt).unwrap();
     let contents = NoteContents::salted_coin(1, amount, Rule::EMPTY, salt);
-    let note = encrypt_note(&note_key, CHAIN_ID, &commit.commitment, &contents, &Capsule::empty(), &mut rng);
+    let note = encrypt_note(&note_key, CHAIN_ID, &commit.commitment, &contents, &mut rng);
     for byte in 0..LOOKUP_TAG_BYTES {
         let mut changed = note;
         changed[byte] ^= 0x80;
@@ -275,7 +263,7 @@ fn a_note_with_a_random_nonce_still_decrypts() {
     let mut note = [0u8; NOTE_BYTES];
     note[..NOTE_NONCE_BYTES].copy_from_slice(&nonce);
     let body = NOTE_NONCE_BYTES..NOTE_NONCE_BYTES + NOTE_PLAINTEXT_BYTES;
-    note[body.clone()].copy_from_slice(&contents.to_plaintext(&Capsule::empty()));
+    note[body.clone()].copy_from_slice(&contents.to_plaintext());
     let tag = chacha20poly1305_seal(
         note_key.as_bytes(),
         &nonce,

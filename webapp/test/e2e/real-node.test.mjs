@@ -9,8 +9,7 @@
 // rewards fund it; no elliptic-curve key or keystore is used. The Phantom
 // Keys are 24 words and the save checks are answered with words. The test
 // then reads the chain itself: the commit transaction's type and sender, its
-// 430 bytes of version 0x0003 with the coin's salt and its 380-byte note, its
-// leaf and the salt the
+// 206 bytes of version 0x0002 with the coin's salt, its leaf and the salt the
 // node serves back beside it, the reveal's marker, the remainder's leaf, the
 // recipient's balance, and the claim.
 //
@@ -370,9 +369,9 @@ if (!GETH) {
       assert.equal(flow.state.vanish.stage, "done");
 
       // On chain: a transaction to the commit entry address of 1 GHOST whose
-      // data is the 430 bytes of a salted commit (ghostpriv
-      // SaltedCommitDataSize), version 0x0003, F, the salt and the 380-byte
-      // note, and a new leaf C = K(tag, COIN_V2, F, v).
+      // data is the 206 bytes of a salted commit (ghostpriv
+      // SaltedCommitDataSize), version 0x0002, F, the salt and the note, and
+      // a new leaf C = K(tag, COIN_V2, F, v).
       const commitTx = await rpc("eth_getTransactionByHash", [sent.txHash]);
       assert.equal(commitTx.type, "0x52", "a quantum-safe account transaction");
       // The sender is derived from the key: the wallet's nonce moved.
@@ -380,8 +379,8 @@ if (!GETH) {
       assert.equal(String(commitTx.to).toLowerCase(), DEFAULT_COMMIT_ENTRY);
       assert.equal(BigInt(commitTx.value), GHOST);
       const data = fromHex(commitTx.input);
-      assert.equal(data.length, 430);
-      assert.equal(toHex(data.slice(0, 2)), "0x0003");
+      assert.equal(data.length, 206);
+      assert.equal(toHex(data.slice(0, 2)), "0x0002");
       const salt = data.slice(34, 34 + SALT_BYTES);
       const note = data.slice(34 + SALT_BYTES);
       const commitReceipt = await rpc("eth_getTransactionReceipt", [sent.txHash]);
@@ -436,8 +435,8 @@ if (!GETH) {
       assert.deepEqual(sentSeen.reveal, { txHash: reveal.txHash, out: GHOST / 4n }, "shown Sent with the amount and hash");
       assert.equal(reveal.stage, "done");
       assert.equal(reveal.block, Number(BigInt(revealReceipt.blockNumber)), "Done at the reveal's own block");
-      // Log data: tree index (4), position (4), remainder (32), the version 1
-      // reveal's remainder note (156), recipient (20), out (32).
+      // Log data: tree index (4), position (4), remainder (32), note (156),
+      // recipient (20), out (32).
       const revealLog = fromHex(revealReceipt.logs[0].data);
       const remainder = toHex(revealLog.slice(8, 40));
       assert.equal(toHex(revealLog.slice(196, 216)), recipient);

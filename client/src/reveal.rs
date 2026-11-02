@@ -21,11 +21,8 @@
 //! Every coin is salted (version 2) and is proved by
 //! [`ghost_proofs::prove_salted_coin_reveal`]: its salt and a fresh salt for
 //! the remainder, drawn from the caller's generator, are private witnesses,
-//! and the remainder's note is note version 2, carrying that fresh salt: the
-//! 156-byte note slot ([`crate::note::REVEAL_NOTE_BYTES`]) this reveal binds.
-//! The node stores it in the tree zero-padded to the 380 bytes of every note,
-//! and restore reads it so ([`crate::note::pad_reveal_note`]). Every builder
-//! refuses what the prover refuses.
+//! and the remainder's note is note version 2, carrying that fresh salt.
+//! Every builder refuses what the prover refuses.
 
 use core::fmt;
 
@@ -37,7 +34,7 @@ use rand_core::CryptoRng;
 
 use crate::commit::{Amount, Commitment, Marker, Rule, Salt};
 use crate::key::PhantomKey;
-use crate::note::{encrypt_note_v2, NoteContents};
+use crate::note::{encrypt_note, NoteContents};
 use crate::wipe::wipe;
 
 /// Why a reveal was not built.
@@ -253,9 +250,7 @@ fn build<R: CryptoRng + ?Sized>(
     };
     let contents = NoteContents::salted_coin(number, left, coin.rule, remainder_salt);
     let chain_id = u64::from_be_bytes(params.chain_id);
-    // The version 1 reveal binds a 156-byte remainder note, so it is note
-    // version 2; the node stores it in the tree zero-padded to 380 bytes.
-    let remainder_note = encrypt_note_v2(
+    let remainder_note = encrypt_note(
         &holder.note_key(),
         chain_id,
         &remainder.commitment,

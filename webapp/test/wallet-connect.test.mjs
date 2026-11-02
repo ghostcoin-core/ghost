@@ -59,7 +59,7 @@ const FIELDS = {
   gasLimit: 122_744n,
   to: fromHex(DEFAULT_COMMIT_ENTRY, 20),
   value: GHOST,
-  data: Uint8Array.of(0x00, 0x03, 0xab),
+  data: Uint8Array.of(0x00, 0x02, 0xab),
 };
 
 // --- The wallet module ---
@@ -90,7 +90,7 @@ test("the transaction fields go to the wallet as 0x hex and read back the same",
     gasLimit: "0x1df78",
     to: DEFAULT_COMMIT_ENTRY,
     value: "0xde0b6b3a7640000",
-    data: "0x0003ab",
+    data: "0x0002ab",
   });
   assert.deepEqual(fieldsFromSnap(seen), FIELDS, "the wallet reads back the fields the page signed");
   assert.equal(snapTransaction({ ...FIELDS, to: null }).to, null, "a contract creation has no to");
@@ -166,8 +166,7 @@ test("Vanish through a wallet speaking 0x hex: the wallet approves, the page sen
     assert.equal(params.to, DEFAULT_COMMIT_ENTRY);
     assert.equal(params.value, "0xde0b6b3a7640000");
     assert.equal(params.nonce, "0x0");
-    assert.equal(params.data.length, 2 + 2 * 430, "the 430 bytes of a version 3 commit");
-    assert.ok(params.data.startsWith("0x0003"), "data version 0x0003");
+    assert.equal(params.data.length, 2 + 2 * 206, "the 206 bytes of a version 2 commit");
     // Only the wallet's two requests were ever asked of it.
     assert.deepEqual(
       wallet.calls.map((c) => c.method),

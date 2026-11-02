@@ -22,10 +22,7 @@ import { Ghost } from "../../src/wasm.mjs";
 import { wasmPath } from "./env.mjs";
 
 export const GHOST = 10n ** 18n;
-// Every note in the tree is 380 bytes; a reveal's log carries the version 1
-// reveal's 156-byte remainder note, stored in the tree zero-padded.
-const NOTE_BYTES = 380;
-const REVEAL_NOTE_BYTES = 156;
+const NOTE_BYTES = 156;
 const SALT_BYTES = 16;
 // The coin tree account and the topics of its commit and reveal logs.
 const COIN_TREE_ACCOUNT = "0x67686f7374000000000000000000000000000001";
@@ -147,14 +144,12 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
   const tip = () => blocks.length - 1;
   // A block that appends `leaf` (with an all-zero note): a commit's log,
   // which ends with the coin's 16-byte salt, or with `reveal`
-  // ({ marker, recipient, out }) a reveal's, whose marker it spends. The
-  // commit log's note is 380 bytes, the reveal log's 156, which the tree
-  // stores zero-padded to 380: all zeros either way.
+  // ({ marker, recipient, out }) a reveal's, whose marker it spends.
   const commit = (leaf, { reveal = null, salt = null } = {}) => {
     const position = leaves.length;
     leaves.push({ leaf, salt: reveal ? null : salt });
     const head = [u32(0), u32(position), leaf];
-    const note = new Uint8Array(reveal ? REVEAL_NOTE_BYTES : NOTE_BYTES);
+    const note = new Uint8Array(NOTE_BYTES);
     const log = reveal
       ? { topics: [revealTopic, reveal.marker], data: toHex(concat([...head, note, fromHex(reveal.recipient, 20), word(reveal.out)])) }
       : { topics: [commitTopic], data: toHex(concat([...head, word(GHOST), note, salt])) };

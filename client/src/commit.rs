@@ -367,22 +367,19 @@ pub fn salted_data_marker(r: &RevealSecret, b: &Blinding, salt: &Salt) -> Marker
     ))
 }
 
-/// The format version of a salted commit's data, its first two bytes:
-/// `0x0003`, the layout of version `0x0002` with the 380-byte note of note
-/// version 3 (spec 10, section 3.2).
-pub const SALTED_COMMIT_FORMAT_VERSION: [u8; 2] = [0x00, 0x03];
+/// The format version of a salted commit's data, its first two bytes.
+pub const SALTED_COMMIT_FORMAT_VERSION: [u8; 2] = [0x00, 0x02];
 
 /// Length of a salted commit's data: format version (2), fingerprint (32),
-/// salt (16), note (380).
+/// salt (16), note (156).
 pub const SALTED_COMMIT_DATA_BYTES: usize =
     SALTED_COMMIT_FORMAT_VERSION.len() + 32 + SALT_BYTES + NOTE_BYTES;
 
-const _: () = assert!(SALTED_COMMIT_DATA_BYTES == 430);
+const _: () = assert!(SALTED_COMMIT_DATA_BYTES == 206);
 
-/// The data of a salted commit, coin or data alike:
-/// `SALTED_COMMIT_FORMAT_VERSION || F || salt || note`, the note 380 bytes
-/// whatever the rule. The salt travels in the clear beside `F`, so the node
-/// can store it beside the leaf.
+/// The data of a version 2 commit, coin or data alike:
+/// `SALTED_COMMIT_FORMAT_VERSION || F || salt || note`. The salt travels in
+/// the clear beside `F`, so the node can store it beside the leaf.
 pub fn salted_commit_data(
     fingerprint: &Fingerprint,
     salt: &Salt,
@@ -478,26 +475,17 @@ impl PhantomKey {
         if !rule.is_empty() {
             return Err(CommitError::RuleNotSupported);
         }
-        Ok(self.coin_commit_with_rule(index, amount, rule, salt))
-    }
-
-    /// The version 2 coin commitment number `index` of this key, holding
-    /// `amount`, under `salt`, for any rule: the empty rule or a policy rule
-    /// a note's capsule opened (spec 10, section 3.2). Restore recomputes a
-    /// coin with it; this wallet still makes and reveals only coins with the
-    /// empty rule ([`Self::salted_coin_commit`], [`Self::coin_commit_with_salt`]).
-    pub fn coin_commit_with_rule(&self, index: u64, amount: Amount, rule: Rule, salt: Salt) -> CoinCommit {
         let key_bytes = self.key_bytes();
         let s = key_bytes.secret();
         let r = key_bytes.reveal_secret();
         let b = key_bytes.blinding(index);
         let fingerprint = salted_coin_fingerprint(&s, &r, &b, &salt, &rule);
-        CoinCommit {
+        Ok(CoinCommit {
             fingerprint,
             commitment: salted_coin_commitment(&fingerprint, amount),
             marker: salted_coin_marker(&r, &b, &salt),
             salt,
-        }
+        })
     }
 
     /// A new version 2 data commitment of this key for `content`, under a

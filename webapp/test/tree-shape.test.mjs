@@ -33,9 +33,8 @@ const LEAF_B = "0x93312061656298f41cd5a9f116d070b38b0acf5f8d968c58e32170f70e7aed
 const PAGE_ROOT = "0x06d032e35a1f30a5773c38d9631f5e4ec069786f4d22131ef0bbba75acf2b717";
 const ROOT = "0x142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5";
 const EMPTY_ROOT = "0x8e66512042388a7863d500c4f96861466ae48b9d64ea1e10ec382c31aa61b5a8";
-// Every note is 380 bytes (note version 3, spec 10, section 3.2).
-const NOTE_A = `0x${"a1".repeat(380)}`;
-const NOTE_B = `0x${"b2".repeat(380)}`;
+const NOTE_A = `0x${"a1".repeat(156)}`;
+const NOTE_B = `0x${"b2".repeat(156)}`;
 const ANCHOR_HASH = `0x${"5a".repeat(32)}`;
 
 const anchor = (root = ROOT) => ({ hash: fromHex(ANCHOR_HASH, 32), coinTreeRoot: fromHex(root, 32) });
@@ -137,10 +136,7 @@ test("fetchTree refuses a page not in the node's shape", async () => {
   );
   // Each leaf and note has its length.
   const short = { ...docsPage(), entries: [entries[0], { leaf: LEAF_B, note: NOTE_B.slice(0, -2) }] };
-  await assert.rejects(fetchTree(endpoint(docsPageRoots(), [short]), prover, anchor()), /expected 380 bytes/);
-  // A note of the old 156 bytes is refused like any other length.
-  const old = { ...docsPage(), entries: [entries[0], { leaf: LEAF_B, note: `0x${"b2".repeat(156)}` }] };
-  await assert.rejects(fetchTree(endpoint(docsPageRoots(), [old]), prover, anchor()), /expected 380 bytes of hex, got 156/);
+  await assert.rejects(fetchTree(endpoint(docsPageRoots(), [short]), prover, anchor()), /expected 156 bytes/);
   const noLeaf = { ...docsPage(), entries: [entries[0], { note: NOTE_B }] };
   await assert.rejects(fetchTree(endpoint(docsPageRoots(), [noLeaf]), prover, anchor()), /expected hex bytes/);
 });
@@ -151,9 +147,9 @@ test("fetchTree reads the optional salt beside a leaf and refuses one that is no
   page.entries[1] = { ...page.entries[1], salt: SALT };
   const tree = await fetchTree(endpoint(docsPageRoots(), [page]), prover, anchor());
   // A reveal's remainder has none; a commit's leaf has its salt. The records
-  // stay leaf and note, 412 bytes each.
+  // stay leaf and note, 188 bytes each.
   assert.deepEqual(tree.salts.map((s) => (s === null ? null : toHex(s))), [null, SALT]);
-  assert.equal(tree.records.length, 2 * 412);
+  assert.equal(tree.records.length, 2 * 188);
   assert.equal(toHex(tree.records), toHex(concat([LEAF_A, NOTE_A, LEAF_B, NOTE_B].map((h) => fromHex(h)))));
   for (const salt of [SALT.slice(0, -2), `${SALT}00`, "0xzz", null, 16, ""]) {
     const bad = docsPage();

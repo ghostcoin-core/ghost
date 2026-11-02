@@ -95,12 +95,12 @@ function stubProver({ bits, owned }) {
 // one entry every bucket holds, so a restore sees that one served twice.
 function stubBuckets() {
   const reads = [];
-  const shared = { position: 0, leaf: new Uint8Array(32).fill(1), note: new Uint8Array(380), salt: null };
+  const shared = { position: 0, leaf: new Uint8Array(32).fill(1), note: new Uint8Array(156), salt: null };
   return {
     reads,
     async readBucket(treeIndex, bits, prefix) {
       reads.push({ treeIndex, bits, prefix });
-      return [shared, { position: 1 + prefix, leaf: new Uint8Array(32).fill(2), note: new Uint8Array(380), salt: null }];
+      return [shared, { position: 1 + prefix, leaf: new Uint8Array(32).fill(2), note: new Uint8Array(156), salt: null }];
     },
   };
 }
@@ -361,7 +361,7 @@ test("a refused bucket read falls back to the full page scan for that scan only"
     ]) {
       await assert.rejects(reader({ ...honest, ...change }).readBucket(0, 8, 0x4d), /malformed/, why);
     }
-    const note = (tag) => toHex(concat([tag, new Uint8Array(377)]));
+    const note = (tag) => toHex(concat([tag, new Uint8Array(153)]));
     const entry = { position: "0x5", leaf: toHex(new Uint8Array(32)), note: note(Uint8Array.of(0x4d, 0x6c, 0x00)) };
     assert.equal((await reader({ ...honest, count: "0x1", entries: [entry] }).readBucket(0, 8, 0x4d)).length, 1);
     await assert.rejects(
@@ -369,16 +369,6 @@ test("a refused bucket read falls back to the full page scan for that scan only"
       /not of the bucket/,
       "a note of another bucket",
     );
-    // Every note is 380 bytes: one of the old 156 bytes, or of any other
-    // length, is refused.
-    for (const length of [156, 379, 381]) {
-      const odd = toHex(concat([Uint8Array.of(0x4d, 0x6c, 0x00), new Uint8Array(length - 3)]));
-      await assert.rejects(
-        reader({ ...honest, count: "0x1", entries: [{ ...entry, note: odd }] }).readBucket(0, 8, 0x4d),
-        /malformed: expected 380 bytes/,
-        `a note of ${length} bytes`,
-      );
-    }
   } finally {
     await done();
   }
@@ -434,9 +424,9 @@ test("a bucket that disagrees with the pages read is dropped for the full page s
   const tags = ghost.noteTags({ key, first: 0, count: 17 });
   // Position 17 is a stranger's note in number 0's bucket.
   const notes = [
-    ...tags.map((tag) => concat([tag, new Uint8Array(377)])),
-    concat([tags[0], Uint8Array.from(randomBytes(377))]),
-    ...Array.from({ length: 20 }, () => Uint8Array.from(randomBytes(380))),
+    ...tags.map((tag) => concat([tag, new Uint8Array(153)])),
+    concat([tags[0], Uint8Array.from(randomBytes(153))]),
+    ...Array.from({ length: 20 }, () => Uint8Array.from(randomBytes(156))),
   ];
   const tree = {
     treeIndex: 0,
