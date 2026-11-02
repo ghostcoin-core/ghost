@@ -4,7 +4,10 @@
 // after a merge. Both files are read as text; nothing is built.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
@@ -130,4 +133,86 @@ test("the workflow uses the three repository secrets", () => {
   for (const name of ["VERCEL_TOKEN", "VERCEL_ORG_ID", "VERCEL_PROJECT_ID"]) {
     assert.ok(workflow.includes(`${name}: \${{ secrets.${name} }}`), name);
   }
+});
+
+// The steps under jobs.deploy, by name, in order, each with its text.
+function steps() {
+  const body = workflow.slice(workflow.indexOf("\n    steps:\n"));
+  return body
+    .split(/\n {6}- /)
+    .slice(1)
+    .map((text) => ({ name: text.match(/^(?:uses: \S+[^\n]*\n {8})?name: ([^\n]+)/)?.[1] ?? text.split("\n")[0], text }));
+}
+
+test("only the head of main deploys, and a newer run never cancels one in progress", () => {
+  assert.match(workflow, /\nconcurrency:\n {2}group: deploy-webapp\n {2}cancel-in-progress: false\n/);
+  assert.doesNotMatch(workflow, /cancel-in-progress: true/);
+  const all = steps();
+  const names = all.map((s) => s.name);
+  const check = names.indexOf("Skip if not the head of main");
+  const deploy = names.indexOf("Deploy to production");
+  const live = names.indexOf("Check the live site");
+  assert.ok(check >= 0, "the workflow checks the head of main");
+  assert.ok(deploy > check && live > deploy, names.join(", "));
+  const head = all[check].text;
+  assert.match(head, /\n {8}id: head\n/);
+  assert.match(head, /git ls-remote origin refs\/heads\/main/);
+  assert.match(head, /"\$head" = "\$GITHUB_SHA"/);
+  assert.match(head, /current=false/);
+  assert.match(head, /::notice /);
+  for (const i of [deploy, live]) {
+    assert.match(all[i].text, /\n {8}if: steps\.head\.outputs\.current == 'true'\n/, names[i]);
+  }
+});
+
+// The head check's script, run with a stand-in git whose ls-remote prints the
+// given head of main (or fails), for each kind of run.
+function runHeadCheck({ event, ref, sha, head }) {
+  const script = steps()
+    .find((s) => s.name === "Skip if not the head of main")
+    .text.split("\n        run: |\n")[1]
+    .split("\n")
+    .map((line) => line.replace(/^ {10}/, ""))
+    .join("\n");
+  const dir = mkdtempSync(join(tmpdir(), "head-check-"));
+  try {
+    const git = join(dir, "git");
+    const out = head === null ? "exit 128" : `printf '%s\\trefs/heads/main\\n' ${head}`;
+    writeFileSync(git, `#!/bin/sh\n[ "$1 $2 $3" = "ls-remote origin refs/heads/main" ] || exit 2\n${out}\n`);
+    chmodSync(git, 0o755);
+    const output = join(dir, "output");
+    writeFileSync(output, "");
+    const run = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: {
+        PATH: `${dir}:${process.env.PATH}`,
+        GITHUB_EVENT_NAME: event,
+        GITHUB_REF: ref,
+        GITHUB_SHA: sha,
+        GITHUB_OUTPUT: output,
+      },
+    });
+    return { status: run.status, stdout: run.stdout, output: readFileSync(output, "utf8") };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("the head check deploys only main's current head, for pushes and manual runs", () => {
+  const a = "a".repeat(40);
+  const b = "b".repeat(40);
+  for (const event of ["push", "workflow_dispatch"]) {
+    const current = runHeadCheck({ event, ref: "refs/heads/main", sha: a, head: a });
+    assert.equal(current.status, 0, event);
+    assert.equal(current.output, "current=true\n", event);
+    const stale = runHeadCheck({ event, ref: "refs/heads/main", sha: a, head: b });
+    assert.equal(stale.status, 0, event);
+    assert.equal(stale.output, "current=false\n", event);
+    assert.match(stale.stdout, /^::notice /m, event);
+  }
+  const branch = runHeadCheck({ event: "workflow_dispatch", ref: "refs/heads/other", sha: a, head: a });
+  assert.equal(branch.output, "current=false\n");
+  const unreadable = runHeadCheck({ event: "push", ref: "refs/heads/main", sha: a, head: null });
+  assert.notEqual(unreadable.status, 0);
+  assert.doesNotMatch(unreadable.output, /current=true/);
 });
