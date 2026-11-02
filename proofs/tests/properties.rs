@@ -479,10 +479,17 @@ fn statement_trace(statement: Statement) -> SecurityEstimate {
 /// none can outgrow the proof field.
 #[test]
 fn proof_budget_holds_for_every_statement() {
-    assert_eq!((MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH), (2048, 3824));
-    // The salted coin reveal is the widest statement and sets the budget.
-    assert_eq!(statement_trace(Statement::SaltedCoinReveal).trace_width, MAX_TRACE_WIDTH);
+    assert_eq!((MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH), (2048, 3890));
+    // The version 2 coin reveal is the widest statement and sets the budget
+    // (spec 10, section 4.4): the version 1 one's 3,824 columns and 66
+    // carried columns for the switch, the rule, the override hash and the
+    // inverse.
+    assert_eq!(statement_trace(Statement::CoinRevealV2).trace_width, MAX_TRACE_WIDTH);
+    assert_eq!(statement_trace(Statement::CoinRevealV2).trace_width, 3824 + 66);
+    assert_eq!(statement_trace(Statement::CoinRevealV2).trace_height, MAX_TRACE_HEIGHT);
+    // The version 1 salted coin reveal stays 3,808 columns and 16 salt ones.
     assert_eq!(statement_trace(Statement::SaltedCoinReveal).trace_width, 3808 + SALT_BYTES);
+    assert_eq!(statement_trace(Statement::SaltedCoinReveal).trace_width, 3824);
     // The salted data statements: 3,786 columns and 16 salt columns.
     for statement in [Statement::SaltedDataReveal, Statement::SaltedHold] {
         assert_eq!(statement_trace(statement).trace_width, 3786 + SALT_BYTES, "{statement:?}");
@@ -490,7 +497,12 @@ fn proof_budget_holds_for_every_statement() {
     }
     assert_eq!(
         Statement::ALL,
-        [Statement::SaltedCoinReveal, Statement::SaltedDataReveal, Statement::SaltedHold]
+        [
+            Statement::SaltedCoinReveal,
+            Statement::SaltedDataReveal,
+            Statement::SaltedHold,
+            Statement::CoinRevealV2
+        ]
     );
     let config = shipped_configuration().expect("the shipped configuration builds");
     let reported: Vec<Statement> = config.statements.iter().map(|(s, _)| *s).collect();
@@ -518,10 +530,16 @@ fn proof_length_bound_fits_field() {
     assert_eq!(PROOF_FIELD_BYTES, 1_310_720);
     let bound = proof_length_bound(MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH);
     assert!(bound <= PROOF_FIELD_BYTES, "the bound {bound} is over {PROOF_FIELD_BYTES}");
-    // The figure spec 07, section 3 derives term by term for 3,808 columns,
-    // and 212 bytes for each of the salt's 16 carried columns.
-    assert_eq!(bound, 1_053_331 + 16 * 212);
-    assert_eq!(bound, 1_056_723);
+    // The version 1 coin reveal: the figure spec 07, section 3 derives term
+    // by term for 3,808 columns, and 212 bytes for each of the salt's 16
+    // carried columns.
+    let v1 = proof_length_bound(MAX_TRACE_HEIGHT, 3824);
+    assert_eq!(v1, 1_053_331 + 16 * 212);
+    assert_eq!(v1, 1_056_723);
+    // The version 2 coin reveal, the budget: 212 bytes more for each of its
+    // 66 extra carried columns (spec 10, section 4.4).
+    assert_eq!(bound, v1 + 66 * 212);
+    assert_eq!(bound, 1_070_715);
     // Any smaller trace has a smaller bound.
     for statement in Statement::ALL {
         let t = statement_trace(statement);

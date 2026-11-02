@@ -33,11 +33,11 @@
 //! The zero-knowledge randomness is 32 bytes the caller supplies; this crate
 //! never reads the operating system's random source.
 //!
-//! The proof-size budget of spec 07, section 3 lives here too: no statement's
-//! trace may be taller than [`MAX_TRACE_HEIGHT`] or wider than
-//! [`MAX_TRACE_WIDTH`], the coin reveal's, the salted one's included, and
-//! [`proof_length_bound`] shows
-//! that a proof of such a trace fits [`PROOF_FIELD_BYTES`].
+//! The proof-size budget of spec 07, section 3, as spec 10, section 4.4
+//! widens it, lives here too: no statement's trace may be taller than
+//! [`MAX_TRACE_HEIGHT`] or wider than [`MAX_TRACE_WIDTH`], the version 2 coin
+//! reveal's, and [`proof_length_bound`] shows that a proof of such a trace
+//! fits [`PROOF_FIELD_BYTES`].
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -131,9 +131,11 @@ pub const PROOF_FIELD_BYTES: usize = 1_310_720;
 /// The proof-size budget (spec 07, section 3): the most rows a statement's
 /// trace may have before zero-knowledge padding, the coin reveal's.
 pub const MAX_TRACE_HEIGHT: usize = 2048;
-/// The most columns a statement's trace may have, the salted coin reveal's:
-/// 3,808 without the salt and its 16 carried columns.
-pub const MAX_TRACE_WIDTH: usize = 3824;
+/// The most columns a statement's trace may have, the version 2 coin
+/// reveal's (spec 10, section 4.4): the 3,722 columns of the Keccak circuit,
+/// the bits and the direction, and 168 carried columns. The version 1 coin
+/// reveal is 66 columns narrower, 3,824.
+pub const MAX_TRACE_WIDTH: usize = 3890;
 
 /// The challenge field.
 pub(crate) type Challenge = BinomialExtensionField<BabyBear, EXTENSION_DEGREE>;
@@ -688,10 +690,19 @@ pub enum Statement {
     /// S3, the proof of holding of salted (version 2) data, type `0x02 0x02`:
     /// the salt is a private witness in 16 carried columns.
     SaltedHold,
+    /// S1 version 2, the coin reveal of the ordinary class (spec 10, section
+    /// 4): the salted coin reveal with the private override switch and a
+    /// private remainder rule, 47 permutations and 3,890 columns.
+    CoinRevealV2,
 }
 
 impl Statement {
-    pub const ALL: [Self; 3] = [Self::SaltedCoinReveal, Self::SaltedDataReveal, Self::SaltedHold];
+    pub const ALL: [Self; 4] = [
+        Self::SaltedCoinReveal,
+        Self::SaltedDataReveal,
+        Self::SaltedHold,
+        Self::CoinRevealV2,
+    ];
 
     /// The coin reveal, [`Self::SaltedCoinReveal`], under the name of the
     /// version 1 statement that is gone. Kept, hidden, only for the reveal
@@ -706,6 +717,7 @@ impl Statement {
             Self::SaltedCoinReveal => 0,
             Self::SaltedDataReveal => 1,
             Self::SaltedHold => 2,
+            Self::CoinRevealV2 => 3,
         }
     }
 
@@ -715,6 +727,7 @@ impl Statement {
             Self::SaltedCoinReveal => crate::reveal::schedule(),
             Self::SaltedDataReveal => crate::data::schedule(),
             Self::SaltedHold => crate::hold::schedule(),
+            Self::CoinRevealV2 => crate::reveal_v2::schedule(),
         }
     }
 
@@ -793,8 +806,9 @@ pub(crate) fn gate(statement: Statement) -> Result<SecurityEstimate, ProofError>
 }
 
 /// The proof-size budget: a statement whose trace is taller or wider than the
-/// coin reveal's could make a proof longer than [`PROOF_FIELD_BYTES`], so it
-/// is refused before anything is proved or verified.
+/// version 2 coin reveal's could make a proof longer than
+/// [`PROOF_FIELD_BYTES`], so it is refused before anything is proved or
+/// verified.
 fn within_budget(est: &SecurityEstimate) -> Result<(), ProofError> {
     if est.trace_height > MAX_TRACE_HEIGHT || est.trace_width > MAX_TRACE_WIDTH {
         return Err(ProofError::TraceOverBudget {
@@ -1015,6 +1029,22 @@ mod tests {
         assert_eq!(proof_length_bound(1000, 10), proof_length_bound(1024, 10));
     }
 
+    /// Spec 10, section 4.4: the budget is the version 2 coin reveal's trace,
+    /// and the bound of each coin reveal is the one the table gives.
+    #[test]
+    fn the_budget_is_the_version_2_coin_reveal() {
+        assert_eq!((MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH), (2048, 3890));
+        assert_eq!(proof_length_bound(2048, 3824), 1_056_723);
+        assert_eq!(proof_length_bound(2048, 3890), 1_070_715);
+        assert!(proof_length_bound(MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH) <= PROOF_FIELD_BYTES);
+        let est = gate(Statement::CoinRevealV2).expect("the gate takes the version 2 coin reveal");
+        assert_eq!((est.trace_height, est.trace_width), (MAX_TRACE_HEIGHT, MAX_TRACE_WIDTH));
+        assert!(est.conjectured_bits_half_grinding >= TARGET_CONJECTURED_BITS, "{est:?}");
+        // The switch adds no degree: the quotient is the version 1 one.
+        let v1 = gate(Statement::SaltedCoinReveal).expect("the gate takes the version 1 coin reveal");
+        assert_eq!(est.constraint_degree, v1.constraint_degree, "{est:?}");
+    }
+
     /// QS-12: the gate takes the shipped parameters and refuses each item of
     /// the rule of spec 09, section 4.1 broken on its own: too few queries, an
     /// estimate short only because grinding counts at half, a hash or digest
@@ -1229,7 +1259,7 @@ mod tests {
         use p3_fri::build_periodic_lde_table_two_adic;
 
         let library = Radix2DitParallel::<F>::default();
-        for statement in [Statement::SaltedCoinReveal, Statement::SaltedDataReveal] {
+        for statement in [Statement::SaltedCoinReveal, Statement::SaltedDataReveal, Statement::CoinRevealV2] {
             let air = statement.air();
             let columns = air.periodic_columns();
             let log_height = air.height().trailing_zeros() as usize;

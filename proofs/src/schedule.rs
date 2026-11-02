@@ -19,10 +19,16 @@
 //! | `Prev` | 32 bytes | the digest of the hash just before |
 //! | `Node` | 64 bytes | the digest just before, left or right by the direction bit; the other half is free |
 //! | `Amount` | a 32-byte amount word | 20 zero bytes, then the six carried limbs |
+//! | `Gated` | a run of carried columns times a carried switch | `switch * column`, byte by byte |
 //!
 //! `Prev` and `Node` must lie in the first block of their hash, and the hash
 //! they follow must be the one just before in the list, so the two
 //! permutations are adjacent in the trace.
+//!
+//! Besides a public destination, a hash's digest may be tied to 32 carried
+//! columns ([`CarriedOutput`]): always, or only when a carried switch is on.
+//! That carries a digest to a hash far away in the trace, into a block it
+//! cannot reach with `Prev`.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -43,13 +49,15 @@ pub(crate) enum Seg {
     Prev,
     Node,
     Amount { col: usize },
+    /// Carried columns `col..col + len`, each times the carried column `gate`.
+    Gated { col: usize, len: usize, gate: usize },
 }
 
 impl Seg {
     fn len(&self) -> usize {
         match self {
             Self::Const(bytes) => bytes.len(),
-            Self::Public { len, .. } | Self::Carried { len, .. } => *len,
+            Self::Public { len, .. } | Self::Carried { len, .. } | Self::Gated { len, .. } => *len,
             Self::Free(len) => *len,
             Self::Prev | Self::Amount { .. } => 32,
             Self::Node => 64,
@@ -57,12 +65,36 @@ impl Seg {
     }
 }
 
-/// One hash: its segments in order, and the public offset its digest must
-/// equal, if any.
+/// One hash: its segments in order, the public offset its digest must equal,
+/// if any, and the carried columns it must equal, if any.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HashSpec {
     pub segs: Vec<Seg>,
     pub output: Option<usize>,
+    pub carried_output: Option<CarriedOutput>,
+}
+
+/// A digest tied to 32 carried columns `col..col + 32`, digest byte `k` to
+/// column `col + k`: always, or, with a `gate`, only where that carried
+/// column is 1 (`gate * (digest - columns) = 0`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CarriedOutput {
+    pub col: usize,
+    pub gate: Option<usize>,
+}
+
+/// A one-bit carried switch and the check it turns on (spec 10, section 4.3,
+/// O1 and O5): the switch is boolean, and when it is 1 the carried bytes
+/// `nonzero..nonzero + nonzero_len` are not all zero, shown by the carried
+/// column `inverse` holding the inverse of their sum. Their sum is at most
+/// 255 times their count, far below the field modulus, so it is zero only
+/// when every byte is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Switch {
+    pub bit: usize,
+    pub nonzero: usize,
+    pub nonzero_len: usize,
+    pub inverse: usize,
 }
 
 /// Conservation of value on carried limbs and public amounts.
@@ -105,6 +137,8 @@ pub(crate) struct Schedule {
     pub public_consts: Vec<(usize, u8)>,
     /// The ordering test of an absence witness, S3 only.
     pub ordering: Option<Ordering>,
+    /// The override switch, S1 version 2 only.
+    pub switch: Option<Switch>,
 }
 
 /// The source of one byte of a block, after expansion.
@@ -113,6 +147,8 @@ pub(crate) enum Src {
     Const(u8),
     Public(usize),
     Carried(usize),
+    /// Carried column `col` times carried column `gate`.
+    Gated { col: usize, gate: usize },
     Free,
     /// Byte `k` of the previous digest.
     Prev(usize),
@@ -134,6 +170,8 @@ pub(crate) struct PermSpec {
     pub node_at: Option<usize>,
     /// Public offset of the digest, on the last permutation of a hash.
     pub output: Option<usize>,
+    /// Carried columns the digest equals, on the last permutation of a hash.
+    pub carried_output: Option<CarriedOutput>,
 }
 
 impl Schedule {
@@ -164,6 +202,10 @@ impl Schedule {
                     Seg::Const(bytes) => srcs.extend(bytes.iter().map(|&b| Src::Const(b))),
                     Seg::Public { offset, len } => srcs.extend((0..*len).map(|k| Src::Public(offset + k))),
                     Seg::Carried { col, len } => srcs.extend((0..*len).map(|k| Src::Carried(col + k))),
+                    Seg::Gated { col, len, gate } => srcs.extend((0..*len).map(|k| Src::Gated {
+                        col: col + k,
+                        gate: *gate,
+                    })),
                     Seg::Free(len) => srcs.extend((0..*len).map(|_| Src::Free)),
                     Seg::Prev => {
                         assert!(h > 0, "a Prev segment needs a hash before it");
@@ -214,6 +256,7 @@ impl Schedule {
                     prev_at: inside(prev_at, 32).map(|a| a - range.start),
                     node_at: inside(node_at, 64).map(|a| a - range.start),
                     output: if n + 1 == blocks { hash.output } else { None },
+                    carried_output: if n + 1 == blocks { hash.carried_output } else { None },
                 });
             }
         }
@@ -279,6 +322,10 @@ pub(crate) fn execute(schedule: &Schedule, a: &Assignment) -> Execution {
                 Seg::Carried { col, len } => {
                     msg.extend(a.carried[*col..col + len].iter().map(|&x| x as u8));
                 }
+                Seg::Gated { col, len, gate } => {
+                    let switch = a.carried[*gate];
+                    msg.extend(a.carried[*col..col + len].iter().map(|&x| switch.wrapping_mul(x) as u8));
+                }
                 Seg::Free(len) => msg.extend(take(*len)),
                 Seg::Prev => msg.extend_from_slice(&prev),
                 Seg::Node => {
@@ -329,6 +376,7 @@ pub(crate) struct HashBuilder {
     free: Vec<u8>,
     dir: bool,
     output: Option<usize>,
+    carried_output: Option<CarriedOutput>,
 }
 
 impl HashBuilder {
@@ -338,7 +386,21 @@ impl HashBuilder {
             free: Vec::new(),
             dir: false,
             output: None,
+            carried_output: None,
         }
+    }
+
+    /// Carried columns `col..col + len`, each times the carried switch `gate`.
+    pub(crate) fn gated(mut self, col: usize, len: usize, gate: usize) -> Self {
+        self.segs.push(Seg::Gated { col, len, gate });
+        self
+    }
+
+    /// The digest equals the carried columns `col..col + 32`; with a `gate`,
+    /// only where that carried switch is 1.
+    pub(crate) fn carried_output(mut self, col: usize, gate: Option<usize>) -> Self {
+        self.carried_output = Some(CarriedOutput { col, gate });
+        self
     }
 
     pub(crate) fn constant(mut self, bytes: &[u8]) -> Self {
@@ -419,6 +481,7 @@ impl ScheduleBuilder {
         self.hashes.push(HashSpec {
             segs: hash.segs,
             output: hash.output,
+            carried_output: hash.carried_output,
         });
         self.free.push(hash.free);
         self.dirs.push(hash.dir);
@@ -440,6 +503,7 @@ impl ScheduleBuilder {
                 conservation,
                 public_consts,
                 ordering: None,
+                switch: None,
             },
             self.free,
             self.dirs,

@@ -5,6 +5,11 @@
 //!
 //! - S1, the one-time reveal of a coin: [`prove_salted_coin_reveal`] and
 //!   [`verify_salted_coin_reveal`].
+//! - S1 version 2, the coin reveal of the ordinary class (spec 10, section
+//!   4): [`prove_coin_reveal_v2`] and [`verify_coin_reveal_v2`]. The input
+//!   rule is the empty rule or a rule opened with its override secret, under
+//!   a private switch; the remainder rule is private and free; neither rule
+//!   is a public value.
 //! - S2, the one-time reveal of data: [`prove_salted_data_reveal`] and
 //!   [`verify_salted_data_reveal`], which checks the fee against the reserve
 //!   `DATA_RESERVE` (spec 04, section 6) and then the proof.
@@ -13,8 +18,8 @@
 //!   spent-marker set, and the verifier's [`ChallengeBook`]. Holding of coins
 //!   is not settled and `COIN_V2` is refused.
 //!
-//! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`], with
-//! its header in `include/ghost_proofs.h`.
+//! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`] and
+//! [`verify_coin_reveal_v2`], with its header in `include/ghost_proofs.h`.
 //!
 //! The S3 prover is compiled only under the `unsettled-points-test` feature,
 //! for tests. The public [`verify_hold`] verifies whether or not the feature
@@ -59,6 +64,7 @@ mod data;
 mod hash;
 mod hold;
 mod reveal;
+mod reveal_v2;
 mod schedule;
 mod stark;
 
@@ -69,9 +75,9 @@ pub use amount::{
     conservation_carries, conservation_holds,
 };
 pub use binding::{
-    Binding, COIN_REVEAL_LAYOUT, ChainParams, DATA_REVEAL_LAYOUT, HOLD_LAYOUT, LayoutField, PROTOCOL_VERSION_1,
-    PURPOSE_HOLD, PURPOSE_REVEAL, PURPOSE_REVOKE, PURPOSE_SPEND, STATEMENT_COIN_REVEAL, STATEMENT_DATA_REVEAL,
-    STATEMENT_HOLD, STATEMENT_VERSION_1,
+    Binding, COIN_REVEAL_LAYOUT, COIN_REVEAL_V2_LAYOUT, ChainParams, DATA_REVEAL_LAYOUT, HOLD_LAYOUT, LayoutField,
+    PROTOCOL_VERSION_1, PROTOCOL_VERSION_2, PURPOSE_HOLD, PURPOSE_REVEAL, PURPOSE_REVOKE, PURPOSE_SPEND,
+    STATEMENT_COIN_REVEAL, STATEMENT_DATA_REVEAL, STATEMENT_HOLD, STATEMENT_VERSION_1, STATEMENT_VERSION_2,
 };
 pub use data::{
     DataPurpose, DataReveal, DataRevealRequest, SaltedDataOpening, prove_salted_data_reveal,
@@ -81,9 +87,11 @@ pub use data::{
 pub use data::prove_salted_data_reveal_claiming;
 pub use hash::{
     COIN_V2, DATA_RESERVE, DATA_RESERVE_WORD, DATA_V2, EMPTY_RULE, MARKER_SET_DEPTH, MARKER_SET_INDEX_BYTES,
-    RATE_BYTES, SALT_BYTES, TREE_DEPTH, Tree, coin_commitment_v2, coin_fingerprint_v2, coin_marker_v2,
+    POLICY_ADDRESS_BYTES, RATE_BYTES, SALT_BYTES, TAG_COIN_REVEAL_BINDING_V2, TAG_POLICY_OVERRIDE_V1,
+    TAG_REVEAL_POLICY_V2, TREE_DEPTH, Tree, coin_commitment_v2, coin_fingerprint_v2, coin_marker_v2,
     data_commitment_v2, data_fingerprint_v2, data_marker_v2, empty_leaf, keccak256, marker_set_leaf, marker_set_node,
-    marker_set_root, merkle_root, permutations, tag_bytes, tagged, tree_node,
+    marker_set_root, merkle_root, padded_policy_address, permutations, policy_override_hash, reveal_policy_rule,
+    tag_bytes, tagged, tree_node,
 };
 pub use hold::{AbsenceWitness, ChallengeBook, HoldContext, SaltedHoldOpening, hold_binding, verify_hold};
 #[cfg(feature = "unsettled-points-test")]
@@ -97,6 +105,12 @@ pub use reveal::{
 };
 #[doc(hidden)]
 pub use reveal::prove_salted_coin_reveal_claiming;
+pub use reveal_v2::{
+    CoinRevealV2, CoinRevealV2Request, InputRule, NOTE_V3_BYTES, PolicyRule, coin_reveal_v2_binding,
+    prove_coin_reveal_v2, verify_coin_reveal_v2,
+};
+#[doc(hidden)]
+pub use reveal_v2::{coin_reveal_v2_public_values, prove_coin_reveal_v2_claiming};
 
 /// There is no version 1 coin reveal statement any more: this verifies
 /// nothing and rejects every proof with [`ProofError::Rejected`]. Kept,
@@ -127,6 +141,14 @@ pub enum ProofError {
     ReusedBlinding,
     /// The commitment is not the leaf at the position under the root.
     NotInTree,
+    /// A version 2 coin reveal's `use_override` other than 0 or 1.
+    OverrideSwitchNotBit,
+    /// A version 2 coin reveal through the override of a rule whose
+    /// `override_hash` is zero: that rule has no override.
+    OverrideNotSet,
+    /// A version 2 coin reveal through the override with a secret that does
+    /// not hash to the rule's `override_hash`.
+    WrongOverrideSecret,
     /// The low leaf of a proof of holding's absence witness, folded with its
     /// siblings along its position, does not give the context's
     /// `marker_set_root`, or its position is not below 2^40.
@@ -190,6 +212,9 @@ impl fmt::Display for ProofError {
             Self::ConservationFails => f.write_str("v is not out + remainder + fee"),
             Self::ReusedBlinding => f.write_str("the remainder reuses the input's blinding"),
             Self::NotInTree => f.write_str("the commitment is not under the root"),
+            Self::OverrideSwitchNotBit => f.write_str("the override switch is neither 0 nor 1"),
+            Self::OverrideNotSet => f.write_str("the rule has no override"),
+            Self::WrongOverrideSecret => f.write_str("the override secret does not match the rule"),
             Self::NotInMarkerSet => f.write_str("the low leaf of the absence witness is not under the marker-set root"),
             Self::UnknownType => f.write_str("unknown type tag"),
             Self::UnknownPurpose => f.write_str("unknown purpose code"),
