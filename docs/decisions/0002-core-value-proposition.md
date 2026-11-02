@@ -20,7 +20,7 @@ Checked against the closest existing systems on 2026-10-17:
 - **Cashu and Fedimint:** bearer ecash run by a custodian.
 - **Aleo/Zexe records, Anoma:** private records for arbitrary data, owned by account keys, not quantum-safe.
 
-None of these combines: coins removed from supply and replaced by a bearer authorization to mint them again; bearer digits for coins and any other data; unlinkable partial reveals; no custodian or administrator; quantum-safe hash-based proofs; and an EVM alongside.
+None of these combines: coins burned so they no longer exist on the chain and replaced by a bearer authorization to mint them again; bearer digits for coins and any other data; unlinkable partial reveals; no custodian or administrator; quantum-safe hash-based proofs; and an EVM alongside.
 
 ## Directions examined and set aside
 

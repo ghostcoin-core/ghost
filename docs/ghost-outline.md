@@ -23,7 +23,7 @@ Fixed requirements of the core:
 Claims we make, and claims we never make:
 - The chain can prove a commitment **has not been revealed**. It can never prove nobody has **viewed** its contents: the author, and anyone the digits are shown to, can read them off the chain.
 - A Phantom Key controls authority and access. Data that has been shown can be copied; the key does not control the bytes after that.
-- On Vanish, coins are removed from supply and replaced by a bearer authorization to mint them again. Public accounting still tracks value entering and leaving the hidden set, so "removed from supply" is the claim, not "gone from existence".
+- On Vanish, GHOST is burned and no longer exists on the blockchain: if supply is 500 and 100 is vanished, 400 GHOST exist on the chain. What remains is a bearer authorization to mint new GHOST. The chain keeps a public count of mint authority still outstanding, so a summon can never mint more than was burned.
 
 **Current focus: build the core technology** (founder, 2026-10-17). That means the commit and reveal proof statements, the trees and tree states in headers, the native private transaction, Phantom Key derivation, and their integration into the proof-of-work node, proven by the coin lifecycle (first milestone) and the data lifecycle (second milestone). Nothing outside the core is built until both milestones pass: no mining pool, no web app beyond a minimal demo, no ecosystem tooling, and no new features. Anyone may build such things on top of Ghost themselves.
 

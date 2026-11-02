@@ -421,8 +421,9 @@ and the damage is bounded and visible as the hidden total running short (threat
 model, section 6 item 5).
 
 Supply reads as: public supply = issuance from block rewards - burned base fees -
-hidden total. "Removed from supply" is the claim for committed value, not
-"destroyed" (outline, "Core value proposition", claims).
+hidden total. Committed value is burned and no longer exists on the chain;
+the hidden total is the public count of mint authority still outstanding, and
+it is not a balance anyone holds (outline, "Core value proposition", claims).
 
 ## 10. Conformance requirements
 
