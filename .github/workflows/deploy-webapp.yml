@@ -54,7 +54,28 @@ jobs:
         run: |
           npm install --global --no-fund --no-audit "vercel@$VERCEL_CLI_VERSION"
           vercel --version
+      # Runs queue in the concurrency group, so an older commit's run can
+      # reach this point after a newer one has already deployed. Deploy only
+      # the commit that is main's head now; any other run skips the deploy and
+      # the live-site check and stays green. A run started by hand on main is
+      # current while main has not moved past it; a manual run that waited
+      # behind a newer merge skips like any other. The repository is public,
+      # so ls-remote needs no credentials; if it fails, the job fails instead
+      # of deploying.
+      - name: Skip if not the head of main
+        id: head
+        run: |
+          set -euo pipefail
+          head="$(git ls-remote origin refs/heads/main | cut -f1)"
+          [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo "could not read the head of main" >&2; exit 1; }
+          if [ "$GITHUB_REF" = "refs/heads/main" ] && [ "$head" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Deploy skipped::$GITHUB_SHA is not the head of main ($head); a newer run deploys that."
+          fi
       - name: Deploy to production
+        if: steps.head.outputs.current == 'true'
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: vercel deploy --prebuilt --prod --yes --token "$VERCEL_TOKEN"
@@ -63,6 +84,7 @@ jobs:
       # load. A missing file fails the job instead of leaving a dead page
       # behind a green run. curl retries while the CDN catches up.
       - name: Check the live site
+        if: steps.head.outputs.current == 'true'
         env:
           SITE: https://ghost-webapp-alpha.vercel.app
         run: |
