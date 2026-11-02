@@ -93,7 +93,7 @@ test("fetchTrees reads every coin tree from tree 0 up to the tip's, each against
     assert.deepEqual(trees.map((t) => [t.treeIndex, t.count]), [[0, 3], [1, 3], [2, 1]]);
     for (const [k, tree] of trees.entries()) {
       assert.equal(toHex(tree.leaves), toHex(leavesOf(node.leaves.slice(3 * k, 3 * k + 3))), `tree ${k}'s leaves`);
-      assert.equal(tree.records.length, tree.count * 188);
+      assert.equal(tree.records.length, tree.count * (32 + 380));
       assert.equal(tree.salts.length, tree.count);
     }
     // Each full tree's root is the final root in the header of the block
@@ -341,13 +341,18 @@ test("restore is asked with each tree's own index", async () => {
   });
 });
 
-// Two leaves per tree: leaf i is 32 bytes of i + 1, its note 156 bytes of
+// Two leaves per tree: leaf i is 32 bytes of i + 1, its note 380 bytes of
 // i + 50 and, beside a commit's leaf, its salt 16 bytes of i + 100; leaf 2
-// is a reveal's remainder, with no salt beside it. A record is what a
-// receipt's coin tree log appended.
+// is a reveal's remainder, with no salt beside it and its 156-byte note
+// zero-padded to 380 bytes. A record is what a receipt's coin tree log
+// appended.
 const REMAINDER = 2;
 const leafOf = (i) => new Uint8Array(32).fill(i + 1);
-const noteOf = (i) => new Uint8Array(156).fill(i + 50);
+const noteOf = (i) => {
+  const note = new Uint8Array(380);
+  note.fill(i + 50, 0, i === REMAINDER ? 156 : 380);
+  return note;
+};
 const saltOf = (i) => (i === REMAINDER ? null : new Uint8Array(16).fill(i + 100));
 const treeOfLeaves = (treeIndex, list) => ({
   treeIndex,

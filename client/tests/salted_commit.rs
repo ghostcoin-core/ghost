@@ -1,10 +1,11 @@
 //! Salted (version 2) commits: the fingerprint, commitment and marker under a
 //! salt, checked against the vectors of spec 01, section 14 and the proofs
 //! crate's own hashes; a fresh salt from the caller's generator for every new
-//! commit; and the 206-byte data of a salted commit.
+//! commit; and the 430-byte data of a salted commit, version `0x0003` with
+//! the 380-byte note of note version 3.
 
 use ghost_client::{
-    check_data_commit_value, salted_commit_data, Amount, Content, Fingerprint, NoteContents, PhantomKey,
+    check_data_commit_value, salted_commit_data, Amount, Capsule, Content, Fingerprint, NoteContents, PhantomKey,
     Rule, Salt, CommitError, COIN_V2, DATA_RESERVE_WEI, DATA_V2, NOTE_BYTES, SALTED_COMMIT_DATA_BYTES,
     SALTED_COMMIT_FORMAT_VERSION, SALT_BYTES,
 };
@@ -224,44 +225,81 @@ fn new_commit_draws_a_fresh_salt_each_time() {
         Some(CommitError::RuleNotSupported)
     );
     assert!(key.salted_data_commit(&content, ruled, &mut rng).is_err());
+
+    // Restore recomputes a coin of any rule its capsule opened: the empty
+    // rule gives the coin above, another rule another leaf under the same
+    // salt and the same marker.
+    let salt = Salt::from_bytes([1; SALT_BYTES]);
+    let plain = key.coin_commit_with_salt(0, value, Rule::EMPTY, salt).unwrap();
+    assert_eq!(key.coin_commit_with_rule(0, value, Rule::EMPTY, salt), plain);
+    let policy = key.coin_commit_with_rule(0, value, ruled, salt);
+    assert_ne!(policy.commitment, plain.commitment);
+    assert_ne!(policy.fingerprint, plain.fingerprint);
+    assert_eq!(policy.marker, plain.marker);
 }
 
 #[test]
-fn salted_commit_data_is_206_bytes() {
-    assert_eq!(SALTED_COMMIT_DATA_BYTES, 206);
-    assert_eq!(SALTED_COMMIT_FORMAT_VERSION, [0x00, 0x02]);
+fn salted_commit_data_is_430_bytes_of_version_3() {
+    assert_eq!(SALTED_COMMIT_DATA_BYTES, 430);
+    assert_eq!(SALTED_COMMIT_FORMAT_VERSION, [0x00, 0x03]);
+    assert_eq!(NOTE_BYTES, 380);
 
     let key = vector_key("coin-commit-salted");
     let mut rng = StdRng::seed_from_u64(206);
     let value = amount(1_000_000_000);
     let commit = key.salted_coin_commit(0, value, Rule::EMPTY, &mut rng).unwrap();
     let salt = commit.salt;
-    // The note of a new commit is note version 2 carrying the same salt.
+    // The note of a new commit is note version 3 carrying the same salt and
+    // the empty capsule.
     let contents = NoteContents::salted_coin(0, value, Rule::EMPTY, salt);
-    let note = ghost_client::encrypt_note(&key.note_key(), 1234, &commit.commitment, &contents, &mut rng);
+    let note =
+        ghost_client::encrypt_note(&key.note_key(), 1234, &commit.commitment, &contents, &Capsule::empty(), &mut rng);
 
     let data = salted_commit_data(&commit.fingerprint, &salt, &note);
-    assert_eq!(data.len(), 206);
-    assert_eq!(&data[..2], &[0x00, 0x02]);
+    assert_eq!(data.len(), 430);
+    assert_eq!(&data[..2], &[0x00, 0x03]);
     assert_eq!(&data[2..34], commit.fingerprint.as_bytes());
     assert_eq!(&data[34..50], salt.as_bytes());
     assert_eq!(&data[50..], &note[..]);
-    assert_eq!(50 + NOTE_BYTES, 206);
+    assert_eq!(50 + NOTE_BYTES, 430);
 
-    let read = ghost_client::decrypt_note(&key.note_key(), 1234, &commit.commitment, &note).unwrap();
+    let (read, capsule) =
+        ghost_client::decrypt_note_with_capsule(&key.note_key(), 1234, &commit.commitment, &note).unwrap();
     assert_eq!(read.salt, salt);
     assert_eq!(read.type_tag, COIN_V2);
+    assert!(capsule == Capsule::empty());
 
-    // A data commit has the same layout.
+    // A data commit has the same layout and the same note length.
     let content = Content::new(b"Ghost example data".to_vec());
     let data_commit = key.salted_data_commit(&content, Rule::EMPTY, &mut rng).unwrap();
     let data_salt = data_commit.salt;
-    let data_note = [0x5a; NOTE_BYTES];
+    let data_contents = NoteContents {
+        type_tag: DATA_V2,
+        number: 0,
+        amount: amount(0),
+        content_fingerprint: data_commit.content_fingerprint,
+        content_length: content.len() as u64,
+        rule: Rule::EMPTY,
+        salt: data_salt,
+    };
+    let data_note = ghost_client::encrypt_note(
+        &key.note_key(),
+        1234,
+        &data_commit.commitment,
+        &data_contents,
+        &Capsule::empty(),
+        &mut rng,
+    );
+    assert_eq!(data_note.len(), note.len());
     let data = salted_commit_data(&data_commit.fingerprint, &data_salt, &data_note);
+    assert_eq!(data.len(), 430);
     assert_eq!(&data[..2], &SALTED_COMMIT_FORMAT_VERSION);
     assert_eq!(&data[2..34], data_commit.fingerprint.as_bytes());
     assert_eq!(&data[34..50], data_salt.as_bytes());
     assert_eq!(&data[50..], &data_note[..]);
+    let read = ghost_client::decrypt_note(&key.note_key(), 1234, &data_commit.commitment, &data_note).unwrap();
+    assert_eq!(read.type_tag, DATA_V2);
+    assert_eq!(read.content_length, 18);
 
     // Every field lands in its place: change one input, only its bytes move.
     let other_f = Fingerprint::from_bytes([0xff; 32]);

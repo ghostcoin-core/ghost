@@ -9,8 +9,9 @@
 // rewards fund it; no elliptic-curve key or keystore is used. The Phantom
 // Keys are 24 words and the save checks are answered with words. The test
 // then reads the chain itself: the commit transaction's type and sender, its
-// 206 bytes of version 0x0002 with the coin's salt, its leaf and the salt the
-// node serves back beside it, the reveal's marker, the remainder's leaf, the
+// 430 bytes of version 0x0003 with the coin's salt and its 380-byte note, its
+// leaf, the salt and the note the node serves back beside it, the reveal's
+// marker, the remainder's leaf and its note zero-padded to 380 bytes, the
 // recipient's balance, and the claim.
 //
 // GHOST_NODE_GETH is the path to the geth binary (webapp/scripts/build-node.sh
@@ -267,11 +268,13 @@ if (!GETH) {
       const pageRoots = await rpc("ghost_getPageRoots", ["coin", "0x0", tip.hash]);
       assert.ok(Array.isArray(pageRoots), "the page roots are an array");
       const leaves = [];
+      const notes = [];
       const salts = [];
       for (let p = 0; p < pageRoots.length; p += 1) {
         const page = await rpc("ghost_getTreePage", ["coin", "0x0", toQuantity(p), tip.hash]);
         assert.equal(page.entries.length, Number(BigInt(page.filled)), `page ${p} holds \`filled\` entries`);
         leaves.push(...page.entries.map((entry) => String(entry.leaf).toLowerCase()));
+        notes.push(...page.entries.map((entry) => String(entry.note).toLowerCase()));
         salts.push(...page.entries.map((entry) => (entry.salt === undefined ? null : String(entry.salt).toLowerCase())));
       }
       const markers = [];
@@ -280,7 +283,7 @@ if (!GETH) {
         markers.push(...page.markers.map((m) => String(m).toLowerCase()));
         if (Number(BigInt(page.count)) < PAGE) break;
       }
-      return { leaves, salts, markers };
+      return { leaves, notes, salts, markers };
     }
 
     // Until `block` is 2 blocks deep, so that the settled tree holds the
@@ -369,9 +372,9 @@ if (!GETH) {
       assert.equal(flow.state.vanish.stage, "done");
 
       // On chain: a transaction to the commit entry address of 1 GHOST whose
-      // data is the 206 bytes of a salted commit (ghostpriv
-      // SaltedCommitDataSize), version 0x0002, F, the salt and the note, and
-      // a new leaf C = K(tag, COIN_V2, F, v).
+      // data is the 430 bytes of a salted commit (ghostpriv
+      // SaltedCommitDataSize), version 0x0003, F, the salt and the 380-byte
+      // note, and a new leaf C = K(tag, COIN_V2, F, v).
       const commitTx = await rpc("eth_getTransactionByHash", [sent.txHash]);
       assert.equal(commitTx.type, "0x52", "a quantum-safe account transaction");
       // The sender is derived from the key: the wallet's nonce moved.
@@ -379,10 +382,11 @@ if (!GETH) {
       assert.equal(String(commitTx.to).toLowerCase(), DEFAULT_COMMIT_ENTRY);
       assert.equal(BigInt(commitTx.value), GHOST);
       const data = fromHex(commitTx.input);
-      assert.equal(data.length, 206);
-      assert.equal(toHex(data.slice(0, 2)), "0x0002");
+      assert.equal(data.length, 430);
+      assert.equal(toHex(data.slice(0, 2)), "0x0003");
       const salt = data.slice(34, 34 + SALT_BYTES);
       const note = data.slice(34 + SALT_BYTES);
+      assert.equal(note.length, 380, "note version 3");
       const commitReceipt = await rpc("eth_getTransactionReceipt", [sent.txHash]);
       assert.equal(commitReceipt.status, "0x1");
       // Sent as soon as the wallet had it, Done in the block that holds it.
@@ -394,6 +398,7 @@ if (!GETH) {
       assert.ok(coinAt >= 0, "the commit's leaf is in the coin tree");
       // The node serves the coin's salt back beside its leaf.
       assert.equal(tree.salts[coinAt], toHex(salt), "the salt is read back with the leaf");
+      assert.equal(tree.notes[coinAt], toHex(note), "the 380-byte note is read back with the leaf");
       // The note on chain opens with the key, the salt read back beside it.
       const restored = ghost.restore({
         chainId: NETWORK_ID,
@@ -435,9 +440,10 @@ if (!GETH) {
       assert.deepEqual(sentSeen.reveal, { txHash: reveal.txHash, out: GHOST / 4n }, "shown Sent with the amount and hash");
       assert.equal(reveal.stage, "done");
       assert.equal(reveal.block, Number(BigInt(revealReceipt.blockNumber)), "Done at the reveal's own block");
-      // Log data: tree index (4), position (4), remainder (32), note (156),
-      // recipient (20), out (32).
+      // Log data: tree index (4), position (4), remainder (32), the version 1
+      // reveal's remainder note (156), recipient (20), out (32).
       const revealLog = fromHex(revealReceipt.logs[0].data);
+      assert.equal(revealLog.length, 248);
       const remainder = toHex(revealLog.slice(8, 40));
       assert.equal(toHex(revealLog.slice(196, 216)), recipient);
       assert.equal(BigInt(toHex(revealLog.slice(216, 248))), GHOST / 4n);
@@ -446,6 +452,12 @@ if (!GETH) {
       assert.ok(tree.markers.includes(marker), "the coin's marker is spent");
       assert.ok(tree.leaves.includes(remainder), "the remainder's leaf is in the coin tree");
       assert.equal(tree.salts[tree.leaves.indexOf(remainder)], null, "a remainder's salt is only in its note");
+      // The tree stores the remainder's 156-byte note zero-padded to 380.
+      assert.equal(
+        tree.notes[tree.leaves.indexOf(remainder)],
+        toHex(concat([revealLog.slice(40, 196), new Uint8Array(224)])),
+        "the remainder's note, zero-padded to 380 bytes",
+      );
       let s = flow.state.summon;
       assert.equal(s.status, "unclaimed", "still unclaimed after a partial reveal");
       assert.equal(s.current.number, 1n);

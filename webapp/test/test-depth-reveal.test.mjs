@@ -158,7 +158,13 @@ test("on a node of 14-level trees the test-depth module reveals a coin of a full
     assert.equal(watched.proved.length, 1);
     const { envelope, txHash } = watched.proved[0];
     assert.equal(toHex(txHash), reveal.hash, "the stand-in took this envelope");
+    // The version 1 reveal keeps its 156-byte remainder note; the tree stores
+    // it zero-padded to the 380 bytes of every note.
     assert.equal(envelope.length, PROOF_AT + PROOF_FIELD_BYTES + 156);
+    const stored = node.leaves.find((l) => toHex(l.commitment) === toHex(reveal.remainder));
+    assert.equal(stored.note.length, 380);
+    assert.equal(toHex(stored.note.slice(0, 156)), toHex(envelope.slice(PROOF_AT + PROOF_FIELD_BYTES)));
+    assert.ok(stored.note.slice(156).every((b) => b === 0), "zero-padded to 380 bytes");
     assert.equal(toHex(field(envelope, 43, 32)), toHex(headerRoot));
     const proof = field(envelope, PROOF_AT, PROOF_FIELD_BYTES);
     assert.equal(proof.length, 1_310_720);

@@ -21,13 +21,16 @@
 //!
 //! | Log | Topics | Data |
 //! |---|---|---|
-//! | salted commit | `K("ghost/commit-receipt/v1")` | tree index (4), position (4), leaf (32), `v` (32), note (156), salt (16) |
+//! | salted commit | `K("ghost/commit-receipt/v1")` | tree index (4), position (4), leaf (32), `v` (32), note (380), salt (16) |
 //! | reveal | `K("ghost/reveal-receipt/v1")`, marker | tree index (4), position (4), remainder (32), note (156), recipient (20), out (32) |
 //!
-//! A commit log is 244 bytes: the node appends the commitment's salt after
-//! the note. The 228-byte log of an unsalted version 1 commit is refused like
-//! any other wrong length. A reveal log carries no salt: a remainder's salt is
-//! only in its note.
+//! A commit log is 468 bytes: the 380-byte note of note version 3, then the
+//! commitment's salt the node appends. The 244-byte log of a commit with a
+//! 156-byte note, and the 228-byte log of an unsalted version 1 commit, are
+//! refused like any other wrong length. A reveal log carries the 156-byte
+//! remainder note the version 1 reveal binds, and no salt: a remainder's salt
+//! is only in its note. Its record holds that note zero-padded to 380 bytes,
+//! as the tree stores it.
 //!
 //! Integers are big-endian. Logs of any other address are not read here.
 //!
@@ -41,7 +44,7 @@ use core::fmt;
 
 use crate::commit::{Commitment, Marker, Salt, SALT_BYTES};
 use crate::hash::{k, keccak256};
-use crate::note::NOTE_BYTES;
+use crate::note::{pad_reveal_note, NOTE_BYTES, REVEAL_NOTE_BYTES};
 use crate::restore::TreeLeaf;
 use crate::seal::{header_fields, HeaderError};
 
@@ -57,10 +60,12 @@ pub const TAG_REVEAL_RECEIPT: &str = "ghost/reveal-receipt/v1";
 /// tree index, position, leaf, `v`, note, then the commitment's salt.
 pub const SALTED_COMMIT_LOG_BYTES: usize = 4 + 4 + 32 + 32 + NOTE_BYTES + SALT_BYTES;
 
-const _: () = assert!(SALTED_COMMIT_LOG_BYTES == 244);
-/// Data bytes of a reveal log: tree index, position, remainder, note,
-/// recipient, out.
-pub const REVEAL_LOG_BYTES: usize = 4 + 4 + 32 + NOTE_BYTES + 20 + 32;
+const _: () = assert!(SALTED_COMMIT_LOG_BYTES == 468);
+/// Data bytes of a reveal log: tree index, position, remainder, the 156-byte
+/// remainder note of the version 1 reveal, recipient, out.
+pub const REVEAL_LOG_BYTES: usize = 4 + 4 + 32 + REVEAL_NOTE_BYTES + 20 + 32;
+
+const _: () = assert!(REVEAL_LOG_BYTES == 248);
 /// The root of an empty trie: Keccak-256 of the RLP of the empty string.
 pub const EMPTY_ROOT: [u8; 32] = [
     0x56, 0xe8, 0x1f, 0x17, 0x1b, 0xcc, 0x55, 0xa6, 0xff, 0x83, 0x45, 0xe6, 0x92, 0xc0, 0xf8, 0x6e,
@@ -78,7 +83,8 @@ pub struct AppendedLeaf {
     pub position: u32,
     /// The leaf `C`.
     pub leaf: Commitment,
-    /// The note stored with it.
+    /// The note stored with it, 380 bytes: a reveal log's 156-byte note
+    /// zero-padded, as the tree stores it.
     pub note: [u8; NOTE_BYTES],
     /// The salt a commit log carries after the note; `None` for a reveal
     /// log.
@@ -401,7 +407,7 @@ fn coin_record(topics: &[[u8; 32]], data: &[u8]) -> Result<CoinRecord, &'static 
         }
         let mut data = Fields(data);
         let remainder = data.appended_head();
-        let note = data.take();
+        let note = pad_reveal_note(&data.take());
         let recipient = data.take();
         let out = data.take();
         Ok(CoinRecord::Reveal {
