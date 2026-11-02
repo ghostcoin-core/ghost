@@ -7,10 +7,12 @@
 // node's log layout (as the client library reads it, after ghost-node
 // docs/private-transactions.md, "Receipts"): a commit's log has the coin
 // tree account as address, the topic K("ghost/commit-receipt/v1") and the
-// tree index, position, leaf, value, note and the commit's salt; a reveal's
-// log has K("ghost/reveal-receipt/v1") and the marker as
-// topics and the tree index, position, remainder, note, recipient and amount
-// out. The header's receiptsRoot is computed from their consensus encoding
+// tree index, position, leaf, value, the 380-byte note and the commit's salt;
+// a reveal's log has K("ghost/reveal-receipt/v1") and the marker as topics
+// and the tree index, position, remainder, the 156-byte remainder note of the
+// version 1 reveal, recipient and amount out. Every note in the tree is 380
+// bytes: a reveal's remainder note is stored there zero-padded, as the node
+// stores it. The header's receiptsRoot is computed from their consensus encoding
 // (written here apart from the app's) by the module's ghost_receipts_root,
 // and eth_getBlockReceipts serves them by block hash, as geth does.
 //
@@ -39,7 +41,10 @@ import { createServer } from "node:http";
 import { concat, fromHex, quantity, toHex, word } from "../../src/bytes.mjs";
 
 const PAGE = 4096;
-const NOTE_BYTES = 156;
+// Every note in the tree (note version 3, spec 10, section 3.2), and the
+// remainder note a version 1 reveal carries.
+export const NOTE_BYTES = 380;
+export const REVEAL_NOTE_BYTES = 156;
 const GWEI = 1_000_000_000n;
 // Spec 05, vector empty-data-tree: no data commitment is ever made here.
 const EMPTY_DATA_ROOT = "0x3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03";
@@ -60,13 +65,22 @@ export const TEST_CHAIN_PARAMS = Object.freeze({
 });
 export const FAKE_CHAIN_ID = 7_777_001n;
 // The commit data the node takes (ghost-node core/ghostpriv/commit.go):
-// version 0x0002, F, the coin's salt and the note (206 bytes,
+// version 0x0003, F, the coin's salt and the 380-byte note (430 bytes,
 // SaltedCommitDataSize), and the node's words for anything else, which it
-// follows with the length (`: N bytes`).
+// follows with the length (`: N bytes`). A commit with a note of any other
+// length, the 206-byte commit of version 0x0002 among them, is refused.
 export const SALT_BYTES = 16;
-export const SALTED_COMMIT_VERSION = Uint8Array.of(0x00, 0x02);
+export const SALTED_COMMIT_VERSION = Uint8Array.of(0x00, 0x03);
 export const SALTED_COMMIT_DATA_BYTES = 2 + 32 + SALT_BYTES + NOTE_BYTES;
-export const COMMIT_DATA_ERROR = "commit data is not 206 bytes of version 2";
+export const COMMIT_DATA_ERROR = "commit data is not 430 bytes of version 3";
+// A reveal's 156-byte remainder note as the tree stores it: zero-padded to
+// the 380 bytes of every note.
+export function padRevealNote(note) {
+  if (note.length !== REVEAL_NOTE_BYTES) throw new Error(`a reveal's remainder note is ${REVEAL_NOTE_BYTES} bytes`);
+  const out = new Uint8Array(NOTE_BYTES);
+  out.set(note);
+  return out;
+}
 // The node's refusal of a reveal whose checks saw a new head every time
 // (ghost-node core/txpool/ghostpool): a transient bound on work per reveal.
 export const HEAD_MOVED_ERROR = "chain head kept moving while the reveal was checked";
@@ -358,7 +372,7 @@ export async function startFakeNode({
   };
   const rootOf = (list) => depthRoot(treesOf(list).at(-1).map((l) => l.commitment));
 
-  // A commit's log: tree index, position, leaf, value, note and salt (244
+  // A commit's log: tree index, position, leaf, value, note and salt (468
   // bytes). `index` is the leaf's index in `leaves`.
   const commitLog = (index, commitment, value, note, salt) => ({
     address: coinTreeAccount,
@@ -366,7 +380,8 @@ export async function startFakeNode({
     data: concat([u32(treeOf(index)), u32(positionOf(index)), commitment, word(value), note, salt]),
   });
   // A reveal's log: the marker as second topic; tree index, position,
-  // remainder, note, recipient and amount out (248 bytes).
+  // remainder, the 156-byte remainder note, recipient and amount out (248
+  // bytes).
   const revealLog = (index, reveal) => ({
     address: coinTreeAccount,
     topics: [REVEAL_TOPIC, reveal.marker],
@@ -497,6 +512,7 @@ export async function startFakeNode({
   // A commit in a new block, or, with `pooled`, in the pool until the next.
   // Its salt is stored with its leaf.
   function appendCommit(fingerprint, value, note, salt, { pooled = false, txHash = null } = {}) {
+    if (note.length !== NOTE_BYTES) throw new Error(`a note is ${NOTE_BYTES} bytes`);
     const commitment = ghost.coinCommitment(fingerprint, value, 2);
     const hash = txHash ?? toHex(sha256("fake commit", String((nonce += 1))));
     const entry = {
@@ -521,7 +537,7 @@ export async function startFakeNode({
   }
 
   // A commit by a stranger: a random fingerprint and salt and a note no key
-  // opens, of version 2 as the app's are.
+  // opens, 380 bytes as the app's are.
   // With `pooled`, it waits in the pool for the next block.
   function foreignCommit(value = 10n ** 18n, { pooled = false } = {}) {
     nonce += 1;
@@ -532,10 +548,10 @@ export async function startFakeNode({
 
   // A commit sent by the wallet to the commit entry address (spec 03,
   // section 6, in the layout of the node's ghostpriv commit data): version
-  // 0x0002 (2 bytes), F (32), the salt (16), the note (156). The amount is
+  // 0x0003 (2 bytes), F (32), the salt (16), the note (380). The amount is
   // the value. It refuses what the real node refuses, in its words where it
-  // has them, and anything it cannot read as a commit, among it the 190-byte
-  // commit of version 0x0001.
+  // has them, and anything it cannot read as a commit, among it the 206-byte
+  // commit of version 0x0002 and the 190-byte commit of version 0x0001.
   function walletCommit({ to, value, data }, txHash = null) {
     if (typeof to !== "string" || to.toLowerCase() !== String(commitEntry).toLowerCase()) {
       throw new Error("not the commit entry address");
@@ -597,6 +613,7 @@ export async function startFakeNode({
     if (raw[0] === 0x52) return accountTx(raw);
     const tip = blocks.length - 1;
     const reveal = ghost.decodeEnvelope({ chainId, domain: blocks[0].hash, envelope: fromHex(hex) });
+    if (reveal.note.length !== REVEAL_NOTE_BYTES) throw new Error(`a reveal's remainder note is ${REVEAL_NOTE_BYTES} bytes`);
     // The fee of the including block's window or of the window before it,
     // and the cover rule against the including block's base fee (a child's
     // base fee here equals its parent's).
@@ -645,7 +662,8 @@ export async function startFakeNode({
       marker: reveal.marker,
       apply: (n) => {
         // A remainder's salt, if any, is only in its note: none is served.
-        leaves.push({ commitment: reveal.remainder, note: reveal.note, salt: null, block: n });
+        // Its 156-byte note is stored zero-padded to 380 bytes.
+        leaves.push({ commitment: reveal.remainder, note: padRevealNote(reveal.note), salt: null, block: n });
         spent.push({ marker: reveal.marker, block: n });
         position = leaves.length - 1;
         blockReceipts.push({ hash, type: 0x50, logs: [revealLog(position, reveal)] });

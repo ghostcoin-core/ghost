@@ -161,7 +161,7 @@ test("a version 1 commit is refused", () => {
   // The module itself refuses version 1, whatever the JavaScript side passes.
   const input = concat([Uint8Array.of(1), u64(7n), word(amount), random(32), text(VECTOR_KEY)]);
   assert.throws(() => ghost.call("ghost_commit", input), /unknown commit version/);
-  assert.equal(ghost.constants().commitPayloadBytes, 206);
+  assert.equal(ghost.constants().commitPayloadBytes, 430);
   assert.equal(Object.keys(ghost.constants()).length, 2, "no version 1 payload length");
 
   const commit = ghost.commit({ chainId: 7n, amount, seed: random(32), key: VECTOR_KEY });
@@ -225,13 +225,14 @@ test("a coin without a salt is refused by the prover", () => {
   }
 });
 
-test("a commit is version 2 by default, its salt fresh each time", () => {
+test("a commit is of data version 3 by default, its note 380 bytes, its salt fresh each time", () => {
   const seed = () => crypto.getRandomValues(new Uint8Array(32));
   const a = ghost.commit({ chainId: 7n, amount: 10n ** 18n, seed: seed(), key: VECTOR_KEY });
   const b = ghost.commit({ chainId: 7n, amount: 10n ** 18n, seed: seed(), key: VECTOR_KEY });
   assert.equal(a.payload.length, ghost.constants().commitPayloadBytes);
-  assert.equal(a.payload.length, 206);
-  assert.equal(toHex(a.payload.slice(0, 2)), "0x0002");
+  assert.equal(a.payload.length, 430);
+  assert.equal(toHex(a.payload.slice(0, 2)), "0x0003");
+  assert.equal(a.payload.slice(50).length, 380);
   assert.notEqual(toHex(a.payload.slice(34, 50)), toHex(b.payload.slice(34, 50)), "a fresh salt");
   assert.notEqual(toHex(a.commitment), toHex(b.commitment), "so a fresh commitment from the same key");
   assert.notEqual(toHex(a.marker), toHex(b.marker));
@@ -242,7 +243,7 @@ test("restore finds the committed coin from its note and passes over others", ()
   const chainId = 7n;
   const commit = ghost.commit({ chainId, amount: 10n ** 18n, seed: random(32), key: VECTOR_KEY });
   const salt = commit.payload.slice(34, 50);
-  const stranger = new Uint8Array(188).fill(3);
+  const stranger = new Uint8Array(32 + 380).fill(3);
   const records = new Uint8Array([...stranger, ...commit.commitment, ...commit.payload.slice(50)]);
   const salts = [null, salt];
   let found = ghost.restore({ chainId, key: VECTOR_KEY, records, salts, markers: new Uint8Array(0) });
@@ -263,9 +264,9 @@ test("restore reports the coin tree it was asked about and refuses nothing it co
   const chainId = 7n;
   const commit = ghost.commit({ chainId, amount: 10n ** 18n, seed: random(32), key: VECTOR_KEY });
   const salt = commit.payload.slice(34, 50);
-  const stranger = new Uint8Array(188).fill(3);
+  const stranger = new Uint8Array(32 + 380).fill(3);
   const records = new Uint8Array([...stranger, ...commit.commitment, ...commit.payload.slice(50)]);
-  const ask = (more) => ghost.restore({ chainId, key: VECTOR_KEY, records, salts: [null, salt], markers: new Uint8Array(0), ...more });
+  const ask =(more) => ghost.restore({ chainId, key: VECTOR_KEY, records, salts: [null, salt], markers: new Uint8Array(0), ...more });
   // Not named, the tree is tree 0.
   let found = ask({});
   assert.equal(found.length, 1);
@@ -343,6 +344,7 @@ test("the tree-state rule takes a settled candidate at or above the leaf's block
 
 test("a malformed envelope is refused before any proof work", () => {
   const { envelopeBytes } = ghost.constants();
+  // The version 1 reveal keeps its 156-byte remainder note slot.
   assert.equal(envelopeBytes, 1 + 190 + 1_310_720 + 156);
   const domain = new Uint8Array(32);
   assert.throws(() => ghost.decodeEnvelope({ chainId: 7n, domain, envelope: new Uint8Array(100) }), /expected size/);
@@ -391,15 +393,17 @@ test("a receipt from eth_getBlockReceipts is encoded as its block's receiptsRoot
   assert.notEqual(toHex(one), toHex(ghost.receiptsRoot([receiptBytes(plain), receiptBytes(plain)])));
 });
 
-// Genesis and block 1, which holds a salted commit (position 0) and a reveal
-// (its remainder at position 1, spending `marker`), with their receipts in
-// the node's log layout.
+// Genesis and block 1, which holds a salted commit (position 0, its 380-byte
+// note in a 468-byte log) and a reveal (its remainder at position 1, spending
+// `marker`, its 156-byte note in a 248-byte log and zero-padded to 380 in the
+// tree), with their receipts in the node's log layout.
 function receiptsChain() {
   const leaf = new Uint8Array(32).fill(0xa1);
-  const note = new Uint8Array(156).fill(0xa2);
+  const note = new Uint8Array(380).fill(0xa2);
   const salt = new Uint8Array(16).fill(0xa3);
   const remainder = new Uint8Array(32).fill(0xb1);
   const remainderNote = new Uint8Array(156).fill(0xb2);
+  const paddedNote = concat([remainderNote, new Uint8Array(224)]);
   const marker = new Uint8Array(32).fill(0xc1);
   const receipt = (topics, data, gas) => ({
     type: "0x50",
@@ -432,11 +436,14 @@ function receiptsChain() {
     block,
     receipts,
     hashes: [ghost.keccak256(genesis), ghost.keccak256(block)],
-    records: concat([leaf, note, remainder, remainderNote]),
+    records: concat([leaf, note, remainder, paddedNote]),
     salts: [salt, null],
     marker,
   };
 }
+
+// One leaf with its note, as a page carries it.
+const RECORD = 32 + 380;
 
 test("block receipts check against their header's receiptsRoot, and the leaves, notes, salts and markers against them", () => {
   const c = receiptsChain();
@@ -455,12 +462,15 @@ test("block receipts check against their header's receiptsRoot, and the leaves, 
   const changed = (bytes, at) => Uint8Array.from(bytes, (b, i) => (i === at ? b ^ 1 : b));
   const refusals = [
     [{ records: changed(c.records, 100) }, /the note at position 0 differs from its receipt/],
-    [{ records: changed(c.records, 188 + 5) }, /the leaf at position 1 differs from its receipt/],
+    [{ records: changed(c.records, 400) }, /the note at position 0 differs from its receipt/],
+    [{ records: changed(c.records, RECORD + 5) }, /the leaf at position 1 differs from its receipt/],
+    // The reveal's note with a byte of its padding set is not its record.
+    [{ records: changed(c.records, 2 * RECORD - 1) }, /the note at position 1 differs from its receipt/],
     [{ salts: [null, null] }, /the salt at position 0 differs from its receipt/],
     [{ salts: [c.salts[0], c.salts[0]] }, /the salt at position 1 differs from its receipt/],
-    [{ records: c.records.slice(0, 188), salts: [c.salts[0]] }, /the leaf at position 1 is missing/],
-    [{ records: concat([c.records, c.records.slice(0, 188)]), salts: [...c.salts, null] }, /position 2 is not in the receipts/],
-    [{ records: concat([c.records.slice(188), c.records.slice(0, 188)]), salts: [null, c.salts[0]] }, /position 0 differs/],
+    [{ records: c.records.slice(0, RECORD), salts: [c.salts[0]] }, /the leaf at position 1 is missing/],
+    [{ records: concat([c.records, c.records.slice(0, RECORD)]), salts: [...c.salts, null] }, /position 2 is not in the receipts/],
+    [{ records: concat([c.records.slice(RECORD), c.records.slice(0, RECORD)]), salts: [null, c.salts[0]] }, /position 0 differs/],
     [{ markers: new Uint8Array(0) }, /spent marker 0 is missing/],
     [{ markers: concat([c.marker, c.marker]) }, /spent marker 1 is not in the receipts/],
     [{ markers: new Uint8Array(32) }, /spent marker 0 differs from its receipt/],
@@ -476,7 +486,7 @@ test("block receipts check against their header's receiptsRoot, and the leaves, 
   // From a pinned block 1 with one leaf before it: the run starts at
   // position 1, and the markers before the start are not the receipts' to
   // say, only the last ones are.
-  const pinned = { ...scan, hashes: [c.hashes[1]], fromGenesis: false, start: 1, records: c.records.slice(188), salts: [null], markerBlocks: 1 };
+  const pinned = { ...scan, hashes: [c.hashes[1]], fromGenesis: false, start: 1, records: c.records.slice(RECORD), salts: [null], markerBlocks: 1 };
   ghost.receiptsCheck({ ...pinned, markers: concat([new Uint8Array(32).fill(9), c.marker]) });
   assert.throws(() => ghost.receiptsCheck({ ...pinned, markers: new Uint8Array(0) }), /spent marker 0 is missing/);
   assert.throws(() => ghost.receiptsCheck({ ...pinned, markers: concat([c.marker, new Uint8Array(32)]) }), /differs from its receipt/);

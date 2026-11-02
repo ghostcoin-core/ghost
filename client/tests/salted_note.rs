@@ -1,14 +1,17 @@
 //! Note version 2, which carries the salt of a version 2 commitment (spec 01,
-//! section 9): it round-trips and returns its salt, its plaintext matches the
-//! salted note vectors of section 14, and a version 1 note, a type tag other
-//! than the version 2 ones and non-zero padding are refused.
+//! section 9), and is now only the 156-byte remainder note of a version 1
+//! coin reveal: it round-trips and returns its salt, its plaintext matches
+//! the salted note vectors of section 14, and a version 1 note, a version 3
+//! plaintext, a type tag other than the version 2 ones and non-zero padding
+//! are refused. Note version 3 is in `note_capsule.rs`.
 
 use ghost_client::note::{
-    chacha20poly1305_seal, note_associated_data, NOTE_PLAINTEXT_BYTES, NOTE_VERSION_2,
+    chacha20poly1305_seal, note_associated_data, NOTE_V2_PLAINTEXT_BYTES as NOTE_PLAINTEXT_BYTES,
+    NOTE_VERSION_3,
 };
 use ghost_client::{
-    decrypt_note, encrypt_note, Amount, Commitment, ContentFingerprint, NoteContents, NoteError,
-    PhantomKey, Rule, Salt, COIN_V2, DATA_V2, NOTE_BYTES, V_MAX,
+    decrypt_note_v2 as decrypt_note, encrypt_note_v2 as encrypt_note, Amount, Commitment, ContentFingerprint,
+    NoteContents, NoteError, PhantomKey, Rule, Salt, COIN_V2, DATA_V2, REVEAL_NOTE_BYTES as NOTE_BYTES, V_MAX,
 };
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -83,7 +86,8 @@ fn salted_note_round_trips_and_returns_its_salt() {
     let salt = spec_salt("note-coin-remainder-salted");
     let contents = NoteContents::salted_coin(1, amount(700_000_000_000_000_000), Rule::EMPTY, salt);
     assert_eq!(contents.type_tag, COIN_V2);
-    assert_eq!(contents.version(), NOTE_VERSION_2);
+    // What the tree's notes are written as; the reveal's note stays version 2.
+    assert_eq!(contents.version(), NOTE_VERSION_3);
 
     let note = encrypt_note(&key.note_key(), CHAIN_ID, &leaf, &contents, &mut rng);
     assert_eq!(note.len(), 156);
@@ -107,9 +111,9 @@ fn salted_note_round_trips_and_returns_its_salt() {
 
     // The largest amount fits the 12-byte amount of version 2.
     let top = NoteContents::salted_coin(9, amount(V_MAX), Rule::EMPTY, salt);
-    let plaintext = top.to_plaintext();
+    let plaintext = top.to_plaintext_v2();
     assert_eq!(plaintext[12..24], [0xff; 12]);
-    assert!(NoteContents::from_plaintext(&plaintext).unwrap() == top);
+    assert!(NoteContents::from_plaintext_v2(&plaintext).unwrap() == top);
 }
 
 #[test]
@@ -121,7 +125,7 @@ fn salted_note_plaintext_matches_spec_vectors() {
         Rule::EMPTY,
         spec_salt("note-coin-remainder-salted"),
     );
-    let plaintext = coin.to_plaintext();
+    let plaintext = coin.to_plaintext_v2();
     assert_eq!(plaintext.to_vec(), hex(&spec_field("note-coin-remainder-salted", "plaintext")));
     assert_eq!(plaintext[0], 0x02);
     assert_eq!(plaintext[96..112], spec_salt("note-coin-remainder-salted").as_bytes()[..]);
@@ -129,7 +133,7 @@ fn salted_note_plaintext_matches_spec_vectors() {
         note_associated_data(CHAIN_ID, &spec_leaf("note-coin-remainder-salted")).to_vec(),
         hex(&spec_field("note-coin-remainder-salted", "associated-data"))
     );
-    assert!(NoteContents::from_plaintext(&plaintext).unwrap() == coin);
+    assert!(NoteContents::from_plaintext_v2(&plaintext).unwrap() == coin);
 
     // [note-data-commit-salted]: a salted data commit.
     let data = NoteContents {
@@ -143,13 +147,13 @@ fn salted_note_plaintext_matches_spec_vectors() {
         rule: Rule::EMPTY,
         salt: spec_salt("note-data-commit-salted"),
     };
-    let plaintext = data.to_plaintext();
+    let plaintext = data.to_plaintext_v2();
     assert_eq!(plaintext.to_vec(), hex(&spec_field("note-data-commit-salted", "plaintext")));
     assert_eq!(
         note_associated_data(CHAIN_ID, &spec_leaf("note-data-commit-salted")).to_vec(),
         hex(&spec_field("note-data-commit-salted", "associated-data"))
     );
-    let read = NoteContents::from_plaintext(&plaintext).unwrap();
+    let read = NoteContents::from_plaintext_v2(&plaintext).unwrap();
     assert!(read == data);
     assert_eq!(read.salt, spec_salt("note-data-commit-salted"));
     assert_eq!(read.content_length, 18);
@@ -180,7 +184,7 @@ fn version_1_note_is_refused() {
     for tag in [COIN_V1, DATA_V1] {
         let plain = version_1_plaintext(tag);
         assert_eq!(plain[0], 0x01);
-        assert_eq!(NoteContents::from_plaintext(&plain).err(), Some(NoteError::UnknownVersion), "{tag:?}");
+        assert_eq!(NoteContents::from_plaintext_v2(&plain).err(), Some(NoteError::UnknownVersion), "{tag:?}");
         assert_eq!(read(&leaf, plain).err(), Some(NoteError::UnknownVersion), "{tag:?}");
     }
 
@@ -191,7 +195,7 @@ fn version_1_note_is_refused() {
     for tag in [COIN_V1, DATA_V1] {
         let mut bad = salted;
         bad[2..4].copy_from_slice(&tag);
-        assert_eq!(NoteContents::from_plaintext(&bad).err(), Some(NoteError::UnknownType), "{tag:?}");
+        assert_eq!(NoteContents::from_plaintext_v2(&bad).err(), Some(NoteError::UnknownType), "{tag:?}");
         assert_eq!(read(&leaf, bad).err(), Some(NoteError::UnknownType), "{tag:?}");
     }
 
@@ -237,13 +241,13 @@ fn only_version_2_and_its_type_tags_read() {
 }
 
 #[test]
-#[should_panic(expected = "not of note version")]
+#[should_panic(expected = "is not COIN_V2 or DATA_V2")]
 fn version_1_type_tag_is_not_written() {
     let contents = NoteContents {
         type_tag: COIN_V1,
         ..NoteContents::salted_coin(1, amount(1), Rule::EMPTY, Salt::from_bytes([1; 16]))
     };
-    let _ = contents.to_plaintext();
+    let _ = contents.to_plaintext_v2();
 }
 
 #[test]

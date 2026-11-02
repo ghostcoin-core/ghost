@@ -1,15 +1,19 @@
 //! Restore of salted (version 2) coins from the digits and the leaf records,
 //! and the reveal of a restored salted coin, checked with the proofs crate's
-//! own verifier. A leaf whose note is an unsalted version 1 note is
-//! discarded, never restored.
+//! own verifier. Every note in the tree is 380 bytes: a note version 3, or a
+//! reveal's 156-byte note version 2 remainder note zero-padded, as the node
+//! stores it. A leaf whose note is an unsalted version 1 note is discarded,
+//! never restored.
 
-use ghost_client::note::{chacha20poly1305_seal, note_associated_data, NOTE_PLAINTEXT_BYTES};
+use ghost_client::note::{
+    chacha20poly1305_seal, note_associated_data, NOTE_PLAINTEXT_BYTES, NOTE_V2_PLAINTEXT_BYTES,
+};
 use ghost_client::reveal::{ChainParams, CoinReveal, ProofError, TREE_DEPTH};
 use ghost_client::{
-    decrypt_note, encrypt_note, full_reveal, partial_reveal, restore_coins, Amount, Commitment,
-    Content, Current, DiscardReason, KeyFormat, Marker, NoteContents, NoteError, OwnedCoin,
-    PhantomKey, RevealError, RevealTerms, Rule, Salt, TreeLeaf, COIN_V2, DATA_V2, NOTE_BYTES,
-    SALT_BYTES,
+    decrypt_note, decrypt_note_v2, encrypt_note, encrypt_note_v2, full_reveal, pad_reveal_note, partial_reveal,
+    restore_coins, Amount, Capsule, Commitment, Content, Current, DiscardReason, KeyFormat, Marker, NoteContents,
+    NoteError, OwnedCoin, PhantomKey, RevealError, RevealTerms, Rule, Salt, TreeLeaf, COIN_V2, DATA_V2, NOTE_BYTES,
+    REVEAL_NOTE_BYTES, SALT_BYTES,
 };
 use ghost_proofs::{empty_leaf, tree_node, verify_coin_reveal, verify_salted_coin_reveal, Tree, PROTOCOL_VERSION_1};
 use rand::rngs::StdRng;
@@ -89,24 +93,28 @@ impl Chain {
         (self.leaves.len() - 1) as u32
     }
 
-    /// A new salted commit of `key`'s number 0: its note is note version 2
-    /// and the record carries the salt beside the leaf.
+    /// A new salted commit of `key`'s number 0: its note is note version 3
+    /// with the empty capsule, and the record carries the salt beside the
+    /// leaf.
     fn salted_commit(&mut self, key: &PhantomKey, wei: u128, rng: &mut StdRng) -> (u32, Salt) {
         let commit = key.salted_coin_commit(0, amount(wei), Rule::EMPTY, rng).unwrap();
         let salt = commit.salt;
         let contents = NoteContents::salted_coin(0, amount(wei), Rule::EMPTY, salt);
-        let note = encrypt_note(&key.note_key(), CHAIN_ID, &commit.commitment, &contents, rng);
+        let note = encrypt_note(&key.note_key(), CHAIN_ID, &commit.commitment, &contents, &Capsule::empty(), rng);
+        assert_eq!(note.len(), 380);
         let position = self.push(TreeLeaf { commitment: commit.commitment, note, salt: Some(salt) });
         (position, salt)
     }
 
-    /// Includes a reveal: its marker is spent, its remainder appended with
-    /// no salt beside it (a remainder's salt is only in its note).
+    /// Includes a reveal as the node does: its marker is spent, and its
+    /// remainder is appended with its 156-byte note zero-padded to 380 bytes
+    /// and no salt beside it (a remainder's salt is only in its note).
     fn include(&mut self, reveal: &CoinReveal) -> u32 {
         self.spent.push(Marker::from_bytes(reveal.marker));
+        assert_eq!(reveal.remainder_note.len(), REVEAL_NOTE_BYTES);
         self.push(TreeLeaf {
             commitment: Commitment::from_bytes(reveal.remainder),
-            note: reveal.remainder_note,
+            note: pad_reveal_note(&reveal.remainder_note),
             salt: None,
         })
     }
@@ -162,7 +170,7 @@ fn restored_salted_coin_reveals_with_its_salt() {
     assert_eq!(built.remainder.commitment, expected.commitment);
     assert_eq!(built.remainder.marker, expected.marker);
     assert_eq!(&built.reveal.remainder, expected.commitment.as_bytes());
-    let note = decrypt_note(&key().note_key(), CHAIN_ID, &expected.commitment, &built.reveal.remainder_note).unwrap();
+    let note = decrypt_note_v2(&key().note_key(), CHAIN_ID, &expected.commitment, &built.reveal.remainder_note).unwrap();
     assert_eq!(note.type_tag, COIN_V2);
     assert_eq!(note.salt, remainder_salt);
     assert_eq!((note.number, note.amount.wei()), (1, left));
@@ -176,6 +184,16 @@ fn restored_salted_coin_reveals_with_its_salt() {
     };
     assert_eq!((current.number, current.amount.wei(), current.position), (1, left, remainder_position));
     assert_eq!(current.salt, remainder_salt);
+    assert!(current.capsule == Capsule::empty());
+
+    // The padded remainder note with a non-zero byte in its padding is no
+    // note of the key's: it is passed over, not read.
+    let mut dirty = chain.leaves.clone();
+    dirty[remainder_position as usize].note[NOTE_BYTES - 1] = 1;
+    let passed = restore_coins(&key(), CHAIN_ID, 0, &dirty, &chain.spent).unwrap();
+    assert_eq!(passed.found.len(), 1);
+    assert!(passed.discarded.is_empty());
+    assert!(matches!(passed.current, Current::None));
 
     // And the restored remainder reveals in turn, with its salt.
     let (root, path) = root_and_path(&chain.leaves, remainder_position);
@@ -194,9 +212,19 @@ fn leaf_without_a_salt_beside_it_restores_from_its_note() {
     let salt = Salt::from_bytes([9; SALT_BYTES]);
     let commit = key().coin_commit_with_salt(1, amount(COMMITTED), Rule::EMPTY, salt).unwrap();
     let contents = NoteContents::salted_coin(1, amount(COMMITTED), Rule::EMPTY, salt);
-    let note = encrypt_note(&key().note_key(), CHAIN_ID, &commit.commitment, &contents, &mut rng);
+    let note = encrypt_note(&key().note_key(), CHAIN_ID, &commit.commitment, &contents, &Capsule::empty(), &mut rng);
     let mut chain = Chain::new();
     let position = chain.push(TreeLeaf { commitment: commit.commitment, note, salt: None });
+
+    // The same remainder as a version 1 reveal writes it, a 156-byte note
+    // version 2 zero-padded to 380 bytes, restores the same coin.
+    let short = encrypt_note_v2(&key().note_key(), CHAIN_ID, &commit.commitment, &contents, &mut rng);
+    let padded = vec![TreeLeaf { commitment: commit.commitment, note: pad_reveal_note(&short), salt: None }];
+    let from_padded = restore_coins(&key(), CHAIN_ID, 0, &padded, &[]).unwrap();
+    assert!(from_padded.discarded.is_empty());
+    assert_eq!(from_padded.found.len(), 1);
+    assert_eq!((from_padded.found[0].number, from_padded.found[0].salt), (1, salt));
+    assert_eq!(from_padded.found[0].commitment, commit.commitment);
 
     let restored = restore_coins(&key(), CHAIN_ID, 0, &chain.leaves, &chain.spent).unwrap();
     assert!(restored.discarded.is_empty());
@@ -219,28 +247,37 @@ fn leaf_without_a_salt_beside_it_restores_from_its_note() {
 /// A version 1 coin note's plaintext, laid out as version 1 wrote it:
 /// `0x01 || 0x01 || 0x0101 || i (8) || v (32) || cf (32) || content length (8)
 /// || rule (32) || 12 zero bytes`.
-fn version_1_plaintext(number: u64, wei: u128) -> [u8; NOTE_PLAINTEXT_BYTES] {
-    let mut plaintext = [0u8; NOTE_PLAINTEXT_BYTES];
+fn version_1_plaintext(number: u64, wei: u128) -> [u8; NOTE_V2_PLAINTEXT_BYTES] {
+    let mut plaintext = [0u8; NOTE_V2_PLAINTEXT_BYTES];
     plaintext[..4].copy_from_slice(&[0x01, 0x01, 0x01, 0x01]);
     plaintext[4..12].copy_from_slice(&number.to_be_bytes());
     plaintext[28..44].copy_from_slice(&wei.to_be_bytes());
     plaintext
 }
 
-/// `plaintext` sealed under `key`'s note key for `leaf`, as a note on the
-/// chain.
-fn sealed(key: &PhantomKey, leaf: &Commitment, plaintext: [u8; NOTE_PLAINTEXT_BYTES]) -> [u8; NOTE_BYTES] {
-    let mut note = [0u8; NOTE_BYTES];
+/// `plaintext` sealed under `key`'s note key for `leaf` into a note of
+/// `N` bytes: nonce, ciphertext, tag.
+fn seal_as<const N: usize>(key: &PhantomKey, leaf: &Commitment, plaintext: &[u8]) -> [u8; N] {
+    assert_eq!(N, 12 + plaintext.len() + 16);
+    let mut note = [0u8; N];
     note[..12].copy_from_slice(&[3; 12]);
-    note[12..140].copy_from_slice(&plaintext);
+    note[12..N - 16].copy_from_slice(plaintext);
     let tag = chacha20poly1305_seal(
         key.note_key().as_bytes(),
         &[3; 12],
         &note_associated_data(CHAIN_ID, leaf),
-        &mut note[12..140],
+        &mut note[12..N - 16],
     );
-    note[140..].copy_from_slice(&tag);
+    note[N - 16..].copy_from_slice(&tag);
     note
+}
+
+/// `plaintext` (the 128 bytes of a version 1 or 2 layout, then zeros)
+/// sealed under `key`'s note key for `leaf` as a 380-byte note on the chain.
+fn sealed(key: &PhantomKey, leaf: &Commitment, plaintext: [u8; NOTE_V2_PLAINTEXT_BYTES]) -> [u8; NOTE_BYTES] {
+    let mut whole = [0u8; NOTE_PLAINTEXT_BYTES];
+    whole[..NOTE_V2_PLAINTEXT_BYTES].copy_from_slice(&plaintext);
+    seal_as::<NOTE_BYTES>(key, leaf, &whole)
 }
 
 #[test]
@@ -250,6 +287,15 @@ fn version_1_note_is_discarded_on_restore() {
     let note = sealed(&key(), &leaf, version_1_plaintext(0, COMMITTED));
     // The note authenticates under the key: it is the key's, not another's.
     assert_eq!(decrypt_note(&key().note_key(), CHAIN_ID, &leaf, &note).err(), Some(NoteError::UnknownVersion));
+
+    // A version 1 note in the 156-byte slot, zero-padded as a reveal's note
+    // is, is discarded the same way.
+    let short: [u8; REVEAL_NOTE_BYTES] = seal_as(&key(), &leaf, &version_1_plaintext(0, COMMITTED));
+    let padded = vec![TreeLeaf { commitment: leaf, note: pad_reveal_note(&short), salt: None }];
+    let restored = restore_coins(&key(), CHAIN_ID, 0, &padded, &[]).unwrap();
+    assert!(restored.found.is_empty());
+    assert_eq!(restored.discarded.len(), 1);
+    assert_eq!(restored.discarded[0].reason, DiscardReason::Malformed(NoteError::UnknownVersion));
 
     for beside in [None, Some(Salt::from_bytes([9; SALT_BYTES]))] {
         let mut chain = Chain::new();
@@ -310,7 +356,7 @@ fn a_salt_beside_the_leaf_that_disagrees_is_discarded() {
     // A note whose salt does not open the leaf is discarded.
     let leaf = chain.leaves[position as usize].commitment;
     let wrong = NoteContents::salted_coin(0, amount(COMMITTED), Rule::EMPTY, Salt::from_bytes(other));
-    let note = encrypt_note(&key().note_key(), CHAIN_ID, &leaf, &wrong, &mut rng);
+    let note = encrypt_note(&key().note_key(), CHAIN_ID, &leaf, &wrong, &Capsule::empty(), &mut rng);
     let forged = vec![TreeLeaf { commitment: leaf, note, salt: None }];
     let restored = restore_coins(&key(), CHAIN_ID, 0, &forged, &[]).unwrap();
     assert!(restored.found.is_empty());
@@ -328,7 +374,7 @@ fn a_salt_beside_the_leaf_that_disagrees_is_discarded() {
         rule: Rule::EMPTY,
         salt: data.salt,
     };
-    let note = encrypt_note(&key().note_key(), CHAIN_ID, &data.commitment, &contents, &mut rng);
+    let note = encrypt_note(&key().note_key(), CHAIN_ID, &data.commitment, &contents, &Capsule::empty(), &mut rng);
     let leaves = vec![TreeLeaf { commitment: data.commitment, note, salt: Some(data.salt) }];
     let restored = restore_coins(&key(), CHAIN_ID, 0, &leaves, &[]).unwrap();
     assert!(restored.found.is_empty());
