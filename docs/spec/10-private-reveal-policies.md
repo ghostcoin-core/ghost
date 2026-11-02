@@ -439,8 +439,11 @@ order:
    keccak256(initcode))`. The address does not depend on the sender or on a
    nonce, so the same code and salt give the same address.
 2. Fail if `addr` is a reserved address (section 6.5), or if an account exists
-   at `addr` with a non-zero nonce, any code, any storage or a non-zero
-   balance. The last test stops a balance sent in advance to the address.
+   at `addr` with a non-zero nonce, any code or any storage. If the account has
+   only a balance (sent in advance by anyone), the factory burns it: it is set
+   to zero and credited to nobody, and the burn counts with the burned base
+   fees. A 1-wei transfer therefore cannot block a deployment, and the policy
+   starts with a zero balance.
 3. Write the registry entry `REG[addr] = {frozen = 1, height = current block
    number, codehash = 0}` in the native account `POLICY_REGISTRY`
    (`0x67686f7374000000000000000000000000000009`). The flag is set before
@@ -534,7 +537,8 @@ every place a balance can arrive:
 - the `dest` of `pay` (section 7.2);
 - the block header's `coinbase` (a block whose `coinbase` is a registered
   policy is invalid; tips are credited there);
-- creation at an address that already has a balance (section 6.1, step 2).
+- a balance that exists at the address before creation (it is burned, section
+  6.1, step 2).
 
 So `BALANCE` of a policy is always zero and `CALLVALUE` in its frame is always
 zero. The registry is read from the state, so a reorganisation that removes a
