@@ -31,7 +31,7 @@ mod exports;
 
 /// The Plonky3 revision `ghost-proofs` pins (decision 0003). A test checks it
 /// against `proofs/Cargo.toml`.
-pub const PLONKY3_REVISION: &str = "f98331687e47106a64ab82a77e2e1d0d66c9161b";
+pub const PLONKY3_REVISION: &str = "0d803737b681774186cd283b1fd2d8e493655c82";
 /// Compiler version and build flags of this build.
 pub const RUSTC_VERSION: &str = env!("GHOST_REVEAL_RUSTC_VERSION");
 pub const BUILD_FLAGS: &str = env!("GHOST_REVEAL_BUILD_FLAGS");

@@ -4,14 +4,16 @@ Status: settled from the browser benchmark results, 2026-10-17.
 
 ## Decision
 
-Ghost's proofs are made with Plonky3, pinned to revision `f98331687e47`
-(`f98331687e47106a64ab82a77e2e1d0d66c9161b`, the revision in
-`benchmarks/Cargo.toml` and in every result record). The proof library and the
-hash are one decision:
+Ghost's proofs are made with Plonky3, pinned to revision `0d803737b681`
+(`0d803737b681774186cd283b1fd2d8e493655c82`, the one revision every
+`Cargo.toml` in the repository names; amended 2026-11-03, see "Revision").
+The benchmark records of this decision were made at the earlier revision
+`f98331687e47` (`f98331687e47106a64ab82a77e2e1d0d66c9161b`), which every
+result record names. The proof library and the hash are one decision:
 
 | Item | Settled |
 |---|---|
-| Library | Plonky3, revision `f98331687e47`, a hash-based STARK with no trusted setup |
+| Library | Plonky3, revision `0d803737b681`, a hash-based STARK with no trusted setup |
 | Field | BabyBear, with a degree-5 extension field for challenges (154 bits) |
 | Polynomial commitment | FRI, in its hiding form, with a hiding Merkle commitment |
 | Hash inside proofs and in the trees | Keccak-256 |
@@ -171,6 +173,27 @@ unchanged by this amendment.
 The same amendment settles the hash: Keccak-256 is the provisional baseline,
 not locked, and there is no automatic fallback to Poseidon2. Switching the
 hash is a founder decision informed by the evidence of the scale work.
+
+## Revision
+
+**Amended 2026-11-03: every Plonky3 crate moves to `0d803737b681`.** The
+recursion layers of the scale design check child proofs in their own
+constraints, which needs a lookup or permutation argument; `p3-uni-stark`
+has none. The new revision is upstream main of 2026-10-26. Its `p3-lookup`
+(LogUp) and `p3-batch-stark` crates provide the argument, and
+`proofs/src/lookup_check.rs` proves and verifies a lookup with them in the
+configuration that ships. Why this revision, and not the separate
+Plonky3-recursion crates, is in the
+[stage 2 design](../scale/stage2-design.md), "Proof library for the layers".
+
+Ghost's own code did not change with it. The configuration, the security
+gate and every statement are the same, every existing test of `proofs/`, `client/`
+and `benchmarks/` passes unchanged, and the web app builds. Proofs made at
+either revision verify at the other: a data reveal proven at each verified at
+the other on 2026-11-03, so a node pinned to the earlier revision still
+accepts the web app's proofs. No recorded proof fixture exists, so none was
+regenerated. The benchmark records and the measured numbers on this page keep
+the revision they were measured at.
 
 ## Cost on the chain
 

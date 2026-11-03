@@ -83,6 +83,8 @@ mod binding;
 mod data;
 mod hash;
 mod hold;
+#[cfg(test)]
+mod lookup_check;
 mod native;
 mod policy_reveal;
 mod reveal;
