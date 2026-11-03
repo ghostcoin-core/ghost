@@ -126,8 +126,18 @@ fn lookup_air_refuses_a_value_outside_the_table() {
     let bad = trace(&values);
     let outcome = std::panic::catch_unwind(|| prove_and_verify(&bad));
     if cfg!(debug_assertions) {
-        // The library's own lookup check panics while proving.
-        assert!(outcome.is_err(), "the prover's lookup check did not fire: {outcome:?}");
+        // The library's own lookup check panics while proving, and it must be
+        // that check, not a failure anywhere else.
+        let payload = match outcome {
+            Err(payload) => payload,
+            Ok(result) => panic!("the prover's lookup check did not fire: {result:?}"),
+        };
+        let message = match (payload.downcast_ref::<String>(), payload.downcast_ref::<&str>()) {
+            (Some(text), _) => text.as_str(),
+            (None, Some(text)) => text,
+            (None, None) => "",
+        };
+        assert!(message.contains("Lookup mismatch"), "unexpected panic: {message}");
     } else {
         // The prover commits an unbalanced running sum and the verifier
         // refuses the proof.
