@@ -36,7 +36,7 @@ pub use witness::Witness;
 /// Library and pinned revision, recorded in every result.
 pub const LIBRARY: &str = "Plonky3";
 pub const PLONKY3_REPOSITORY: &str = "https://github.com/Plonky3/Plonky3";
-pub const PLONKY3_REVISION: &str = "f98331687e47106a64ab82a77e2e1d0d66c9161b";
+pub const PLONKY3_REVISION: &str = "0d803737b681774186cd283b1fd2d8e493655c82";
 
 /// Compiler version and build flags of this build.
 pub const RUSTC_VERSION: &str = env!("GHOST_BENCH_RUSTC_VERSION");
