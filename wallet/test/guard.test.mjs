@@ -13,7 +13,7 @@ import { test } from "node:test";
 
 import { concat, equalBytes, fromHex, toHex, toQuantity, word } from "../../webapp/src/bytes.mjs";
 import { NOTE_BYTES } from "../../webapp/src/wasm.mjs";
-import { WARN_COST_UNKNOWN, WARN_HANDED_OVER, WARN_SLOT_TOO_SMALL, createWallet, vaultStore } from "../src/wallet.mjs";
+import { TRUSTED_GUARD, WARN_COST_UNKNOWN, WARN_HANDED_OVER, WARN_SLOT_TOO_SMALL, createWallet, vaultStore } from "../src/wallet.mjs";
 import { PASSWORD, fakeIndexedDB, loadTestGhost, scriptedUi, spyGhost, spySubtle, testRandom, until } from "./fakes.mjs";
 
 const APP = "https://app.example";
@@ -23,7 +23,15 @@ const CHAIN_ID = 7777001n;
 const GENESIS = `0x${"ab".repeat(32)}`;
 const COMMIT_ENTRY = "0x67686f7374000000000000000000000000000005";
 const POLICY = { address: new Uint8Array(20).fill(0x47), codehash: new Uint8Array(32).fill(0x5a) };
-const GUARD = { guardAddress: toHex(POLICY.address), guardCodeHash: toHex(POLICY.codehash) };
+// What the wallets of these tests trust on the test network: the commit
+// entry and the test Guard policy. An app names neither.
+const TRUST = {
+  commitEntries: { 7777001: COMMIT_ENTRY },
+  policies: { 7777001: { address: toHex(POLICY.address), codehash: toHex(POLICY.codehash) } },
+};
+// A policy an app might substitute: another frozen policy's address and code hash.
+const APP_POLICY = { address: new Uint8Array(20).fill(0x66), codehash: new Uint8Array(32).fill(0x6c) };
+const ATTACKER = `0x${"66".repeat(20)}`;
 const STOP_ROOT = `0x${"a5".repeat(32)}`;
 const OTHER_STOP_ROOT = new Uint8Array(32).fill(0xb5);
 const COMMITTED = 1_000_000_000_000n;
@@ -43,7 +51,6 @@ const COMMIT_PARAMS = {
   gasLimit: "0x30d40",
   to: COMMIT_ENTRY,
   value: toQuantity(COMMITTED),
-  ...GUARD,
   filledLeaves: "0x64",
   leavesPerBlock: "0x40",
   baseFee: toQuantity(BASE_FEE),
@@ -56,7 +63,7 @@ const SIGN_CALLS = ["ghost_wallet_sign", "ghost_wallet_sign_rescue_key", "ghost_
 // Key (`keys`, one per ask, then `key`), the stop root, and whether Approve
 // or Reject is pressed. `advance` draws that many bytes first, so the
 // wallet's seed is another one than a wallet set up without it.
-function setUp({ idb = fakeIndexedDB(), advance = 0 } = {}) {
+function setUp({ idb = fakeIndexedDB(), advance = 0, guard = TRUST } = {}) {
   const random = testRandom();
   if (advance > 0) random(advance);
   const spy = spyGhost(ghost);
@@ -71,7 +78,7 @@ function setUp({ idb = fakeIndexedDB(), advance = 0 } = {}) {
       opener.sent.push({ data: structuredClone(data), origin });
     },
   };
-  const wallet = createWallet({ ghost: spy, store: vaultStore(idb), ui, subtle: spySubtle(), credentials: null, random, origins: [APP], opener });
+  const wallet = createWallet({ ghost: spy, store: vaultStore(idb), ui, subtle: spySubtle(), credentials: null, random, origins: [APP], opener, guard });
   async function ask(data) {
     const before = opener.sent.length;
     wallet.onMessage({ data, origin: APP, source: opener });
@@ -128,7 +135,7 @@ test("a Guard commit takes the stop root typed from the stop card, shows a new P
   assert.equal(summary.kind, "guardCommit");
   assert.equal(summary.amount, "0.000001");
   assert.equal(summary.to, COMMIT_ENTRY);
-  assert.equal(summary.guardAddress, GUARD.guardAddress);
+  assert.equal(summary.guardAddress, toHex(POLICY.address));
   assert.deepEqual(summary.warnings, [WARN_HANDED_OVER]);
   // The new key was shown once, with the same warning, then checked.
   assert.equal(ui.key.length, 24);
@@ -202,15 +209,13 @@ test("a Guard commit warns of a slot not above the action cost, and is refused b
   const shown = ui.log.length;
   const calls = spy.calls.length;
   for (const [params, said] of [
-    [{ guardAddress: `0x${"00".repeat(19)}05` }, /reserved/],
-    [{ guardCodeHash: `0x${"00".repeat(32)}` }, /code hash is zero/],
     [{ filledLeaves: toQuantity(2n ** 32n - 64n * 8_640n) }, /within the hold period of full/],
     [{ leavesPerBlock: "0x0" }, /room cannot be checked/],
     [{ value: "0x0" }, /value is zero/],
     [{ data: "0x" }, /unknown field data/],
     [{ stopRoot: STOP_ROOT }, /unknown field stopRoot/],
     [{ chainId: "0x1" }, /not a network this wallet signs for/],
-    [{ guardAddress: "0x47" }, /guardAddress is not 20 bytes/],
+    [{ to: "0x67" }, /to is not 20 bytes/],
   ]) {
     const reply = await ask(guardCommit(params, 3));
     assert.equal(reply.error?.code, -32602, said.source);
@@ -264,7 +269,7 @@ test("a wrong word typed back from the new Phantom Key signs nothing until the k
 const spendRequest = (params = {}, id = 10) => ({
   id,
   method: "ghost_guardSpend",
-  params: { chainId: "0x76aae9", genesisHash: GENESIS, ...GUARD, ...treeParams(), recipient: RECIPIENT, out: toQuantity(PAID), fee: toQuantity(FEE), remainder: "guard", filledLeaves: "0x64", leavesPerBlock: "0x40", ...params },
+  params: { chainId: "0x76aae9", genesisHash: GENESIS, ...treeParams(), recipient: RECIPIENT, out: toQuantity(PAID), fee: toQuantity(FEE), remainder: "guard", filledLeaves: "0x64", leavesPerBlock: "0x40", ...params },
 });
 
 test("the normal spend opens the override with this wallet's guard secret and keeps the rest under a new Guard rule", async () => {
@@ -325,7 +330,7 @@ test("the normal spend opens the override with this wallet's guard secret and ke
 const wordsOnlyRequest = (params = {}, id = 20) => ({
   id,
   method: "ghost_guardWordsOnlySpend",
-  params: { chainId: "0x76aae9", genesisHash: GENESIS, ...GUARD, ...treeParams(), recipient: RECIPIENT, fee: toQuantity(FEE), baseFee: toQuantity(BASE_FEE), ...params },
+  params: { chainId: "0x76aae9", genesisHash: GENESIS, ...treeParams(), recipient: RECIPIENT, fee: toQuantity(FEE), baseFee: toQuantity(BASE_FEE), ...params },
 });
 
 test("the words-only spend needs the Phantom Key's words alone: a wallet with no vault makes it, with the warnings", async () => {
@@ -420,7 +425,7 @@ test("a restore from the words lists a Guard coin, and from the new key's words 
   // spent) and the zero-value remainder of the words-only spend.
   const { ask, ui, typed, idb } = setUp();
   typed.key = state.key;
-  const reply = await ask({ id: 30, method: "ghost_guardRestore", params: { chainId: "0x76aae9", ...GUARD, treeIndex: "0x0", ...treeParams() } });
+  const reply = await ask({ id: 30, method: "ghost_guardRestore", params: { chainId: "0x76aae9", treeIndex: "0x0", ...treeParams() } });
   assert.equal(reply.error, undefined, reply.error?.message);
   assert.equal(ui.keyAsks.at(-1).kind, "guardRestore");
   assert.deepEqual(
@@ -447,7 +452,7 @@ test("a restore from the words lists a Guard coin, and from the new key's words 
 
   // The new key's words: the cancelled slot's new coin, a Guard coin.
   typed.key = rescueKey;
-  const rescued = await ask({ id: 31, method: "ghost_guardRestore", params: { chainId: "0x76aae9", ...GUARD, treeIndex: "0x0", ...treeParams() } });
+  const rescued = await ask({ id: 31, method: "ghost_guardRestore", params: { chainId: "0x76aae9", treeIndex: "0x0", ...treeParams() } });
   assert.equal(rescued.error, undefined, rescued.error?.message);
   assert.deepEqual(ui.coins, [{ number: "0", amount: "0.000000999806442192", position, spent: false, rule: "guard", warnings: [WARN_HANDED_OVER] }]);
   assert.equal(BigInt(rescued.result.coins[0].amount), settled);
@@ -455,9 +460,93 @@ test("a restore from the words lists a Guard coin, and from the new key's words 
 
   // Refused before any screen: tree data that is not whole records.
   const shown = ui.log.length;
-  const bad = await ask({ id: 32, method: "ghost_guardRestore", params: { chainId: "0x76aae9", ...GUARD, treeIndex: "0x0", ...treeParams(), leaves: "0x00" } });
+  const bad = await ask({ id: 32, method: "ghost_guardRestore", params: { chainId: "0x76aae9", treeIndex: "0x0", ...treeParams(), leaves: "0x00" } });
   assert.match(bad.error?.message ?? "", /leaves is not whole records/);
-  const salts = await ask({ id: 33, method: "ghost_guardRestore", params: { chainId: "0x76aae9", ...GUARD, treeIndex: "0x0", ...treeParams(), salts: [] } });
+  const salts = await ask({ id: 33, method: "ghost_guardRestore", params: { chainId: "0x76aae9", treeIndex: "0x0", ...treeParams(), salts: [] } });
   assert.match(salts.error?.message ?? "", /salts is not one entry per leaf/);
   assert.equal(ui.log.length, shown);
+});
+
+test("a Guard commit goes only to the chain's trusted commit entry: an attacker's account cannot receive the deposit", async () => {
+  const { ask, ui, spy, callsDuring } = setUp();
+  const shown = ui.log.length;
+  for (const to of [ATTACKER, "0x67686f7374000000000000000000000000000007", `0x${"00".repeat(20)}`]) {
+    const { result: reply, calls } = await callsDuring(() => ask(guardCommit({ to }, 40)));
+    assert.equal(reply.error?.code, -32602, to);
+    assert.equal(reply.error.message, "to is not the commit entry of chainId 7777001");
+    assert.equal(reply.result, undefined);
+    assert.deepEqual(calls, [], "nothing built or signed");
+  }
+  assert.equal(ui.log.length, shown, "no screen for a commit to another account");
+
+  // The entry in capitals is the same address.
+  const upper = await ask(guardCommit({ to: COMMIT_ENTRY.toUpperCase().replace("0X", "0x") }, 41));
+  assert.equal(upper.error, undefined, upper.error?.message);
+  assert.equal(toHex(verify(upper.result.envelope).to), COMMIT_ENTRY);
+
+  // A wallet that trusts no commit entry for the chain commits nowhere.
+  const none = setUp({ guard: { ...TRUST, commitEntries: {} } });
+  const refused = await none.ask(guardCommit({}, 42));
+  assert.equal(refused.error?.message, "this wallet has no trusted commit entry for chainId 7777001");
+  assert.ok(!none.spy.calls.some((c) => SIGN_CALLS.includes(c)));
+  assert.ok(spy.calls.length > 0);
+});
+
+test("the Guard policy is the wallet's own: an app cannot name one, and a coin of an app's policy gets no Guard screens", async () => {
+  // Naming a policy in any Guard request is an unknown field, before any screen.
+  const { ask, ui, typed, spy, callsDuring } = setUp();
+  const named ={ guardAddress: toHex(APP_POLICY.address), guardCodeHash: toHex(APP_POLICY.codehash) };
+  const requests = [
+    guardCommit(named, 50),
+    spendRequest(named, 51),
+    wordsOnlyRequest(named, 52),
+    { id: 53, method: "ghost_guardRestore", params: { chainId: "0x76aae9", treeIndex: "0x0", ...treeParams(), ...named } },
+  ];
+  const calls = spy.calls.length;
+  for (const request of requests) {
+    const reply = await ask(request);
+    assert.equal(reply.error?.code, -32602, request.method);
+    assert.match(reply.error.message, /^unknown field guard(Address|CodeHash)$/);
+  }
+  assert.deepEqual(ui.log, []);
+  assert.equal(spy.calls.length, calls);
+
+  // The wallet as shipped trusts no Guard policy yet (it is not final):
+  // every Guard request is refused, naming the chain.
+  const shipped = setUp({ guard: TRUSTED_GUARD });
+  assert.deepEqual(TRUSTED_GUARD.policies, {});
+  for (const request of [guardCommit({}, 54), spendRequest({}, 55), wordsOnlyRequest({}, 56), { id: 57, method: "ghost_guardRestore", params: { chainId: "0x76aae9", treeIndex: "0x0", ...treeParams() } }]) {
+    const reply = await shipped.ask(request);
+    assert.equal(reply.error?.message, "this wallet has no trusted Guard policy for chainId 7777001", request.method);
+  }
+  assert.deepEqual(shipped.ui.log, []);
+  // A trusted policy at a reserved address is refused by the module's check.
+  const reserved = setUp({ guard: { ...TRUST, policies: { 7777001: { address: `0x${"00".repeat(19)}05`, codehash: toHex(POLICY.codehash) } } } });
+  assert.match((await reserved.ask(guardCommit({}, 58))).error?.message ?? "", /reserved/);
+
+  // A coin committed under an app's own policy, the same wallet seed and stop
+  // root: to this wallet it is no Guard coin. Restore names it "other" and
+  // neither spend is offered for it.
+  const key = ghost.newKey(new Uint8Array(32).fill(0x28));
+  const made = ghost.guardCommit({
+    chainId: CHAIN_ID,
+    policy: APP_POLICY,
+    walletWords: state.walletWords,
+    stopRoot: fromHex(STOP_ROOT),
+    amount: COMMITTED,
+    room: { filledLeaves: 100n, leavesPerBlock: 64n },
+    seed: new Uint8Array(32).fill(0x29),
+    key,
+  });
+  push(made.commitment, made.payload.slice(50), made.payload.slice(34, 50));
+  typed.key = key;
+  const listed = await ask({ id: 60, method: "ghost_guardRestore", params: { chainId: "0x76aae9", treeIndex: "0x0", ...treeParams() } });
+  assert.deepEqual(listed.result.coins.map((c) => c.rule), ["other"]);
+  assert.equal(ui.coins[0].rule, "other");
+  for (const request of [wordsOnlyRequest({}, 61), spendRequest({}, 62)]) {
+    const { result: reply, calls: made } = await callsDuring(() => ask(request));
+    assert.equal(reply.error?.message, "these words hold no unspent Guard coin of this policy in the tree given", request.method);
+    assert.ok(!made.includes("ghost_guard_words_only_spend") && !made.includes("ghost_guard_spend"));
+  }
+  assert.equal(ui.approvals.length, 0, "no approval screen for a coin of an app's policy");
 });

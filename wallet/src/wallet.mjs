@@ -28,7 +28,7 @@
 
 import { concat, toHex, toQuantity, word } from "../../webapp/src/bytes.mjs";
 import { LEAF_RECORD_BYTES, SALT_BYTES } from "../../webapp/src/wasm.mjs";
-import { CHAIN_IDS } from "./config.mjs";
+import { CHAIN_IDS, COMMIT_ENTRIES, GUARD_POLICIES } from "./config.mjs";
 
 export const GET_ACCOUNT = "ghost_getAccount";
 export const SIGN_TRANSACTION = "ghost_signTransaction";
@@ -81,32 +81,26 @@ const SIGN_OPTIONAL = ["from"];
 // read it from the node. The destination is typed in the wallet, never
 // taken from the request.
 const RESCUE_FIELDS = ["chainId", "genesisHash", "nonce", "maxPriorityFeePerGas", "maxFeePerGas", "gasLimit", "balance"];
-// Ghost Guard. The Guard address and code hash are not final, so the app
-// names them; the tree data is what the app read from its node: the leaves
-// with their notes (412 bytes each, from position 0, 0x hex), the salt beside
-// each (16 bytes of 0x hex, or null), the spent markers (32 bytes each).
-const GUARD_POLICY_FIELDS = ["guardAddress", "guardCodeHash"];
+// Ghost Guard. The Guard policy (address and code hash) and the commit entry
+// are the wallet's own, by chain (config.mjs), never the app's: a request
+// that names a policy is refused as an unknown field. The tree data is what
+// the app read from its node: the leaves with their notes (412 bytes each,
+// from position 0, 0x hex), the salt beside each (16 bytes of 0x hex, or
+// null), the spent markers (32 bytes each).
 const TREE_FIELDS = ["leaves", "salts", "markers"];
 const ROOM_FIELDS = ["filledLeaves", "leavesPerBlock"];
 // A Guard commit: the fields of ghost_signTransaction without `data`, which
-// the wallet makes (`to` is the commit entry, `value` the amount), the tree
-// room and the base fee of the cost of a cancel.
-const GUARD_COMMIT_FIELDS = [
-  "chainId",
-  "genesisHash",
-  "nonce",
-  "maxPriorityFeePerGas",
-  "maxFeePerGas",
-  "gasLimit",
-  "to",
-  "value",
-  ...GUARD_POLICY_FIELDS,
-  ...ROOM_FIELDS,
-  "baseFee",
-];
-const GUARD_SPEND_FIELDS = ["chainId", "genesisHash", ...GUARD_POLICY_FIELDS, ...TREE_FIELDS, "recipient", "out", "fee", "remainder", ...ROOM_FIELDS];
-const GUARD_WORDS_ONLY_FIELDS = ["chainId", "genesisHash", ...GUARD_POLICY_FIELDS, ...TREE_FIELDS, "recipient", "fee", "baseFee"];
-const GUARD_RESTORE_FIELDS = ["chainId", ...GUARD_POLICY_FIELDS, "treeIndex", ...TREE_FIELDS];
+// the wallet makes (`to` must be the chain's trusted commit entry, `value` is
+// the amount), the tree room and the base fee of the cost of a cancel.
+const GUARD_COMMIT_FIELDS = ["chainId", "genesisHash", "nonce", "maxPriorityFeePerGas", "maxFeePerGas", "gasLimit", "to", "value", ...ROOM_FIELDS, "baseFee"];
+const GUARD_SPEND_FIELDS = ["chainId", "genesisHash", ...TREE_FIELDS, "recipient", "out", "fee", "remainder", ...ROOM_FIELDS];
+const GUARD_WORDS_ONLY_FIELDS = ["chainId", "genesisHash", ...TREE_FIELDS, "recipient", "fee", "baseFee"];
+const GUARD_RESTORE_FIELDS = ["chainId", "treeIndex", ...TREE_FIELDS];
+
+// What the wallet trusts for Guard, by chain id (decimal string): the coin
+// commit entry and the Guard policy { address, codehash } (0x hex). The
+// defaults are config.mjs's; only the tests give others.
+export const TRUSTED_GUARD = Object.freeze({ commitEntries: COMMIT_ENTRIES, policies: GUARD_POLICIES });
 const REMAINDER_RULES = ["plain", "guard"];
 
 // The account schemes (spec 09, section 5): plain ML-DSA-44, the rescue-key
@@ -146,8 +140,9 @@ function bytesField(params, name, length) {
 
 // A request as posted by the web app, checked before the user sees
 // anything: { id, method } or { id, method, params }. Returns { id, method,
-// fields }, or throws a Refused naming the field.
-export function checkRequest(message) {
+// fields }, or throws a Refused naming the field. `trust`: the wallet's own
+// Guard settings (TRUSTED_GUARD).
+export function checkRequest(message, trust = TRUSTED_GUARD) {
   if (!message || typeof message !== "object" || Array.isArray(message)) throw refuse("the request is not an object");
   if (!Number.isSafeInteger(message.id) || message.id < 0) throw refuse("id is not a whole number");
   if (message.method === GET_ACCOUNT) {
@@ -162,7 +157,7 @@ export function checkRequest(message) {
   const guard = GUARD_CHECKS[message.method];
   if (guard) {
     exactKeys(message, ["id", "method", "params"], "the request");
-    return { id: message.id, method: message.method, fields: guard(message.params) };
+    return { id: message.id, method: message.method, fields: guard(message.params, trust) };
   }
   if (message.method !== SIGN_TRANSACTION) throw new Refused(METHOD_NOT_FOUND, `unknown method ${String(message.method)}`);
   exactKeys(message, ["id", "method", "params"], "the request");
@@ -218,8 +213,29 @@ function chainIdField(p) {
   return chainId;
 }
 
-function guardPolicyField(p) {
-  return { address: bytesField(p, "guardAddress", 20), codehash: bytesField(p, "guardCodeHash", 32) };
+// The trusted value of chain `chainId` in `table`, or undefined.
+const trustedFor = (table, chainId) => (Object.hasOwn(table, String(chainId)) ? table[String(chainId)] : undefined);
+
+// The Guard policy this wallet trusts on `chainId`: never one an app names.
+// A chain with none is refused, so no Guard coin is made, spent or named
+// under a policy the wallet has not checked.
+function trustedPolicy(chainId, trust) {
+  const policy = trustedFor(trust.policies, chainId);
+  if (!policy) throw refuse(`this wallet has no trusted Guard policy for chainId ${chainId}`);
+  return {
+    address: bytesField({ address: policy.address }, "address", 20),
+    codehash: bytesField({ codehash: policy.codehash }, "codehash", 32),
+  };
+}
+
+// A Guard commit's `to`, which must be the chain's trusted coin commit entry:
+// anything else would credit the amount to that account and make no coin.
+function commitEntryField(p, chainId, trust) {
+  const to = bytesField(p, "to", 20);
+  const entry = trustedFor(trust.commitEntries, chainId);
+  if (!entry) throw refuse(`this wallet has no trusted commit entry for chainId ${chainId}`);
+  if (toHex(to) !== entry.toLowerCase()) throw refuse(`to is not the commit entry of chainId ${chainId}`);
+  return to;
 }
 
 function roomField(p) {
@@ -241,20 +257,21 @@ function treeField(p) {
 
 // The params of each Guard request, checked before any screen.
 const GUARD_CHECKS = {
-  [GUARD_COMMIT](p) {
+  [GUARD_COMMIT](p, trust) {
     exactKeys(p, GUARD_COMMIT_FIELDS, "params", SIGN_OPTIONAL);
+    const chainId = chainIdField(p);
+    const policy = trustedPolicy(chainId, trust);
     const fields = {
       from: Object.hasOwn(p, "from") ? bytesField(p, "from", 20) : null,
-      chainId: chainIdField(p),
+      chainId,
       genesis: bytesField(p, "genesisHash", 32),
       nonce: quantityField(p, "nonce", U64_MAX),
       maxPriorityFeePerGas: quantityField(p, "maxPriorityFeePerGas", U256_MAX),
       maxFeePerGas: quantityField(p, "maxFeePerGas", U256_MAX),
       gasLimit: quantityField(p, "gasLimit", U64_MAX),
-      // The commit entry address.
-      to: bytesField(p, "to", 20),
+      to: commitEntryField(p, chainId, trust),
       value: quantityField(p, "value", U256_MAX),
-      policy: guardPolicyField(p),
+      policy,
       room: roomField(p),
       baseFee: quantityField(p, "baseFee", U256_MAX),
     };
@@ -262,13 +279,14 @@ const GUARD_CHECKS = {
     if (fields.value === 0n) throw refuse("value is zero: a Guard coin holds at least 1 wei");
     return fields;
   },
-  [GUARD_SPEND](p) {
+  [GUARD_SPEND](p, trust) {
     exactKeys(p, GUARD_SPEND_FIELDS, "params");
     if (!REMAINDER_RULES.includes(p.remainder)) throw refuse('remainder is not "plain" or "guard"');
+    const chainId = chainIdField(p);
     return {
-      chainId: chainIdField(p),
+      chainId,
       domain: bytesField(p, "genesisHash", 32),
-      policy: guardPolicyField(p),
+      policy: trustedPolicy(chainId, trust),
       ...treeField(p),
       recipient: bytesField(p, "recipient", 20),
       out: quantityField(p, "out", U256_MAX),
@@ -277,21 +295,23 @@ const GUARD_CHECKS = {
       room: roomField(p),
     };
   },
-  [GUARD_WORDS_ONLY_SPEND](p) {
+  [GUARD_WORDS_ONLY_SPEND](p, trust) {
     exactKeys(p, GUARD_WORDS_ONLY_FIELDS, "params");
+    const chainId = chainIdField(p);
     return {
-      chainId: chainIdField(p),
+      chainId,
       domain: bytesField(p, "genesisHash", 32),
-      policy: guardPolicyField(p),
+      policy: trustedPolicy(chainId, trust),
       ...treeField(p),
       recipient: bytesField(p, "recipient", 20),
       fee: quantityField(p, "fee", U256_MAX),
       baseFee: quantityField(p, "baseFee", U256_MAX),
     };
   },
-  [GUARD_RESTORE](p) {
+  [GUARD_RESTORE](p, trust) {
     exactKeys(p, GUARD_RESTORE_FIELDS, "params");
-    return { chainId: chainIdField(p), policy: guardPolicyField(p), treeIndex: Number(quantityField(p, "treeIndex", 0xffffffffn)), ...treeField(p) };
+    const chainId = chainIdField(p);
+    return { chainId, policy: trustedPolicy(chainId, trust), treeIndex: Number(quantityField(p, "treeIndex", 0xffffffffn)), ...treeField(p) };
   },
 };
 
@@ -465,8 +485,9 @@ async function vaultKey(subtle, record, secret) {
 // `store`: vaultStore; `ui`: the screens (main.mjs); `subtle`: WebCrypto;
 // `credentials`: navigator.credentials, or null without passkeys; `random(n)`:
 // n bytes from crypto.getRandomValues; `origins`: the web app origins;
-// `opener`: the window that opened the pop-up.
-export function createWallet({ ghost, store, ui, subtle, credentials, random, origins, opener }) {
+// `opener`: the window that opened the pop-up. `guard`: the trusted Guard
+// settings, config.mjs's unless a test gives others; never from a request.
+export function createWallet({ ghost, store, ui, subtle, credentials, random, origins, opener, guard = TRUSTED_GUARD }) {
   let queue = Promise.resolve();
 
   // The passkey's PRF output for the record's salt; the user touches the
@@ -1007,7 +1028,7 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
   async function handle(message, origin) {
     let request;
     try {
-      request = checkRequest(message);
+      request = checkRequest(message, guard);
     } catch (err) {
       const id = message && Number.isSafeInteger(message.id) ? message.id : null;
       return { id, error: { code: err.code ?? INVALID_PARAMS, message: err.message } };
