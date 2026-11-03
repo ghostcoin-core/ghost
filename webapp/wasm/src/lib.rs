@@ -52,7 +52,11 @@
 //!   policy class, the cancel by the stop card, the release and the
 //!   warnings, with the client library's refusals. The guard secret is
 //!   derived from the wallet seed's words and the stop root is the stop
-//!   card's 32 bytes, passed in; neither is derived from a Phantom Key.
+//!   card's 32 bytes, passed in; neither is derived from a Phantom Key;
+//! - the Poseidon2 reveal (the `poseidon2_reveal` module below): the version
+//!   2 coin reveal proved and verified with the proofs crate's Poseidon2
+//!   parameters, with the native functions' refusals, so the page's worker
+//!   can measure that prover and verifier where it runs.
 //!
 //! # Secrets
 //!
@@ -2067,6 +2071,159 @@ mod guard {
             out.extend_from_slice(&call.data);
             debug_assert_eq!(call.data.len(), RELEASE_CALLDATA_BYTES);
             Ok(out)
+        })
+    }
+}
+
+/// The Poseidon2 reveal: the version 2 coin reveal of the ordinary class
+/// (spec 10, section 4) at the proofs crate's scale configuration,
+/// `prove_coin_reveal_v2_scale` and `verify_coin_reveal_v2_scale`. The
+/// statement, its public fields and their Keccak-256 hashes are those of the
+/// shipped reveal; the proof's commitments and transcript are Poseidon2 over
+/// BabyBear, its challenges from the degree-8 extension, with 96 queries.
+///
+/// These calls are for measuring that prover and verifier where the page
+/// runs (a browser, a phone). No transaction carries such a proof yet (it is
+/// larger than [`PROOF_FIELD_BYTES`]), so there is no envelope: the proof is
+/// its bytes. Both calls pass the caller's values to the native functions
+/// as they are and refuse exactly what those refuse, with their messages;
+/// the only refusals of their own are inputs that do not parse.
+mod poseidon2_reveal {
+    use super::*;
+    use ghost_proofs::{
+        CoinRevealV2, CoinRevealV2Request, InputRule, NOTE_V3_BYTES, PROTOCOL_VERSION_2, PolicyRule,
+        SaltedCoinOpening, SaltedCoinRemainder, prove_coin_reveal_v2_scale, verify_coin_reveal_v2_scale,
+    };
+
+    const _: () = assert!(NOTE_V3_BYTES == NOTE_BYTES);
+
+    /// The chain constants of a version 2 reveal: protocol version 2.
+    fn ordinary_params(chain_id: u64, domain: [u8; 32]) -> ChainParams {
+        ChainParams { chain_id: chain_id.to_be_bytes(), version: PROTOCOL_VERSION_2, domain }
+    }
+
+    /// The public fields of a reveal, in the order both calls write and read
+    /// them: root, marker, remainder (32 each), recipient (20), amount out
+    /// and fee (32 each), the remainder note (380).
+    fn read_reveal(input: &mut Input) -> Result<CoinRevealV2, String> {
+        Ok(CoinRevealV2 {
+            root: input.array()?,
+            marker: input.array()?,
+            remainder: input.array()?,
+            recipient: input.array()?,
+            out: input.array()?,
+            fee: input.array()?,
+            remainder_note: input.array()?,
+        })
+    }
+
+    fn push_reveal(out: &mut Vec<u8>, tx: &CoinRevealV2) {
+        for field in [&tx.root[..], &tx.marker, &tx.remainder, &tx.recipient, &tx.out, &tx.fee, &tx.remainder_note] {
+            out.extend_from_slice(field);
+        }
+    }
+
+    /// Proves a version 2 coin reveal with the Poseidon2 parameters.
+    ///
+    /// Input: chain identifier (8), domain (32); the coin: `s`, `r`, `b` (32
+    /// each), salt (16), amount word (32), position (4); how its rule is
+    /// opened: the switch (1: 0 a plain coin, 1 the override), the rule's
+    /// policy address (20), code hash, params hash, override hash, action
+    /// tag and action salt (32 each), the override secret (32); the
+    /// remainder: `s`, `r`, `b` (32 each), salt (16), amount word (32); the
+    /// remainder's rule (32); root (32), recipient (20), amount out (32), fee
+    /// (32), the remainder note (380); the leaves of the tree under the root
+    /// (count, 32 each, from position 0), from which the coin's path is
+    /// read; zero-knowledge randomness (32).
+    ///
+    /// Refuses as `prove_coin_reveal_v2_scale` does, before any proving: a
+    /// switch other than 0 or 1, the override of a rule with a zero override
+    /// hash or with a wrong secret, an amount word above 2^96 - 1, a
+    /// remainder with the coin's blinding, amounts that do not balance, and
+    /// a coin that is not the leaf at its position under the root.
+    ///
+    /// Output: the public fields of the reveal (as [`read_reveal`] reads
+    /// them), then the proof.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_poseidon2_reveal_prove(ptr: *const u8, len: usize) -> u32 {
+        run(ptr, len, |input| {
+            let params = ordinary_params(input.u64()?, input.array()?);
+            let mut opening = SaltedCoinOpening {
+                s: input.array()?,
+                r: input.array()?,
+                b: input.array()?,
+                salt: input.array()?,
+                v: input.array()?,
+                position: input.u32()?,
+                path: [[0u8; 32]; TREE_DEPTH],
+            };
+            let mut spend = InputRule {
+                use_override: input.u8()?,
+                rule: PolicyRule {
+                    policy_address: input.array()?,
+                    policy_codehash: input.array()?,
+                    params_hash: input.array()?,
+                    override_hash: input.array()?,
+                    action_tag: input.array()?,
+                    action_salt: input.array()?,
+                },
+                override_secret: input.array()?,
+            };
+            let mut remainder = SaltedCoinRemainder {
+                s: input.array()?,
+                r: input.array()?,
+                b: input.array()?,
+                salt: input.array()?,
+                v: input.array()?,
+            };
+            let remainder_rule: [u8; 32] = input.array()?;
+            let request = CoinRevealV2Request {
+                root: input.array()?,
+                recipient: input.array()?,
+                out: input.array()?,
+                fee: input.array()?,
+                remainder_note: input.array()?,
+            };
+            let leaves = input.records::<32>()?;
+            let zk: [u8; 32] = input.array()?;
+            opening.path = witness(&leaves, opening.position as usize, &zeros());
+
+            let proved =
+                prove_coin_reveal_v2_scale(&params, &opening, &spend, &remainder, &remainder_rule, &request, zk);
+            for secret in [&mut opening.s, &mut opening.r, &mut opening.b, &mut spend.override_secret] {
+                wipe(secret);
+            }
+            for secret in [&mut remainder.s, &mut remainder.r, &mut remainder.b] {
+                wipe(secret);
+            }
+            wipe(&mut opening.salt);
+            wipe(&mut remainder.salt);
+            let (tx, proof) = proved.map_err(|e| e.to_string())?;
+
+            let mut out = Vec::with_capacity(32 * 5 + 20 + NOTE_BYTES + proof.as_bytes().len());
+            push_reveal(&mut out, &tx);
+            out.extend_from_slice(proof.as_bytes());
+            Ok(out)
+        })
+    }
+
+    /// Verifies a version 2 coin reveal's Poseidon2 proof against the
+    /// verifier's own chain constants and the reveal's public fields.
+    ///
+    /// Input: chain identifier (8), domain (32), the public fields of the
+    /// reveal (as [`read_reveal`] reads them), then the proof. Refuses as
+    /// `verify_coin_reveal_v2_scale` does: an amount out or fee above
+    /// 2^96 - 1 before the proof is looked at, then a proof that does not
+    /// decode, has the wrong shape or bytes after its end, or does not
+    /// verify. Output: nothing.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_poseidon2_reveal_verify(ptr: *const u8, len: usize) -> u32 {
+        run(ptr, len, |input| {
+            let params = ordinary_params(input.u64()?, input.array()?);
+            let tx = read_reveal(input)?;
+            let proof = Proof::from_bytes(input.rest().to_vec());
+            verify_coin_reveal_v2_scale(&params, &tx, &proof).map_err(|e| e.to_string())?;
+            Ok(Vec::new())
         })
     }
 }

@@ -134,6 +134,25 @@ const OPS = {
     return { ...result, provingMs: performance.now() - started };
   },
 
+  // The version 2 coin reveal at the Poseidon2 parameters (lib.rs, mod
+  // poseidon2_reveal), so the page and the phone measurements can time that
+  // prover and verifier in this worker. The zero-knowledge randomness is
+  // drawn here; the arguments are those of wasm.mjs, provePoseidon2Reveal.
+  provePoseidon2Reveal(ghost, args, progress) {
+    progress("proving");
+    const started = performance.now();
+    const result = ghost.provePoseidon2Reveal({ ...args, zk: random(32) });
+    progress("proved");
+    return { ...result, provingMs: performance.now() - started };
+  },
+
+  // A refused proof is an error reply with the native verifier's message.
+  verifyPoseidon2Reveal(ghost, args) {
+    const started = performance.now();
+    ghost.verifyPoseidon2Reveal(args);
+    return { ok: true, verifyingMs: performance.now() - started };
+  },
+
   // The levels of the coin trees the module's test-depth reveal is made for
   // (lib.rs, test_depth), or null: only a module built with the
   // test-tree-depth feature has one, never the one the page ships.

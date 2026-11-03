@@ -185,6 +185,43 @@ function readOrdinary(out) {
   };
 }
 
+// The Poseidon2 reveal (lib.rs, mod poseidon2_reveal): the version 2 coin
+// reveal at the proofs crate's Poseidon2 parameters. The six fields of a
+// rule, in the order the module reads them, with their lengths.
+const RULE_FIELDS = [
+  ["policyAddress", 20],
+  ["policyCodehash", 32],
+  ["paramsHash", 32],
+  ["overrideHash", 32],
+  ["actionTag", 32],
+  ["actionSalt", 32],
+];
+
+// The public fields of a Poseidon2 reveal, in the order the module writes
+// and reads them. Amounts are words (Uint8Array), as the proof binds them.
+function writeReveal(input, r) {
+  return input
+    .bytes(r.root, 32)
+    .bytes(r.marker, 32)
+    .bytes(r.remainder, 32)
+    .bytes(r.recipient, 20)
+    .bytes(r.out, 32)
+    .bytes(r.fee, 32)
+    .bytes(r.remainderNote, NOTE_BYTES);
+}
+
+function readReveal(out) {
+  return {
+    root: out.take(32),
+    marker: out.take(32),
+    remainder: out.take(32),
+    recipient: out.take(20),
+    out: out.take(32),
+    fee: out.take(32),
+    remainderNote: out.take(NOTE_BYTES),
+  };
+}
+
 // The key formats ghost_check_key names by their code: only words. The codes
 // 0x0c and 0x18 of the old digit keys are refused like any unknown code.
 const KEY_FORMATS = new Map([[0x20, "words"]]);
@@ -387,6 +424,45 @@ export class Ghost {
       // The 156-byte remainder note; the tree stores it zero-padded to 380.
       note: out.take(REVEAL_NOTE_BYTES),
     };
+  }
+
+  // Proves a version 2 coin reveal with the Poseidon2 parameters (lib.rs,
+  // ghost_poseidon2_reveal_prove). `opening`: the coin, { s, r, b, salt,
+  // amount, position }; `spend`: how its rule is opened, null for a plain
+  // coin, or { useOverride (1 unless given), rule: { policyAddress,
+  // policyCodehash, paramsHash, overrideHash, actionTag, actionSalt },
+  // overrideSecret }; `remainder`: { s, r, b, salt, amount }; `remainderRule`
+  // (32 bytes, the empty rule unless given); `root`, `recipient`, `out`,
+  // `fee`, `remainderNote` (380 bytes); `leaves`: the tree under the root (32
+  // bytes each, flat or a list); `zk`: 32 random bytes. Amounts are passed
+  // as words for the module to check, so it refuses what the native prover
+  // refuses. Returns the reveal's public fields and the proof.
+  provePoseidon2Reveal(a) {
+    const o = a.opening;
+    const input = new Input().u64(a.chainId).bytes(a.domain, 32);
+    input.bytes(o.s, 32).bytes(o.r, 32).bytes(o.b, 32).bytes(o.salt, SALT_BYTES).bytes(word(o.amount)).u32(o.position);
+    const spend = a.spend ?? null;
+    const switchBit = spend === null ? 0 : (spend.useOverride ?? 1);
+    if (!Number.isInteger(switchBit) || switchBit < 0 || switchBit > 0xff) throw new Error("the override switch is one byte");
+    input.u8(switchBit);
+    for (const [name, length] of RULE_FIELDS) input.bytes(spend?.rule?.[name] ?? new Uint8Array(length), length);
+    input.bytes(spend?.overrideSecret ?? new Uint8Array(32), 32);
+    const rem = a.remainder;
+    input.bytes(rem.s, 32).bytes(rem.r, 32).bytes(rem.b, 32).bytes(rem.salt, SALT_BYTES).bytes(word(rem.amount));
+    input.bytes(a.remainderRule ?? new Uint8Array(32), 32);
+    input.bytes(a.root, 32).bytes(a.recipient, 20).bytes(word(a.out)).bytes(word(a.fee)).bytes(a.remainderNote, NOTE_BYTES);
+    input.records(Array.isArray(a.leaves) ? concat(a.leaves) : a.leaves, 32).bytes(a.zk, 32);
+    const out = new Output(this.call("ghost_poseidon2_reveal_prove", input.build()));
+    return { reveal: readReveal(out), proof: out.rest() };
+  }
+
+  // Verifies a Poseidon2 reveal proof against `reveal` (the public fields
+  // provePoseidon2Reveal returns) and the chain constants (lib.rs,
+  // ghost_poseidon2_reveal_verify). Throws the native verifier's refusal.
+  verifyPoseidon2Reveal({ chainId, domain, reveal, proof }) {
+    const input = writeReveal(new Input().u64(chainId).bytes(domain, 32), reveal).bytes(proof);
+    this.call("ghost_poseidon2_reveal_verify", input.build());
+    return true;
   }
 
   // `C` as the node computes it from a commit's `F`, amount and version, 2:
