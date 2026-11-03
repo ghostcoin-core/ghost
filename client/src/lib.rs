@@ -19,6 +19,12 @@
 //!   from the caller's generator for every new commitment), and the data of a
 //!   salted commit (sections 3 and 8). The unsalted version 1 format is
 //!   neither made nor read.
+//! - [`guard`]: Ghost Guard in the wallet (spec 10, sections 3.1, 12 and
+//!   13): the Guard rule under a fresh action salt, the commit, the normal
+//!   spend with the override, the words-only spend in the policy class,
+//!   release, cancel, transfer, restore and the warnings. The guard secret
+//!   comes from the wallet seed and the stop root from the stop card; neither
+//!   from a Phantom Key.
 //! - [`hash`]: the tagged Keccak-256 and SHA3-256 of sections 2 and 4.
 //! - [`note`]: the encrypted note, ChaCha20-Poly1305 under the note key
 //!   (section 9): note version 3, 380 bytes for every commitment, with the
@@ -68,6 +74,7 @@
 pub mod account;
 pub mod commit;
 pub mod derive;
+pub mod guard;
 pub mod hash;
 pub mod header_chain;
 pub mod key;
@@ -95,6 +102,12 @@ pub use commit::{
     SALTED_COMMIT_DATA_BYTES, SALTED_COMMIT_FORMAT_VERSION, SALT_BYTES, V_MAX,
 };
 pub use derive::{Blinding, DataKey, KeyBytes, NoteKey, RevealSecret, Secret};
+pub use guard::{
+    guard_cancel, guard_commit, guard_release, guard_spend, guard_transfer, restore_guard_coins, words_only_spend,
+    ActionSalt, BuiltCancel, BuiltGuardSpend, BuiltWordsOnlySpend, CancelTerms, ChainHead, EscrowSlot, GuardChain,
+    GuardCommit, GuardError, GuardFound, GuardPolicy, GuardRemainder, GuardRestored, GuardRule, GuardSecret,
+    GuardWarning, ReleaseCall, RemainderRule, StopRoot, TreeRoom, HOLD_BLOCKS, HOLD_SECONDS,
+};
 pub use header_chain::{
     required_difficulty, Added, ChainError, ChainParams, HeaderChain, PinnedStart, StartError, U256,
 };
