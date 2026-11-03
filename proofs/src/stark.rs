@@ -26,9 +26,10 @@
 //! scheme (`HidingFriPcs`) paired with a hiding Merkle commitment
 //! (`MerkleTreeHidingMmcs`). [`stark_config`] is the only function that builds
 //! a configuration, for the prover and the verifier alike. Its types are the
-//! hiding ones, there is no other configuration type in this crate, and it
-//! refuses to return a configuration the library does not report as
-//! zero-knowledge. So there is no way to prove with zero-knowledge off.
+//! hiding ones, the only other configuration in this crate (the Poseidon2
+//! scale configuration of [`crate::scale`]) is hiding too, and each refuses
+//! to return a configuration the library does not report as zero-knowledge.
+//! So there is no way to prove with zero-knowledge off.
 //!
 //! The zero-knowledge randomness is 32 bytes the caller supplies; this crate
 //! never reads the operating system's random source.
@@ -496,7 +497,7 @@ pub(crate) const SHIPPED_FRI: FriShape = FriShape {
     batch_pow_bits: BATCH_POW_BITS,
 };
 
-fn fri_parameters<M>(fri: &FriShape, mmcs: M) -> FriParameters<M> {
+pub(crate) fn fri_parameters<M>(fri: &FriShape, mmcs: M) -> FriParameters<M> {
     FriParameters {
         log_blowup: fri.log_blowup,
         log_final_poly_len: 0,
@@ -967,7 +968,7 @@ pub fn proof_length_bound(trace_height: usize, trace_width: usize) -> usize {
     commitments + opened_values + hidden_openings + fri + VARINT_MAX_BYTES + FIELD_BYTES
 }
 
-fn public_field(public: &[u8]) -> Vec<F> {
+pub(crate) fn public_field(public: &[u8]) -> Vec<F> {
     public.iter().map(|&b| F::from_u8(b)).collect()
 }
 
