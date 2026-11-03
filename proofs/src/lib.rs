@@ -29,6 +29,12 @@
 //!   9.2): [`prove_know_preimage`] and [`verify_know_preimage`], knowledge of
 //!   `x` with `y = K("ghost/policy-preimage/v1", x)`.
 //!
+//! - The scale build (stage 2 design, "Aggregation cost", leaf): the version
+//!   2 coin reveal, statement and Keccak-256 hashes unchanged, proven with
+//!   Poseidon2 commitments and transcript, the degree-8 extension and 96
+//!   queries: [`prove_coin_reveal_v2_scale`] and
+//!   [`verify_coin_reveal_v2_scale`], beside the shipped configuration.
+//!
 //! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`] and
 //! [`verify_coin_reveal_v2`], with its header in `include/ghost_proofs.h`.
 //!
@@ -45,7 +51,10 @@
 //! estimator with grinding counted at half, so about 64 against a quantum
 //! attacker. It is transparent and the proof is verified as it is, never
 //! wrapped in an elliptic-curve proof. Inside the proofs the only hash is
-//! Keccak-256 with the original padding, the hash of spec 01.
+//! Keccak-256 with the original padding, the hash of spec 01. The scale
+//! build's prover and verifier keep that statement and move only the proof's
+//! commitments and transcript to Poseidon2 over BabyBear, with the degree-8
+//! extension and 96 queries (see `scale.rs`).
 //!
 //! **What stays private.** No public input is `s`, `r`, `b`, a salt, `v`,
 //! `v'`, a position or a path. The types that hold them implement neither `Debug`
@@ -78,6 +87,7 @@ mod native;
 mod policy_reveal;
 mod reveal;
 mod reveal_v2;
+mod scale;
 mod schedule;
 mod stark;
 
@@ -141,6 +151,17 @@ pub use reveal_v2::{
 };
 #[doc(hidden)]
 pub use reveal_v2::{coin_reveal_v2_public_values, prove_coin_reveal_v2_claiming};
+pub use reveal_v2::{prove_coin_reveal_v2_scale, verify_coin_reveal_v2_scale};
+#[doc(hidden)]
+pub use reveal_v2::{prove_coin_reveal_v2_scale_shaped, verify_coin_reveal_v2_scale_shaped};
+pub use scale::{
+    SCALE_BATCH_POW_BITS, SCALE_CHALLENGE_FIELD_BITS, SCALE_COLLISION_RESISTANCE_BITS, SCALE_DIGEST_BITS,
+    SCALE_DIGEST_ELEMS, SCALE_EXTENSION_DEGREE, SCALE_LOG_BLOWUP, SCALE_MODELED_PROOF_BYTES, SCALE_NUM_QUERIES,
+    SCALE_POSEIDON2_WIDTH, SCALE_QUERY_POW_BITS, SCALE_SPONGE_CAPACITY, SCALE_SPONGE_RATE,
+    scale_coin_reveal_v2_estimate,
+};
+#[doc(hidden)]
+pub use scale::ScaleShape;
 
 /// There is no version 1 coin reveal statement any more: this verifies
 /// nothing and rejects every proof with [`ProofError::Rejected`]. Kept,

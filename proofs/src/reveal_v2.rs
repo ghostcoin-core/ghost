@@ -67,6 +67,7 @@ use crate::hash::{
 };
 use crate::reveal::{SaltedCoinOpening, SaltedCoinRemainder};
 use crate::schedule::{Assignment, Conservation, HashBuilder, Schedule, ScheduleBuilder, Switch};
+use crate::scale::{self, ScaleShape};
 use crate::stark::{self, Statement};
 use crate::{Proof, ProofError};
 
@@ -471,6 +472,26 @@ pub fn prove_coin_reveal_v2(
     request: &CoinRevealV2Request,
     zk_randomness: [u8; 32],
 ) -> Result<(CoinRevealV2, Proof), ProofError> {
+    let (tx, carries) = checked_reveal(opening, input, remainder, remainder_rule, request)?;
+    let w = Witness {
+        opening,
+        input,
+        remainder,
+        remainder_rule,
+    };
+    let proof = prove_witness_unchecked(params, &w, &tx, carries, zk_randomness)?;
+    Ok((tx, proof))
+}
+
+/// The honest prover's checks of [`prove_coin_reveal_v2`], and the
+/// transaction and conservation carries they give.
+fn checked_reveal(
+    opening: &SaltedCoinOpening,
+    input: &InputRule,
+    remainder: &SaltedCoinRemainder,
+    remainder_rule: &[u8; 32],
+    request: &CoinRevealV2Request,
+) -> Result<(CoinRevealV2, [u8; CARRIES]), ProofError> {
     let input_rule = input.checked_rule()?;
     if ![&opening.v, &remainder.v, &request.out, &request.fee].into_iter().all(amount_is_valid) {
         return Err(ProofError::AmountOutOfRange);
@@ -496,14 +517,7 @@ pub fn prove_coin_reveal_v2(
         out: request.out,
         fee: request.fee,
     };
-    let w = Witness {
-        opening,
-        input,
-        remainder,
-        remainder_rule,
-    };
-    let proof = prove_witness_unchecked(params, &w, &tx, carries, zk_randomness)?;
-    Ok((tx, proof))
+    Ok((tx, carries))
 }
 
 /// Verify a version 2 coin reveal against the verifier's own chain
@@ -518,6 +532,83 @@ pub fn verify_coin_reveal_v2(params: &ChainParams, tx: &CoinRevealV2, proof: &Pr
         return Err(ProofError::AmountOutOfRange);
     }
     stark::verify(Statement::CoinRevealV2, &coin_reveal_v2_public_values(params, tx), proof.as_bytes())
+}
+
+/// [`prove_coin_reveal_v2`] at the scale configuration (`scale.rs`):
+/// the same statement, the same checks before proving and the same public
+/// fields, with Poseidon2 commitments and transcript, challenges from the
+/// degree-8 extension and 96 queries. The proof verifies only with
+/// [`verify_coin_reveal_v2_scale`].
+///
+/// `zk_randomness` must be 32 fresh bytes from a secure random source.
+pub fn prove_coin_reveal_v2_scale(
+    params: &ChainParams,
+    opening: &SaltedCoinOpening,
+    input: &InputRule,
+    remainder: &SaltedCoinRemainder,
+    remainder_rule: &[u8; 32],
+    request: &CoinRevealV2Request,
+    zk_randomness: [u8; 32],
+) -> Result<(CoinRevealV2, Proof), ProofError> {
+    prove_coin_reveal_v2_scale_shaped(
+        params,
+        opening,
+        input,
+        remainder,
+        remainder_rule,
+        request,
+        zk_randomness,
+        ScaleShape::SHIPPED,
+    )
+}
+
+/// [`prove_coin_reveal_v2_scale`] at another query count or digest length,
+/// so tests can show the verifier rejects a proof of the wrong shape.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn prove_coin_reveal_v2_scale_shaped(
+    params: &ChainParams,
+    opening: &SaltedCoinOpening,
+    input: &InputRule,
+    remainder: &SaltedCoinRemainder,
+    remainder_rule: &[u8; 32],
+    request: &CoinRevealV2Request,
+    zk_randomness: [u8; 32],
+    shape: ScaleShape,
+) -> Result<(CoinRevealV2, Proof), ProofError> {
+    let (tx, carries) = checked_reveal(opening, input, remainder, remainder_rule, request)?;
+    let w = Witness {
+        opening,
+        input,
+        remainder,
+        remainder_rule,
+    };
+    let assignment = assignment(params, &w, &tx, carries);
+    let proof = scale::prove(&assignment, zk_randomness, shape)?;
+    Ok((tx, Proof(proof)))
+}
+
+/// [`verify_coin_reveal_v2`] at the scale configuration (`scale.rs`):
+/// the same public values, binding digest included, built by the verifier.
+/// A proof of the shipped Keccak configuration is rejected here, as a proof
+/// of this one is by [`verify_coin_reveal_v2`].
+pub fn verify_coin_reveal_v2_scale(params: &ChainParams, tx: &CoinRevealV2, proof: &Proof) -> Result<(), ProofError> {
+    verify_coin_reveal_v2_scale_shaped(params, tx, proof, ScaleShape::SHIPPED)
+}
+
+/// [`verify_coin_reveal_v2_scale`] at another query count or digest length,
+/// for tests.
+#[doc(hidden)]
+pub fn verify_coin_reveal_v2_scale_shaped(
+    params: &ChainParams,
+    tx: &CoinRevealV2,
+    proof: &Proof,
+    shape: ScaleShape,
+) -> Result<(), ProofError> {
+    if !amount_is_valid(&tx.out) || !amount_is_valid(&tx.fee) {
+        return Err(ProofError::AmountOutOfRange);
+    }
+    scale::verify(&coin_reveal_v2_public_values(params, tx), proof.as_bytes(), shape)
 }
 
 #[cfg(test)]
