@@ -9,6 +9,7 @@ import "./early-reveal.test.mjs";
 import "./reveal-moving-head.test.mjs";
 import "./wasm.test.mjs";
 import "./guard-wasm.test.mjs";
+import "./poseidon2-reveal-wasm.test.mjs";
 import "./commit-layout.test.mjs";
 import "./tree-shape.test.mjs";
 import "./earlier-trees.test.mjs";
