@@ -45,6 +45,15 @@ class Input {
     return this;
   }
 
+  // A text given as a string or as its UTF-8 bytes (the wallet holds its
+  // words only as bytes); the bytes are copied, and the copy overwritten
+  // with zeros by build().
+  textOrBytes(t) {
+    if (typeof t === "string") return this.text(t);
+    this.u32(t.length);
+    return this.bytes(t);
+  }
+
   // `flat` holds `size`-byte records back to back.
   records(flat, size) {
     if (flat.length % size !== 0) throw new Error(`records of ${size} bytes expected`);
@@ -117,6 +126,63 @@ export function saltRecord(salt) {
   record[0] = 1;
   record.set(salt, 1);
   return record;
+}
+
+// Ghost Guard (lib.rs, mod guard). A Guard policy is { address, codehash }
+// (20 and 32 bytes): they are not final, so the caller gives them.
+export const GUARD_SLOT_WORDS = 15;
+export const GUARD_CANCEL_CALLDATA_BYTES = 432;
+// The warning flags ghost_guard_check and ghost_guard_restore write.
+const WARN_HANDED_OVER = 1;
+const WARN_SLOT_TOO_SMALL = 2;
+const WARN_COST_UNKNOWN = 4;
+const GUARD_RULE_KINDS = ["empty", "guard", "other"];
+
+function guardPolicy(input, policy) {
+  return input.bytes(policy.address, 20).bytes(policy.codehash, 32);
+}
+
+// A stop root: the stop card's 32 bytes, or null for none (kind 0), which
+// every call that needs one refuses by name.
+function stopRoot(input, root) {
+  if (root == null) return input.u8(0);
+  return input.u8(1).bytes(root, 32);
+}
+
+function treeRoom(input, room) {
+  return input.u64(room.filledLeaves).u64(room.leavesPerBlock);
+}
+
+// The leaves with their notes (412 bytes each, from position 0) and the salt
+// beside each (16 bytes or null), as the Guard calls read a tree.
+function treeData(input, records, salts) {
+  const count = records.length / LEAF_RECORD_BYTES;
+  if (salts.length !== count) throw new Error("one salt (or null) is expected per leaf");
+  return input.records(records, LEAF_RECORD_BYTES).records(concat(salts.map((salt) => saltRecord(salt ?? null))), SALT_RECORD_BYTES);
+}
+
+// The fifteen words of slot(marker): a 480-byte array or a list of 32-byte words.
+function slotWords(input, words) {
+  const flat = Array.isArray(words) ? concat(words) : words;
+  return input.bytes(flat, 32 * GUARD_SLOT_WORDS);
+}
+
+function warnings(flags) {
+  return {
+    handedOverAsWords: (flags & WARN_HANDED_OVER) !== 0,
+    slotNotAboveActionCost: (flags & WARN_SLOT_TOO_SMALL) !== 0,
+    actionCostUnknown: (flags & WARN_COST_UNKNOWN) !== 0,
+  };
+}
+
+// The output of a normal spend or a transfer.
+function readOrdinary(out) {
+  return {
+    txHash: out.take(32),
+    marker: out.take(32),
+    remainder: { commitment: out.take(32), number: out.u64(), amount: fromWord(out.take(32)), rule: out.take(32) },
+    envelope: out.rest(),
+  };
 }
 
 // The key formats ghost_check_key names by their code: only words. The codes
@@ -518,6 +584,144 @@ export class Ghost {
     const hashes = [];
     while (out.at < out.bytes.length) hashes.push(out.take(32));
     return { best, held, work, confirmations, hashes };
+  }
+
+  // What a wallet checks before it shows a Guard commit or a words-only
+  // spend: the policy usable, `amount` (what the coin or the slot holds) not
+  // zero, and with `room` ({ filledLeaves, leavesPerBlock }) the tree not
+  // within the hold of full. Returns the action cost at `baseFee` (0n when
+  // unknown) and the warnings: handed over as words alone, the coin stays
+  // under the giver's stop key; the coin is not larger than the cost of a
+  // cancel; that cost is unknown.
+  guardCheck({ policy, amount, baseFee, room = null }) {
+    const input = guardPolicy(new Input(), policy).bytes(word(amount)).bytes(word(baseFee));
+    if (room === null) input.u8(0);
+    else treeRoom(input.u8(1), room);
+    const out = new Output(this.call("ghost_guard_check", input.build()));
+    return { actionCost: fromWord(out.take(32)), warnings: warnings(out.take(1)[0]) };
+  }
+
+  // A Guard commit of `amount` to number 0 of `key`. The guard secret is
+  // derived from the wallet seed's words `walletWords` (a string or its
+  // bytes) and `guardIndex`; `stopRoot` is the stop card's 32 bytes (null is
+  // refused). Returns `C`, the marker, the rule and the 430-byte payload.
+  guardCommit({ chainId, policy, walletWords, guardIndex = 0, stopRoot: root, amount, room, seed, key }) {
+    const input = guardPolicy(new Input().u64(chainId), policy).textOrBytes(walletWords).u32(guardIndex);
+    stopRoot(input, root).bytes(word(amount));
+    treeRoom(input, room).bytes(seed, 32).text(key);
+    const out = new Output(this.call("ghost_guard_commit", input.build()));
+    return { commitment: out.take(32), marker: out.take(32), rule: out.take(32), payload: out.rest() };
+  }
+
+  // Restore of a key's coins, as restore, naming each coin's rule: "empty",
+  // "guard" (a Guard coin of `policy`, with its override hash, action tag
+  // and action salt) or "other"; `handedOverAsWords` is the warning a coin
+  // with a rule carries.
+  guardRestore({ chainId, treeIndex = 0, policy, key, records, salts, markers }) {
+    const input = guardPolicy(new Input().u64(chainId).u32(treeIndex), policy).text(key);
+    treeData(input, records, salts).records(markers, 32);
+    const out = new Output(this.call("ghost_guard_restore", input.build()));
+    const coins = [];
+    for (let n = out.u32(); n > 0; n -= 1) {
+      const coin = {
+        number: out.u64(),
+        amount: fromWord(out.take(32)),
+        treeIndex: out.u32(),
+        position: out.u32(),
+        commitment: out.take(32),
+        marker: out.take(32),
+        spent: out.take(1)[0] === 1,
+        salt: out.salt(),
+      };
+      coin.handedOverAsWords = warnings(out.take(1)[0]).handedOverAsWords;
+      coin.rule = GUARD_RULE_KINDS[out.take(1)[0]];
+      if (coin.rule === undefined) throw new Error("the module returned an unknown rule kind");
+      coin.ruleBytes = out.take(32);
+      coin.guard = coin.rule === "guard" ? { overrideHash: out.take(32), actionTag: out.take(32), actionSalt: out.take(32) } : null;
+      coins.push(coin);
+    }
+    return coins;
+  }
+
+  // The normal spend of the Guard coin at `position` of the tree
+  // (`records`, `salts`), with the guard secret of `walletWords` and
+  // `guardIndex`. `remainder`: null for a plain remainder, or { stopRoot,
+  // room } for one under a new Guard rule. Returns the hash, marker,
+  // remainder and the 0x50 version 2 envelope.
+  guardSpend(a) {
+    const input = guardPolicy(new Input().u64(a.chainId).bytes(a.domain, 32), a.policy)
+      .textOrBytes(a.walletWords)
+      .u32(a.guardIndex ?? 0)
+      .text(a.key);
+    treeData(input, a.records, a.salts).u32(a.position).bytes(a.recipient, 20).bytes(word(a.out)).bytes(word(a.fee));
+    if (a.remainder == null) input.u8(0);
+    else treeRoom(stopRoot(input.u8(1), a.remainder.stopRoot), a.remainder.room);
+    input.bytes(a.seed, 32).bytes(a.zk, 32);
+    return readOrdinary(new Output(this.call("ghost_guard_spend", input.build())));
+  }
+
+  // A transfer of the Guard coin at `position` to `newKey`, as guardSpend;
+  // `receiver`: null for the empty rule, or { overrideHash, actionTag,
+  // actionSalt, room }, the receiver's own Guard rule from its capsule.
+  guardTransfer(a) {
+    const input = guardPolicy(new Input().u64(a.chainId).bytes(a.domain, 32), a.policy)
+      .textOrBytes(a.walletWords)
+      .u32(a.guardIndex ?? 0)
+      .text(a.key)
+      .text(a.newKey);
+    treeData(input, a.records, a.salts).u32(a.position).bytes(a.recipient, 20).bytes(word(a.out)).bytes(word(a.fee));
+    if (a.receiver == null) input.u8(0);
+    else {
+      input.u8(1).bytes(a.receiver.overrideHash, 32).bytes(a.receiver.actionTag, 32).bytes(a.receiver.actionSalt, 32);
+      treeRoom(input, a.receiver.room);
+    }
+    input.bytes(a.seed, 32).bytes(a.zk, 32);
+    return readOrdinary(new Output(this.call("ghost_guard_transfer", input.build())));
+  }
+
+  // The words-only spend of the Guard coin at `position`: the key's words
+  // and the tree only, no wallet seed and no stop root. Everything but `fee`
+  // goes to Guard's escrow slot, paid to `recipient` after the hold unless
+  // the stop card cancels. Returns the hash, marker, zero-value remainder,
+  // the slot's amount and the 0x53 envelope.
+  guardWordsOnlySpend(a) {
+    const input = guardPolicy(new Input().u64(a.chainId).bytes(a.domain, 32), a.policy).text(a.key);
+    treeData(input, a.records, a.salts).u32(a.position).bytes(word(a.fee)).bytes(a.recipient, 20);
+    input.bytes(a.seed, 32).bytes(a.zk, 32);
+    const out = new Output(this.call("ghost_guard_words_only_spend", input.build()));
+    return {
+      txHash: out.take(32),
+      marker: out.take(32),
+      remainder: { commitment: out.take(32), number: out.u64(), amount: fromWord(out.take(32)) },
+      slotAmount: fromWord(out.take(32)),
+      envelope: out.rest(),
+    };
+  }
+
+  // The stop card's cancel of the slot `marker` opened (`slot`: its fifteen
+  // words): `stopRoot` (null is refused: the words alone cannot cancel), the
+  // new coin's guard secret from `walletWords` and `guardIndex`, and the new
+  // key. Returns the new coin, the 432-byte calldata and the 0x54 envelope.
+  guardCancel(a) {
+    const input = guardPolicy(new Input().u64(a.chainId).bytes(a.domain, 32), a.policy).bytes(a.marker, 32);
+    stopRoot(slotWords(input, a.slot), a.stopRoot).textOrBytes(a.walletWords).u32(a.guardIndex ?? 0).text(a.newKey);
+    input.bytes(word(a.debit)).u64(a.expiry).bytes(word(a.baseFee)).u64(a.headHeight).bytes(a.selector, 4);
+    input.bytes(a.seed, 32).bytes(a.zk, 32);
+    const out = new Output(this.call("ghost_guard_cancel", input.build()));
+    return {
+      newCoin: { commitment: out.take(32), marker: out.take(32), amount: fromWord(out.take(32)), rule: out.take(32) },
+      calldata: out.take(GUARD_CANCEL_CALLDATA_BYTES),
+      envelope: out.rest(),
+    };
+  }
+
+  // The release call of a slot after the hold: Guard's address and the
+  // calldata (the release selector, then the marker).
+  guardRelease({ policy, marker, slot, headHeight, headTimestamp, selector }) {
+    const input = slotWords(guardPolicy(new Input(), policy).bytes(marker, 32), slot);
+    input.u64(headHeight).u64(headTimestamp).bytes(selector, 4);
+    const out = new Output(this.call("ghost_guard_release", input.build()));
+    return { to: out.take(20), data: out.rest() };
   }
 }
 
