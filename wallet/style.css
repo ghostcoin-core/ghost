@@ -54,6 +54,21 @@ dt {
   color: #ff8080;
 }
 
+.warnings {
+  margin: 8px 0;
+  padding-left: 20px;
+  color: #ffc870;
+}
+
+.coins {
+  padding-left: 20px;
+}
+
+.coins li {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+
 [hidden] {
   display: none;
 }

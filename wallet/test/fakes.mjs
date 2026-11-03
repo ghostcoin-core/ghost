@@ -20,10 +20,13 @@ export async function loadTestGhost() {
   return loadGhost(await readFile(wasmPath));
 }
 
-// The module with every call's name logged.
+// The module with every call's name logged: its methods (wasm.mjs) all go
+// through `call`, so those are logged too.
 export function spyGhost(ghost) {
-  const calls = [];
-  return { calls, call: (name, input) => (calls.push(name), ghost.call(name, input)) };
+  const spy = Object.create(ghost);
+  spy.calls = [];
+  spy.call = (name, input) => (spy.calls.push(name), ghost.call(name, input));
+  return spy;
 }
 
 // A fixed random source; every answer is logged as a copy (the wallet
@@ -121,8 +124,11 @@ export function fakeIndexedDB() {
 // given the screen's arguments and this object) or by the defaults: create,
 // type the right check words, a password, approve with it. `log` lists the
 // screens shown, `words` the words shown, `approvals` each approval's summary.
+// For Ghost Guard: `key` the Phantom Key words shown with `keyWarnings`,
+// `coins` the coins a restore listed, `keyAsks` each summary the key was
+// typed for (by default nothing is typed: null, a rejection).
 export function scriptedUi(script = {}) {
-  const ui = { log: [], errors: [], statuses: [], words: null, approvals: [] };
+  const ui = { log: [], errors: [], statuses: [], words: null, approvals: [], key: null, keyWarnings: null, coins: null, keyAsks: [] };
   const defaults = {
     start: () => "create",
     showWords: () => {},
@@ -130,12 +136,22 @@ export function scriptedUi(script = {}) {
     restoreWords: () => assert.fail("not restoring"),
     chooseLock: () => ({ kind: "password", password: PASSWORD, again: PASSWORD }),
     approve: () => ({ password: PASSWORD }),
+    showKey: () => {},
+    checkKey: (positions) => positions.map((p) => ui.key[p - 1]),
+    guardKey: () => null,
+    showCoins: () => {},
   };
   for (const name of Object.keys(defaults)) {
     ui[name] = async (...args) => {
       ui.log.push(name);
       if (name === "showWords") ui.words = args[0].slice();
       if (name === "approve") ui.approvals.push(args[0]);
+      if (name === "showKey") {
+        ui.key = args[0].slice();
+        ui.keyWarnings = args[1].slice();
+      }
+      if (name === "guardKey") ui.keyAsks.push(args[0]);
+      if (name === "showCoins") ui.coins = args[0].slice();
       return (script[name] ?? defaults[name])(...args, ui);
     };
   }

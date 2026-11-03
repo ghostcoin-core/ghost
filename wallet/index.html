@@ -38,7 +38,7 @@
     </section>
 
     <section id="check-screen" hidden>
-      <h2>Check your backup</h2>
+      <h2 id="check-title">Check your backup</h2>
       <p>Type these three words from what you wrote down.</p>
       <label><span id="check-label-0"></span> <input id="check-0" type="text" spellcheck="false" autocomplete="off" autocapitalize="off"></label>
       <label><span id="check-label-1"></span> <input id="check-1" type="text" spellcheck="false" autocomplete="off" autocapitalize="off"></label>
@@ -61,11 +61,35 @@
       <button id="lock-done" type="button">Use this password</button>
     </section>
 
+    <section id="key-screen" hidden>
+      <h2>Save your Phantom Key</h2>
+      <p>These 24 words are the new Guard coin. Anyone with them can make a words-only spend of it, which your stop card can cancel during the hold. They are shown once.</p>
+      <ol id="key-words" class="words"></ol>
+      <ul id="key-warnings" class="warnings"></ul>
+      <button id="key-done" type="button">I saved it</button>
+    </section>
+
+    <section id="guard-key-screen" hidden>
+      <h2 id="guard-key-title"></h2>
+      <p>Asked by <strong id="guard-key-origin"></strong>. Type the Phantom Key here: the app never sees it.</p>
+      <label>Phantom Key (24 words or 21 groups of digits) <textarea id="guard-key-words" rows="4" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
+      <button id="guard-key-done" type="button">Continue</button>
+      <button id="guard-key-reject" type="button">Reject</button>
+    </section>
+
+    <section id="coins-screen" hidden>
+      <h2>Coins of this Phantom Key</h2>
+      <ul id="coins" class="coins"></ul>
+      <button id="coins-done" type="button">Done</button>
+    </section>
+
     <section id="approve-screen" hidden>
       <h2 id="approve-title"></h2>
       <p>Asked by <strong id="approve-origin"></strong></p>
       <dl id="approve-details"></dl>
+      <ul id="approve-warnings" class="warnings"></ul>
       <label id="approve-destination-label" hidden>Destination address (0x, typed by you, never by the app) <input id="approve-destination" type="text" spellcheck="false" autocomplete="off" autocapitalize="off"></label>
+      <label id="approve-stop-label" hidden>Stop root from your stop card (64 hex digits, typed by you, never by the app) <input id="approve-stop" type="password" spellcheck="false" autocomplete="off" autocapitalize="off"></label>
       <label id="approve-password-label">Password <input id="approve-password" type="password" autocomplete="current-password"></label>
       <button id="approve" type="button">Approve</button>
       <button id="reject" type="button">Reject</button>

@@ -9,7 +9,7 @@ import { WASM } from "./ghost-wasm.mjs";
 import { createWallet, vaultStore } from "./wallet.mjs";
 
 const $ = (id) => document.getElementById(id);
-const SCREENS = ["status", "start", "words", "check", "restore", "lock", "approve"];
+const SCREENS = ["status", "start", "words", "check", "restore", "lock", "key", "guard-key", "coins", "approve"];
 
 function show(name) {
   for (const s of SCREENS) $(`${s}-screen`).hidden = s !== name;
@@ -42,6 +42,33 @@ function row(list, term, value) {
   list.append(dt, dd);
 }
 
+// List items of `texts`, for the warnings of a Guard screen.
+function items(texts) {
+  return texts.map((text) => {
+    const li = document.createElement("li");
+    li.textContent = text;
+    return li;
+  });
+}
+
+// The three check words, typed back under `title`.
+function checkThree(title, positions) {
+  $("check-title").textContent = title;
+  positions.forEach((p, i) => {
+    $(`check-label-${i}`).textContent = `Word ${p}`;
+  });
+  show("check");
+  return wait({ "check-done": () => positions.map((_, i) => take(`check-${i}`)) });
+}
+
+const GUARD_KEY_TITLES = {
+  guardRestore: "Restore from a Phantom Key",
+  guardSpend: "Spend a Guard coin",
+  guardWordsOnly: "Words-only spend of a Guard coin",
+};
+
+const RULE_NAMES = { guard: "Guard coin", empty: "plain coin", other: "coin with another rule" };
+
 const ui = {
   status(text) {
     $("status").textContent = text;
@@ -66,11 +93,48 @@ const ui = {
     return wait({ "words-done": () => $("words").replaceChildren() });
   },
   checkWords(positions) {
-    positions.forEach((p, i) => {
-      $(`check-label-${i}`).textContent = `Word ${p}`;
+    return checkThree("Check your backup", positions);
+  },
+  // A Guard commit's new Phantom Key, shown once with the warnings.
+  showKey(words, warnings) {
+    $("key-words").replaceChildren(...items(words));
+    $("key-warnings").replaceChildren(...items(warnings));
+    show("key");
+    return wait({ "key-done": () => $("key-words").replaceChildren() });
+  },
+  checkKey(positions) {
+    return checkThree("Check your Phantom Key", positions);
+  },
+  // The Phantom Key of a Guard request, typed here; null for Reject.
+  guardKey(summary) {
+    $("guard-key-title").textContent = GUARD_KEY_TITLES[summary.kind];
+    $("guard-key-origin").textContent = summary.origin;
+    show("guard-key");
+    return wait({
+      "guard-key-done": () => take("guard-key-words"),
+      "guard-key-reject": () => {
+        take("guard-key-words");
+        return null;
+      },
     });
-    show("check");
-    return wait({ "check-done": () => positions.map((_, i) => take(`check-${i}`)) });
+  },
+  // The coins a restore found, each with its warnings.
+  showCoins(coins) {
+    const list = coins.map((coin) => {
+      const li = document.createElement("li");
+      const state = coin.spent ? "spent" : "unspent";
+      li.textContent = `Number ${coin.number}: ${coin.amount} GHOST, ${RULE_NAMES[coin.rule]}, ${state}, at position ${coin.position}`;
+      if (coin.warnings.length > 0) {
+        const warnings = document.createElement("ul");
+        warnings.className = "warnings";
+        warnings.replaceChildren(...items(coin.warnings));
+        li.append(warnings);
+      }
+      return li;
+    });
+    $("coins").replaceChildren(...(list.length > 0 ? list : items(["No coin of these words in the tree the app gave."])));
+    show("coins");
+    return wait({ "coins-done": () => $("coins").replaceChildren() });
   },
   restoreWords() {
     show("restore");
@@ -102,6 +166,35 @@ const ui = {
       row(list, "Amount moved", `${summary.amount} GHOST`);
       row(list, "Maximum fee", `${summary.maxFee} GHOST`);
       row(list, "Chain id", summary.chainId);
+    } else if (summary.kind === "guardCommit") {
+      $("approve-title").textContent = "Guard commit: a new coin under your stop card";
+      row(list, "From", summary.from ?? "your first account (unlock to sign with it)");
+      row(list, "Scheme", summary.scheme ?? "known once unlocked");
+      row(list, "Amount", `${summary.amount} GHOST`);
+      row(list, "Maximum fee", `${summary.maxFee} GHOST`);
+      row(list, "Commit entry", summary.to);
+      row(list, "Guard address", summary.guardAddress);
+      row(list, "Cost of a cancel", `${summary.actionCost} GHOST`);
+      row(list, "Chain id", summary.chainId);
+      row(list, "Phantom Key", "a new one, made and shown in this wallet");
+    } else if (summary.kind === "guardSpend") {
+      $("approve-title").textContent = "Guard: spend normally";
+      row(list, "Coin holds", `${summary.amount} GHOST`);
+      row(list, "Amount", `${summary.out} GHOST`);
+      row(list, "Fee", `${summary.fee} GHOST`);
+      row(list, "To", summary.recipient);
+      row(list, "Left in the key", `${summary.remainder} GHOST`);
+      row(list, "Left under", summary.remainderRule === "guard" ? "a new Guard rule of your stop card" : "no rule: a plain coin");
+      row(list, "Chain id", summary.chainId);
+    } else if (summary.kind === "guardWordsOnly") {
+      $("approve-title").textContent = "Guard: words-only spend";
+      row(list, "Coin holds", `${summary.amount} GHOST`);
+      row(list, "Into Guard's slot", `${summary.slot} GHOST`);
+      row(list, "Fee", `${summary.fee} GHOST`);
+      row(list, "Paid after the hold (72 hours) to", summary.recipient);
+      row(list, "Cost of a cancel", `${summary.actionCost} GHOST`);
+      row(list, "During the hold", "the coin's stop card can cancel this spend");
+      row(list, "Chain id", summary.chainId);
     } else {
       $("approve-title").textContent = "Sign a transaction";
       row(list, "From", summary.from ?? "your first account (unlock to sign with it)");
@@ -113,19 +206,26 @@ const ui = {
       row(list, "Chain id", summary.chainId);
       row(list, "Data", `${summary.dataBytes} bytes`);
     }
+    $("approve-warnings").replaceChildren(...items(summary.warnings ?? []));
     $("approve-password-label").hidden = kind !== "password";
-    // The rescue destination is typed here, never taken from the app.
+    // The rescue destination and the stop root are typed here, never taken
+    // from the app.
     const rescue = summary.kind === "rescue";
+    const stop = summary.kind === "guardCommit" || (summary.kind === "guardSpend" && summary.remainderRule === "guard");
     $("approve-destination-label").hidden = !rescue;
+    $("approve-stop-label").hidden = !stop;
     show("approve");
     return wait({
       approve: () => {
         const destination = take("approve-destination");
+        const stopRoot = take("approve-stop");
         const password = take("approve-password");
-        return rescue ? { password, destination } : { password };
+        if (rescue) return { password, destination };
+        return stop ? { password, stopRoot } : { password };
       },
       reject: () => {
         take("approve-destination");
+        take("approve-stop");
         return null;
       },
     });

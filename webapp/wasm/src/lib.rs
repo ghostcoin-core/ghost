@@ -45,7 +45,14 @@
 //!   receipts checked against its header's `receiptsRoot`, and the coin
 //!   tree's leaves, notes, salts and the spent markers the page downloaded
 //!   checked against the records of those receipts, so an endpoint cannot
-//!   alter, drop, reorder, hide or invent any of them.
+//!   alter, drop, reorder, hide or invent any of them;
+//! - Ghost Guard, over the client library's `guard` module (the `guard`
+//!   module below): the Guard commit, restore of Guard coins, the normal
+//!   spend with the override, the transfer, the words-only spend in the
+//!   policy class, the cancel by the stop card, the release and the
+//!   warnings, with the client library's refusals. The guard secret is
+//!   derived from the wallet seed's words and the stop root is the stop
+//!   card's 32 bytes, passed in; neither is derived from a Phantom Key.
 //!
 //! # Secrets
 //!
@@ -551,16 +558,21 @@ fn found_out(found: &[ghost_client::FoundCoin], spent: &[Marker]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&(found.len() as u32).to_be_bytes());
     for coin in found {
-        out.extend_from_slice(&coin.number.to_be_bytes());
-        out.extend_from_slice(&coin.amount.to_bytes());
-        out.extend_from_slice(&coin.tree_index.to_be_bytes());
-        out.extend_from_slice(&coin.position.to_be_bytes());
-        out.extend_from_slice(coin.commitment.as_bytes());
-        out.extend_from_slice(coin.marker.as_bytes());
-        out.push(u8::from(spent.contains(&coin.marker)));
-        push_salt(&mut out, Some(&coin.salt));
+        coin_out(&mut out, coin, spent);
     }
     out
+}
+
+/// One coin restore found, as [`found_out`] writes it.
+fn coin_out(out: &mut Vec<u8>, coin: &ghost_client::FoundCoin, spent: &[Marker]) {
+    out.extend_from_slice(&coin.number.to_be_bytes());
+    out.extend_from_slice(&coin.amount.to_bytes());
+    out.extend_from_slice(&coin.tree_index.to_be_bytes());
+    out.extend_from_slice(&coin.position.to_be_bytes());
+    out.extend_from_slice(coin.commitment.as_bytes());
+    out.extend_from_slice(coin.marker.as_bytes());
+    out.push(u8::from(spent.contains(&coin.marker)));
+    push_salt(out, Some(&coin.salt));
 }
 
 /// Restores a key's coins from some leaves of one coin tree, each with its
@@ -1470,6 +1482,593 @@ pub extern "C" fn ghost_receipts_check(ptr: *const u8, len: usize) -> u32 {
         check_markers(up_to, listed).map_err(|e| e.to_string())?;
         Ok(Vec::new())
     })
+}
+
+/// Ghost Guard (spec 10, sections 3.1, 12 and 13), over the client library's
+/// `guard` module: the commit, restore, the normal spend, the transfer, the
+/// words-only spend, the cancel, the release and the warnings, each with the
+/// client library's refusals.
+///
+/// The two Guard secrets never come from a Phantom Key. The guard secret is
+/// derived from the wallet seed's words and an index
+/// (`GuardSecret::from_seed`); the stop root is the 32 bytes the stop card
+/// gives (`StopRoot::from_bytes`), passed in by the caller. A stop root is
+/// given as a kind byte, 0 for none and 1 followed by its 32 bytes, so a call
+/// made with the words alone can say so and be refused by name. The Guard
+/// address, its code hash and the selectors of its entry points are not final
+/// (spec 10, section 15, item 4): every call takes them.
+///
+/// The coin a spend uses is read from the tree data the caller passes, the
+/// leaves with their notes and the salt beside each, as restore reads it: the
+/// leaf at the given position must be a Guard coin of the key, of this policy.
+mod guard {
+    use super::*;
+    use ghost_client::guard::{
+        CANCEL_CALLDATA_BYTES, GuardWarning, RELEASE_CALLDATA_BYTES, SLOT_WORDS, action_cost, hand_over_warning,
+        slot_cost_warning,
+    };
+    use ghost_client::{
+        CancelTerms, ChainHead, EscrowSlot, FoundCoin, GuardChain, GuardPolicy, GuardRule, GuardSecret, RemainderRule,
+        StopRoot, TreeRoom, guard_cancel, guard_commit, guard_release, guard_spend, guard_transfer, restore_guard_coins,
+        words_only_spend,
+    };
+    use ghost_proofs::{CoinRevealV2, PolicyReveal, verify_coin_reveal_v2, verify_know_action, verify_policy_reveal};
+
+    /// The version of an ordinary reveal (type `0x50`) under spec 10, section
+    /// 4: `0x0002`.
+    pub const ORDINARY_VERSION: [u8; 2] = [0x00, 0x02];
+    /// The type byte of a policy reveal (spec 10, section 5.1).
+    pub const POLICY_TYPE_BYTE: u8 = 0x53;
+    /// The version of a policy reveal: `0x0001`.
+    pub const POLICY_VERSION: [u8; 2] = [0x00, 0x01];
+    /// The envelope of an ordinary version 2 reveal: the type byte, version,
+    /// chain identifier, marker, root, remainder, recipient, amount out, fee,
+    /// the proof field and the 380-byte remainder note (spec 10, section 4.1).
+    pub const ORDINARY_ENVELOPE_BYTES: usize = 1 + 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32 + PROOF_FIELD_BYTES + NOTE_BYTES;
+    /// The envelope of a policy reveal (spec 10, section 5.1).
+    pub const POLICY_ENVELOPE_BYTES: usize = 1 + 350 + PROOF_FIELD_BYTES + NOTE_BYTES;
+    const _: () = assert!(ORDINARY_ENVELOPE_BYTES == 1_311_291);
+    const _: () = assert!(POLICY_ENVELOPE_BYTES == 1_311_451);
+
+    /// The warning flags [`ghost_guard_check`] and [`ghost_guard_restore`]
+    /// write: a coin handed over as words alone stays under the giver's stop
+    /// key; the coin is not larger than the cost of a cancel; that cost is
+    /// unknown.
+    const WARN_HANDED_OVER: u8 = 1;
+    const WARN_SLOT_TOO_SMALL: u8 = 2;
+    const WARN_COST_UNKNOWN: u8 = 4;
+
+    /// How [`ghost_guard_restore`] names a coin's rule: the empty rule, a
+    /// Guard rule of the policy, any other rule.
+    const RULE_EMPTY: u8 = 0;
+    const RULE_GUARD: u8 = 1;
+    const RULE_OTHER: u8 = 2;
+
+    fn guard_error(error: ghost_client::GuardError) -> String {
+        error.to_string()
+    }
+
+    /// The Guard policy: its address (20) and code hash (32).
+    fn policy(input: &mut Input) -> Result<GuardPolicy, String> {
+        let address = input.array()?;
+        let codehash = input.array()?;
+        GuardPolicy::new(address, codehash).map_err(guard_error)
+    }
+
+    /// The guard secret of a wallet seed: its words (text) and the index (4).
+    fn secret(input: &mut Input) -> Result<GuardSecret, String> {
+        let seed = wallet_seed(input.text()?)?;
+        Ok(GuardSecret::from_seed(&seed, input.u32()?))
+    }
+
+    /// A stop root as the caller gives it: 0 for none, or 1 and the 32 bytes
+    /// the stop card holds.
+    fn stop_root(input: &mut Input) -> Result<Option<StopRoot>, String> {
+        match input.u8()? {
+            0 => Ok(None),
+            1 => {
+                let mut bytes = input.array::<32>()?;
+                let root = StopRoot::from_bytes(bytes).map_err(guard_error);
+                wipe(&mut bytes);
+                root.map(Some)
+            }
+            _ => Err(String::from("unknown stop root kind")),
+        }
+    }
+
+    /// The tree room: the leaves the coin tree holds (8) and the most leaves
+    /// one block can add (8).
+    fn room(input: &mut Input) -> Result<TreeRoom, String> {
+        Ok(TreeRoom { filled_leaves: input.u64()?, leaves_per_block: input.u64()? })
+    }
+
+    fn chain(input: &mut Input) -> Result<GuardChain, String> {
+        Ok(GuardChain { chain_id: input.u64()?, domain: input.array()? })
+    }
+
+    /// The leaves with their notes (count, 412 each, from position 0) and the
+    /// salt beside each (count, 17 each).
+    fn tree_leaves(input: &mut Input) -> Result<Vec<TreeLeaf>, String> {
+        let records = input.records::<LEAF_RECORD_BYTES>()?;
+        let salts = input.records::<SALT_RECORD_BYTES>()?;
+        if salts.len() != records.len() {
+            return Err(String::from("the salts do not match the leaves one for one"));
+        }
+        let mut leaves = Vec::with_capacity(records.len());
+        for (record, salt) in records.iter().zip(&salts) {
+            leaves.push(TreeLeaf {
+                commitment: Commitment::from_bytes(record[..32].try_into().expect("32 bytes")),
+                note: record[32..].try_into().expect("note bytes"),
+                salt: salt_of(salt)?,
+            });
+        }
+        Ok(leaves)
+    }
+
+    /// The Guard coin of `key` at `position` of the tree of `leaves`, as
+    /// restore reads it, with its rule and the tree's root.
+    fn guard_coin(
+        key: &PhantomKey,
+        chain_id: u64,
+        policy: &GuardPolicy,
+        leaves: &[TreeLeaf],
+        position: u32,
+    ) -> Result<(OwnedCoin, GuardRule, [u8; 32]), String> {
+        let index = position as usize;
+        let leaf = leaves.get(index).ok_or_else(|| String::from("the coin is not in the tree under the chosen root"))?;
+        let restored = restore_coins_at(key, chain_id, 0, &[(position, leaf.clone())], &[]).map_err(|e| e.to_string())?;
+        let coin = restored
+            .found
+            .first()
+            .ok_or_else(|| String::from("the leaf at the position is not a coin of this key"))?;
+        let rule = GuardRule::of_coin(policy, coin).map_err(guard_error)?;
+        let commitments: Vec<[u8; 32]> = leaves.iter().map(|leaf| *leaf.commitment.as_bytes()).collect();
+        let z = zeros();
+        let root = tree_root(&commitments, &z);
+        Ok((coin.owned(witness(&commitments, index, &z)), rule, root))
+    }
+
+    /// Writes the proof into its zero-padded field.
+    fn push_proof(out: &mut Vec<u8>, proof: &Proof) -> Result<(), String> {
+        let bytes = proof.as_bytes();
+        if bytes.len() > PROOF_FIELD_BYTES {
+            return Err(format!(
+                "the proof has {} bytes, more than the {PROOF_FIELD_BYTES} the transaction carries; prove again",
+                bytes.len()
+            ));
+        }
+        out.extend_from_slice(bytes);
+        out.resize(out.len() + PROOF_FIELD_BYTES - bytes.len(), 0);
+        Ok(())
+    }
+
+    /// The envelope of an ordinary version 2 reveal (spec 10, section 4.1).
+    pub fn ordinary_envelope(chain_id: u64, tx: &CoinRevealV2, proof: &Proof) -> Result<Vec<u8>, String> {
+        let mut out = Vec::with_capacity(ORDINARY_ENVELOPE_BYTES);
+        out.push(TYPE_BYTE);
+        out.extend_from_slice(&ORDINARY_VERSION);
+        out.extend_from_slice(&chain_id.to_be_bytes());
+        for field in [&tx.marker[..], &tx.root, &tx.remainder, &tx.recipient, &tx.out, &tx.fee] {
+            out.extend_from_slice(field);
+        }
+        push_proof(&mut out, proof)?;
+        out.extend_from_slice(&tx.remainder_note);
+        debug_assert_eq!(out.len(), ORDINARY_ENVELOPE_BYTES);
+        Ok(out)
+    }
+
+    /// The envelope of a policy reveal (spec 10, section 5.1).
+    pub fn policy_envelope(chain_id: u64, tx: &PolicyReveal, proof: &Proof) -> Result<Vec<u8>, String> {
+        let mut out = Vec::with_capacity(POLICY_ENVELOPE_BYTES);
+        out.push(POLICY_TYPE_BYTE);
+        out.extend_from_slice(&POLICY_VERSION);
+        out.extend_from_slice(&chain_id.to_be_bytes());
+        for field in [&tx.marker[..], &tx.root, &tx.remainder, &tx.out, &tx.fee, &tx.policy_address] {
+            out.extend_from_slice(field);
+        }
+        for field in [&tx.policy_codehash, &tx.params_hash, &tx.action_tag, &tx.action_salt, &tx.instr] {
+            out.extend_from_slice(field);
+        }
+        push_proof(&mut out, proof)?;
+        out.extend_from_slice(&tx.remainder_note);
+        debug_assert_eq!(out.len(), POLICY_ENVELOPE_BYTES);
+        Ok(out)
+    }
+
+    /// The warning flags of a coin of `value` at `base_fee`.
+    fn cost_flags(value: Amount, base_fee: u128) -> ([u8; 32], u8) {
+        let cost = action_cost(base_fee);
+        let warning = slot_cost_warning(value, cost.unwrap_or(0));
+        let flag = match warning {
+            Some(GuardWarning::SlotNotAboveActionCost) => WARN_SLOT_TOO_SMALL,
+            Some(GuardWarning::ActionCostUnknown) => WARN_COST_UNKNOWN,
+            _ => 0,
+        };
+        (word_of(cost.unwrap_or(0)), flag)
+    }
+
+    /// What a wallet checks before it shows a Guard commit or a words-only
+    /// spend. Input: the policy (20 + 32), the coin's amount word (32; for a
+    /// words-only spend, what goes to the slot), the base fee word (32), and
+    /// the tree room (1: 0 for none, or 1 and the leaves held (8) and the
+    /// most leaves per block (8)). Refuses a reserved Guard address or a zero
+    /// code hash, a zero amount, and a tree within the hold of full or whose
+    /// room cannot be checked. Output: the action cost word (32, zero when it
+    /// is unknown) and the warning flags (1): 1, a coin handed over as words
+    /// alone stays under the giver's stop key (always, for a Guard coin); 2,
+    /// the coin is not larger than the cost of a cancel; 4, that cost is
+    /// unknown.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_guard_check(ptr: *const u8, len: usize) -> u32 {
+        run(ptr, len, |input| {
+            policy(input)?;
+            let value = amount(input.array()?)?;
+            let base_fee = wide(input.array()?)?;
+            let room = match input.u8()? {
+                0 => None,
+                1 => Some(room(input)?),
+                _ => return Err(String::from("unknown tree room kind")),
+            };
+            if value.wei() == 0 {
+                return Err(String::from("a Guard coin holds at least 1 wei"));
+            }
+            if let Some(room) = room {
+                room.check().map_err(guard_error)?;
+            }
+            let (cost, flag) = cost_flags(value, base_fee);
+            let mut out = cost.to_vec();
+            out.push(WARN_HANDED_OVER | flag);
+            Ok(out)
+        })
+    }
+
+    /// A Guard commit: number 0 of a key, its fingerprint holding a new Guard
+    /// rule under a fresh action salt, the rule's capsule in its note. Input:
+    /// chain identifier (8), the policy (20 + 32), the wallet seed's words
+    /// (text) and the guard secret's index (4), the stop root (1 + 32), the
+    /// amount word (32), the tree room (8 + 8), seed (32), the key text.
+    /// Refuses as the client library does (a tree within the hold of full)
+    /// and a commit with no stop root or of zero wei. Output: `C` (32),
+    /// marker (32), the rule (32), then the commit payload (430).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_guard_commit(ptr: *const u8, len: usize) -> u32 {
+        run(ptr, len, |input| {
+            let chain_id = input.u64()?;
+            let policy = policy(input)?;
+            let secret = secret(input)?;
+            let stop = stop_root(input)?;
+            let value = amount(input.array()?)?;
+            let room = room(input)?;
+            let mut rng = rng(input.array()?);
+            let key = key(input.text()?)?;
+            let stop = stop.ok_or_else(|| String::from("a Guard commit needs the stop root from the stop card"))?;
+            if value.wei() == 0 {
+                return Err(String::from("a commit holds at least 1 wei"));
+            }
+            let rule = GuardRule::new(&policy, &secret, &stop, &mut rng).map_err(guard_error)?;
+            let commit = guard_commit(&key, chain_id, value, &rule, &room, &mut rng).map_err(guard_error)?;
+            let mut out = Vec::with_capacity(96 + SALTED_COMMIT_PAYLOAD_BYTES);
+            out.extend_from_slice(commit.commit.commitment.as_bytes());
+            out.extend_from_slice(commit.commit.marker.as_bytes());
+            out.extend_from_slice(commit.rule.rule().as_bytes());
+            out.extend_from_slice(&commit.data);
+            Ok(out)
+        })
+    }
+
+    /// Restores a key's coins in one coin tree, as [`ghost_restore`], and
+    /// names the Guard coins of the policy by their capsules: a committed
+    /// Guard coin, a spend's Guard remainder and the coin a cancel
+    /// re-committed to a new key. Input: chain identifier (8), the tree's
+    /// index (4), the policy (20 + 32), key text, the leaves with their notes
+    /// (count, 412 each), the salts (count, 17 each), the spent markers
+    /// (count, 32 each). Output: the number found (4), then per coin the
+    /// fields of [`ghost_restore`], its warning flags (1: 1 when the coin has
+    /// a rule, so that handed over as words alone it stays under the giver's
+    /// stop key), its rule's kind (1: 0 empty, 1 Guard, 2 another rule), the
+    /// rule (32), and for a Guard coin its override hash, action tag and
+    /// action salt (32 each).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_guard_restore(ptr: *const u8, len: usize) -> u32 {
+        run(ptr, len, |input| {
+            let chain_id = input.u64()?;
+            let tree_index = input.u32()?;
+            let policy = policy(input)?;
+            let key = key(input.text()?)?;
+            let leaves = tree_leaves(input)?;
+            let spent: Vec<Marker> = input.records::<32>()?.into_iter().map(Marker::from_bytes).collect();
+            let restored =
+                restore_guard_coins(&key, chain_id, tree_index, &leaves, &spent, &policy).map_err(|e| e.to_string())?;
+            let found: &[FoundCoin] = &restored.restored.found;
+            let mut out = (found.len() as u32).to_be_bytes().to_vec();
+            for coin in found {
+                coin_out(&mut out, coin, &spent);
+                out.push(if hand_over_warning(coin).is_some() { WARN_HANDED_OVER } else { 0 });
+                let guard = restored.guard.iter().find(|g| g.coin.commitment == coin.commitment && g.coin.position == coin.position);
+                match guard {
+                    Some(g) => {
+                        out.push(RULE_GUARD);
+                        out.extend_from_slice(g.rule.rule().as_bytes());
+                        out.extend_from_slice(g.rule.override_hash());
+                        out.extend_from_slice(g.rule.action_tag());
+                        out.extend_from_slice(g.rule.action_salt().as_bytes());
+                    }
+                    None => {
+                        out.push(if coin.rule.is_empty() { RULE_EMPTY } else { RULE_OTHER });
+                        out.extend_from_slice(coin.rule.as_bytes());
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// The output of a built ordinary reveal: transaction hash (32), the
+    /// spent marker (32), the remainder's `C` (32), number (8), amount word
+    /// (32) and rule (32), then the envelope.
+    fn ordinary_out(chain: &GuardChain, built: &ghost_client::BuiltGuardSpend) -> Result<Vec<u8>, String> {
+        verify_coin_reveal_v2(&chain.ordinary_params(), &built.reveal, &built.proof)
+            .map_err(|e| format!("the proof did not verify in the worker: {e}"))?;
+        let envelope = ordinary_envelope(chain.chain_id, &built.reveal, &built.proof)?;
+        let mut out = Vec::with_capacity(168 + envelope.len());
+        out.extend_from_slice(&keccak256(&envelope));
+        out.extend_from_slice(&built.reveal.marker);
+        out.extend_from_slice(built.remainder.commitment.as_bytes());
+        out.extend_from_slice(&built.remainder.number.to_be_bytes());
+        out.extend_from_slice(&built.remainder.amount.to_bytes());
+        out.extend_from_slice(built.remainder.rule.as_bytes());
+        out.extend_from_slice(&envelope);
+        Ok(out)
+    }
+
+    /// The normal spend of a Guard coin: the ordinary class with the
+    /// override, which needs the guard secret. Input: chain identifier (8),
+    /// domain (32), the policy (20 + 32), the wallet seed's words (text) and
+    /// the guard secret's index (4), key text, the tree under the root (the
+    /// leaves with their notes and salts, as [`ghost_guard_restore`]), the
+    /// coin's position (4), recipient (20), amount out (32), fee (32), the
+    /// remainder's rule (1: 0 the empty rule; 1 a new Guard rule, then the
+    /// stop root (1 + 32) and the tree room (8 + 8)), seed (32),
+    /// zero-knowledge randomness (32). Refuses as the client library does: a
+    /// leaf that is not a Guard coin of the key and policy, a guard secret
+    /// that does not open its override, amounts that do not balance, a Guard
+    /// remainder with no stop root or a tree within the hold of full. Output:
+    /// that of [`ordinary_out`].
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_guard_spend(ptr: *const u8, len: usize) -> u32 {
+        run(ptr, len, |input| {
+            let chain = chain(input)?;
+            let policy = policy(input)?;
+            let secret = secret(input)?;
+            let key = key(input.text()?)?;
+            let leaves = tree_leaves(input)?;
+            let position = input.u32()?;
+            let recipient = input.array()?;
+            let out = amount(input.array()?)?;
+            let fee = amount(input.array()?)?;
+            let remainder = remainder_choice(input)?;
+            let mut rng = rng(input.array()?);
+            let zk = input.array()?;
+            let (coin, rule, root) = guard_coin(&key, chain.chain_id, &policy, &leaves, position)?;
+            let remainder_rule = remainder.into_rule(&policy, &secret, &mut rng)?;
+            let terms = RevealTerms { root, recipient, fee };
+            let built = guard_spend(&chain, &key, &coin, &rule, &secret, &terms, out, remainder_rule, &mut rng, zk)
+                .map_err(guard_error)?;
+            ordinary_out(&chain, &built)
+        })
+    }
+
+    /// The rule the remainder of a normal spend takes, as read from the input.
+    enum RemainderChoice {
+        Empty,
+        Guard(Option<StopRoot>, TreeRoom),
+    }
+
+    fn remainder_choice(input: &mut Input) -> Result<RemainderChoice, String> {
+        match input.u8()? {
+            0 => Ok(RemainderChoice::Empty),
+            1 => {
+                let stop = stop_root(input)?;
+                Ok(RemainderChoice::Guard(stop, room(input)?))
+            }
+            _ => Err(String::from("unknown remainder rule kind")),
+        }
+    }
+
+    impl RemainderChoice {
+        /// The remainder's rule: a new Guard rule of the owner's guard secret
+        /// and stop root draws a fresh action salt.
+        fn into_rule(self, policy: &GuardPolicy, secret: &GuardSecret, rng: &mut StdRng) -> Result<RemainderRule, String> {
+            match self {
+                Self::Empty => Ok(RemainderRule::Empty),
+                Self::Guard(stop, room) => {
+                    let stop = stop.ok_or_else(|| String::from("a Guard remainder needs the stop root from the stop card"))?;
+                    let rule = GuardRule::new(policy, secret, &stop, rng).map_err(guard_error)?;
+                    Ok(RemainderRule::Guard { rule, room })
+                }
+            }
+        }
+    }
+
+    /// A transfer of a Guard coin to a new key: the ordinary class with the
+    /// override, the remainder going to the new key's number 0 with the
+    /// receiver's own Guard rule (its capsule fields) or the empty rule.
+    /// Input: as [`ghost_guard_spend`] with the new key's text after the key
+    /// text, and in place of the remainder's rule the receiver's (1: 0 the
+    /// empty rule; 1 the receiver's override hash, action tag and action salt
+    /// (32 each) and the tree room (8 + 8)). Output: that of
+    /// [`ordinary_out`].
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_guard_transfer(ptr: *const u8, len: usize) -> u32 {
+        run(ptr, len, |input| {
+            let chain = chain(input)?;
+            let policy = policy(input)?;
+            let secret = secret(input)?;
+            let key = key(input.text()?)?;
+            let new_key = key_for_claim(input.text()?)?;
+            let leaves = tree_leaves(input)?;
+            let position = input.u32()?;
+            let recipient = input.array()?;
+            let out = amount(input.array()?)?;
+            let fee = amount(input.array()?)?;
+            let receiver_rule = match input.u8()? {
+                0 => RemainderRule::Empty,
+                1 => {
+                    let capsule = Capsule::policy(
+                        *policy.address(),
+                        *policy.codehash(),
+                        &[],
+                        input.array()?,
+                        input.array()?,
+                        input.array()?,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let rule = GuardRule::from_capsule(&policy, &capsule).map_err(guard_error)?;
+                    RemainderRule::Guard { rule, room: room(input)? }
+                }
+                _ => return Err(String::from("unknown remainder rule kind")),
+            };
+            let mut rng = rng(input.array()?);
+            let zk = input.array()?;
+            let (coin, rule, root) = guard_coin(&key, chain.chain_id, &policy, &leaves, position)?;
+            let terms = RevealTerms { root, recipient, fee };
+            let built = guard_transfer(
+                &chain,
+                &key,
+                &coin,
+                &rule,
+                &secret,
+                &new_key,
+                &terms,
+                out,
+                receiver_rule,
+                &mut rng,
+                zk,
+            )
+            .map_err(guard_error)?;
+            ordinary_out(&chain, &built)
+        })
+    }
+
+    /// The words-only spend of a Guard coin: the policy class, `v - fee` into
+    /// Guard's escrow slot with the recipient in `instr`. It takes the key's
+    /// words and the chain data only: no wallet seed, no guard secret, no stop
+    /// root. Input: chain identifier (8), domain (32), the policy (20 + 32),
+    /// key text, the tree under the root (as [`ghost_guard_spend`]), the
+    /// coin's position (4), fee (32), recipient (20), seed (32),
+    /// zero-knowledge randomness (32). Output: transaction hash (32), the
+    /// spent marker (32), the zero-value remainder's `C` (32), number (8),
+    /// amount word (32), the amount the slot opens with (32), then the
+    /// envelope (type `0x53`).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_guard_words_only_spend(ptr: *const u8, len: usize) -> u32 {
+        run(ptr, len, |input| {
+            let chain = chain(input)?;
+            let policy = policy(input)?;
+            let key = key(input.text()?)?;
+            let leaves = tree_leaves(input)?;
+            let position = input.u32()?;
+            let fee = amount(input.array()?)?;
+            let recipient: [u8; 20] = input.array()?;
+            let mut rng = rng(input.array()?);
+            let zk = input.array()?;
+            let (coin, rule, root) = guard_coin(&key, chain.chain_id, &policy, &leaves, position)?;
+            let built = words_only_spend(&chain, &key, &coin, &rule, root, fee, &recipient, &mut rng, zk)
+                .map_err(guard_error)?;
+            verify_policy_reveal(&chain.policy_params(), &built.reveal, &built.proof)
+                .map_err(|e| format!("the proof did not verify in the worker: {e}"))?;
+            let envelope = policy_envelope(chain.chain_id, &built.reveal, &built.proof)?;
+            let mut out = Vec::with_capacity(168 + envelope.len());
+            out.extend_from_slice(&keccak256(&envelope));
+            out.extend_from_slice(&built.reveal.marker);
+            out.extend_from_slice(built.remainder.commitment.as_bytes());
+            out.extend_from_slice(&built.remainder.number.to_be_bytes());
+            out.extend_from_slice(&built.remainder.amount.to_bytes());
+            out.extend_from_slice(&built.reveal.out);
+            out.extend_from_slice(&envelope);
+            Ok(out)
+        })
+    }
+
+    /// The fifteen 32-byte words of `slot(marker)` (spec 10, section 7.2).
+    fn slot(input: &mut Input) -> Result<EscrowSlot, String> {
+        let mut words = [[0u8; 32]; SLOT_WORDS];
+        for word in words.iter_mut() {
+            *word = input.array()?;
+        }
+        EscrowSlot::from_words(&words).map_err(guard_error)
+    }
+
+    /// The cancel of a words-only spend by the stop card: a policy action
+    /// (type `0x54`) that re-commits `remaining - debit` to a new key under a
+    /// new Guard rule with a fresh action salt. It needs the stop root that
+    /// opens the slot's action tag; the words alone cannot cancel. Input:
+    /// chain identifier (8), domain (32), the policy (20 + 32), the slot's
+    /// marker (32), the slot's fifteen words (32 each), the stop root (1 +
+    /// 32), the wallet seed's words (text) and the guard secret's index (4)
+    /// for the new coin's rule, the new key's text, the debit word (32), the
+    /// expiry (8), the base fee word (32; the action cost is `G_ACTION` times
+    /// it), the head's height (8), the cancel selector (4), seed (32),
+    /// zero-knowledge randomness (32). Refuses a cancel with no stop root and
+    /// as the client library does. Output: the new coin's `C` (32), marker
+    /// (32), amount word (32) and rule (32), the calldata (432), then the
+    /// envelope.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_guard_cancel(ptr: *const u8, len: usize) -> u32 {
+        run(ptr, len, |input| {
+            let chain = chain(input)?;
+            let policy = policy(input)?;
+            let marker = Marker::from_bytes(input.array()?);
+            let slot = slot(input)?;
+            let stop = stop_root(input)?;
+            let secret = secret(input)?;
+            let new_key = key_for_claim(input.text()?)?;
+            let debit = amount(input.array()?)?;
+            let expiry = input.u64()?;
+            let base_fee = wide(input.array()?)?;
+            let head_height = input.u64()?;
+            let selector = input.array()?;
+            let mut rng = rng(input.array()?);
+            let zk = input.array()?;
+            let stop = stop.ok_or_else(|| String::from("a cancel needs the stop root from the stop card: the words alone cannot cancel"))?;
+            let action_cost = action_cost(base_fee).ok_or_else(|| guard_error(ghost_client::GuardError::ActionCostUnknown))?;
+            let terms = CancelTerms { debit, expiry, action_cost, head_height, selector };
+            let built = guard_cancel(&chain, &policy, &marker, &slot, &stop, &secret, &new_key, &terms, &mut rng, zk)
+                .map_err(guard_error)?;
+            verify_know_action(&chain.action_params(), &built.statement, &built.proof)
+                .map_err(|e| format!("the proof did not verify in the worker: {e}"))?;
+            let envelope = built.envelope();
+            let mut out = Vec::with_capacity(128 + CANCEL_CALLDATA_BYTES + envelope.len());
+            out.extend_from_slice(built.new_coin.commitment.as_bytes());
+            out.extend_from_slice(built.new_coin.marker.as_bytes());
+            out.extend_from_slice(&built.new_coin.amount.to_bytes());
+            out.extend_from_slice(built.new_coin.rule.as_bytes());
+            out.extend_from_slice(&built.calldata);
+            out.extend_from_slice(&envelope);
+            Ok(out)
+        })
+    }
+
+    /// The release of a Guard slot after the hold. Input: the policy (20 +
+    /// 32), the slot's marker (32), its fifteen words (32 each), the head's
+    /// height (8) and timestamp (8), the release selector (4). Refuses as
+    /// the client library does. Output: the Guard address (20), then the
+    /// calldata (36).
+    #[unsafe(no_mangle)]
+    pub extern "C" fn ghost_guard_release(ptr: *const u8, len: usize) -> u32 {
+        run(ptr, len, |input| {
+            let policy = policy(input)?;
+            let marker = Marker::from_bytes(input.array()?);
+            let slot = slot(input)?;
+            let head = ChainHead { height: input.u64()?, timestamp: input.u64()? };
+            let selector = input.array()?;
+            let call = guard_release(&policy, &marker, &slot, &head, selector).map_err(guard_error)?;
+            let mut out = call.to.to_vec();
+            out.extend_from_slice(&call.data);
+            debug_assert_eq!(call.data.len(), RELEASE_CALLDATA_BYTES);
+            Ok(out)
+        })
+    }
 }
 
 /// The threaded build (feature `threads`, built by `../build.sh` with the
