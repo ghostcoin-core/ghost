@@ -105,8 +105,8 @@ jobs:
           RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
         run: cargo check --locked --manifest-path proofs/Cargo.toml --lib --target wasm32-unknown-unknown
 
-  rust-proofs-layers:
-    name: rust-proofs-layers
+  rust-proofs-layers-reveal:
+    name: rust-proofs-layers-reveal
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -120,8 +120,8 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup default "$RUST_TOOLCHAIN"
           rustc --version
-      # Its own cache key: both proofs jobs save proofs/target, and a shared
-      # key would let one job's build overwrite the other's.
+      # Its own cache key apart from rust-proofs: the layers jobs build the
+      # same test binaries, so they share this key with each other.
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
@@ -130,12 +130,137 @@ jobs:
             ~/.cargo/git/db
             proofs/target
           key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-layers-${{ hashFiles('proofs/*.lock') }}
-      # layers_bench.rs is built here; its benchmark is #[ignore] and runs
-      # only by hand with -- --ignored --nocapture.
+      # One slow layers test per job so each fits the 10-minute limit.
       - name: Test (release) the recursion layers
         env:
           RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
-        run: cargo test --release --locked --manifest-path proofs/Cargo.toml --test layers --test layers_results --test layers_bench
+        run: cargo test --release --locked --manifest-path proofs/Cargo.toml --test layers -- --exact a_bundle_of_one_real_reveal_verifies
+
+  rust-proofs-layers-pipeline:
+    name: rust-proofs-layers-pipeline
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUST_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      # Its own cache key apart from rust-proofs: the layers jobs build the
+      # same test binaries, so they share this key with each other.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            proofs/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-layers-${{ hashFiles('proofs/*.lock') }}
+      # One slow layers test per job so each fits the 10-minute limit.
+      - name: Test (release) the recursion layers
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+        run: cargo test --release --locked --manifest-path proofs/Cargo.toml --test layers -- --exact a_root_and_a_shrink_prove_an_aggregators_batches
+
+  rust-proofs-layers-shrink:
+    name: rust-proofs-layers-shrink
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUST_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      # Its own cache key apart from rust-proofs: the layers jobs build the
+      # same test binaries, so they share this key with each other.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            proofs/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-layers-${{ hashFiles('proofs/*.lock') }}
+      # One slow layers test per job so each fits the 10-minute limit.
+      - name: Test (release) the recursion layers
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+        run: cargo test --release --locked --manifest-path proofs/Cargo.toml --test layers -- --exact the_real_shrink_fits_the_proof_field
+
+  rust-proofs-layers-bundle32:
+    name: rust-proofs-layers-bundle32
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUST_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      # Its own cache key apart from rust-proofs: the layers jobs build the
+      # same test binaries, so they share this key with each other.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            proofs/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-layers-${{ hashFiles('proofs/*.lock') }}
+      # One slow layers test per job so each fits the 10-minute limit.
+      - name: Test (release) the recursion layers
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+        run: cargo test --release --locked --manifest-path proofs/Cargo.toml --test layers -- --exact a_bundle_of_32_verifies_and_its_contents_are_fixed
+
+  rust-proofs-layers-rest:
+    name: rust-proofs-layers-rest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUST_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      # Its own cache key apart from rust-proofs: the layers jobs build the
+      # same test binaries, so they share this key with each other.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            proofs/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-layers-${{ hashFiles('proofs/*.lock') }}
+      # Every other layers test, plus layers_results and layers_bench (its
+      # benchmark is #[ignore] and runs only by hand with -- --ignored
+      # --nocapture). The skipped tests each run in their own job above.
+      - name: Test (release) the recursion layers
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+        run: cargo test --release --locked --manifest-path proofs/Cargo.toml --test layers --test layers_results --test layers_bench -- --exact --skip a_bundle_of_one_real_reveal_verifies --skip a_root_and_a_shrink_prove_an_aggregators_batches --skip the_real_shrink_fits_the_proof_field --skip a_bundle_of_32_verifies_and_its_contents_are_fixed
 
   rust-client:
     name: rust-client
