@@ -48,7 +48,7 @@ no circuit and no contract. The build tickets of section 18 do.
 | Escrow slots | Public, native, per spent coin. Only the slot's own policy moves them, through six native functions | Section 7 |
 | Policy action | Type `0x54`. No account. Paid from the slot. Authorised by a proof of the action key | Section 8 |
 | Notes | 380 bytes for every commitment: today's 128-byte plaintext plus a 224-byte capsule | Section 3 |
-| Gas | `G_PRIV` 21,111,656; `G_POLICY` 21,274,216; `G_ACTION` 15,585,968; the data reveal keeps 21,090,372 | **Proposed** (section 10) |
+| Gas | `G_PRIV` 21,371,656; `G_POLICY` 21,604,216; `G_ACTION` 15,865,968; the data reveal keeps 21,090,372 | **Proposed** (section 10) |
 | Pool | Actions share the reveal pool's peer budgets and check slots, have their own count and byte caps, reserve their `(marker, nonce)` only after the proof verifies | Draft version 4; section 11 |
 | Ghost Guard | Policy with empty parameters; override secret for the normal spend; stop card for the cancel; 72 hour and 8,640 block hold before release | Draft version 4; section 12 |
 | Not promised | A majority of miners that also holds the words can censor a cancel. A policy coin handed over as words alone stays under the giver's stop key | Section 12 |
@@ -877,7 +877,7 @@ At `STATEMENT_CHECKER = 0x0000000000000000000000000000000000000061`
 (**Proposed**). Input: `statement (1) || y (32) || context (64) || proof
 (ACTION_PROOF_BYTES)`. Only a frozen context may call it, and only with
 `statement = 0x06`. It returns 32 bytes, 1 or 0. Gas:
-`PREIMAGE_VERIFY_GAS = 110,000` plus 3 per 32-byte word of input, charged
+`PREIMAGE_VERIFY_GAS = 390,000` plus 3 per 32-byte word of input, charged
 before verifying and whether or not the proof verifies. An input of any other
 length fails.
 
@@ -915,7 +915,7 @@ that width. So:
 
 ```text
 10.61 ms * (3,890 / 3,824) = 10.79 ms  ->  107,900 gas
-VERIFY_GAS_ORD = VERIFY_GAS_POLICY = VERIFY_GAS_ACTION = 110,000   (rounded up)
+estimate = 110,000   (rounded up)
 ```
 
 The small statements (128 rows, 3,722 columns) are no larger than the
@@ -924,7 +924,26 @@ bound. The build ticket of section 18 measures at least 1,000 verifications of
 each statement in the node's own verifier on the reference hardware. If the
 slowest exceeds 11.0 ms (110,000 gas) the constant is **raised** in that
 change. A lower measured value does not lower it without a deliberate
-consensus change. The data reveal keeps `VERIFY_GAS_DATA = 92,300`: its trace
+consensus change.
+
+The node's measurement (2026-11-04) ran 1,000 valid and 1,000 invalid
+verifications of each statement in the node's own verifier
+(`core/ghostpriv/realproof_timing_test.go` of the node), after one warm-up,
+invalid runs alternating a changed public field and a flipped proof byte. The
+machine is the build machine of the benchmark record (an aarch64 Linux virtual
+machine on Apple silicon, 16 cores). The slowest is the highest of three such
+measurements. Every slowest exceeds 11.0 ms, so each charge is raised to its
+own slowest, rounded up to a multiple of 10,000 gas:
+
+| Statement | Valid runs | Invalid runs | Slowest (ms) | Charge |
+|---|---|---|---|---|
+| `S1` version 2 | 1,000 | 1,000 | 36.92 | 370,000 |
+| `S4` | 1,000 | 1,000 | 43.99 | 440,000 |
+| `KNOW_ACTION_v1` | 1,000 | 1,000 | 38.89 | 390,000 |
+
+`KNOW_PREIMAGE_v1` is not yet linked into the node's verifier. It has the
+action's trace dimensions, so `PREIMAGE_VERIFY_GAS` takes the action's charge,
+390,000, until it is measured. The data reveal keeps `VERIFY_GAS_DATA = 92,300`: its trace
 has half the rows and its pricing does not change (section 10.5).
 
 If the proof configuration changes under spec 09, section 4.1, every constant
@@ -939,13 +958,15 @@ of this section is recomputed from the formulas here with the new
 | `ORD_ENVELOPE_BYTES` | 1,311,291 | Ordinary reveal (section 4.1) |
 | `POLICY_ENVELOPE_BYTES` | 1,311,451 | Policy reveal (section 5.1) |
 | `ACTION_ENVELOPE_BYTES` | 949,373 | Policy action (section 8.1) |
-| `VERIFY_GAS_ORD`, `_POLICY`, `_ACTION` | 110,000 each | Section 10.2 |
+| `VERIFY_GAS_ORD` | 370,000 | Section 10.2 |
+| `VERIFY_GAS_POLICY` | 440,000 | Section 10.2 |
+| `VERIFY_GAS_ACTION` | 390,000 | Section 10.2 |
 | `SLOT_OPEN_GAS` | 160,000 | Eight new storage words (section 7.1) |
 | `ACTION_STATE_GAS` | 15,000 | Three storage word updates at 5,000: nonce, remaining, debits |
 | `ACTION_CALL_GAS` | 250,000 | Cap on the policy call |
-| `G_PRIV` | 21,111,656 | `16 * 1,311,291 + 21,000 + 110,000` |
-| `G_POLICY` | 21,274,216 | `16 * 1,311,451 + 21,000 + 110,000 + 160,000` |
-| `G_ACTION` | 15,585,968 | `16 * 949,373 + 21,000 + 110,000 + 15,000 + 250,000` |
+| `G_PRIV` | 21,371,656 | `16 * 1,311,291 + 21,000 + 370,000` |
+| `G_POLICY` | 21,604,216 | `16 * 1,311,451 + 21,000 + 440,000 + 160,000` |
+| `G_ACTION` | 15,865,968 | `16 * 949,373 + 21,000 + 390,000 + 15,000 + 250,000` |
 | `FEE_WINDOW`, `FEE_STEPS`, `TIP_DIVISOR` | 4, 1, 10 | Unchanged (spec 07) |
 
 Window fee for a class: `price_w` as in spec 07, section 4;
@@ -958,23 +979,23 @@ Worked values at the genesis base fee of 1 gwei (`b_ref = 1,000,000,000`,
 
 ```text
 [window-genesis-ordinary]
-g = 21111656
-base_part = 23751668603911656
-tip = 2375166860391166
-fee = 26126835464302822
+g = 21371656
+base_part = 24044181604171656
+tip = 2404418160417166
+fee = 26448599764588822
 cover_limit = 1237555001
 
 [window-genesis-policy]
-g = 21274216
-base_part = 23934556732074216
-tip = 2393455673207422
-fee = 26328012405281638
+g = 21604216
+base_part = 24305823232404216
+tip = 2430582323240422
+fee = 26736405555644638
 cover_limit = 1237555001
 ```
 
-The ordinary fee rises by 26,340,120,643,412 wei over version 1's
-26,100,495,343,659,410 (about 0.1 percent). The lowest `debit` of an action at the same base fee is
-`G_ACTION * 1,000,000,000 = 15,585,968,000,000,000` wei, about 0.0156 GHOST.
+The ordinary fee rises by 348,104,420,929,412 wei over version 1's
+26,100,495,343,659,410 (about 1.3 percent). The lowest `debit` of an action at the same base fee is
+`G_ACTION * 1,000,000,000 = 15,865,968,000,000,000` wei, about 0.0159 GHOST.
 
 Other parameters of this document:
 
@@ -996,8 +1017,8 @@ Other parameters of this document:
 ### 10.4 Block space
 
 The default gas limit is 30,000,000 (spec 05, question 1). `G_PRIV` and
-`G_POLICY` are each more than half of it. `G_ACTION` is 15.6 million; it plus `G_PRIV` is 36.7 million and two actions
-are 31.2 million. So a block holds at most one private
+`G_POLICY` are each more than half of it. `G_ACTION` is 15.9 million; it plus `G_PRIV` is 37.2 million and two actions
+are 31.7 million. So a block holds at most one private
 transaction of any type, as spec 07 already says for reveals. A cancel
 competes with reveals and other actions for that space, and wins by paying a
 larger tip in `debit`. This is the cost of proofs near a megabyte. Question 4
@@ -1259,10 +1280,11 @@ passes with the check it names removed does not count (spec 03, section 10).
 
 ## 15. Not settled: fail closed
 
-1. **Verification constants.** `VERIFY_GAS_ORD`, `_POLICY` and `_ACTION` are set
-   from the recorded 10.61 ms (section 10.2). Until the build ticket's
-   measurement of at least 1,000 verifications per statement is recorded, a
-   node uses these values, and it does not accept a lower one.
+1. **Verification constants.** `VERIFY_GAS_ORD`, `_POLICY` and `_ACTION` were set
+   from the recorded 10.61 ms (section 10.2) and are now raised to the node's
+   measurement of 1,000 verifications per statement. `PREIMAGE_VERIFY_GAS`
+   takes the action's charge until `KNOW_PREIMAGE_v1` is measured. A node
+   does not accept a lower value.
 2. **Admission limits.** `PEER_FAIL_LIMIT`, `MaxActions` and `MaxActionBytes`
    are proposed. A node enforces them as written until the pool's flood
    tests set others.
@@ -1328,7 +1350,8 @@ Each has a default that this document already applies.
    Default: yes. Without it a thief with the words can disable the cancel.
 2. **Verification charge.** 110,000 gas for each new statement, above the
    recorded 10.61 ms (section 10.2). Default: as written; the build ticket
-   raises it if the measurement is higher.
+   raises it if the measurement is higher. The measurement was higher, so the
+   charges are raised to 370,000, 440,000 and 390,000 gas.
 3. **Modexp and BLAKE2 in frozen policies.** Forbidden (section 6.3), as the
    draft has it. Default: forbidden. A later version can allow BLAKE2.
 4. **Block space.** One private transaction per block at 30,000,000 gas
@@ -1388,9 +1411,9 @@ action binding   = 8+2+32+1+1+1+20+32+8+32+32+32+32+8+32 = 273
 permutations     = floor((607+29)/136) + 1 = 5;  floor((767+31)/136) + 1 = 6;  floor((273+24)/136) + 1 = 3
 trace width      = 2,633 + 1,088 + 1 + carried columns
 capsule          = 1+20+32+32+32+32+1+64+10 = 224
-G_PRIV           = 16*1,311,291 + 21,000 + 110,000 = 21,111,656
-G_POLICY         = 16*1,311,451 + 21,000 + 110,000 + 160,000 = 21,274,216
-G_ACTION         = 16*949,373 + 21,000 + 110,000 + 15,000 + 250,000 = 15,585,968
+G_PRIV           = 16*1,311,291 + 21,000 + 370,000 = 21,371,656
+G_POLICY         = 16*1,311,451 + 21,000 + 440,000 + 160,000 = 21,604,216
+G_ACTION         = 16*949,373 + 21,000 + 390,000 + 15,000 + 250,000 = 15,865,968
 G_DATA           = 16*1,311,067 + 21,000 + 92,300 = 21,090,372
 ```
 
@@ -1407,7 +1430,6 @@ worked window fees and the section structure, and exits non-zero when any one
 of them is damaged; `scripts/test_check_private_reveal_policies.py` damages
 each in turn. With `--constants` it prints the recomputed constants, the
 RP-24 gas among them, for the node's test to compare with. It checks the
-charge against the recorded 10.61 ms; the measurement of at least 1,000
-verifications per statement in the node's own verifier (section 10.2) is the
-node's part of the gas constants ticket (section 18, item 9), and until it is
-recorded section 15, item 1 holds.
+charge against the recorded 10.61 ms and against the node's measurement of
+1,000 verifications per statement (section 10.2), which raised each charge to
+its own slowest.
