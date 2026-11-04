@@ -50,3 +50,15 @@ fn every_layer_stage_is_measured_or_not_yet_established() {
     }
     assert!(PAGE.contains("128 GiB"), "the page compares with the machine ceiling");
 }
+
+#[test]
+fn the_page_records_the_shrink_bound_against_the_proof_field() {
+    for stage in ["Root:", "Shrink:"] {
+        let line = line_starting(stage);
+        assert!(!line.contains("not built"), "the root and shrink layers are built: {line}");
+    }
+    let shrink = line_starting("Shrink:");
+    assert!(shrink.contains("1,310,720"), "{shrink}");
+    assert!(shrink.contains("at most"), "the shrink line gives its size bound: {shrink}");
+    assert!(shrink.contains("blowup 2^5 with 56 queries"), "{shrink}");
+}

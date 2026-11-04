@@ -7,15 +7,21 @@
 //!
 //! It names the machine from /proc/cpuinfo, /proc/meminfo and the hostname,
 //! times one width-24 Poseidon2 permutation of the pinned library on one
-//! core, then proves a real batch of 32 version 2 coin reveals at the layers'
-//! shape (blowup 2^3, 96 queries) and reports its seconds and the process's
-//! peak memory (VmHWM) against the 128 GiB machine ceiling. Every figure is
-//! printed with the label measured. The layers themselves read no clock or
-//! file; only this test does.
+//! core, proves 32 real version 2 coin reveals at 96 queries, plans the real
+//! pipeline (a batch of the 32 reveals, a root over 44 such batches, both at
+//! blowup 2^3 with 96 queries, and a shrink at blowup 2^5 with 56 queries),
+//! then runs each stage in turn: the batch key and 44 batch proofs (each over
+//! the same 32 reveals, chained from where the one before ended), the root
+//! key and proof, the shrink key and proof. Each stage prints its seconds and
+//! the process's peak memory (VmHWM) against the 128 GiB machine ceiling,
+//! labelled measured. A stage whose modeled prover memory exceeds the
+//! machine's memory is not run: it prints not yet established, with the
+//! modeled figure, and so does every stage after it. The layers themselves
+//! read no clock or file; only this test does.
 
 use std::time::Instant;
 
-use ghost_proofs::layers::{self, LayerShape};
+use ghost_proofs::layers::{self, Claim, LayerShape};
 use ghost_proofs::*;
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_24};
 use p3_field::PrimeCharacteristicRing;
@@ -23,9 +29,25 @@ use p3_symmetric::Permutation;
 
 /// The machine ceiling of the stage 2 design.
 const CEILING_GIB: f64 = 128.0;
+/// Reveals a batch verifies, and batches a root verifies, in the design.
+const PER_BATCH: usize = 32;
+const BATCHES: usize = 44;
+
+const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
 fn proc_file(path: &str) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
+}
+
+/// The machine's total memory in bytes (MemTotal).
+fn machine_bytes() -> f64 {
+    let kib: f64 = proc_file("/proc/meminfo")
+        .lines()
+        .find(|l| l.starts_with("MemTotal:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0);
+    kib * 1024.0
 }
 
 /// The machine: CPU model (or the CPU implementer when the kernel names no
@@ -43,17 +65,11 @@ fn machine() -> String {
         .or_else(|| field("CPU implementer").map(|i| format!("CPU implementer {i}")))
         .unwrap_or_else(|| "unknown CPU".into());
     let cores = cpuinfo.lines().filter(|l| l.starts_with("processor")).count();
-    let mem_kib: f64 = proc_file("/proc/meminfo")
-        .lines()
-        .find(|l| l.starts_with("MemTotal:"))
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.0);
     let host = proc_file("/proc/sys/kernel/hostname");
     format!(
         "{} ({model}, {cores} cores, {:.1} GiB, {})",
         host.trim(),
-        mem_kib / 1024.0 / 1024.0,
+        machine_bytes() / GIB,
         std::env::consts::ARCH
     )
 }
@@ -128,9 +144,36 @@ fn reveal(params: &ChainParams, i: u8) -> (CoinRevealV2, Proof) {
         .expect("an honest reveal proves")
 }
 
+/// Whether a stage of `modeled` prover bytes fits the machine; prints the
+/// reason when it does not.
+fn fits(stage: &str, modeled: usize, machine: f64) -> bool {
+    let need = modeled as f64 / GIB;
+    if modeled as f64 <= machine {
+        println!("modeled: {stage} needs about {need:.1} GiB, within the machine's {:.1} GiB", machine / GIB);
+        true
+    } else {
+        println!(
+            "not yet established: {stage}, which needs about {need:.1} GiB (modeled), more than the machine's {:.1} GiB \
+             (the design's ceiling is {CEILING_GIB} GiB)",
+            machine / GIB
+        );
+        false
+    }
+}
+
+fn measured(stage: &str, t: Instant, bytes: Option<usize>) {
+    let bytes = bytes.map_or(String::new(), |b| format!(", {b} bytes"));
+    println!(
+        "measured: {stage} in {:.1} s{bytes}, peak {:.2} GiB of the {CEILING_GIB} GiB ceiling",
+        t.elapsed().as_secs_f64(),
+        peak_gib()
+    );
+}
+
 #[test]
 #[ignore = "the layers benchmark: run with -- --ignored --nocapture"]
 fn layers_benchmark() {
+    let machine_mem = machine_bytes();
     println!("machine: {}", machine());
     println!("measured: {:.1} ns per Poseidon2 permutation (one core)", permutation_ns());
 
@@ -139,35 +182,83 @@ fn layers_benchmark() {
         version: PROTOCOL_VERSION_2,
         domain: [0x47; 32],
     };
-    let t = Instant::now();
-    let reveals: Vec<(CoinRevealV2, Proof)> = (0..32).map(|i| reveal(&params, i)).collect();
-    println!("measured: 32 reveal proofs in {:.1} s", t.elapsed().as_secs_f64());
-
-    let child = layers::RevealChild::new(SCALE_NUM_QUERIES);
     let binding = layers::Binding::of(&params);
+    let child = layers::RevealChild::new(SCALE_NUM_QUERIES);
+
     let t = Instant::now();
-    let key = layers::batch_key(&child, LayerShape::WIDE, child.log_height(), 32, LayerShape::WIDE)
-        .expect("the batch key builds");
-    println!(
-        "measured: batch key in {:.1} s, table heights {:?}, peak {:.2} GiB",
-        t.elapsed().as_secs_f64(),
-        key.table_heights(),
-        peak_gib()
-    );
+    let plan = layers::plan_pipeline(
+        &child,
+        LayerShape::WIDE,
+        child.log_height(),
+        PER_BATCH,
+        BATCHES,
+        LayerShape::WIDE,
+        LayerShape::SHRINK,
+    )
+    .expect("the real pipeline plans");
+    measured("planning the real pipeline", t, None);
+    for (name, layer) in [("batch", &plan.batch), ("root", &plan.root), ("shrink", &plan.shrink)] {
+        println!(
+            "measured: {name} circuit entries {:?}, table lanes {:?}, heights {:?}; modeled prover memory {:.1} GiB",
+            layer.entries,
+            layer.lanes,
+            layer.heights,
+            layer.modeled_prover_bytes as f64 / GIB
+        );
+    }
+    println!("measured: shrink proof size bound {} bytes", plan.shrink_bytes_bound);
+
+    let t = Instant::now();
+    let reveals: Vec<(CoinRevealV2, Proof)> = (0..PER_BATCH as u8).map(|i| reveal(&params, i)).collect();
+    measured("32 reveal proofs", t, None);
     let children: Vec<(Vec<u8>, Vec<BabyBear>)> = reveals
         .iter()
         .map(|(tx, proof)| (proof.as_bytes().to_vec(), layers::RevealChild::public_values(&params, tx)))
         .collect();
     let contents: Vec<Vec<BabyBear>> = children.iter().map(|(_, p)| p.clone()).collect();
+
+    if !fits("a batch of 32 real reveals", plan.batch.modeled_prover_bytes, machine_mem) {
+        println!("not yet established: the root over 44 batches and the shrink, which need the batches first");
+        return;
+    }
     let t = Instant::now();
-    let batch = layers::prove_batch(&key, &child, &binding, 0, &layers::START_DIGEST, &children, [1; 32])
-        .expect("the batch proves");
-    println!(
-        "measured: batch of 32 real reveals in {:.1} s, {} bytes, peak {:.2} GiB of the {CEILING_GIB} GiB ceiling",
-        t.elapsed().as_secs_f64(),
-        batch.len(),
-        peak_gib()
-    );
-    layers::verify_batch(&key, &binding, 0, &layers::START_DIGEST, &contents, &batch).expect("the batch verifies");
-    println!("not yet established: root over 44 batches and shrink (those layers are not built yet)");
+    let batch_key = layers::batch_key(&child, LayerShape::WIDE, child.log_height(), PER_BATCH, LayerShape::WIDE)
+        .expect("the batch key builds");
+    measured("batch key", t, None);
+    let mut batches: Vec<(Vec<u8>, Claim)> = Vec::with_capacity(BATCHES);
+    let mut start = layers::START_DIGEST;
+    for i in 0..BATCHES {
+        let t = Instant::now();
+        let proof = layers::prove_batch(&batch_key, &child, &binding, i as u32, &start, &children, [i as u8; 32])
+            .expect("the batch proves");
+        if i == 0 {
+            measured("batch of 32 real reveals", t, Some(proof.len()));
+            layers::verify_batch(&batch_key, &binding, 0, &start, &contents, &proof).expect("the batch verifies");
+        }
+        let claim = Claim::of(&start, &contents);
+        start = claim.end;
+        batches.push((proof, claim));
+    }
+    let whole = Claim::joined(&batches.iter().map(|(_, c)| *c).collect::<Vec<_>>()).expect("44 batches");
+
+    if !fits("the root over 44 batches", plan.root.modeled_prover_bytes, machine_mem) {
+        println!("not yet established: the shrink, which needs the root first");
+        return;
+    }
+    let t = Instant::now();
+    let root_key = layers::root_key(&batch_key, BATCHES, LayerShape::WIDE).expect("the root key builds");
+    let root = layers::prove_layer(&root_key, &batch_key, &binding, 0, &batches, [0x52; 32]).expect("the root proves");
+    measured("root over 44 batches, key included", t, Some(root.len()));
+    layers::verify_layer(&root_key, &binding, 0, &whole, &root).expect("the root verifies");
+
+    if !fits("the shrink", plan.shrink.modeled_prover_bytes, machine_mem) {
+        return;
+    }
+    let t = Instant::now();
+    let shrink_key = layers::shrink_key(&root_key, LayerShape::SHRINK).expect("the shrink key builds");
+    let shrink = layers::prove_layer(&shrink_key, &root_key, &binding, 0, &[(root, whole)], [0x53; 32])
+        .expect("the shrink proves");
+    measured("shrink, key included", t, Some(shrink.len()));
+    layers::verify_layer(&shrink_key, &binding, 0, &whole, &shrink).expect("the shrink verifies");
+    assert!(shrink.len() <= layers::PROOF_FIELD_BYTES);
 }

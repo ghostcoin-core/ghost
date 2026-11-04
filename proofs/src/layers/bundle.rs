@@ -1,13 +1,18 @@
 //! The layers themselves: batch, root and shrink, their binding tags, their
-//! running digest and their keys.
+//! running digest and their circuits.
+//!
+//! Every layer has the same public values: its binding (the chain
+//! identifier's eight bytes, the protocol version's two, the statement
+//! version), the running digest before its reveals, the running digest after
+//! them and their count.
 //!
 //! - A batch verifies up to `capacity` child proofs of one AIR and shape (a
-//!   reveal proof, or the stand-in of a test). Its public values are the
-//!   running digest before and after its active children and their count.
-//! - A root verifies up to `capacity` batches of one key. Each active
-//!   batch's starting digest must be the running digest so far, which starts
-//!   at zero; its public values are the final digest and the total count.
-//! - A shrink verifies one root and carries its public values.
+//!   reveal proof, or the stand-in of a test). Each child's chain identifier
+//!   and versions, among its public values, must equal the batch's binding.
+//! - A root verifies up to `capacity` batch proofs of one key, and a shrink
+//!   one root proof. Each child's binding is the layer's own, the first
+//!   child starts from the layer's starting digest, each next one from where
+//!   the one before ended, and the counts add up.
 //!
 //! The running digest is `d' = compress(d, H(public values of the child))`
 //! with the leaf hash `H` and the node compression of the scale
@@ -17,9 +22,10 @@
 //! kind, its index among its parent's children, the protocol and statement
 //! versions, the chain identifier and the digest of its children's verifier
 //! key. That digest is a constant of the circuit, so it sits in the
-//! preprocessed constant column of the wire table; for a layer child, the
-//! child's preprocessed commitment itself is such a constant too, absorbed
-//! where the child's own transcript absorbs it.
+//! preprocessed constant columns of the wire table. For a layer child the
+//! circuit also recomputes that digest from the child key's words, its
+//! preprocessed commitment among them, and absorbs the same commitment where
+//! the child's own transcript absorbs it.
 
 use alloc::vec::Vec;
 
@@ -30,8 +36,18 @@ use p3_field::{PrimeCharacteristicRing, PrimeField32};
 use super::circuit::{Circuit, Wire};
 use super::pcs::{DIGEST, Digest, RATE, compress, hash_values};
 use super::poseidon2::{self, WIDTH};
-use super::verifier::{UniProof, UniShape, log_quotient_chunks, verify_uni};
+use super::verifier::{
+    LayerProof, LayerSpec, TableConstraints, UniProof, UniShape, log_quotient_chunks, verify_layer, verify_uni,
+};
 use super::{EF, F};
+
+/// Elements of a binding among a layer's public values: the chain
+/// identifier's eight bytes, the protocol version's two, the statement
+/// version.
+pub(crate) const BINDING_ELEMS: usize = 11;
+/// Public values of every layer: binding, starting digest, ending digest,
+/// count.
+pub(crate) const LAYER_PUBLICS: usize = BINDING_ELEMS + 2 * DIGEST + 1;
 
 /// A native digest.
 pub(crate) type NativeDigest = [F; DIGEST];
@@ -243,24 +259,83 @@ pub(crate) struct UniChild<'a> {
     pub(crate) publics: &'a [F],
 }
 
+/// A layer's public values in the circuit: its first wires after the
+/// constants zero and one, as the wire table requires.
+pub(crate) struct LayerWires {
+    pub(crate) binding: [Wire; BINDING_ELEMS],
+    pub(crate) start: Digest,
+    pub(crate) end: Digest,
+    pub(crate) count: Wire,
+}
+
+/// Make a layer's public values from their native values (zeros when only
+/// the rows are wanted).
+pub(crate) fn layer_wires(c: &mut Circuit, publics: &[F; LAYER_PUBLICS]) -> LayerWires {
+    let mut next = publics.iter().copied();
+    let mut public = |c: &mut Circuit| {
+        let v = next.next().expect("one value a public");
+        c.public(v)
+    };
+    LayerWires {
+        binding: core::array::from_fn(|_| public(c)),
+        start: core::array::from_fn(|_| public(c)),
+        end: core::array::from_fn(|_| public(c)),
+        count: public(c),
+    }
+}
+
+/// The public values of a layer from its binding elements and its claim.
+pub(crate) fn layer_publics(
+    binding: &[F; BINDING_ELEMS],
+    start: &NativeDigest,
+    end: &NativeDigest,
+    count: usize,
+) -> [F; LAYER_PUBLICS] {
+    let mut out = [F::ZERO; LAYER_PUBLICS];
+    out[..BINDING_ELEMS].copy_from_slice(binding);
+    out[BINDING_ELEMS..BINDING_ELEMS + DIGEST].copy_from_slice(start);
+    out[BINDING_ELEMS + DIGEST..BINDING_ELEMS + 2 * DIGEST].copy_from_slice(end);
+    out[LAYER_PUBLICS - 1] = F::from_usize(count);
+    out
+}
+
+/// The running digest has reached the layer's ending digest, and the active
+/// children's counts add up to its count.
+fn close_layer(c: &mut Circuit, p: &LayerWires, d: &Digest, total: Wire) {
+    for i in 0..DIGEST {
+        c.assert_eq(d[i], p.end[i]);
+    }
+    c.assert_eq(total, p.count);
+}
+
 /// The batch circuit: `capacity` slots of uni-STARK children of `air` at
-/// `shape`, the first `children.len()` of them active. Publics: the starting
-/// digest, the ending digest, the count. In a slot past the active ones the
-/// circuit verifies a copy of the last child, which counts for nothing.
-/// `children` is `None` when only the rows are wanted.
+/// `shape`, the first `children.len()` of them active. In a slot past the
+/// active ones the circuit verifies a copy of the last child, which counts
+/// for nothing. `binding_slots` are the positions, among a child's public
+/// values, of the chain identifier's bytes, the protocol version's and the
+/// statement version, in the binding's order: each must equal the batch's
+/// binding. `child_key` is the digest of the children's verifier key, a
+/// constant of the circuit. `children` is `None` when only the rows are
+/// wanted.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn batch_circuit<A>(
     c: &mut Circuit,
     air: &A,
     shape: &UniShape,
+    binding_slots: &[usize; BINDING_ELEMS],
+    child_key: &NativeDigest,
     capacity: usize,
-    start: &NativeDigest,
+    publics: &[F; LAYER_PUBLICS],
     children: Option<&[UniChild<'_>]>,
 ) where
     A: BaseAir<F> + Air<SymbolicAirBuilder<F>>,
 {
+    let p = layer_wires(c, publics);
+    for &k in child_key {
+        c.const_base(k);
+    }
     let count = children.map_or(capacity, <[_]>::len);
-    let start_w: Digest = core::array::from_fn(|i| c.public(start[i]));
-    let mut d = start_w;
+    let mut d = p.start;
     let active = active_bits(c, capacity, count);
     let n_pub = air.num_public_values();
     for (slot, &bit) in active.iter().enumerate() {
@@ -268,16 +343,130 @@ pub(crate) fn batch_circuit<A>(
         let publics: Vec<Wire> = (0..n_pub)
             .map(|i| c.hint_base(child.and_then(|ch| ch.publics.get(i).copied()).unwrap_or(F::ZERO)))
             .collect();
+        // The child's chain identifier and versions are the batch's.
+        for (j, &at) in binding_slots.iter().enumerate() {
+            c.assert_eq(publics[at], p.binding[j]);
+        }
         verify_uni(c, air, shape, &publics, child.map(|ch| ch.proof));
         let next = absorb_child(c, &d, &publics);
         d = select_digest(c, bit, &next, &d);
     }
-    let end_native: NativeDigest = core::array::from_fn(|i| c.base_value(d[i]));
-    for i in 0..DIGEST {
-        let p = c.public(end_native[i]);
-        c.assert_eq(p, d[i]);
-    }
     let total = sum(c, &active);
-    let count_public = c.public(F::from_usize(count));
-    c.assert_eq(count_public, total);
+    close_layer(c, &p, &d, total);
+}
+
+/// One child of a root or a shrink: its proof, its index among the layer's
+/// children (the one its tag names) and its public values.
+pub(crate) struct LayerChild<'a> {
+    pub(crate) proof: &'a LayerProof,
+    pub(crate) index: u32,
+    pub(crate) publics: &'a [F; LAYER_PUBLICS],
+}
+
+/// The words of a layer key its digest hashes: its kind, its FRI shape, its
+/// public value count, each table's lanes and height, its preprocessed
+/// commitment and the digest of its children's key.
+pub(crate) fn key_words(
+    kind: LayerKind,
+    shape: super::LayerShape,
+    num_publics: usize,
+    tables: &[(usize, usize)],
+    commitment: &NativeDigest,
+    child_key: &NativeDigest,
+) -> Vec<F> {
+    let mut words = alloc::vec![
+        F::from_u32(kind as u32),
+        F::from_usize(shape.log_blowup),
+        F::from_usize(shape.num_queries),
+        F::from_usize(num_publics),
+    ];
+    for &(lanes, height) in tables {
+        words.push(F::from_usize(lanes));
+        words.push(F::from_usize(height));
+    }
+    words.extend_from_slice(commitment);
+    words.extend_from_slice(child_key);
+    words
+}
+
+/// A layer spec's key words.
+pub(crate) fn spec_words(spec: &LayerSpec) -> Vec<F> {
+    let tables: Vec<(usize, usize)> = spec.airs.iter().map(|a| (a.lanes(), a.height())).collect();
+    key_words(
+        spec.kind,
+        spec.shape,
+        spec.airs[0].num_publics(),
+        &tables,
+        &spec.commitment,
+        &spec.child_key,
+    )
+}
+
+/// The circuit of a root or a shrink: `capacity` slots of layer children of
+/// `child`, the first `children.len()` of them active; in a slot past the
+/// active ones the circuit verifies a copy of the last child, which counts
+/// for nothing. `children` is `None` when only the rows are wanted.
+pub(crate) fn layer_circuit(
+    c: &mut Circuit,
+    child: &LayerSpec,
+    cons: &[TableConstraints],
+    capacity: usize,
+    publics: &[F; LAYER_PUBLICS],
+    children: Option<&[LayerChild<'_>]>,
+) {
+    let p = layer_wires(c, publics);
+    // The digest of the children's key, a constant, is the hash of the key's
+    // words: its shape, its tables and its preprocessed commitment, the same
+    // constant wires the children's transcripts absorb below.
+    let words: Vec<Wire> = spec_words(child).iter().map(|&w| c.const_base(w)).collect();
+    let digest = hash_values(c, &words);
+    for (i, &k) in child.key_digest.iter().enumerate() {
+        let k = c.const_base(k);
+        c.assert_eq(digest[i], k);
+    }
+    let label: Vec<Wire> = TAG_LABEL.iter().map(|&x| c.const_base(F::from_u32(x))).collect();
+    let kind = c.const_base(F::from_u32(child.kind as u32));
+    let grandchild: Vec<Wire> = child.child_key.iter().map(|&x| c.const_base(x)).collect();
+
+    let count = children.map_or(capacity, <[_]>::len);
+    let mut d = p.start;
+    let mut total = c.zero();
+    let active = active_bits(c, capacity, count);
+    for (slot, &bit) in active.iter().enumerate() {
+        let entry = children.and_then(|ch| ch.get(slot.min(ch.len().saturating_sub(1))));
+        let value = |i: usize| entry.map_or(F::ZERO, |e| e.publics[i]);
+        let start: Digest = core::array::from_fn(|i| c.hint_base(value(BINDING_ELEMS + i)));
+        let end: Digest = core::array::from_fn(|i| c.hint_base(value(BINDING_ELEMS + DIGEST + i)));
+        let child_count = c.hint_base(value(LAYER_PUBLICS - 1));
+        // The child's binding is the layer's own.
+        let mut child_publics: Vec<Wire> = p.binding.to_vec();
+        child_publics.extend_from_slice(&start);
+        child_publics.extend_from_slice(&end);
+        child_publics.push(child_count);
+        // An active slot's child is the slot's own: its tag names the slot.
+        let index = c.hint_base(F::from_u32(entry.map_or(slot as u32, |e| e.index)));
+        let off = c.add_const(index, -EF::from(F::from_usize(slot)));
+        let off = c.mul(off, bit);
+        c.assert_zero(off);
+        // The child's tag, in `LayerTag::elements` order: label, kind, index,
+        // protocol version, statement version, chain identifier, the key of
+        // the child's own children.
+        let mut tag = label.clone();
+        tag.push(kind);
+        tag.push(index);
+        tag.extend_from_slice(&p.binding[8..10]);
+        tag.push(p.binding[10]);
+        tag.extend_from_slice(&p.binding[..8]);
+        tag.extend_from_slice(&grandchild);
+        verify_layer(c, child, cons, &tag, &child_publics, entry.map(|e| e.proof));
+        // An active child starts where the one before it ended.
+        for i in 0..DIGEST {
+            let gap = c.sub(start[i], d[i]);
+            let gap = c.mul(gap, bit);
+            c.assert_zero(gap);
+        }
+        d = select_digest(c, bit, &end, &d);
+        total = c.mul_add(bit, child_count, total);
+    }
+    close_layer(c, &p, &d, total);
 }
