@@ -1385,7 +1385,7 @@ ACTION_PAYLOAD   = 2+8+32+8+32+32+8+2+1,024 + 948,224 = 949,372
 ordinary binding = 8+2+32+1+1+2+1+32+32+32+20+32+32+380 = 607
 policy binding   = 8+2+32+1+1+2+1+32+32+32+32+32+20+32+32+32+32+32+380 = 767
 action binding   = 8+2+32+1+1+1+20+32+8+32+32+32+32+8+32 = 273
-permutations     = ceil((607+29)/136) = 5;  ceil((767+31)/136) = 6;  ceil((273+24)/136) = 3
+permutations     = floor((607+29)/136) + 1 = 5;  floor((767+31)/136) + 1 = 6;  floor((273+24)/136) + 1 = 3
 trace width      = 2,633 + 1,088 + 1 + carried columns
 capsule          = 1+20+32+32+32+32+1+64+10 = 224
 G_PRIV           = 16*1,311,291 + 21,000 + 110,000 = 21,111,656
@@ -1394,8 +1394,20 @@ G_ACTION         = 16*949,373 + 21,000 + 110,000 + 15,000 + 250,000 = 15,585,968
 G_DATA           = 16*1,311,067 + 21,000 + 92,300 = 21,090,372
 ```
 
+A Keccak-256 input of `n` bytes takes `floor(n / 136) + 1` permutations: the
+padding adds at least one byte, so an input of exactly 136 bytes takes two.
 The proof-length bounds are `proof_length_bound(rows, columns)` of
-`proofs/src/stark.rs`. A script that recomputes the formulas above, the worked
-fee values of section 10.3 and the section structure is part of the gas
-constants ticket (section 18, item 9). It must also fail when any table of
-this document is damaged.
+`proofs/src/stark.rs`.
+
+`scripts/check_private_reveal_policies.py` (standard library only) recomputes
+the formulas above, every payload, binding and trace table, the permutation
+counts, the proof-length bounds (with a port of `proof_length_bound`), the
+verification charge of section 10.2, the constants of section 10.3, the two
+worked window fees and the section structure, and exits non-zero when any one
+of them is damaged; `scripts/test_check_private_reveal_policies.py` damages
+each in turn. With `--constants` it prints the recomputed constants, the
+RP-24 gas among them, for the node's test to compare with. It checks the
+charge against the recorded 10.61 ms; the measurement of at least 1,000
+verifications per statement in the node's own verifier (section 10.2) is the
+node's part of the gas constants ticket (section 18, item 9), and until it is
+recorded section 15, item 1 holds.
