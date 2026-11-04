@@ -24,8 +24,10 @@ _spec.loader.exec_module(_keccak_source)
 keccak256 = _keccak_source.keccak256
 
 # The Ghost header, in RLP order: the pinned base header's fields with the base
-# fee required, then the two tree roots and the data marker-set root, 19 fields
-# in all. Each entry is (name, kind, size): a
+# fee required, then the two tree roots and the data marker-set root (fields 16
+# to 18), then the two lookup index roots, the coin marker-set root and the
+# block lookup digest (fields 19 to 22, decision 0004), 23 fields in all. Each
+# entry is (name, kind, size): a
 # "fixed" field is exactly `size` bytes, a "bytes" field at most `size` bytes,
 # an "int" field a canonical integer below 2^size.
 HEADER_LAYOUT = (
@@ -48,7 +50,13 @@ HEADER_LAYOUT = (
     ("coinTreeRoot", "fixed", 32),
     ("dataTreeRoot", "fixed", 32),
     ("dataMarkerRoot", "fixed", 32),
+    ("coinLookupRoot", "fixed", 32),
+    ("dataLookupRoot", "fixed", 32),
+    ("coinMarkerRoot", "fixed", 32),
+    ("lookupDigest", "fixed", 32),
 )
+# The four fields decision 0004 adds after dataMarkerRoot.
+LOOKUP_FIELDS = ("coinLookupRoot", "dataLookupRoot", "coinMarkerRoot", "lookupDigest")
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +140,21 @@ DATA_ROOT_ONE_LEAF = bytes.fromhex("dfc2bf39581c30d2cf1f025586af2f821524daa2e496
 # spec 01's two data markers (vector marker-set-two-markers), taken as given.
 EMPTY_MARKER_SET_ROOT = bytes.fromhex("0ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3")
 MARKER_SET_ROOT_TWO_MARKERS = bytes.fromhex("f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f")
+# The genesis values of the four lookup fields (vector header-genesis-new-fields):
+# the empty coin and data lookup indices, the coin marker set holding only its
+# sentinel and the digest of the empty block list, taken as given.
+EMPTY_COIN_LOOKUP_ROOT = bytes.fromhex("994a8bc5ba72f53f4449d4981c3ea8294d504b148afa58abec873819b143554b")
+EMPTY_DATA_LOOKUP_ROOT = bytes.fromhex("c0ad355e8462fbe6093fa0ac37c0afc450b36cbe679bb7de3050a9a1b2cddece")
+EMPTY_COIN_MARKER_ROOT = bytes.fromhex("84e7c602ab3870f46bf300eff5581ae88029f7c58afb3758a652e0129e9e85cc")
+EMPTY_LOOKUP_DIGEST = bytes.fromhex("9217af84b49597c35c570275e095d6a0245cab03c6f0126ce995acaa5023cd7b")
+# Block one: the coin lookup index after numbers 0 and 1 (coin-lookup-two-leaves),
+# the data lookup index after the data commit (data-lookup-one-leaf), the coin
+# marker set after the spend of number 0 (coin-marker-set-one-marker) and the
+# digest of the block's list (lookup-digest-block-one-example), taken as given.
+COIN_LOOKUP_ROOT_TWO_LEAVES = bytes.fromhex("489542787d7482d68a5bbd92c21f8225be3b0420bf06f1232c01af1f9f4c4451")
+DATA_LOOKUP_ROOT_ONE_LEAF = bytes.fromhex("04d419113c03c7b976eea6b1e9334f91d529faa05a89355e64b8439d6b96f9cc")
+COIN_MARKER_ROOT_ONE_MARKER = bytes.fromhex("d2d2d35cf33c017a3bbe0d7867ce1f62948514d1294354c2a11795f046960df8")
+LOOKUP_DIGEST_BLOCK_ONE = bytes.fromhex("daead9867c4447459915bdb77c163a1cfaa9e69e0f915c422a3f291bec8afcbc")
 
 # Stand-in for Bitcoin block B: the hash of Bitcoin's own first block, as
 # Bitcoin Core prints it. An example only, never Ghost's anchor.
@@ -164,6 +187,10 @@ def genesis_example():
         "coinTreeRoot": EMPTY_COIN_TREE_ROOT,
         "dataTreeRoot": EMPTY_DATA_TREE_ROOT,
         "dataMarkerRoot": EMPTY_MARKER_SET_ROOT,
+        "coinLookupRoot": EMPTY_COIN_LOOKUP_ROOT,
+        "dataLookupRoot": EMPTY_DATA_LOOKUP_ROOT,
+        "coinMarkerRoot": EMPTY_COIN_MARKER_ROOT,
+        "lookupDigest": EMPTY_LOOKUP_DIGEST,
     }
 
 
@@ -188,6 +215,10 @@ def block_one_example(parent_hash):
         "coinTreeRoot": COIN_ROOT_TWO_LEAVES,
         "dataTreeRoot": DATA_ROOT_ONE_LEAF,
         "dataMarkerRoot": MARKER_SET_ROOT_TWO_MARKERS,
+        "coinLookupRoot": COIN_LOOKUP_ROOT_TWO_LEAVES,
+        "dataLookupRoot": DATA_LOOKUP_ROOT_ONE_LEAF,
+        "coinMarkerRoot": COIN_MARKER_ROOT_ONE_MARKER,
+        "lookupDigest": LOOKUP_DIGEST_BLOCK_ONE,
     }
 
 
@@ -200,6 +231,7 @@ NEGATIVE_VECTORS = (
     ("header-short-tree-root", "short-tree-root", "field-size"),
     ("header-trailing-bytes", "trailing-bytes", "trailing-bytes"),
     ("header-eighteen-items", "eighteen-items", "item-count"),
+    ("header-nineteen-items", "nineteen-items", "item-count"),
 )
 
 
@@ -225,8 +257,12 @@ def damaged(fields, fault):
     elif fault == "trailing-bytes":
         return rlp_list_of_encoded(items) + b"\x00"
     elif fault == "eighteen-items":
-        # The 18-field header from before the data marker-set root.
-        del items[index["dataMarkerRoot"]]
+        # The 18-field header from before the data marker-set root: neither
+        # dataMarkerRoot nor the four lookup fields after it.
+        items = items[:index["dataMarkerRoot"]]
+    elif fault == "nineteen-items":
+        # The 19-field header from before decision 0004: no lookup fields.
+        items = items[:index[LOOKUP_FIELDS[0]]]
     else:
         raise ValueError(f"unknown fault {fault}")
     return rlp_list_of_encoded(items)

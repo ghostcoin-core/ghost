@@ -11,7 +11,8 @@ also checks that the tag table lists exactly the tags used here,
 with the right input sizes, that the same secret under two salts gives
 unrelated fingerprints, commitments and markers, and that every note vector
 has a version 2 type tag and is the note of a commitment vector. It recomputes
-the note lookup tag of the note nonce and the bucket rule. Commitment
+the 16-byte lookup tag of decision 0004, and the 3-byte nonce tag and the
+bucket rule that the lookup path superseded as the restore route. Commitment
 format version 2, the salted format, is the only one: a vector of another
 kind or a type tag of another version is refused.
 
@@ -153,6 +154,16 @@ TAG_DATA_MARKER_SET_NODE = "ghost/data-marker-set-node/v1"
 TAG_COIN_REVEAL_BINDING = "ghost/coin-reveal-binding/v1"
 TAG_DATA_REVEAL_BINDING = "ghost/data-reveal-binding/v1"
 TAG_HOLD_BINDING = "ghost/hold-binding/v1"
+# Decision 0004: the lookup tag, the two lookup indices, the coin marker-set
+# tree and the block lookup digest (spec 05, section 6).
+TAG_NOTE_LOOKUP = "ghost/note-lookup/v1"
+TAG_COIN_LOOKUP_LEAF = "ghost/coin-lookup-leaf/v1"
+TAG_COIN_LOOKUP_NODE = "ghost/coin-lookup-node/v1"
+TAG_DATA_LOOKUP_LEAF = "ghost/data-lookup-leaf/v1"
+TAG_DATA_LOOKUP_NODE = "ghost/data-lookup-node/v1"
+TAG_COIN_MARKER_SET_LEAF = "ghost/coin-marker-set-leaf/v1"
+TAG_COIN_MARKER_SET_NODE = "ghost/coin-marker-set-node/v1"
+TAG_BLOCK_LOOKUP_DIGEST = "ghost/block-lookup-digest/v1"
 
 ALL_TAGS = {
     TAG_KEY_CHECK,
@@ -177,6 +188,14 @@ ALL_TAGS = {
     TAG_COIN_REVEAL_BINDING,
     TAG_DATA_REVEAL_BINDING,
     TAG_HOLD_BINDING,
+    TAG_NOTE_LOOKUP,
+    TAG_COIN_LOOKUP_LEAF,
+    TAG_COIN_LOOKUP_NODE,
+    TAG_DATA_LOOKUP_LEAF,
+    TAG_DATA_LOOKUP_NODE,
+    TAG_COIN_MARKER_SET_LEAF,
+    TAG_COIN_MARKER_SET_NODE,
+    TAG_BLOCK_LOOKUP_DIGEST,
 }
 
 # The one key format (section 5): a words key, read here from its digit view of
@@ -218,6 +237,26 @@ TAG_LAYOUTS = {
     # nextValue, nextIndex as 5 bytes) and a node (level, left, right).
     TAG_DATA_MARKER_SET_LEAF: (32, 32, 5),
     TAG_DATA_MARKER_SET_NODE: (1, 32, 32),
+    # The lookup indices (decision 0004): a leaf (tag, position, nextTag,
+    # nextPosition, nextIndex) and a node; the coin marker-set tree: a leaf
+    # (value, nextValue, nextIndex, appended) and a node.
+    TAG_COIN_LOOKUP_LEAF: (16, 5, 16, 5, 5),
+    TAG_COIN_LOOKUP_NODE: (1, 32, 32),
+    TAG_DATA_LOOKUP_LEAF: (16, 5, 16, 5, 5),
+    TAG_DATA_LOOKUP_NODE: (1, 32, 32),
+    TAG_COIN_MARKER_SET_LEAF: (32, 32, 5, 5),
+    TAG_COIN_MARKER_SET_NODE: (1, 32, 32),
+}
+# Tags whose hash is the inner node of a tree: one permutation per level.
+NODE_TAGS = (TAG_COIN_TREE_NODE, TAG_DATA_TREE_NODE, TAG_DATA_MARKER_SET_NODE,
+             TAG_COIN_LOOKUP_NODE, TAG_DATA_LOOKUP_NODE, TAG_COIN_MARKER_SET_NODE)
+# Rows that are not fixed Keccak layouts, as decision 0004 states them:
+# (hash, input bytes, permutations). The lookup tag's 61 bytes are its length
+# byte, its 20 ASCII bytes, k_note and i as 8 bytes; the digest's 55 are its
+# length byte, its 28 bytes, two 5-byte starts and four 4-byte counts.
+FIXED_ROWS = {
+    TAG_NOTE_LOOKUP: ("SHA3-256", "61", "not in a proof"),
+    TAG_BLOCK_LOOKUP_DIGEST: ("Keccak-256", "55 + 16 a tag + 32 a marker", "not in a proof"),
 }
 KECCAK_RATE = 136
 
@@ -319,6 +358,15 @@ MAX_BUCKET_BITS = 8 * LOOKUP_TAG_BYTES
 
 def note_tag_digest(note_key, index):
     return sha3_tagged(TAG_NOTE_TAG, note_key, index.to_bytes(8, "big"))
+
+
+# The lookup tag (section 7; decision 0004): the first 16 bytes of
+# S("ghost/note-lookup/v1", k_note, i as 8 bytes), carried beside every new leaf.
+NOTE_LOOKUP_TAG_BYTES = 16
+
+
+def lookup_tag_digest(note_key, index):
+    return sha3_tagged(TAG_NOTE_LOOKUP, note_key, index.to_bytes(8, "big"))
 
 
 def bucket_bits(notes):
@@ -654,12 +702,28 @@ def check_bucket_rule(ch, v):
     ch.expect(v, "bits", str(bucket_bits(int(v["notes"]))))
 
 
+def check_lookup_tag(ch, v):
+    kb = _hex_field(v, "key-bytes")
+    if len(kb) != 33 or kb[0] != FORMAT_WORDS:
+        raise ValueError("key-bytes must be the format code 20 and 32 secret bytes")
+    index = int(v["index"])
+    if not 0 <= index < 1 << 64:
+        raise ValueError("index out of range")
+    note_key = derive_note_key(kb)
+    ch.expect(v, "note-key", note_key.hex())
+    ch.expect(v, "index-bytes", index.to_bytes(8, "big").hex())
+    digest = lookup_tag_digest(note_key, index)
+    ch.expect(v, "digest", digest.hex())
+    ch.expect(v, "tag", digest[:NOTE_LOOKUP_TAG_BYTES].hex())
+
+
 CHECKS = {
     "keccak256": check_keccak,
     "checksum": check_checksum,
     "derivation": check_derivation,
     "note-tag": check_note_tag,
     "bucket-rule": check_bucket_rule,
+    "lookup-tag": check_lookup_tag,
     "salted-coin-commitment": check_coin_commitment,
     "salted-data-commitment": check_data_commitment,
     "empty-leaf": check_empty_leaf,
@@ -703,7 +767,12 @@ def check_coverage(vectors):
     rule_bits = {v.get("bits") for v in vectors if v.get("kind") == "bucket-rule"}
     if not {"0", str(MAX_BUCKET_BITS)} <= rule_bits:
         errors.append(f"bucket-rule vectors must cover 0 bits and the clamp at {MAX_BUCKET_BITS}")
-    names = [v["name"] for v in vectors]
+    lookup = [v for v in vectors if v.get("kind") == "lookup-tag"]
+    if not {"0", "1"} <= {v.get("index") for v in lookup}:
+        errors.append("lookup-tag vectors must cover index 0 and index 1")
+    if len({v.get("key-bytes") for v in lookup}) < 2:
+        errors.append("lookup-tag vectors must cover the example key and the data example key")
+    names =[v["name"] for v in vectors]
     for name in sorted({n for n in names if names.count(n) > 1}):
         errors.append(f"vector name [{name}] used more than once")
     return errors
@@ -826,7 +895,7 @@ def check_tag_table(text):
                           f"recomputed {total}")
         perms = row.get("Keccak permutations", "")
         expect = total // KECCAK_RATE + 1
-        if tag in (TAG_COIN_TREE_NODE, TAG_DATA_TREE_NODE, TAG_DATA_MARKER_SET_NODE):
+        if tag in NODE_TAGS:
             expect_text = f"{expect} per level"
         elif tag == TAG_EMPTY_LEAF:
             expect_text = "a constant"
@@ -835,6 +904,14 @@ def check_tag_table(text):
         if perms != expect_text:
             errors.append(f"tag {tag}: table says {perms!r} Keccak permutations, "
                           f"recomputed {expect_text!r}")
+    for tag, (hash_name, size, perms) in sorted(FIXED_ROWS.items()):
+        row = rows.get(tag)
+        if row is None:
+            continue
+        got = (row.get("Hash"), row.get("Input bytes"), row.get("Keccak permutations"))
+        if got != (hash_name, size, perms):
+            errors.append(f"tag {tag}: table says {got}, decision 0004 fixes "
+                          f"{(hash_name, size, perms)}")
     return errors
 
 

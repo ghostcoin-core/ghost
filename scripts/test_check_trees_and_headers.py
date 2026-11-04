@@ -1,11 +1,14 @@
 """Tests for check_trees_and_headers.py: it passes on the specification and
 fails when a section, a parameter, a table, the header layout, the genesis
-list, a tree, rollover, marker-set, witness-extension or header vector, the
+list, a tree, rollover, marker-set, lookup (tag, index, witness, coin
+marker-set, digest, genesis field, global position), witness-extension or
+header vector, the
 encoder's output, a requirement, the restore reads of section 8 and their cost, the
 recovery test, a conflict or a tag is damaged. It also checks that the
 separately written encoder agrees with the checker's own RLP code and stays
 separate from it."""
 
+import hashlib
 import importlib.util
 import random
 import re
@@ -153,49 +156,67 @@ class CheckerTest(unittest.TestCase):
                             "| 8 | `gasLimit` | integer below 2^64 | base |\n| 9 | `number` |")
         self.assert_gap(text, "header fields are")
 
-    def test_marker_root_is_field_eighteen(self):
-        # A coin marker-set root after the data one is refused.
-        row = "| 18 | `dataMarkerRoot` | 32 bytes | Ghost |\n"
-        text = self.damaged(row, row + "| 19 | `coinMarkerRoot` | 32 bytes | Ghost |\n")
-        self.assert_gap(text, "no coin marker-set root may be added")
-        self.assert_gap(text, "the header table lists 20 fields, expected exactly 19")
-        # The marker-set root moved before the tree roots is refused.
+    def test_marker_roots_are_fields_eighteen_and_twenty_one(self):
+        # The two marker-set roots are dataMarkerRoot (18) and coinMarkerRoot
+        # (21); a third is refused.
+        row = "| 22 | `lookupDigest` | 32 bytes | Ghost |\n"
+        text = self.damaged(row, row + "| 23 | `otherMarkerRoot` | 32 bytes | Ghost |\n")
+        self.assert_gap(text, "no other marker-set root may be added")
+        self.assert_gap(text, "the header table lists 24 fields, expected exactly 23")
+        # The data marker-set root moved before the tree roots is refused.
         text = self.damaged("| 16 | `coinTreeRoot` | 32 bytes | Ghost |\n"
                             "| 17 | `dataTreeRoot` | 32 bytes | Ghost |\n"
                             "| 18 | `dataMarkerRoot` | 32 bytes | Ghost |\n",
                             "| 16 | `dataMarkerRoot` | 32 bytes | Ghost |\n"
                             "| 17 | `coinTreeRoot` | 32 bytes | Ghost |\n"
                             "| 18 | `dataTreeRoot` | 32 bytes | Ghost |\n")
-        self.assert_gap(text, "the one marker-set root must be 'dataMarkerRoot', field 18")
-        # The 18-field table without it is refused.
-        self.assert_gap(self.damaged(row, ""), "the header table lists 18 fields, expected exactly 19")
+        self.assert_gap(text, "the marker-set roots must be 'dataMarkerRoot', field 18, and "
+                              "'coinMarkerRoot', field 21")
+        # The table without the data root, or without the coin root, is refused.
+        data_row = "| 18 | `dataMarkerRoot` | 32 bytes | Ghost |\n"
+        self.assert_gap(self.damaged(data_row, ""), "the header table lists 22 fields, expected exactly 23")
+        coin_row = "| 21 | `coinMarkerRoot` | 32 bytes | Ghost |\n"
+        text = self.damaged(coin_row, "")
+        self.assert_gap(text, "the marker-set roots must be")
+        self.assert_gap(text, "the header table lists 22 fields, expected exactly 23")
         self.assert_gap(self.damaged("| 18 | `dataMarkerRoot` | 32 bytes | Ghost |",
                                      "| 18 | `dataMarkerRoot` | 32 bytes | base |"),
                         "header field 'dataMarkerRoot' must have source Ghost")
+        self.assert_gap(self.damaged("| 21 | `coinMarkerRoot` | 32 bytes | Ghost |",
+                                     "| 21 | `coinMarkerRoot` | 32 bytes | base |"),
+                        "header field 'coinMarkerRoot' must have source Ghost")
 
-    def test_header_has_nineteen_items(self):
-        self.assertEqual(len(checker.HEADER), 19)
+    def test_header_has_twenty_three_items(self):
+        self.assertEqual(len(checker.HEADER), 23)
         self.assertEqual(checker.HEADER_NAMES[18], "dataMarkerRoot")
+        self.assertEqual(checker.HEADER_NAMES[19:], checker.LOOKUP_FIELDS)
+        self.assertEqual(checker.HEADER_NAMES[21], "coinMarkerRoot")
         self.assertEqual(tuple(encoder.HEADER_LAYOUT)[18], ("dataMarkerRoot", "fixed", 32))
-        self.assert_gap(self.damaged("holds exactly 19 items", "holds exactly 18 items"),
-                        "do not say the list holds exactly 19 items")
-        # The decoder takes 19 items and refuses the 18 of a header without
-        # the marker-set root.
+        self.assertEqual(tuple(encoder.HEADER_LAYOUT)[22], ("lookupDigest", "fixed", 32))
+        self.assert_gap(self.damaged("holds exactly 23 items", "holds exactly 19 items"),
+                        "do not say the list holds exactly 23 items")
+        # The decoder takes 23 items and refuses the 19 of a header without the
+        # lookup fields and the 18 of one without the marker-set root.
         one = dict(encoder.golden_vectors())["header-block-one-example"]
         fields = checker.decode_header(bytes.fromhex(dict(one)["rlp"]))
         self.assertEqual(list(fields), list(checker.HEADER_NAMES))
         items = [checker.rlp_encode(x) for x in checker.header_list(fields)]
-        body = b"".join(items[:18])
-        with self.assertRaises(checker.DecodeError) as ctx:
-            checker.decode_header(checker._prefix(0xC0, len(body)) + body)
-        self.assertEqual(ctx.exception.reason, "item-count")
-        # The negative vector of that header is required and rejected as item-count.
-        text = self.in_block("header-eighteen-items", "reject = item-count", "reject = field-size")
-        self.assert_gap(text, "header-eighteen-items: rejected as item-count")
-        self.assert_gap(self.damaged("fault = eighteen-items\n", "fault = unknown\n"),
-                        "no negative header vector with fault 'eighteen-items'")
-        eighteen = dict(dict(encoder.golden_vectors())["header-eighteen-items"])
-        self.assertEqual(eighteen["rlp"], checker.with_fault(fields, "eighteen-items").hex())
+        for count in (18, 19, 22):
+            with self.subTest(count=count):
+                body = b"".join(items[:count])
+                with self.assertRaises(checker.DecodeError) as ctx:
+                    checker.decode_header(checker._prefix(0xC0, len(body)) + body)
+                self.assertEqual(ctx.exception.reason, "item-count")
+        # The negative vectors of those headers are required and rejected as item-count.
+        for name, fault in (("header-eighteen-items", "eighteen-items"),
+                            ("header-nineteen-items", "nineteen-items")):
+            with self.subTest(fault=fault):
+                text = self.in_block(name, "reject = item-count", "reject = field-size")
+                self.assert_gap(text, f"{name}: rejected as item-count")
+                self.assert_gap(self.damaged(f"fault = {fault}\n", "fault = unknown\n"),
+                                f"no negative header vector with fault '{fault}'")
+                vector = dict(dict(encoder.golden_vectors())[name])
+                self.assertEqual(vector["rlp"], checker.with_fault(fields, fault).hex())
 
     def test_marker_root_is_a_marker_set_vector(self):
         two = "f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f"
@@ -506,8 +527,8 @@ class CheckerTest(unittest.TestCase):
 
     def test_header_vector_rlp(self):
         start = self.text.index("[header-block-one-example]")
-        at = self.text.index("rlp = f90264", start)
-        text = self.text[:at] + "rlp = f90265" + self.text[at + len("rlp = f90264"):]
+        at = self.text.index("rlp = f902e8", start)
+        text = self.text[:at] + "rlp = f902e9" + self.text[at + len("rlp = f902e8"):]
         errors = self.errors(text)
         self.assertTrue(any("header-block-one-example: rlp differs" in e for e in errors), errors)
         self.assertTrue(any("differs from the encoder's output" in e for e in errors), errors)
@@ -519,11 +540,11 @@ class CheckerTest(unittest.TestCase):
         self.assertTrue(any("header-block-one-example: hash is" in e for e in errors), errors)
 
     def test_header_vector_hash(self):
-        text = self.damaged("hash = 81ca9614", "hash = 01ca9614")
+        text = self.damaged("hash = c8dc5524", "hash = 08dc5524")
         self.assert_gap(text, "vector header-block-one-example: hash is")
 
     def test_parent_link(self):
-        text = self.damaged("parentHash = 039d14f5", "parentHash = 139d14f5")
+        text = self.damaged("parentHash = d264783a", "parentHash = 1264783a")
         self.assert_gap(text, "parentHash is not the genesis example's hash")
 
     def test_header_root_must_be_a_tree_vector(self):
@@ -539,8 +560,8 @@ class CheckerTest(unittest.TestCase):
 
     def test_negative_vector_bytes(self):
         start = self.text.index("[header-extra-trailing-field]")
-        at = self.text.index("36e4f80\n", start)
-        text = self.text[:at] + "36e4f81\n" + self.text[at + len("36e4f80\n"):]
+        at = self.text.index("afcbc80\n", start)
+        text = self.text[:at] + "afcbc81\n" + self.text[at + len("afcbc80\n"):]
         self.assert_gap(text, "header-extra-trailing-field: rlp differs from the re-derived")
 
     def test_negative_vector_marked_valid(self):
@@ -607,6 +628,365 @@ class CheckerTest(unittest.TestCase):
         text = self.damaged("`ghost/data-marker/v2`, each", "`ghost/spent-set/v1`, each")
         self.assert_gap(text, "tag ghost/spent-set/v1 is not in the tag table")
         self.assert_gap(self.text, "no tag table found in spec 01", spec01="no table")
+
+
+class LookupVectors(unittest.TestCase):
+    """The lookup tags, lookup indices, coin marker-set tree, block lookup
+    digest and header fields of decision 0004: each family damaged fails."""
+
+    setUp = CheckerTest.setUp
+    errors = CheckerTest.errors
+    damaged = CheckerTest.damaged
+    in_block = CheckerTest.in_block
+    assert_gap = CheckerTest.assert_gap
+
+    def flip(self, name, key, offset=0):
+        """The text with one hex digit of field `key` of block `[name]` changed."""
+        start = self.text.index(f"[{name}]\n")
+        end = min(i for i in (self.text.find("\n\n", start), self.text.find("```", start)) if i > 0)
+        at = self.text.index(f"\n{key} = ", start) + len(f"\n{key} = ")
+        self.assertLess(at, end, f"'{key}' is not in [{name}]")
+        if offset < 0:
+            offset += self.text.index("\n", at) - at
+        at += offset
+        digit = "1" if self.text[at] == "0" else "0"
+        return self.text[:at] + digit + self.text[at + 1:]
+
+    def field(self, name, key):
+        return dict(checker.vector_blocks(self.text.splitlines())[name])[key]
+
+    def test_specification_passes_and_holds_every_vector(self):
+        self.assertEqual(self.errors(self.text), [])
+        blocks = checker.vector_blocks(self.text.splitlines())
+        for name in checker.LOOKUP_VECTOR_NAMES:
+            with self.subTest(name=name):
+                self.assertIn(name, blocks)
+                self.assert_gap(self.damaged(f"[{name}]\n", f"[renamed-{name}]\n"), f"no vector {name}")
+        # A lookup vector the checker does not compute is refused.
+        self.assert_gap(self.damaged("[coin-lookup-one-leaf]\n", "[coin-lookup-other]\n"),
+                        "vector coin-lookup-other is not a lookup vector this script computes")
+
+    def test_lookup_tag(self):
+        for name in checker.LOOKUP_TAG_VECTORS:
+            for key in ("tag", "digest", "note-key"):
+                with self.subTest(name=name, key=key):
+                    self.assert_gap(self.flip(name, key, 5), f"vector {name}: {key} differ")
+        # The tag is the first 16 bytes, not the 3 of the nonce tag.
+        text = self.in_block("lookup-tag-index-0", "tag = 74c5d993f5f018e3174926b2c8e8fb68",
+                             "tag = 74c5d9")
+        self.assert_gap(text, "vector lookup-tag-index-0: tag differ")
+        # Spec 01's note key must be the k_note of its key bytes.
+        note_key = "35136c4a7bdccb4b26159c15f86567a483ac58e1b2c40dca49a5d099272c4181"
+        self.assertIn(f"note-key = {note_key}", self.spec01)
+        spec01 = self.spec01.replace(f"note-key = {note_key}", "note-key = " + "66" * 32)
+        self.assert_gap(self.text, "the lookup vectors cannot be recomputed from spec 01", spec01=spec01)
+        # Independently: SHA3-256 under the 20-byte domain, first 16 bytes.
+        k_note = bytes.fromhex(note_key)
+        digest = hashlib.sha3_256(b"\x14ghost/note-lookup/v1" + k_note + bytes(8)).digest()
+        self.assertEqual(self.field("lookup-tag-index-0", "tag"), digest[:16].hex())
+        self.assertEqual(checker.lookup_tag(k_note, 0), (digest, digest[:16]))
+
+    def test_lookup_index_roots(self):
+        for name in checker.LOOKUP_INDEX_VECTORS:
+            with self.subTest(name=name):
+                self.assert_gap(self.flip(name, "root", 7), f"vector {name}: root differ")
+        # A leaf, the count, the entries, the tree.
+        self.assert_gap(self.flip("coin-lookup-copied-tag", "leaf-3", 40),
+                        "vector coin-lookup-copied-tag: leaf-3 differ")
+        self.assert_gap(self.in_block("coin-lookup-copied-tag", "count = 4", "count = 3"),
+                        "vector coin-lookup-copied-tag: count differ")
+        self.assert_gap(self.in_block("coin-lookup-copied-tag", "fb68@2", "fb68@3"),
+                        "vector coin-lookup-copied-tag: entries differ")
+        self.assert_gap(self.in_block("data-lookup-one-leaf", "tree = data", "tree = coin"),
+                        "vector data-lookup-one-leaf: tree differ")
+        # The empty roots are the sentinel's, under each type's own tags.
+        sentinel = bytes(47)
+        for tree, name in (("coin", "coin-lookup-empty"), ("data", "data-lookup-empty")):
+            leaf_tag, node_tag = checker.LOOKUP_TREE_TAGS[tree]
+            at, z = checker.tagged(leaf_tag, sentinel), checker.empty_leaf()
+            for level in range(40):
+                at = checker.node(node_tag, level, at, z)
+                z = checker.node(node_tag, level, z, z)
+            self.assertEqual(self.field(name, "root"), at.hex())
+        self.assertNotEqual(self.field("coin-lookup-empty", "root"), self.field("data-lookup-empty", "root"))
+
+    def test_lookup_witnesses(self):
+        for name in ("coin-lookup-absence", "coin-lookup-first-entry", "coin-lookup-membership"):
+            for offset in (0, 30, 101, 1500, -1):
+                with self.subTest(name=name, offset=offset):
+                    text = self.flip(name, "witness", offset)
+                    self.assert_gap(text, f"vector {name}: witness differ")
+                    self.assert_gap(text, f"vector {name}: the witness is rejected")
+            with self.subTest(name=name, cut=True):
+                text = self.in_block(name, "6840\n", "68\n")
+                self.assert_gap(text, f"vector {name}: the witness is 1331 bytes, expected 1332")
+        # The absence witness gives no answer for the rejected tags; a reject
+        # that is in fact absent is caught.
+        absent = self.field("coin-lookup-absence", "tag")
+        text = self.in_block("coin-lookup-absence", "reject-below = 98f00763f51d9e982a7814297473729e",
+                             f"reject-below = {absent}")
+        self.assert_gap(text, "vector coin-lookup-absence: the witness shows reject-below absent")
+        self.assert_gap(text, "vector coin-lookup-absence: reject-below differ")
+        self.assert_gap(self.in_block("coin-lookup-absence", "outcome = absent", "outcome = first"),
+                        "vector coin-lookup-absence: outcome differ")
+        # The first entry of a copied tag is the original at 0, not the copy at 2.
+        text = self.in_block("coin-lookup-first-entry", "\nposition = 0", "\nposition = 2")
+        self.assert_gap(text, "vector coin-lookup-first-entry: position differ")
+        self.assert_gap(text, "the witness answers ('first', 0), not the first entry at position 2")
+        # The membership witness is for the copy at 2 only.
+        text = self.in_block("coin-lookup-membership", "\nposition = 2", "\nposition = 0")
+        self.assert_gap(text, "vector coin-lookup-membership: position differ")
+        self.assert_gap(text, "vector coin-lookup-membership: the witness is rejected (other-entry)")
+        self.assert_gap(self.in_block("coin-lookup-membership", "leaf-position = 3", "leaf-position = 1"),
+                        "vector coin-lookup-membership: leaf-position differ")
+
+    def test_coin_marker_set(self):
+        for name in checker.COIN_SET_VECTORS:
+            with self.subTest(name=name):
+                self.assert_gap(self.flip(name, "root", 3), f"vector {name}: root differ")
+        # The sentinel's appended is none, ff ff ff ff ff.
+        text = self.in_block("coin-marker-set-empty", "0000000000 ffffffffff", "0000000000 0000000000")
+        self.assert_gap(text, "vector coin-marker-set-empty: leaf-0 differ")
+        # A rewritten leaf keeps its own appended.
+        text = self.in_block("coin-marker-set-two-markers", "0000000002 0000000001", "0000000002 0000000002")
+        self.assert_gap(text, "vector coin-marker-set-two-markers: leaf-1 differ")
+        self.assert_gap(self.in_block("coin-marker-set-two-markers", "daf78@1", "daf78@2"),
+                        "vector coin-marker-set-two-markers: spends differ")
+        # The markers are spec 01's coin markers.
+        marker = "d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78"
+        self.assertIn(f"marker = {marker}", self.spec01)
+        spec01 = self.spec01.replace(f"marker = {marker}", "marker = " + "77" * 32)
+        self.assert_gap(self.text, "vector coin-marker-set-one-marker: spends", spec01=spec01)
+        # The witnesses: any changed byte, the appended position, the rejected marker.
+        for name in ("coin-marker-set-membership", "coin-marker-set-absence"):
+            for offset in (0, 66, 140, 150, -1):
+                with self.subTest(name=name, offset=offset):
+                    text = self.flip(name, "witness", offset)
+                    self.assert_gap(text, f"vector {name}: witness differ")
+                    self.assert_gap(text, f"vector {name}: the witness is rejected")
+        text = self.in_block("coin-marker-set-membership", "appended = 1", "appended = 2")
+        self.assert_gap(text, "vector coin-marker-set-membership: appended differ")
+        self.assert_gap(text, "the witness shows appended 1, the vector says 2")
+        text = self.in_block("coin-marker-set-absence", "reject-spent = d93e", "reject-spent = 8888")
+        self.assert_gap(text, "vector coin-marker-set-absence: reject-spent differ")
+        self.assert_gap(self.in_block("coin-marker-set-absence", "low-position = 0", "low-position = 1"),
+                        "vector coin-marker-set-absence: low-position differ")
+
+    def test_block_lookup_digest(self):
+        for name in checker.LOOKUP_DIGEST_VECTORS:
+            for key in ("digest", "encoding"):
+                with self.subTest(name=name, key=key):
+                    self.assert_gap(self.flip(name, key, 9), f"vector {name}: {key} differ")
+        self.assert_gap(self.in_block("lookup-digest-example", "coin-start = 1", "coin-start = 0"),
+                        "vector lookup-digest-example: coin-start differ")
+        # Tags before markers, coin before data: swapping the data markers' order breaks it.
+        text = self.in_block("lookup-digest-block-one-example",
+                             "data-markers = c340c4a3020d70f72ed289d4e5fcc0c41cd41224d69bea229f0f8a6ecbb77e3b "
+                             "40b6aa08963fee7e02d69cf4d7c5e9d2ba775d28991f4e08e27ed97c8a38acc8",
+                             "data-markers = 40b6aa08963fee7e02d69cf4d7c5e9d2ba775d28991f4e08e27ed97c8a38acc8 "
+                             "c340c4a3020d70f72ed289d4e5fcc0c41cd41224d69bea229f0f8a6ecbb77e3b")
+        self.assert_gap(text, "vector lookup-digest-block-one-example: data-markers differ")
+        # The empty list is 26 bytes: two starts and four counts.
+        body, digest = checker.lookup_digest(0, [], 0, [], [], [])
+        self.assertEqual(len(body), 26)
+        self.assertEqual(digest.hex(), self.field("lookup-digest-empty", "digest"))
+
+    def test_header_genesis_values(self):
+        for key in checker.LOOKUP_FIELDS:
+            with self.subTest(key=key):
+                text = self.flip("header-genesis-new-fields", key, 11)
+                self.assert_gap(text, f"vector header-genesis-new-fields: {key} differ")
+        # The genesis table and the genesis header carry the same values.
+        value = self.field("header-genesis-new-fields", "coinMarkerRoot")
+        other = self.field("coin-marker-set-one-marker", "root")
+        text = self.damaged(f"| `coinMarkerRoot` | `{value}`", f"| `coinMarkerRoot` | `{other}`")
+        self.assert_gap(text, "genesis field 'coinMarkerRoot' differs from vector header-genesis-new-fields")
+        self.assert_gap(text, f"genesis field 'coinMarkerRoot' is '{other}' in the table")
+        text = self.in_block("header-genesis-example", f"coinMarkerRoot = {value}", f"coinMarkerRoot = {other}")
+        self.assert_gap(text, "header-genesis-example: 'coinMarkerRoot' is not the genesis value")
+        self.assert_gap(text, "header-genesis-example: coinMarkerRoot is not the root of coin-marker-set-empty")
+        start = self.text.index("| `lookupDigest` | `")
+        end = self.text.index("\n", start) + 1
+        self.assert_gap(self.text[:start] + self.text[end:], "genesis field 'lookupDigest' is listed 0 times")
+
+    def test_header_with_twenty_three_items(self):
+        # Every new field of block one is the value of its vector.
+        for key, source in zip(checker.LOOKUP_FIELDS, checker.HEADER_LOOKUP_SOURCES["header-block-one-example"]):
+            with self.subTest(key=key):
+                value = self.field("header-block-one-example", key)
+                text = self.in_block("header-block-one-example", f"{key} = {value}", f"{key} = " + "55" * 32)
+                self.assert_gap(text, f"vector header-block-one-example: {key} is not the value of any")
+                self.assert_gap(text, "header-block-one-example: rlp differs from the re-encoding")
+                self.assert_gap(text, f"header-block-one-example: {key} is not the")
+        # The root of another coin marker-set vector is not the one block one names.
+        two = self.field("coin-marker-set-two-markers", "root")
+        one = self.field("header-block-one-example", "coinMarkerRoot")
+        text = self.in_block("header-block-one-example", f"coinMarkerRoot = {one}", f"coinMarkerRoot = {two}")
+        self.assert_gap(text, "header-block-one-example: coinMarkerRoot is not the root of "
+                              "coin-marker-set-one-marker")
+        # One byte of the 23-item RLP, in the new fields, is caught.
+        rlp = self.field("header-block-one-example", "rlp")
+        self.assertTrue(rlp.startswith("f902e8"))
+        self.assertEqual(len(bytes.fromhex(rlp)), 3 + 0x2E8)
+        text = self.flip("header-block-one-example", "rlp", -10)
+        self.assert_gap(text, "header-block-one-example: rlp differs from the re-encoding")
+        self.assert_gap(text, "vector header-block-one-example differs from the encoder's output")
+        fields = checker.decode_header(bytes.fromhex(rlp))
+        self.assertEqual(len(fields), 23)
+        self.assertEqual(fields["lookupDigest"].hex(), self.field("lookup-digest-block-one-example", "digest"))
+
+    def test_global_positions(self):
+        text = self.in_block("global-position-examples", "tree-255-position-4294967295 = rejected",
+                             "tree-255-position-4294967295 = ffffffffff")
+        self.assert_gap(text, "vector global-position-examples: tree-255-position-4294967295 differ")
+        for key in ("tree-0-position-4294967295", "tree-1-position-0", "tree-255-position-4294967294", "none"):
+            with self.subTest(key=key):
+                self.assert_gap(self.flip("global-position-examples", key, 9),
+                                f"vector global-position-examples: {key} differ")
+        self.assertEqual(checker.global_position(1, 0).hex(), "0100000000")
+        with self.assertRaises(checker.LookupRejected):
+            checker.global_position(255, 2**32 - 1)
+        with self.assertRaises(checker.LookupRejected):
+            checker.global_position(0, 2**32)
+        # The append at the limit is refused, and its vector is required.
+        self.assertEqual(checker.append(255, 2**32 - 2, False), (True, 255, 2**32 - 1, 2**32 - 2))
+        self.assertEqual(checker.append(255, 2**32 - 1, False), (False, 255, 2**32 - 1, None))
+        self.assertEqual(checker.append(255, 2**32, False), (False, 255, 2**32, None))
+        text = self.in_block("append-lookup-limit", "includable = no", "includable = yes")
+        self.assert_gap(text, "vector append-lookup-limit: includable is yes, recomputed no")
+        self.assert_gap(self.in_block("append-lookup-limit", "kind = append", "kind = other"),
+                        "no vector for an append at the last global position")
+
+    def test_field_indices(self):
+        rows = ("| 19 | `coinLookupRoot` | 32 bytes | Ghost |\n"
+                "| 20 | `dataLookupRoot` | 32 bytes | Ghost |\n")
+        swapped = ("| 19 | `dataLookupRoot` | 32 bytes | Ghost |\n"
+                   "| 20 | `coinLookupRoot` | 32 bytes | Ghost |\n")
+        text = self.damaged(rows, swapped)
+        self.assert_gap(text, "header lookup fields are")
+        self.assert_gap(text, "header fields are")
+        self.assert_gap(self.damaged("| 22 | `lookupDigest` |", "| 23 | `lookupDigest` |"),
+                        "header field 'lookupDigest' has index 23, expected 22")
+        self.assert_gap(self.damaged("| 21 | `coinMarkerRoot` | 32 bytes |", "| 21 | `coinMarkerRoot` | 31 bytes |"),
+                        "header field 'coinMarkerRoot' encoding '31 bytes'")
+        text = self.damaged("| 21 | `coinMarkerRoot` | 32 bytes | Ghost |\n"
+                            "| 22 | `lookupDigest` | 32 bytes | Ghost |\n",
+                            "| 21 | `lookupDigest` | 32 bytes | Ghost |\n"
+                            "| 22 | `coinMarkerRoot` | 32 bytes | Ghost |\n")
+        self.assert_gap(text, "the marker-set roots must be")
+        self.assert_gap(text, "header lookup fields are")
+
+    def test_decision_table_records_the_change(self):
+        start = self.text.index("| Spent-marker-set root in the header |")
+        end = self.text.index("\n", start)
+        for word in ("superseded", "coinMarkerRoot", "field 21", "decision 0004", "2026-10-25"):
+            with self.subTest(word=word):
+                row = self.text[start:end].replace(word, "x")
+                self.assert_gap(self.text[:start] + row + self.text[end:],
+                                f"decision table row 'Spent-marker-set root in the header' does not "
+                                f"record '{word}'")
+        self.assert_gap(self.damaged("| Header encoding |", "| Encoding |"),
+                        "the decision table has no row 'Header encoding'")
+        start = self.text.index("| Header encoding |")
+        end = self.text.index("\n", start)
+        row = self.text[start:end].replace("23 items", "19 items")
+        self.assert_gap(self.text[:start] + row + self.text[end:],
+                        "decision table row 'Header encoding' does not record '23 items'")
+        # The superseded rule may not come back anywhere.
+        for sentence in ("There is no coin marker-set root.", "The header carries exactly three new fields."):
+            with self.subTest(sentence=sentence):
+                text = self.damaged("## 13. Conflicts with other chapters\n",
+                                    f"## 13. Conflicts with other chapters\n\n{sentence}\n")
+                self.assert_gap(text, "the 2026-10-25 rule that decision 0004 supersedes")
+
+    def test_section_six_states_the_trees(self):
+        for title, words in checker.LOOKUP_SUBSECTIONS.items():
+            with self.subTest(title=title):
+                self.assert_gap(self.damaged(f"### {title}\n", f"### Other {title}\n"),
+                                f"section 'Markers' has no subsection '{title}'")
+            start = self.text.index(f"### {title}\n") + len(f"### {title}\n")
+            end = min(self.text.index("\n### ", start), self.text.index("\n## ", start))
+            for word in words:
+                with self.subTest(title=title, word=word):
+                    pattern = r"\s+".join(re.escape(part) for part in word.split())
+                    body = re.sub(pattern, "x", self.text[start:end], flags=re.I)
+                    self.assert_gap(self.text[:start] + body + self.text[end:],
+                                    f"subsection '{title}' does not mention '{word}'")
+
+    def test_lookup_rules(self):
+        """The checker's own trees: inserts keep the list sorted, every
+        witness verifies, and a changed byte or a wrong claim does not."""
+        rng = random.Random(17)
+        tags = [bytes(rng.randrange(256) for _ in range(16)) for _ in range(9)]
+        entries = [(t, g) for g, t in enumerate(tags + [tags[2], tags[5]])]
+        leaves = checker.lookup_index("coin", entries)
+        chain, at = [], 0
+        while True:
+            tag, position, next_tag, next_position, next_index = leaves[at]
+            chain.append((tag, position))
+            if next_tag == bytes(16):
+                break
+            self.assertEqual(leaves[next_index][:2], (next_tag, next_position))
+            self.assertEqual(next_index, next_position + 1)
+            at = next_index
+        self.assertEqual(chain, [(bytes(16), 0)] + sorted(entries))
+        root = checker.lookup_root("coin", leaves)
+        for i, (tag, position) in enumerate(entries):
+            witness = checker.lookup_witness("coin", leaves, i + 1)
+            self.assertEqual(len(witness), 1332)
+            self.assertEqual(checker.lookup_membership("coin", root, tag, position, witness)[:2],
+                             (tag, position))
+            with self.assertRaises(checker.LookupRejected):
+                checker.lookup_membership("data", root, tag, position, witness)
+            broken = bytearray(witness)
+            broken[52 + 32 * rng.randrange(40)] ^= 1
+            with self.assertRaises(checker.LookupRejected):
+                checker.lookup_membership("coin", root, tag, position, bytes(broken))
+        # A copied tag's first entry is the original.
+        for tag in (tags[2], tags[5]):
+            low = checker.lookup_low(leaves, tag)
+            witness = checker.lookup_witness("coin", leaves, low)
+            self.assertEqual(checker.lookup_answer("coin", root, tag, witness),
+                             ("first", tags.index(tag)))
+        # An absent tag is shown absent, and the witness answers nothing else.
+        for _ in range(5):
+            tag = bytes(rng.randrange(256) for _ in range(16))
+            low = checker.lookup_low(leaves, tag)
+            witness = checker.lookup_witness("coin", leaves, low)
+            self.assertEqual(checker.lookup_answer("coin", root, tag, witness), ("absent", None))
+            with self.assertRaises(checker.LookupRejected):
+                checker.lookup_answer("coin", root, tag, witness[:-1])
+            with self.assertRaises(checker.LookupRejected):
+                checker.lookup_answer("coin", root, leaves[low][0] if low else bytes(16), witness)
+        with self.assertRaises(checker.LookupRejected):
+            checker.lookup_insert(list(leaves), bytes(16), len(entries))
+        with self.assertRaises(checker.LookupRejected):
+            checker.lookup_insert(list(leaves), tags[0], 3)
+        # The coin marker set keeps each leaf's appended through rewrites.
+        markers = [bytes(rng.randrange(256) for _ in range(32)) for _ in range(8)]
+        spends = [(m, 10 + i) for i, m in enumerate(markers)]
+        cset = checker.coin_set(spends)
+        self.assertEqual(cset[0][3], checker.NONE_POSITION)
+        self.assertEqual({leaf[0]: leaf[3] for leaf in cset[1:]}, dict(spends))
+        root = checker.coin_set_root(cset)
+        for i, (m, appended) in enumerate(spends):
+            witness = checker.coin_set_witness(cset, i + 1)
+            self.assertEqual(len(witness), 1359)
+            self.assertEqual(checker.coin_set_membership(root, m, witness), appended)
+            with self.assertRaises(checker.LookupRejected):
+                checker.coin_set_absence(root, m, witness)
+        for _ in range(5):
+            m = bytes(rng.randrange(256) for _ in range(32))
+            witness = checker.coin_set_witness(cset, checker.coin_set_low(cset, m))
+            self.assertIsNone(checker.coin_set_absence(root, m, witness))
+            broken = bytearray(witness)
+            broken[69] ^= 1  # the appended field is hashed
+            with self.assertRaises(checker.LookupRejected):
+                checker.coin_set_absence(root, m, bytes(broken))
+        with self.assertRaises(checker.LookupRejected):
+            checker.coin_set_insert(list(cset), markers[0], 1)
+        with self.assertRaises(checker.LookupRejected):
+            checker.coin_set_insert(list(cset), bytes(32), 1)
 
 
 class TreeAndRlpTest(unittest.TestCase):

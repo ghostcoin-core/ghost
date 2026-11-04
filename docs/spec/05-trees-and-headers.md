@@ -17,7 +17,10 @@ listed in section 12.
 This document fixes the two trees and what happens when one fills, the two tree
 states in every block header, which roots a proof may use, where the one-time
 markers are kept and the tree over the data markers whose root every header
-carries, what a reorganisation does to all of them, how a wallet gets
+carries, the lookup indices, the coin marker-set tree and the block lookup
+digest whose values every header carries since
+[decision 0004](../decisions/0004-lookup-formats.md), what a reorganisation
+does to all of them, how a wallet gets
 the tree data it needs without telling anyone which commitment is its own, which
 nodes keep that history, and the exact bytes of a header. Section 11 holds the
 golden vectors, and section 15 names the script that checks this document and
@@ -36,14 +39,17 @@ here by name. It writes no node code, no circuit and no proof-system choice.
 | Rollover | When a tree holds 2^32 leaves, the next append of that type goes to a new empty tree with the next index; the full tree is final and its last root stays valid forever | Front desk decision |
 | Rollover inside one block | A block never appends to two tree indices of one type, so every final root appears in a header | **Proposed** (section 3) |
 | Tree state | Tree index, leaf count and frontier of each type in reserved system-account storage, covered by the state root | Front desk decision; base client plan 7.3 |
-| Header | Exactly three new fields: the current coin tree root, the current data tree root and the data spent-marker-set root `dataMarkerRoot` | Front desk decision |
-| Spent-marker-set root in the header | Data only: `dataMarkerRoot`, field 18, the root of an append-only indexed Keccak-256 tree of depth 40 (section 6), answering [spec 04](04-data-commitments.md), question 2; no coin marker-set root; the proof circuit checks constraint 4 of spec 02's S3, so data proofs of holding are verified and coin ones stay rejected | Front desk decision, 2026-10-25 |
+| Header | Seven new fields: the current coin tree root, the current data tree root and the data spent-marker-set root `dataMarkerRoot` (fields 16 to 18), then `coinLookupRoot`, `dataLookupRoot`, `coinMarkerRoot` and `lookupDigest` (fields 19 to 22) | Front desk decision; fields 19 to 22 decision 0004 |
+| Spent-marker-set root in the header | Both sets: `dataMarkerRoot`, field 18, the root of an append-only indexed Keccak-256 tree of depth 40 (section 6), answering [spec 04](04-data-commitments.md), question 2, and `coinMarkerRoot`, field 21, the root of the coin marker-set tree of section 6, the same construction with the `appended` field. The 2026-10-25 rule that the data set alone has a header root is superseded by the [stage 2 design](../scale/stage2-design.md), "What changes on the chain", whose formats decision 0004 fixes. The proof circuit checks constraint 4 of spec 02's S3 for data, so data proofs of holding are verified and coin ones stay rejected (spec 02, question 2 is not settled by `coinMarkerRoot`) | Front desk decision, 2026-10-25; changed by decision 0004, 2026-11-04 |
+| Lookup tags and lookup indices | A 16-byte lookup tag beside every new leaf; per type an append-only indexed Keccak-256 tree of depth 40 over (tag, global position), with membership, first-entry and absence witnesses of 1,332 bytes (section 6) | Decision 0004 |
+| Coin marker-set tree | The coin spent markers in the data marker-set construction with a fourth field, the global position of the leaf the same reveal appended or none; 1,359-byte witnesses (section 6) | Decision 0004 |
+| Block lookup digest | Keccak-256 over the block's new coin and data tags and its coin and data markers, in transaction order with their counts (section 6) | Decision 0004 |
 | Eligible roots | Exactly the roots in headers of canonical blocks before the including block, of the matching type, with no age limit | Front desk decision; [spec 03](03-coin-rules.md), question 4 |
 | Marker storage | One set per marker tag in reserved system-account storage, keyed by the marker; checked in the canonical state at block execution and pool admission | Front desk decision |
 | Reorganisation | Tree state and markers roll back with the journaled state; disconnected roots leave the eligible set at once; disconnected transactions return to the pool and are fully rechecked; no new depth limit | Front desk decision |
 | Wallet tree data | Whole pages of 4,096 consecutive leaves with their notes, by position, and a bulk list of page roots; the wallet builds its witness itself; no per-commitment request exists; note buckets by key-derived tag prefix, at least 4,096 expected notes each; a page-root tail from a multiple of 65,536 pages and a read of 8 pages (7 of them decoys) to extend a witness | Front desk decision; page size **Proposed** |
 | History | Every full node keeps and serves all commitments and notes of both trees; no pruning in version 1; header-only clients keep none; project-run indexers are optional | Front desk decision |
-| Header encoding | The pinned base header's fields in order with the base fee required, then the two tree roots and the data marker-set root, 19 items; no optional fields; withdrawals, blob and beacon-root fields forbidden; any extra trailing field rejected | Front desk decision |
+| Header encoding | The pinned base header's fields in order with the base fee required, then the two tree roots and the data marker-set root, then `coinLookupRoot`, `dataLookupRoot`, `coinMarkerRoot` and `lookupDigest`, 23 items; no optional fields; withdrawals, blob and beacon-root fields forbidden; any extra trailing field and the 19-item header of before decision 0004 rejected | Front desk decision; 23 items decision 0004 |
 
 ## 2. Conventions
 
@@ -63,6 +69,11 @@ value or transaction is invalid and changes no state. In addition:
   check, the block the node would build next on its head.
 - **Page.** 4,096 consecutive leaf positions of one tree, starting at a multiple
   of 4,096 (section 8).
+- **Global position.** A leaf at position `p` of tree index `k` of one type has
+  the global position `g = k * 2^32 + p`, written as 5 bytes (decision 0004).
+  A tree fills before the next starts (section 3), so `g` is the number of
+  leaves of that type appended before this one. The 5 bytes `ff ff ff ff ff`,
+  2^40 - 1, are never a global position and mean "none".
 - **RLP.** The recursive length prefix encoding of the base client, in its
   canonical form only (section 10).
 - **Uncertain means rejected.** Every classification in this document (is this
@@ -141,6 +152,14 @@ An append of leaf `C` to the tree of a type, in a block at height `H`:
    rejected. Otherwise set `k = k + 1`, `n = 0`, clear the frontier, and
    continue as in step 1 with position 0 of the new tree.
 
+Before either step, an append whose leaf would have the global position
+2^40 - 1 or more (section 2) is rejected, because the lookup index of its type
+has no entry for it (section 6, "The lookup indices"; decision 0004). The last
+usable leaf is position 4294967294 of tree index 255, about 301 years at 10
+million leaves a day (modeled), so in practice this limit, not
+`TREE_INDEX_MAX`, ends a type's trees (vectors `append-lookup-limit` and
+`global-position-examples`).
+
 The position of a leaf is the pair (tree index, position), recorded in the
 receipt (spec 03, section 6, step 10). The tree index is never an input of any
 hash: two trees with the same leaves would have the same root, which cannot
@@ -189,20 +208,31 @@ become "the append is includable in this block".
 ## 4. Tree states in headers
 
 Every block header carries the tree state of both trees (outline, "Core
-protocol" 6) as two new fields, and the root of the data spent-marker set as a
-third (front desk decision; the third, 2026-10-25):
+protocol" 6) as two new fields, the root of the data spent-marker set as a
+third (front desk decision; the third, 2026-10-25), and the four lookup fields
+of [decision 0004](../decisions/0004-lookup-formats.md) (the stage 2 design's
+restore by private lookup):
 
 - `coinTreeRoot`: the root of the current coin tree (index `k`, count `n` of
   the coin tree state) after the last transaction of the block.
 - `dataTreeRoot`: the same for the data tree.
 - `dataMarkerRoot`: the root of the data marker-set tree (section 6, "The data
   marker-set tree") after the last transaction of the block.
+- `coinLookupRoot` and `dataLookupRoot`: the root of the lookup index of each
+  type (section 6, "The lookup indices") after the last transaction of the
+  block.
+- `coinMarkerRoot`: the root of the coin marker-set tree (section 6, "The coin
+  marker-set tree") after the last transaction of the block.
+- `lookupDigest`: the block lookup digest (section 6, "The block lookup
+  digest").
 
-A block whose three roots differ from the roots the node computes by executing
+A block whose seven values differ from those the node computes by executing
 it is invalid; the check sits with the state root and receipt root checks of the
-base client. The genesis roots are the empty roots (section 10).
+base client. The genesis values are the empty roots and the digest of the
+empty list (section 10).
 
-When no leaf of a type is added in a block, its root equals the parent's. After
+When no leaf of a type is added in a block, its root equals the parent's, and
+so does the root of a lookup index or marker set the block adds nothing to. After
 a tree fills, its final root stays in the header of every block until the first
 append to the next tree, and at least in the header of the block that filled it
 (section 3).
@@ -224,21 +254,23 @@ give is marker status:
   header. For data that root is `dataMarkerRoot` (spec 04, question 2,
   answered), and the witness is the `absence` of section 6. The proof circuit
   checks that non-membership (spec 02, S3, constraint 4; section 13, item 2
-  there), so a proof of holding for data is verified. There is no coin
-  marker-set root: a proof of holding for coins stays rejected (spec 02,
-  section 13, item 3).
+  there), so a proof of holding for data is verified. For coins the header
+  now carries a marker-set root too, `coinMarkerRoot` (decision 0004), but it
+  does not settle spec 02, question 2: a proof of holding for coins stays
+  rejected (spec 02, section 13, item 3).
 
-**Seal coverage.** The proof-of-work seal must cover the three root fields, so
-that no relay can change a root without redoing the work (Core-Geth survey,
-"Seal hash coverage"). The seal hash's exact layout is in
+**Seal coverage.** The proof-of-work seal must cover the seven Ghost fields,
+so that no relay can change a root or the digest without redoing the work
+(Core-Geth survey, "Seal hash coverage"). The seal hash's exact layout is in
 [spec 08](08-randomx-seal.md), section 4: Keccak-256 of the header's RLP with
 `mixDigest` and `nonce` set to zero, so it covers every header field except
-those two seal fields, all three roots included; `dataMarkerRoot` needs no new
-rule. Spec 08 also fixes what RandomX hashes, the target and the key; its RS-6
-is TH-6 below.
+those two seal fields, all seven included; the four fields of decision 0004
+need no new rule. Spec 08 also fixes what RandomX hashes, the target and the
+key; its RS-6 is TH-6 below.
 
 - **TH-5. Wrong root in a header.** A block whose `coinTreeRoot`,
-  `dataTreeRoot` or `dataMarkerRoot` differs from the executed value by one
+  `dataTreeRoot`, `dataMarkerRoot`, `coinLookupRoot`, `dataLookupRoot`,
+  `coinMarkerRoot` or `lookupDigest` differs from the executed value by one
   bit. Expected: the block is invalid and nothing of it is imported.
 - **TH-6. Roots are sealed.** A valid sealed header with one bit of
   `coinTreeRoot` changed. Expected: the seal check fails.
@@ -358,11 +390,13 @@ client plan 7.3):
 
 **Header-only verifiers.** The state root covers both sets, so a state proof
 for one slot against a trusted header shows a public marker's status (section
-4). That is not a set root a proof of holding can use. For data the header
-carries one: `dataMarkerRoot`, the root of the data marker-set tree below
-(spec 04, question 2, answered by front desk decision, 2026-10-25). The coin
-set has no such root, and a proof of holding for coins stays rejected (spec 02,
-section 13, item 3).
+4). That is not a set root a proof of holding can use. The header carries one
+for each set: `dataMarkerRoot`, the root of the data marker-set tree below
+(spec 04, question 2, answered by front desk decision, 2026-10-25), and
+`coinMarkerRoot`, the root of the coin marker-set tree below (decision 0004,
+which supersedes the 2026-10-25 rule of a data root only). A proof of holding
+for coins still stays rejected (spec 02, section 13, item 3): the coin root
+serves the restore of spec 01, section 8.
 
 - **TH-12. Repeats.** After a reveal with marker `m` is included, a second
   reveal with `m` in a later block, in the same block, and offered to the pool.
@@ -442,6 +476,251 @@ and asks no endpoint for a witness.
 
 **Vectors.** Section 11, "Marker-set vectors", and TH-25.
 
+The trees below, and the block lookup digest, are the restore formats of the
+[stage 2 design](../scale/stage2-design.md), "What changes on the chain", with
+the bytes fixed by [decision 0004](../decisions/0004-lookup-formats.md), copied
+here unchanged. Every one is a depth-40 tree built exactly as the data
+marker-set tree above: 2^40 positions, levels 0 (just above the leaves) to 39
+(the root), the empty leaf `E` at every unused position, empty subtrees
+`Z_0 = E` and `Z_(l+1) = node(l, Z_l, Z_l)` under the tree's own node tag, a
+position's bit `l` saying whether its ancestor at level `l - 1` is a right
+child, and byte strings of one width compared as big-endian integers. Every
+position below is a global position (section 2). The tags are in the tag table
+of spec 01, section 4.
+
+### The coin marker-set tree
+
+The coin spent markers are also kept as the construction of the data
+marker-set tree, with one more field. Its root after the block's last
+transaction is the header field `coinMarkerRoot`, field 21. It holds the same
+markers as the coin set's storage slots, in the order they were spent, and
+does not replace the slot check, which still rejects a repeat ("How a repeat
+is rejected" above).
+
+**Leaves and nodes.** A used position holds a leaf of 74 bytes:
+
+| Field | Width | Meaning |
+|---|---|---|
+| `value` | 32 bytes | A spent coin marker |
+| `nextValue` | 32 bytes | The next larger marker in the set; 32 zero bytes for none |
+| `nextIndex` | 5 bytes | The position of that marker's leaf in this tree |
+| `appended` | 5 bytes | The global position of the coin leaf that the reveal spending `value` appended, or none, `ff ff ff ff ff` |
+
+```text
+leaf = K("ghost/coin-marker-set-leaf/v1", value, nextValue, nextIndex, appended)   104 input bytes, 1 permutation
+node = K("ghost/coin-marker-set-node/v1", l as 1 byte, left, right)               95 input bytes, 1 per level
+```
+
+**Genesis.** Position 0 holds the sentinel `(0, 0, 0, none)`: 69 zero bytes and
+then `ff ff ff ff ff`. Every other position is empty. Its root is the genesis
+`coinMarkerRoot` (vector `coin-marker-set-empty`). The marker value 0 is never
+valid.
+
+**Insert.** In the apply step of a coin reveal (spec 03, section 7, step 13),
+which spends marker `m` and appends its remainder, or a claim's new
+commitment, at global position `a` (after the rollover rule of section 3 has
+chosen its tree index and position), into a set with `n` used positions:
+
+1. Find the used leaf `low` with `low.value < m` and (`m < low.nextValue` or
+   `low.nextValue = 0`). Exactly one leaf has this property.
+2. Write `(m, low.nextValue, low.nextIndex, a)` at position `n`.
+3. Rewrite `low` as `(low.value, m, n, low.appended)`: a rewritten leaf keeps
+   its own `appended`. Set `n = n + 1`.
+
+The append and the insert are one state change, so `a` is the same whatever
+order a node performs them in. In version 1 every coin reveal appends exactly
+one remainder, so every leaf except the sentinel records a position; none is
+the sentinel's, and is there for any later reveal kind that appends no leaf.
+
+**Witnesses.** Both kinds have one layout, the siblings from level 0 up:
+
+```text
+value (32) || nextValue (32) || nextIndex (5) || appended (5) || position of the leaf (5) || 40 siblings (32 each)
+```
+
+1,359 bytes. The leaf's hash folded with the siblings along the bits of its
+position must give the root `R` taken from a header; any witness of another
+length, or one that does not fold to `R`, is rejected.
+
+- **Absence witness** for a marker `m`: valid if and only if `m` is not zero,
+  the leaf folds to `R`, `value < m`, and (`m < nextValue` or `nextValue = 0`):
+  `m` is unspent under `R` (vector `coin-marker-set-absence`).
+- **Membership witness** for `m`: valid if and only if `m` is not zero, the
+  leaf folds to `R` and `value = m`: `m` is spent on the chain of `R`, and
+  `appended` is the global position of the leaf its reveal appended, where a
+  wallet reads the next commitment, or none (vector
+  `coin-marker-set-membership`).
+
+**Proofs of holding.** `coinMarkerRoot` is an authenticated root of the coin
+set, but it does not settle spec 02, question 2: coin proofs of holding stay
+rejected (spec 02, section 13, item 3). If that question is settled later,
+constraint 4 of S3 for coins would open this 104-byte leaf from the 1,359-byte
+absence witness, not the data layout, and the circuit and its statement change
+with it. The data marker-set tree keeps its three fields and its 1,354-byte
+witness: data commitments have no remainder in version 1 (spec 04,
+question 3).
+
+**Vectors.** Section 11, "Coin marker-set vectors", and TH-27.
+
+### The lookup indices
+
+**Lookup tag.** Every new leaf of either tree (a commit, a remainder, a claim's
+new commitment) is written with a lookup tag of 16 bytes, the first 16 bytes
+of `S("ghost/note-lookup/v1", k_note, i as 8 bytes)` for the leaf's
+commitment number `i` (spec 01, section 7). Whoever writes the note writes the
+tag (spec 01, section 9). The tag is not an input of `C`, of `F`, of any
+coin-tree or data-tree node or of the note's associated data, so the coin and
+data trees, their roots and every proof statement are unchanged by it. It
+enters exactly two hashes: the leaf hash of the lookup index of its type, with
+the leaf's global position, and the block lookup digest. Consensus cannot
+check that a tag was derived as above and does not try; it checks only its
+width, and rejects a tag of 16 zero bytes, at a commit's format check and at a
+reveal's encoding check, because the all-zero key belongs to the sentinel.
+
+There are two lookup indices, one per type, each the construction of the data
+marker-set tree over another key: the sorted linked list runs over the pair
+(tag, position) of every leaf of that type. Their roots after the block's last
+transaction are the header fields `coinLookupRoot`, field 19, and
+`dataLookupRoot`, field 20.
+
+**Leaves and nodes.** A used position holds a leaf of 47 bytes:
+
+| Field | Width | Meaning |
+|---|---|---|
+| `tag` | 16 bytes | The lookup tag of a leaf of the tree's type |
+| `position` | 5 bytes | That leaf's global position |
+| `nextTag` | 16 bytes | The tag of the next entry in key order; 16 zero bytes for none |
+| `nextPosition` | 5 bytes | The global position of that next entry |
+| `nextIndex` | 5 bytes | The position of that next entry in this lookup index |
+
+The key of a leaf is `tag || position`, 21 bytes, so entries are ordered by tag
+and, between equal tags, by position.
+
+```text
+coin: leaf = K("ghost/coin-lookup-leaf/v1", tag, position, nextTag, nextPosition, nextIndex)   73 input bytes, 1 permutation
+      node = K("ghost/coin-lookup-node/v1", l as 1 byte, left, right)                          91 input bytes, 1 per level
+data: leaf = K("ghost/data-lookup-leaf/v1", tag, position, nextTag, nextPosition, nextIndex)   73 input bytes, 1 permutation
+      node = K("ghost/data-lookup-node/v1", l as 1 byte, left, right)                          91 input bytes, 1 per level
+```
+
+The coin and data tags differ from each other and from the marker-set tags, so
+no leaf or node of one tree can stand for one of another.
+
+**Genesis.** Position 0 holds the sentinel: every field zero, the 47 zero
+bytes. Every other position is empty. Its root is the genesis `coinLookupRoot`
+(or `dataLookupRoot`), vectors `coin-lookup-empty` and `data-lookup-empty`.
+`nextTag` of 16 zero bytes means "no larger entry".
+
+**Insert.** Every leaf the tree of a type appends inserts one entry, in the
+apply step of the transaction that appends it (spec 03, section 6, step 10 and
+section 7, step 13; spec 04, section 4), right after the append, so the
+entries of a block go in in transaction order. For a leaf with tag `t` at
+global position `g`, key `q = t || g`, into an index with `n` used positions:
+
+1. Find the used leaf `low` with `low.key < q` and (`q < low.nextKey` or
+   `low.nextTag = 0`), `nextKey` being `nextTag || nextPosition`. Exactly one
+   leaf has this property.
+2. Write `(t, g, low.nextTag, low.nextPosition, low.nextIndex)` at position
+   `n`.
+3. Rewrite `low` as `(low.tag, low.position, t, g, n)`, and set `n = n + 1`.
+
+Each leaf of the type is one insert, in append order, so the entry of the leaf
+at global position `g` sits at index position `g + 1`, and
+`nextIndex = nextPosition + 1` in every leaf whose `nextTag` is not zero.
+
+**Equal tags.** Two leaves can carry the same tag: a retry of one number on
+another branch, or a copied tag, which anyone can write into a commit they pay
+for (stage 2 design, "Denial of service"). Their keys still differ, because
+their positions do, and the earlier leaf comes first. A new leaf's position is
+larger than every position already in the index, so a copied tag is inserted
+right after the last entry with the same tag and never sorts before the
+original (vector `coin-lookup-copied-tag`).
+
+**Witnesses.** All lookup witnesses have one layout, the low leaf's fields, its
+index position and its 40 siblings from level 0 up:
+
+```text
+tag (16) || position (5) || nextTag (16) || nextPosition (5) || nextIndex (5) || index position of the leaf (5) || 40 siblings (32 each)
+```
+
+1,332 bytes. The leaf's hash folded with the siblings along the bits of its
+index position must give the root `R` taken from a header; any witness of
+another length, or one that does not fold to `R`, is rejected.
+
+- **Membership witness** for a pair (`t`, `g`): valid if and only if `t` is not
+  zero, the leaf folds to `R`, `tag = t` and `position = g`. It also names the
+  next entry: when its `nextTag` is `t`, that is the next leaf carrying the
+  same tag, so a wallet passes over a copy one witness at a time (vector
+  `coin-lookup-membership`).
+- **Lookup witness** for a tag `t`: the low leaf of the query `t || 0^5`. Valid
+  if and only if `t` is not zero, the leaf folds to `R`, `tag < t`, and either
+  `nextTag = 0` or `nextTag >= t`. Its answer:
+  - `nextTag = t`: the **first entry** with tag `t` is the leaf at global
+    position `nextPosition` (index position `nextIndex`); no leaf with that tag
+    has a smaller position (vector `coin-lookup-first-entry`).
+  - `nextTag = 0` or `nextTag > t`: no leaf of this type carries `t` under
+    `R`; the tag is absent, and the witness is its **absence witness** (vector
+    `coin-lookup-absence`).
+
+**Storage and limit.** The two lookup indices and the coin marker set are
+journaled storage of reserved system accounts, in a layout of the node's own
+in which the genesis sentinels occupy no non-zero slot (so the genesis state
+root of section 10 stays the empty root), exactly as the data marker set is
+kept. They span every tree index of their type and never roll over; the lookup
+index has room for 2^40 - 1 entries besides its sentinel, which is the limit
+of section 3. The coin marker set holds at most one marker for each coin leaf,
+so it never fills before the coin lookup index does.
+
+**Vectors.** Section 11, "Lookup tag vectors" and "Lookup index vectors", and
+TH-26.
+
+### The block lookup digest
+
+The header field `lookupDigest`, field 22, commits to the lookup tags and
+spent markers of its block, so that a wallet reads the blocks after a snapshot
+in bulk and checks them against their headers.
+
+**The list.** The node collects, from the transactions of the block that
+apply, in transaction order (a rejected transaction, or a reveal a bundle
+skips, contributes nothing):
+
+1. the coin tags: the tag of every coin leaf the block appends, commits' and
+   remainders' alike, in append order;
+2. the data tags: the tag of every data commit;
+3. the coin markers: every marker the block's coin reveals insert;
+4. the data markers: every marker the block's data reveals and revocations
+   insert.
+
+Tags come before markers, and the coin list of each before the data list.
+
+**Encoding.**
+
+```text
+coinStart (5) || coinTagCount (4) || coin tags (16 each)
+|| dataStart (5) || dataTagCount (4) || data tags (16 each)
+|| coinMarkerCount (4) || coin markers (32 each)
+|| dataMarkerCount (4) || data markers (32 each)
+```
+
+Each count is 4 bytes, big-endian, and may be zero. `coinStart` and
+`dataStart` are the global positions of the block's first new leaf of each
+type, the number of leaves of that type appended before the block, written
+even when the count is zero; the `j`-th coin tag of the list is the tag of the
+coin leaf at global position `coinStart + j`.
+
+```text
+lookupDigest = K("ghost/block-lookup-digest/v1", encoding)
+```
+
+Keccak-256 under its own tag, over 55 bytes with the tag plus 16 a tag and 32
+a marker, never recomputed inside a proof. It is a flat hash, not a tree: the
+list of a block is read whole, never one item at a time, and the wallet checks
+it by recomputing the digest and comparing it with the header's
+`lookupDigest`. A block of 3,500 private reveals and nothing else lists
+26 + 3,500 x 48 = 168,026 bytes.
+
+**Vectors.** Section 11, "Block lookup digest vectors", and TH-28.
+
 ## 7. Reorganisation
 
 When the canonical chain changes from an old head to a new head with common
@@ -457,7 +736,17 @@ depends on how deep the reorganisation is.
    mints and spec 03's running totals (spec 03, CR-11). The data marker-set
    tree is part of that state: its used leaves and its leaf count return to
    their values at `A`, so every `dataMarkerRoot` of the new branch equals that
-   of a node that never saw the disconnected blocks.
+   of a node that never saw the disconnected blocks. So are the two lookup
+   indices and the coin marker set (section 6; decision 0004): their used
+   leaves and counts return to their values at `A` and the new branch is
+   executed on them, so every `coinLookupRoot`, `dataLookupRoot` and
+   `coinMarkerRoot` of the new branch equals that of such a node. A spend only
+   on a disconnected block is absent from the `coinMarkerRoot` of every block
+   of the new chain, so an absence witness against it is valid and the coin
+   shows unspent again; a commit re-included at another position gets its
+   lookup entry at the new position, and the entry of its old position is gone
+   with the disconnected block; the `lookupDigest` of a disconnected block
+   leaves with its header.
 2. **Roots leave at once.** The roots in the headers of disconnected blocks
    leave the eligible set in the same step as the canonical-chain pointers
    change, before any transaction is admitted or any block is validated on the
@@ -492,9 +781,10 @@ depends on how deep the reorganisation is.
 - **TH-15. Everything rolls back together.** A block with a commit, a reveal
   and the rollover of a tree is removed by a reorganisation to a branch without
   them. Expected: leaf count, frontier, tree index, last filled height, marker
-  slots, the data marker-set tree, balances and totals equal their values at
-  the common ancestor; all three header roots of the new head match a node
-  that never saw the removed block.
+  slots, the data marker-set tree, the lookup indices, the coin marker set,
+  balances and totals equal their values at the common ancestor; all seven
+  Ghost header fields of the new head match a node that never saw the removed
+  block.
 - **TH-16. Roots and in-flight proofs.** A reveal against the coin root of a
   block that is then disconnected is pending in the pool. Expected: after the
   reorganisation it is dropped from the pool, and the same transaction offered
@@ -562,7 +852,10 @@ fallback. Proving that a returned leaf sits at its position is not specified
 yet, so a bucket result is unchecked like any page result, and its notes are
 checked against the receipts as in item 5 below. The scale model of
 `benchmarks/scale/restore_sim.py` still models a 4-byte tag with a per-leaf
-tag column; this design reads no such column and adds no header root.
+tag column; the bucket read uses no such column. The bucket path that this
+read served is superseded as the restore route by the lookup path of spec 01,
+section 8, which uses the 16-byte lookup tags and the header roots of section
+6; the bucket read stays allowed here until a later revision withdraws it.
 
 **What the wallet does.**
 
@@ -624,9 +917,9 @@ path.
 which found commitment is unspent (spec 01, section 8, step 5). **Proposed:**
 they are served the same way, as marker pages of 4,096 markers of one set in the
 order their reveals were included, as of an anchor. These pages are not
-checkable against a header root on their own (no coin spent-marker-set root is
-in the header, and a data page holds only part of the set whose root
-`dataMarkerRoot` is, section 6), so they are hints only (review 01, F4). A lying endpoint, or
+checkable against a header root on their own (a page holds only part of the
+set whose root `coinMarkerRoot` or `dataMarkerRoot` is, section 6, and its
+markers come with no witness), so they are hints only (review 01, F4). A lying endpoint, or
 several that agree, can make a commitment look spent or unspent, and agreement
 between peers proves nothing against an attacker that runs many of them
 (threat model T8). **Rule:** the wallet takes marker status only from the
@@ -887,6 +1180,10 @@ fields: every field is required in every header, from genesis on.
 | 16 | `coinTreeRoot` | 32 bytes | Ghost |
 | 17 | `dataTreeRoot` | 32 bytes | Ghost |
 | 18 | `dataMarkerRoot` | 32 bytes | Ghost |
+| 19 | `coinLookupRoot` | 32 bytes | Ghost |
+| 20 | `dataLookupRoot` | 32 bytes | Ghost |
+| 21 | `coinMarkerRoot` | 32 bytes | Ghost |
+| 22 | `lookupDigest` | 32 bytes | Ghost |
 
 Fields 0 to 14 are the base header of the pinned Core-Geth commit (decision
 0001), in its order. The base client's sanity check on a block a peer announces
@@ -894,8 +1191,16 @@ also refuses a `difficulty` longer than 80 bits; finding a seal at that difficul
 hashes on average, out of practical reach, so in practice the bound never
 decides a block (milestone 1 review). Field 15 is the base client's first optional field, here
 required. Fields 16 and 17 are the two tree roots of section 4, and field 18
-is the data marker-set root of sections 4 and 6. There is no coin marker-set
-root.
+is the data marker-set root of sections 4 and 6. Fields 19 to 22 are those of
+[decision 0004](../decisions/0004-lookup-formats.md), sections 4 and 6:
+`coinLookupRoot` and `dataLookupRoot`, the roots of the two lookup indices;
+`coinMarkerRoot`, the root of the coin marker-set tree; and `lookupDigest`,
+the block lookup digest. Each is a 32-byte RLP string, 33 bytes encoded, so
+the header grows by 132 bytes. The two marker-set roots are fields 18 and 21,
+and no other marker-set root is in the header. The rule of 2026-10-25, that
+the header carried the data marker-set root as its only marker-set root, is
+superseded by the stage 2 design; decision 0004 fixes `coinMarkerRoot` as
+field 21 and leaves `dataMarkerRoot` at 18, unchanged.
 
 **Forbidden fields.** These later fields of the base client are absent in every
 Ghost header (decision 0001 removes the features behind them):
@@ -914,9 +1219,11 @@ otherwise rejects them with the first reason that applies:
    never wrapped, a length below 56 never uses the long form, and a long length
    has no leading zero byte. Otherwise `non-canonical-rlp`.
 2. Nothing follows the list. Otherwise `trailing-bytes`.
-3. The list holds exactly 19 items, none of them a list. Any other count,
+3. The list holds exactly 23 items, none of them a list. Any other count,
    whether from a forbidden field, an extra trailing field or a missing field,
-   is `item-count`; so is an 18-item header without `dataMarkerRoot`. A decoder never skips, ignores or defaults a field.
+   is `item-count`; so is a 19-item header without the four fields of
+   decision 0004, and an 18-item header without `dataMarkerRoot` either. A
+   decoder never skips, ignores or defaults a field.
 4. Each fixed-size field has exactly its size, and `extraData` at most 32
    bytes. Otherwise `field-size`.
 5. Each integer is canonical: no leading zero byte, and zero is the empty
@@ -924,7 +1231,7 @@ otherwise rejects them with the first reason that applies:
    allows is `integer-range`.
 
 The consensus checks on the values (seal, difficulty, timestamp, base fee, uncle
-hash, the three roots) follow decoding; they are in spec 06 and section 4.
+hash, the seven Ghost fields) follow decoding; they are in spec 06 and section 4.
 
 **Genesis fields.** Spec 06, section 8.3 fixes the Bitcoin-dependent fields and
 a few constants, and leaves every other field to this document. Every field of
@@ -951,6 +1258,10 @@ the genesis header:
 | `coinTreeRoot` | `8e66512042388a7863d500c4f96861466ae48b9d64ea1e10ec382c31aa61b5a8`, the empty coin tree | this chapter |
 | `dataTreeRoot` | `3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03`, the empty data tree | this chapter |
 | `dataMarkerRoot` | `0ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3`, the data marker set holding only its sentinel (vector `marker-set-empty`) | this chapter |
+| `coinLookupRoot` | `994a8bc5ba72f53f4449d4981c3ea8294d504b148afa58abec873819b143554b`, the empty coin lookup index (vector `coin-lookup-empty`) | this chapter |
+| `dataLookupRoot` | `c0ad355e8462fbe6093fa0ac37c0afc450b36cbe679bb7de3050a9a1b2cddece`, the empty data lookup index (vector `data-lookup-empty`) | this chapter |
+| `coinMarkerRoot` | `84e7c602ab3870f46bf300eff5581ae88029f7c58afb3758a652e0129e9e85cc`, the coin marker set holding only its sentinel (vector `coin-marker-set-empty`) | this chapter |
+| `lookupDigest` | `9217af84b49597c35c570275e095d6a0245cab03c6f0126ce995acaa5023cd7b`, the digest of the empty list (vector `lookup-digest-empty`) | this chapter |
 
 The fields of this chapter are constants of the frozen chain configuration, with
 no operator input (spec 06, section 8.3). The genesis state root holds as long
@@ -974,7 +1285,10 @@ python3 scripts/check_trees_and_headers.py
 ```
 
 to recompute every tree vector from the rules of section 3, every marker-set
-vector from those of section 6, every witness-extension vector with the
+vector from those of section 6, every lookup tag, lookup index, coin
+marker-set, block lookup digest and global-position vector of decision 0004
+from the rules of sections 2, 3 and 6 with the checker's own code and spec
+01's keys and markers, every witness-extension vector with the
 checker's own tree code, and every header
 vector with the checker's own RLP code, and to compare the header vectors with
 the output of the separately written encoder,
@@ -1101,7 +1415,21 @@ includable = no
 index-after = 18446744073709551615
 count-after = 4294967296
 position = none
+
+[append-lookup-limit]
+kind = append
+index-before = 255
+count-before = 4294967295
+filled-this-block = no
+includable = no
+index-after = 255
+count-after = 4294967295
+position = none
 ```
+
+`append-lookup-limit` is the append whose leaf would have the global position
+2^40 - 1, refused by the limit of section 3; the append before it, position
+4294967294 of tree 255, is the last usable leaf.
 
 ### Marker-set vectors
 
@@ -1161,6 +1489,325 @@ reject-above-next = eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
   counts and roots; the witness is accepted for its marker and rejected for
   each of the three rejected markers; a node that rewrites the wrong low leaf
   or hashes `nextIndex` at another width fails.
+
+### Lookup tag vectors
+
+The lookup tags of section 6, "The lookup indices" (decision 0004): numbers 0,
+1 and 2 of spec 01's example words key (secret `00 01 .. 1f`) and number 0 of
+its data example key (secret `7f 7f .. 7f`), examples only, which must never
+hold value. `key-bytes` and `note-key` are those of spec 01's
+`derivation-words` and `derivation-words-data`, `digest` the whole SHA3-256
+output and `tag` its first 16 bytes. Spec 01, section 14 carries the same
+blocks.
+
+```text
+[lookup-tag-index-0]
+kind = lookup-tag
+key-bytes = 20000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+note-key = 35136c4a7bdccb4b26159c15f86567a483ac58e1b2c40dca49a5d099272c4181
+index = 0
+index-bytes = 0000000000000000
+digest = 74c5d993f5f018e3174926b2c8e8fb68e9444bfe3fdb48a847ef99c2446ef1a5
+tag = 74c5d993f5f018e3174926b2c8e8fb68
+
+[lookup-tag-index-1]
+kind = lookup-tag
+key-bytes = 20000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+note-key = 35136c4a7bdccb4b26159c15f86567a483ac58e1b2c40dca49a5d099272c4181
+index = 1
+index-bytes = 0000000000000001
+digest = 98f00763f51d9e982a7814297473729f085ae21e5a0f398ffbe70a4c95d159af
+tag = 98f00763f51d9e982a7814297473729f
+
+[lookup-tag-index-2]
+kind = lookup-tag
+key-bytes = 20000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+note-key = 35136c4a7bdccb4b26159c15f86567a483ac58e1b2c40dca49a5d099272c4181
+index = 2
+index-bytes = 0000000000000002
+digest = b3e8df15fdd3d0f3ac8c7562c50ba57ec7d2688a9a57a685661be28f9d4b13f8
+tag = b3e8df15fdd3d0f3ac8c7562c50ba57e
+
+[lookup-tag-data-index-0]
+kind = lookup-tag
+key-bytes = 207f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f
+note-key = 08f3c586fe83f60374f0551ad5a25ddab61fd4fc70ab71572c0aae3b042c82ab
+index = 0
+index-bytes = 0000000000000000
+digest = 9d77715bd859976996087ca266cf37b02c73e1deff301d4ae4ed04d77c88546f
+tag = 9d77715bd859976996087ca266cf37b0
+```
+
+### Lookup index vectors
+
+The empty indices; the coin index after the commit of number 0 at coin leaf 0
+(one leaf beside the sentinel); after the remainder of number 1 at coin leaf 1
+(two leaves); after a commit by someone else that copies the tag of number 0
+at coin leaf 2; and the data index after the data commit of number 0. Leaf
+fields are written in their order, separated by spaces; an entry `tag@g` is a
+tag at global position `g`. In the copied-tag index the copy, `leaf-3`, sorts
+right after the original, `leaf-1`, and before the tag of number 1.
+
+```text
+[coin-lookup-empty]
+kind = lookup-index
+tree = coin
+entries =
+count = 1
+leaf-0 = 00000000000000000000000000000000 0000000000 00000000000000000000000000000000 0000000000 0000000000
+root = 994a8bc5ba72f53f4449d4981c3ea8294d504b148afa58abec873819b143554b
+
+[data-lookup-empty]
+kind = lookup-index
+tree = data
+entries =
+count = 1
+leaf-0 = 00000000000000000000000000000000 0000000000 00000000000000000000000000000000 0000000000 0000000000
+root = c0ad355e8462fbe6093fa0ac37c0afc450b36cbe679bb7de3050a9a1b2cddece
+
+[coin-lookup-one-leaf]
+kind = lookup-index
+tree = coin
+entries = 74c5d993f5f018e3174926b2c8e8fb68@0
+count = 2
+leaf-0 = 00000000000000000000000000000000 0000000000 74c5d993f5f018e3174926b2c8e8fb68 0000000000 0000000001
+leaf-1 = 74c5d993f5f018e3174926b2c8e8fb68 0000000000 00000000000000000000000000000000 0000000000 0000000000
+root = 09cf86c7dd4db859ff77e3ee9b988e324cc4fe53a384f6b4b674a4b9ddc64954
+
+[coin-lookup-two-leaves]
+kind = lookup-index
+tree = coin
+entries = 74c5d993f5f018e3174926b2c8e8fb68@0 98f00763f51d9e982a7814297473729f@1
+count = 3
+leaf-0 = 00000000000000000000000000000000 0000000000 74c5d993f5f018e3174926b2c8e8fb68 0000000000 0000000001
+leaf-1 = 74c5d993f5f018e3174926b2c8e8fb68 0000000000 98f00763f51d9e982a7814297473729f 0000000001 0000000002
+leaf-2 = 98f00763f51d9e982a7814297473729f 0000000001 00000000000000000000000000000000 0000000000 0000000000
+root = 489542787d7482d68a5bbd92c21f8225be3b0420bf06f1232c01af1f9f4c4451
+
+[coin-lookup-copied-tag]
+kind = lookup-index
+tree = coin
+entries = 74c5d993f5f018e3174926b2c8e8fb68@0 98f00763f51d9e982a7814297473729f@1 74c5d993f5f018e3174926b2c8e8fb68@2
+count = 4
+leaf-0 = 00000000000000000000000000000000 0000000000 74c5d993f5f018e3174926b2c8e8fb68 0000000000 0000000001
+leaf-1 = 74c5d993f5f018e3174926b2c8e8fb68 0000000000 74c5d993f5f018e3174926b2c8e8fb68 0000000002 0000000003
+leaf-2 = 98f00763f51d9e982a7814297473729f 0000000001 00000000000000000000000000000000 0000000000 0000000000
+leaf-3 = 74c5d993f5f018e3174926b2c8e8fb68 0000000002 98f00763f51d9e982a7814297473729f 0000000001 0000000002
+root = 2f880d0d3c8d149461815119475cc2c32bb5932ff3fa98a7dd771cdd2a18957e
+
+[data-lookup-one-leaf]
+kind = lookup-index
+tree = data
+entries = 9d77715bd859976996087ca266cf37b0@0
+count = 2
+leaf-0 = 00000000000000000000000000000000 0000000000 9d77715bd859976996087ca266cf37b0 0000000000 0000000001
+leaf-1 = 9d77715bd859976996087ca266cf37b0 0000000000 00000000000000000000000000000000 0000000000 0000000000
+root = 04d419113c03c7b976eea6b1e9334f91d529faa05a89355e64b8439d6b96f9cc
+```
+
+`coin-lookup-absence` is the absence witness for the tag of number 2 against
+the two-leaf index: its low leaf is the entry of number 1, the largest, so its
+`nextTag` is zero. It is accepted as "absent" for that tag and gives no answer
+for `reject-equal` (the low leaf's own tag) or `reject-below` (a tag below
+it). `coin-lookup-first-entry` is the lookup witness for the tag of number 0
+against the copied-tag index: it answers with position 0, the original, not
+the copy. `coin-lookup-membership` is the membership witness of the copy at
+position 2; its `nextTag` is not the same tag, so no third leaf carries it.
+
+```text
+[coin-lookup-absence]
+kind = lookup-witness
+tree = coin
+set = coin-lookup-two-leaves
+root = 489542787d7482d68a5bbd92c21f8225be3b0420bf06f1232c01af1f9f4c4451
+tag = b3e8df15fdd3d0f3ac8c7562c50ba57e
+low-position = 2
+low-leaf = 98f00763f51d9e982a7814297473729f 0000000001 00000000000000000000000000000000 0000000000 0000000000
+witness = 98f00763f51d9e982a7814297473729f000000000100000000000000000000000000000000000000000000000000000000000002e050b25c8ab09717b0a6846b688b5047b93c0d37e18599cc7deec37f914bcca45ed47d0a6b4ea73fe42ec422c53ea5feca683dadb97cca79670ff66034efb5bb428d8a99174610ecde2b557298e4f11f1be3a4e8c9e044b7344cbf887b03fae511895d5e152e7e726b8a981bfac5553b7961f828c8b0769d93cfed2b1569560c5d4744935b927c9326f3f0c150e6f82abce2dc6859a5513e1ee9fc2d57a539e9ea373e6700a4f82ff20f05923f02d2d9a75652b2b4b84189c3b20a847970976eb095a7ac6911792ebd21e086f4cbc0715a1203e0de606a299f047ad9942b00c4b2b8a834c52590ba0a6b5a235463055523e507ad0f466d0c298bb1ec2edfc4ae5ce9e115dd2e93d6950af5be90adc53ff3254eb86efb0321ed2e3db4765ee645cf405852c390193d38e3344af6fd0f52cc426972e17404bfb487cb3153665d26a6c4cc57c8c0f7a2bd16f05ef0d8a9f7dafc3a5893b5d14f51db262a71c67464363ee61f5319d915807383ae1082376337f3ed2fad3b30778d3651a289e93e45a367a24666cdc2c799b84b343e294a3ee406500f1af35bc9c75949ee96358c8f2009ece35f1d5f97d7bc48989c61bcbfac0fd31faed2fcb7f163c4195cef171a3210cfed4b00fa1565328b3d6beff79a877115cb4b51d497472551f52089704e56d977ae04d7b609d3f942232e353880a60526189150ea28c15179060b50d3dfa0a670926d5409ff2baee65f35f29176b3e449e2139a48ef2428218e93dd1d3d546a706ea4252b199339b31d7e259e4efeb2fb102d948a73e8c1ba6b802626731f43b08ac080fbf6cedb3a32485296ef398ff13d8edf9796372b30458ce6409d5a1aa568c4d2a133b45eb85cbbf7b6f2f26f61901364f0aeb66a58aff4213453d9c9bf5f6de0247fa608c37d3cd1a6bfa08bdc0c9ce1c574fb8f56649a6c77a50368f17f3ff9e4b7b69e0b4e79623f8c70bac3088a2a17f19fcd932a7f61bc491980aa5c90bd9faab2044d58e002481db5b3ba3dcd14cd80319b17d697c79512197c5f3e7ed37233929de277213a76a38a958427b94abcb65630a2b17e45f0c93121378420c00b94a7858650fb875f8f1db1890f9c890ecf8d22ac1e7bbb1eea77ca607e6a15dcc2dc1779f20acca12c071dd3f8b76265ae3609be7e82bc6de065cf55c78a65a4de1a37e661465d7c58b5e8e2a49dc317e82a1c3c47d52240bee785dc24fa2d21629a0c3031db7556b4ca1f9d406d79b9cdc6941c2123caf2cd8f04059f914b6b40757b635333116527ff1e8d58443f005065707140d92d46dd9a337899179aac597ee38e583ca989c9c737b20533de354b98e2297591eb70e824245b91e31d20d05b7ef583368f40f49902e555b87b95b0e08800462fdff29a288485e9d2526ef527a1e56b91fce754fc69d05e9896fb3ebc32dce0ceeeeaf071f5bd5f14415f1d690d7d7d183b5615548fe9c09431f7bb7edb0da5aaf9a30afcf356f59daa3c92b30f01676906ed13d85f48b1dd44d8e898b1d23ae287ff9df6971399ad8cb6685355f2ee410bb37b4ba87251679d1fe5a18f923b5e4d05fcd285b77585eff225f0421e06818262b1131f24ef1683e76f5cbf3004a34915f533630b68fee85c02d5b9e19a603a58851c78a8ff0bdb05ea8f8dc7d84de2e4d5595f91136e75b515e743886957a7745932da92209097fab68800e6c97f337eb4a34704909aa5bf80dac98372c04de297250e02df8087aca893fd878ede413f4f0be64a3ae94364c325dae725b95b921791b492c39ab8ea37eecadfb1f47a6840
+outcome = absent
+reject-equal = 98f00763f51d9e982a7814297473729f
+reject-below = 98f00763f51d9e982a7814297473729e
+
+[coin-lookup-first-entry]
+kind = lookup-witness
+tree = coin
+set = coin-lookup-copied-tag
+root = 2f880d0d3c8d149461815119475cc2c32bb5932ff3fa98a7dd771cdd2a18957e
+tag = 74c5d993f5f018e3174926b2c8e8fb68
+low-position = 0
+low-leaf = 00000000000000000000000000000000 0000000000 74c5d993f5f018e3174926b2c8e8fb68 0000000000 0000000001
+witness = 00000000000000000000000000000000000000000074c5d993f5f018e3174926b2c8e8fb68000000000000000000010000000000b5c781588b658babf151dbdeec8c29874c45f51e521c9605fa6f6a2b61a8bb684d833df486f489bbe0af605a689b5c66e28ccc5973c0ce7ad50d8a1318055dea428d8a99174610ecde2b557298e4f11f1be3a4e8c9e044b7344cbf887b03fae511895d5e152e7e726b8a981bfac5553b7961f828c8b0769d93cfed2b1569560c5d4744935b927c9326f3f0c150e6f82abce2dc6859a5513e1ee9fc2d57a539e9ea373e6700a4f82ff20f05923f02d2d9a75652b2b4b84189c3b20a847970976eb095a7ac6911792ebd21e086f4cbc0715a1203e0de606a299f047ad9942b00c4b2b8a834c52590ba0a6b5a235463055523e507ad0f466d0c298bb1ec2edfc4ae5ce9e115dd2e93d6950af5be90adc53ff3254eb86efb0321ed2e3db4765ee645cf405852c390193d38e3344af6fd0f52cc426972e17404bfb487cb3153665d26a6c4cc57c8c0f7a2bd16f05ef0d8a9f7dafc3a5893b5d14f51db262a71c67464363ee61f5319d915807383ae1082376337f3ed2fad3b30778d3651a289e93e45a367a24666cdc2c799b84b343e294a3ee406500f1af35bc9c75949ee96358c8f2009ece35f1d5f97d7bc48989c61bcbfac0fd31faed2fcb7f163c4195cef171a3210cfed4b00fa1565328b3d6beff79a877115cb4b51d497472551f52089704e56d977ae04d7b609d3f942232e353880a60526189150ea28c15179060b50d3dfa0a670926d5409ff2baee65f35f29176b3e449e2139a48ef2428218e93dd1d3d546a706ea4252b199339b31d7e259e4efeb2fb102d948a73e8c1ba6b802626731f43b08ac080fbf6cedb3a32485296ef398ff13d8edf9796372b30458ce6409d5a1aa568c4d2a133b45eb85cbbf7b6f2f26f61901364f0aeb66a58aff4213453d9c9bf5f6de0247fa608c37d3cd1a6bfa08bdc0c9ce1c574fb8f56649a6c77a50368f17f3ff9e4b7b69e0b4e79623f8c70bac3088a2a17f19fcd932a7f61bc491980aa5c90bd9faab2044d58e002481db5b3ba3dcd14cd80319b17d697c79512197c5f3e7ed37233929de277213a76a38a958427b94abcb65630a2b17e45f0c93121378420c00b94a7858650fb875f8f1db1890f9c890ecf8d22ac1e7bbb1eea77ca607e6a15dcc2dc1779f20acca12c071dd3f8b76265ae3609be7e82bc6de065cf55c78a65a4de1a37e661465d7c58b5e8e2a49dc317e82a1c3c47d52240bee785dc24fa2d21629a0c3031db7556b4ca1f9d406d79b9cdc6941c2123caf2cd8f04059f914b6b40757b635333116527ff1e8d58443f005065707140d92d46dd9a337899179aac597ee38e583ca989c9c737b20533de354b98e2297591eb70e824245b91e31d20d05b7ef583368f40f49902e555b87b95b0e08800462fdff29a288485e9d2526ef527a1e56b91fce754fc69d05e9896fb3ebc32dce0ceeeeaf071f5bd5f14415f1d690d7d7d183b5615548fe9c09431f7bb7edb0da5aaf9a30afcf356f59daa3c92b30f01676906ed13d85f48b1dd44d8e898b1d23ae287ff9df6971399ad8cb6685355f2ee410bb37b4ba87251679d1fe5a18f923b5e4d05fcd285b77585eff225f0421e06818262b1131f24ef1683e76f5cbf3004a34915f533630b68fee85c02d5b9e19a603a58851c78a8ff0bdb05ea8f8dc7d84de2e4d5595f91136e75b515e743886957a7745932da92209097fab68800e6c97f337eb4a34704909aa5bf80dac98372c04de297250e02df8087aca893fd878ede413f4f0be64a3ae94364c325dae725b95b921791b492c39ab8ea37eecadfb1f47a6840
+outcome = first
+position = 0
+
+[coin-lookup-membership]
+kind = lookup-membership
+tree = coin
+set = coin-lookup-copied-tag
+root = 2f880d0d3c8d149461815119475cc2c32bb5932ff3fa98a7dd771cdd2a18957e
+tag = 74c5d993f5f018e3174926b2c8e8fb68
+position = 2
+leaf-position = 3
+leaf = 74c5d993f5f018e3174926b2c8e8fb68 0000000002 98f00763f51d9e982a7814297473729f 0000000001 0000000002
+witness = 74c5d993f5f018e3174926b2c8e8fb68000000000298f00763f51d9e982a7814297473729f0000000001000000000200000000039372941be88e4dcec10afb1f0c3f7a27a5aba1d9c11066021731ec18a30dfe88260d969e2292a99f7a7e41ad92caa2caf82d9fd74aa440649bf670f61859761b428d8a99174610ecde2b557298e4f11f1be3a4e8c9e044b7344cbf887b03fae511895d5e152e7e726b8a981bfac5553b7961f828c8b0769d93cfed2b1569560c5d4744935b927c9326f3f0c150e6f82abce2dc6859a5513e1ee9fc2d57a539e9ea373e6700a4f82ff20f05923f02d2d9a75652b2b4b84189c3b20a847970976eb095a7ac6911792ebd21e086f4cbc0715a1203e0de606a299f047ad9942b00c4b2b8a834c52590ba0a6b5a235463055523e507ad0f466d0c298bb1ec2edfc4ae5ce9e115dd2e93d6950af5be90adc53ff3254eb86efb0321ed2e3db4765ee645cf405852c390193d38e3344af6fd0f52cc426972e17404bfb487cb3153665d26a6c4cc57c8c0f7a2bd16f05ef0d8a9f7dafc3a5893b5d14f51db262a71c67464363ee61f5319d915807383ae1082376337f3ed2fad3b30778d3651a289e93e45a367a24666cdc2c799b84b343e294a3ee406500f1af35bc9c75949ee96358c8f2009ece35f1d5f97d7bc48989c61bcbfac0fd31faed2fcb7f163c4195cef171a3210cfed4b00fa1565328b3d6beff79a877115cb4b51d497472551f52089704e56d977ae04d7b609d3f942232e353880a60526189150ea28c15179060b50d3dfa0a670926d5409ff2baee65f35f29176b3e449e2139a48ef2428218e93dd1d3d546a706ea4252b199339b31d7e259e4efeb2fb102d948a73e8c1ba6b802626731f43b08ac080fbf6cedb3a32485296ef398ff13d8edf9796372b30458ce6409d5a1aa568c4d2a133b45eb85cbbf7b6f2f26f61901364f0aeb66a58aff4213453d9c9bf5f6de0247fa608c37d3cd1a6bfa08bdc0c9ce1c574fb8f56649a6c77a50368f17f3ff9e4b7b69e0b4e79623f8c70bac3088a2a17f19fcd932a7f61bc491980aa5c90bd9faab2044d58e002481db5b3ba3dcd14cd80319b17d697c79512197c5f3e7ed37233929de277213a76a38a958427b94abcb65630a2b17e45f0c93121378420c00b94a7858650fb875f8f1db1890f9c890ecf8d22ac1e7bbb1eea77ca607e6a15dcc2dc1779f20acca12c071dd3f8b76265ae3609be7e82bc6de065cf55c78a65a4de1a37e661465d7c58b5e8e2a49dc317e82a1c3c47d52240bee785dc24fa2d21629a0c3031db7556b4ca1f9d406d79b9cdc6941c2123caf2cd8f04059f914b6b40757b635333116527ff1e8d58443f005065707140d92d46dd9a337899179aac597ee38e583ca989c9c737b20533de354b98e2297591eb70e824245b91e31d20d05b7ef583368f40f49902e555b87b95b0e08800462fdff29a288485e9d2526ef527a1e56b91fce754fc69d05e9896fb3ebc32dce0ceeeeaf071f5bd5f14415f1d690d7d7d183b5615548fe9c09431f7bb7edb0da5aaf9a30afcf356f59daa3c92b30f01676906ed13d85f48b1dd44d8e898b1d23ae287ff9df6971399ad8cb6685355f2ee410bb37b4ba87251679d1fe5a18f923b5e4d05fcd285b77585eff225f0421e06818262b1131f24ef1683e76f5cbf3004a34915f533630b68fee85c02d5b9e19a603a58851c78a8ff0bdb05ea8f8dc7d84de2e4d5595f91136e75b515e743886957a7745932da92209097fab68800e6c97f337eb4a34704909aa5bf80dac98372c04de297250e02df8087aca893fd878ede413f4f0be64a3ae94364c325dae725b95b921791b492c39ab8ea37eecadfb1f47a6840
+```
+
+### Coin marker-set vectors
+
+The coin marker-set tree of section 6. The markers are those of spec 01's
+vectors `coin-commit-salted` (number 0) and `coin-remainder-salted` (number
+1). The reveal that spends number 0 appends its remainder at coin leaf 1, and
+the one that spends number 1 appends at coin leaf 2; a spend `marker@a` is a
+marker whose reveal appended the leaf at global position `a`. Leaves are
+`value nextValue nextIndex appended`. In `coin-marker-set-two-markers` the
+rewritten `leaf-1` keeps its own `appended`, 1. The membership witness of
+number 0's marker leads to coin leaf 1; the absence witness is for an example
+marker `8888...88` that no coin commitment of spec 01 has, and is rejected
+for the spent `reject-spent`.
+
+```text
+[coin-marker-set-empty]
+kind = coin-marker-set
+spends =
+count = 1
+leaf-0 = 0000000000000000000000000000000000000000000000000000000000000000 0000000000000000000000000000000000000000000000000000000000000000 0000000000 ffffffffff
+root = 84e7c602ab3870f46bf300eff5581ae88029f7c58afb3758a652e0129e9e85cc
+
+[coin-marker-set-one-marker]
+kind = coin-marker-set
+spends = d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78@1
+count = 2
+leaf-0 = 0000000000000000000000000000000000000000000000000000000000000000 d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78 0000000001 ffffffffff
+leaf-1 = d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78 0000000000000000000000000000000000000000000000000000000000000000 0000000000 0000000001
+root = d2d2d35cf33c017a3bbe0d7867ce1f62948514d1294354c2a11795f046960df8
+
+[coin-marker-set-two-markers]
+kind = coin-marker-set
+spends = d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78@1 f7476caa827fa1478d8f2a561e2638a7d4817793176eaced88798bf7d28fa806@2
+count = 3
+leaf-0 = 0000000000000000000000000000000000000000000000000000000000000000 d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78 0000000001 ffffffffff
+leaf-1 = d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78 f7476caa827fa1478d8f2a561e2638a7d4817793176eaced88798bf7d28fa806 0000000002 0000000001
+leaf-2 = f7476caa827fa1478d8f2a561e2638a7d4817793176eaced88798bf7d28fa806 0000000000000000000000000000000000000000000000000000000000000000 0000000000 0000000002
+root = f073fe2b59b6fd3d2827569ccd5d8652f56aae3547109fb34030749ed6877fb3
+
+[coin-marker-set-membership]
+kind = coin-marker-set-membership
+set = coin-marker-set-two-markers
+root = f073fe2b59b6fd3d2827569ccd5d8652f56aae3547109fb34030749ed6877fb3
+marker = d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78
+leaf-position = 1
+leaf = d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78 f7476caa827fa1478d8f2a561e2638a7d4817793176eaced88798bf7d28fa806 0000000002 0000000001
+witness = d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78f7476caa827fa1478d8f2a561e2638a7d4817793176eaced88798bf7d28fa8060000000002000000000100000000013eeaa536e9199f3168d5ef938c1185aefc3b59a695e735a456d38904f7df594ef7d8cd6be91af09bb109dc6cdda2d096919891cd12fd48865a09c3732d159448aa4b0696d0f6d262620471d23ebae1c10caddb8e4ed750d8806f428994ed4ebd012e57d1bb7b8deba720933c3dd35af261ca6a492825b1cca060e77272dedc8d3fb433528fda3950f7540b083bbab1fac69731d74c01e4871e87315b690dc582b738d317abf5383b00df5984c587c8090e423a75f017a60557d1ef76dcba48eecc67c4ce823d8ed577b2963f9a6076dd8b4a21cc629101ec1786fd5efbfb9920feeec66b44b51ce4734c65d3f5de22e6eb93b2523b33dd18e109db1c49dc2e62475e4c6b1c51bcfc8a1b8a363d6895c8bb282dc83d3afb7d6e412e78ac7b015765b41fff7373cc5d5ec51f0f2637fdee020af0976d80d8434ffd7b51662067fb6bba8b13fd714631fbe792c9715b0e43e9aec37efaf6e59b9e0aedd57e2baebc07f03fb4d7687c79e4e2469a0d053de7e9b875cbaa0e14e4e30213cfca434a438ef02ea92eb3e7b80c360a8b5a4e5e19755f09a7923af02c357438aff9158856e93ada6f4832a7a34fd078e327ea95cf0b94589e0ef41c4d66592012cd7ce9a915f76d382aeb416b5254419f63b86f0be2c9151cd59ff3f3e30f4628c53a3cccea5f3f582de906f458b7ec9f0b1d3c7186046663f124592d9153a986bcff82be7309fc633b16bca6e6b36b55f8ec119fb537808930a1ca52e0dd94a4437c5e954c65527e204be0744ca6287d89d335715c73e60ac4a69dd4060aeb6a36c780491c7dc92297b4ff0549f471b4d227897197b9ba3188b0afecc879b81d39c5406968293d461cfc6ee5823afdafb751e62cc04f2d07dfa469f0b997ad6929d7f50a8f7e84efe6f554e80eb44ab5b2846177836a496523242eab8db456e0e95de0ae870a2d7f1b02d7f5c0e39486555d7f31b913a739232bfc73f9100245d051484264a3c227005c914648944ab46052b917a236b988f1a5e854ce287b2fa8e0dd656438a213911b4bf251f363bcab474bfe443aab41cf1d6d683864742035eec13bb53f7075605ac7236e9909638dfda90a9867c662682f6bae239034b12fb2dc3d6f431cbeee64ac68a0226ffd116b14a3b9941b91413ffe2584c77daa515b02ea6dfffb3770c47d2624c4926f297acd8a87381ecf3961bad1da77d491589abe1c62d316a0f9d36b0858e246c149938accdefb4fceeda90b9b7b4ba03f9d9c3d6a67ee33536b536e36824a46e73f04a144d35252eb81290b1514f9d0ec9ff71d639e35ac9561c803cdb82bf5bdd97b9a22a7909d3ffa28d4baeaf30d81f02862f0540a5283d76e91b29e07e2e725bd41c144fdfa942216cee574140faf260bf21718c9662a3d6faa44c1f5d7a54caa7095624c95cf65544585152bb9231454420640e80f1dc280ee4c3951bee037f8c1b4522abe7a61b2cd33ea870d935367fe90d739aaa14b91c4961eefb40359b8b018f8b82584ad2d5b99b3371cb07259d7ea602240446fdac323e7249e75311b0acad9d5d2221c1cf490b7b65d4e84f002cbc0494aa709dd148c14afaede5c7ff214e605b8abbcc1a2c848c453c5152e2bbc5c4e3150c52121859166eb97004ee08722e5cca97002d85f4b8db127cede9486e4e9e11e635af05eb0226ac901d3c058a9c4bd7d416dd6960739384fd75be28d92c52a2e46540fdc7036e740afa942b407a47de4199b5396613cbd3d66af6b34ffce5ca5cc9af628ef3036dc07dd2fbed179b6ccc4a93164d1c4f4e42145ac29
+appended = 1
+
+[coin-marker-set-absence]
+kind = coin-marker-set-absence
+set = coin-marker-set-two-markers
+root = f073fe2b59b6fd3d2827569ccd5d8652f56aae3547109fb34030749ed6877fb3
+marker = 8888888888888888888888888888888888888888888888888888888888888888
+low-position = 0
+low-leaf = 0000000000000000000000000000000000000000000000000000000000000000 d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78 0000000001 ffffffffff
+witness = 0000000000000000000000000000000000000000000000000000000000000000d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf780000000001ffffffffff000000000060da17a0a464ff17421186e8fb75b43468ff5d98e375fdef2dfe6e8f1026e2daf7d8cd6be91af09bb109dc6cdda2d096919891cd12fd48865a09c3732d159448aa4b0696d0f6d262620471d23ebae1c10caddb8e4ed750d8806f428994ed4ebd012e57d1bb7b8deba720933c3dd35af261ca6a492825b1cca060e77272dedc8d3fb433528fda3950f7540b083bbab1fac69731d74c01e4871e87315b690dc582b738d317abf5383b00df5984c587c8090e423a75f017a60557d1ef76dcba48eecc67c4ce823d8ed577b2963f9a6076dd8b4a21cc629101ec1786fd5efbfb9920feeec66b44b51ce4734c65d3f5de22e6eb93b2523b33dd18e109db1c49dc2e62475e4c6b1c51bcfc8a1b8a363d6895c8bb282dc83d3afb7d6e412e78ac7b015765b41fff7373cc5d5ec51f0f2637fdee020af0976d80d8434ffd7b51662067fb6bba8b13fd714631fbe792c9715b0e43e9aec37efaf6e59b9e0aedd57e2baebc07f03fb4d7687c79e4e2469a0d053de7e9b875cbaa0e14e4e30213cfca434a438ef02ea92eb3e7b80c360a8b5a4e5e19755f09a7923af02c357438aff9158856e93ada6f4832a7a34fd078e327ea95cf0b94589e0ef41c4d66592012cd7ce9a915f76d382aeb416b5254419f63b86f0be2c9151cd59ff3f3e30f4628c53a3cccea5f3f582de906f458b7ec9f0b1d3c7186046663f124592d9153a986bcff82be7309fc633b16bca6e6b36b55f8ec119fb537808930a1ca52e0dd94a4437c5e954c65527e204be0744ca6287d89d335715c73e60ac4a69dd4060aeb6a36c780491c7dc92297b4ff0549f471b4d227897197b9ba3188b0afecc879b81d39c5406968293d461cfc6ee5823afdafb751e62cc04f2d07dfa469f0b997ad6929d7f50a8f7e84efe6f554e80eb44ab5b2846177836a496523242eab8db456e0e95de0ae870a2d7f1b02d7f5c0e39486555d7f31b913a739232bfc73f9100245d051484264a3c227005c914648944ab46052b917a236b988f1a5e854ce287b2fa8e0dd656438a213911b4bf251f363bcab474bfe443aab41cf1d6d683864742035eec13bb53f7075605ac7236e9909638dfda90a9867c662682f6bae239034b12fb2dc3d6f431cbeee64ac68a0226ffd116b14a3b9941b91413ffe2584c77daa515b02ea6dfffb3770c47d2624c4926f297acd8a87381ecf3961bad1da77d491589abe1c62d316a0f9d36b0858e246c149938accdefb4fceeda90b9b7b4ba03f9d9c3d6a67ee33536b536e36824a46e73f04a144d35252eb81290b1514f9d0ec9ff71d639e35ac9561c803cdb82bf5bdd97b9a22a7909d3ffa28d4baeaf30d81f02862f0540a5283d76e91b29e07e2e725bd41c144fdfa942216cee574140faf260bf21718c9662a3d6faa44c1f5d7a54caa7095624c95cf65544585152bb9231454420640e80f1dc280ee4c3951bee037f8c1b4522abe7a61b2cd33ea870d935367fe90d739aaa14b91c4961eefb40359b8b018f8b82584ad2d5b99b3371cb07259d7ea602240446fdac323e7249e75311b0acad9d5d2221c1cf490b7b65d4e84f002cbc0494aa709dd148c14afaede5c7ff214e605b8abbcc1a2c848c453c5152e2bbc5c4e3150c52121859166eb97004ee08722e5cca97002d85f4b8db127cede9486e4e9e11e635af05eb0226ac901d3c058a9c4bd7d416dd6960739384fd75be28d92c52a2e46540fdc7036e740afa942b407a47de4199b5396613cbd3d66af6b34ffce5ca5cc9af628ef3036dc07dd2fbed179b6ccc4a93164d1c4f4e42145ac29
+valid = yes
+reject-spent = d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78
+```
+
+### Block lookup digest vectors
+
+The genesis block's empty list; the block after the commit of number 0 (coin
+leaf 0), which holds the reveal of number 0, whose remainder is coin leaf 1
+with the tag of number 1, and the data commit of the data example key, data
+leaf 0; and the list of `header-block-one-example`, the first block after an
+empty genesis: the commit of number 0 and the remainder of number 1 (coin
+leaves 0 and 1), the data commit (data leaf 0), the spend of number 0, and the
+two data markers of `marker-set-two-markers`.
+
+```text
+[lookup-digest-empty]
+kind = lookup-digest
+coin-start = 0
+coin-tags =
+data-start = 0
+data-tags =
+coin-markers =
+data-markers =
+encoding = 0000000000000000000000000000000000000000000000000000
+digest = 9217af84b49597c35c570275e095d6a0245cab03c6f0126ce995acaa5023cd7b
+
+[lookup-digest-example]
+kind = lookup-digest
+coin-start = 1
+coin-tags = 98f00763f51d9e982a7814297473729f
+data-start = 0
+data-tags = 9d77715bd859976996087ca266cf37b0
+coin-markers = d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78
+data-markers =
+encoding = 00000000010000000198f00763f51d9e982a7814297473729f0000000000000000019d77715bd859976996087ca266cf37b000000001d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf7800000000
+digest = 91534b00a1395018530174d9b5512a570a8d78038cd7f9526926309196a7429e
+
+[lookup-digest-block-one-example]
+kind = lookup-digest
+coin-start = 0
+coin-tags = 74c5d993f5f018e3174926b2c8e8fb68 98f00763f51d9e982a7814297473729f
+data-start = 0
+data-tags = 9d77715bd859976996087ca266cf37b0
+coin-markers = d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf78
+data-markers = c340c4a3020d70f72ed289d4e5fcc0c41cd41224d69bea229f0f8a6ecbb77e3b 40b6aa08963fee7e02d69cf4d7c5e9d2ba775d28991f4e08e27ed97c8a38acc8
+encoding = 00000000000000000274c5d993f5f018e3174926b2c8e8fb6898f00763f51d9e982a7814297473729f0000000000000000019d77715bd859976996087ca266cf37b000000001d93e36255156ef29b2e0785719a1a22ec2b03a8500013c94f5277aa1cb6daf7800000002c340c4a3020d70f72ed289d4e5fcc0c41cd41224d69bea229f0f8a6ecbb77e3b40b6aa08963fee7e02d69cf4d7c5e9d2ba775d28991f4e08e27ed97c8a38acc8
+digest = daead9867c4447459915bdb77c163a1cfaa9e69e0f915c422a3f291bec8afcbc
+```
+
+### Genesis values and global positions
+
+The genesis values of fields 19 to 22: the empty lookup indices, the coin
+marker set holding only its sentinel, and the digest of the empty list (the
+genesis table of section 10 and `header-genesis-example` carry them). Then
+global positions at the edges of the trees, as 5 bytes: the last position of
+tree 0, the first of tree 1 and the last usable one, in tree 255; the next is
+rejected (section 3).
+
+```text
+[header-genesis-new-fields]
+kind = genesis-fields
+coinLookupRoot = 994a8bc5ba72f53f4449d4981c3ea8294d504b148afa58abec873819b143554b
+dataLookupRoot = c0ad355e8462fbe6093fa0ac37c0afc450b36cbe679bb7de3050a9a1b2cddece
+coinMarkerRoot = 84e7c602ab3870f46bf300eff5581ae88029f7c58afb3758a652e0129e9e85cc
+lookupDigest = 9217af84b49597c35c570275e095d6a0245cab03c6f0126ce995acaa5023cd7b
+
+[global-position-examples]
+kind = global-position
+tree-0-position-0 = 0000000000
+tree-0-position-4294967295 = 00ffffffff
+tree-1-position-0 = 0100000000
+tree-255-position-4294967294 = fffffffffe
+tree-255-position-4294967295 = rejected
+none = ffffffffff
+```
+
+- **TH-26. Lookup index vectors.** The node's lookup tag code derives the tags
+  of every `lookup-tag` vector, its lookup index code inserts the entries of
+  every `lookup-index` vector in order into the genesis index of its type, and
+  it checks the witnesses of `coin-lookup-absence`, `coin-lookup-first-entry`
+  and `coin-lookup-membership` against their roots. Expected: the same tags,
+  leaves, counts and roots; the absence witness shows its tag absent and gives
+  no answer for its rejected tags; the first-entry witness answers position 0,
+  the original, not the copy; the membership witness is accepted for its pair
+  and for no other position; any changed byte, any other length or the data
+  tags in place of the coin tags rejects each of them.
+- **TH-27. Coin marker-set vectors.** The node's coin marker-set code inserts
+  the spends of every `coin-marker-set` vector in order into the genesis set
+  and checks `coin-marker-set-membership` and `coin-marker-set-absence`.
+  Expected: the same leaves, counts and roots, a rewritten leaf keeping its own
+  `appended`; the membership witness gives `appended` 1; the absence witness
+  is accepted for its marker and rejected for `reject-spent`; a node that
+  drops `appended` from the leaf hash or rewrites it fails.
+- **TH-28. Lookup digest and header fields.** The node computes the block
+  lookup digest of every `lookup-digest` vector from its lists, the genesis
+  values of `header-genesis-new-fields`, and the global positions of
+  `global-position-examples`. Expected: the same encodings and digests; the
+  genesis header carries exactly those four values as fields 19 to 22; a
+  header of 19 items is rejected as `item-count`; an append at the global
+  position 2^40 - 1 is rejected (vector `append-lookup-limit`).
 
 ### Witness-extension vectors
 
@@ -1226,9 +1873,12 @@ witness-after = d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0
 `header-genesis-example` is a genesis header with example inputs: the stand-in
 for Bitcoin block `B` is the hash of Bitcoin's own first block and `MTP(B)` is
 1798761600. Neither is Ghost's anchor. Its `dataMarkerRoot` is the root of
-`marker-set-empty`. `header-block-one-example` builds on it with the roots of
-the tree vectors above, the root of `marker-set-two-markers` and example values
-elsewhere. The negative vectors are `header-block-one-example` with one fault
+`marker-set-empty`, and its four lookup fields are the values of
+`header-genesis-new-fields`. `header-block-one-example` builds on it with the
+roots of the tree vectors above, the root of `marker-set-two-markers`, the
+roots of `coin-lookup-two-leaves`, `data-lookup-one-leaf` and
+`coin-marker-set-one-marker`, the digest of `lookup-digest-block-one-example`
+and example values elsewhere. The negative vectors are `header-block-one-example` with one fault
 each, and a decoder must reject each with the reason given.
 
 ```text
@@ -1253,13 +1903,17 @@ baseFee = 1000000000
 coinTreeRoot = 8e66512042388a7863d500c4f96861466ae48b9d64ea1e10ec382c31aa61b5a8
 dataTreeRoot = 3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03
 dataMarkerRoot = 0ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3
-rlp = f90281a00000000000000000000000000000000000000000000000000000000000000000a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347940000000000000000000000000000000000000000a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000808401c9c38080846b3703f0a0000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26fa00000000000000000000000000000000000000000000000000000000000000000880000000000000000843b9aca00a08e66512042388a7863d500c4f96861466ae48b9d64ea1e10ec382c31aa61b5a8a03d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03a00ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3
-hash = 039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4
+coinLookupRoot = 994a8bc5ba72f53f4449d4981c3ea8294d504b148afa58abec873819b143554b
+dataLookupRoot = c0ad355e8462fbe6093fa0ac37c0afc450b36cbe679bb7de3050a9a1b2cddece
+coinMarkerRoot = 84e7c602ab3870f46bf300eff5581ae88029f7c58afb3758a652e0129e9e85cc
+lookupDigest = 9217af84b49597c35c570275e095d6a0245cab03c6f0126ce995acaa5023cd7b
+rlp = f90305a00000000000000000000000000000000000000000000000000000000000000000a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347940000000000000000000000000000000000000000a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000808401c9c38080846b3703f0a0000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26fa00000000000000000000000000000000000000000000000000000000000000000880000000000000000843b9aca00a08e66512042388a7863d500c4f96861466ae48b9d64ea1e10ec382c31aa61b5a8a03d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03a00ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3a0994a8bc5ba72f53f4449d4981c3ea8294d504b148afa58abec873819b143554ba0c0ad355e8462fbe6093fa0ac37c0afc450b36cbe679bb7de3050a9a1b2cddecea084e7c602ab3870f46bf300eff5581ae88029f7c58afb3758a652e0129e9e85cca09217af84b49597c35c570275e095d6a0245cab03c6f0126ce995acaa5023cd7b
+hash = d264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3d
 valid = yes
 
 [header-block-one-example]
 kind = header
-parentHash = 039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4
+parentHash = d264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3d
 uncleHash = 1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347
 coinbase = 00000000000000000000000000000000000004d2
 stateRoot = 1111111111111111111111111111111111111111111111111111111111111111
@@ -1278,8 +1932,12 @@ baseFee = 875000000
 coinTreeRoot = 142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5
 dataTreeRoot = dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a
 dataMarkerRoot = f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f
-rlp = f90264a0039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f
-hash = 81ca961404b518ee3ded78ebee1c4e23eba18b7c86515b6471e970cfed8538f4
+coinLookupRoot = 489542787d7482d68a5bbd92c21f8225be3b0420bf06f1232c01af1f9f4c4451
+dataLookupRoot = 04d419113c03c7b976eea6b1e9334f91d529faa05a89355e64b8439d6b96f9cc
+coinMarkerRoot = d2d2d35cf33c017a3bbe0d7867ce1f62948514d1294354c2a11795f046960df8
+lookupDigest = daead9867c4447459915bdb77c163a1cfaa9e69e0f915c422a3f291bec8afcbc
+rlp = f902e8a0d264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3da01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4fa0489542787d7482d68a5bbd92c21f8225be3b0420bf06f1232c01af1f9f4c4451a004d419113c03c7b976eea6b1e9334f91d529faa05a89355e64b8439d6b96f9cca0d2d2d35cf33c017a3bbe0d7867ce1f62948514d1294354c2a11795f046960df8a0daead9867c4447459915bdb77c163a1cfaa9e69e0f915c422a3f291bec8afcbc
+hash = c8dc552427485a2dfa53f71ecb1fe6402fde9e239e35e1a7576077373e403061
 valid = yes
 
 [header-forbidden-field]
@@ -1287,7 +1945,7 @@ kind = header-negative
 base = header-block-one-example
 fault = forbidden-field
 reject = item-count
-rlp = f90285a0039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f
+rlp = f90309a0d264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3da01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4fa0489542787d7482d68a5bbd92c21f8225be3b0420bf06f1232c01af1f9f4c4451a004d419113c03c7b976eea6b1e9334f91d529faa05a89355e64b8439d6b96f9cca0d2d2d35cf33c017a3bbe0d7867ce1f62948514d1294354c2a11795f046960df8a0daead9867c4447459915bdb77c163a1cfaa9e69e0f915c422a3f291bec8afcbc
 valid = no
 
 [header-extra-trailing-field]
@@ -1295,7 +1953,7 @@ kind = header-negative
 base = header-block-one-example
 fault = extra-trailing-field
 reject = item-count
-rlp = f90265a0039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f80
+rlp = f902e9a0d264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3da01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4fa0489542787d7482d68a5bbd92c21f8225be3b0420bf06f1232c01af1f9f4c4451a004d419113c03c7b976eea6b1e9334f91d529faa05a89355e64b8439d6b96f9cca0d2d2d35cf33c017a3bbe0d7867ce1f62948514d1294354c2a11795f046960df8a0daead9867c4447459915bdb77c163a1cfaa9e69e0f915c422a3f291bec8afcbc80
 valid = no
 
 [header-missing-required-field]
@@ -1303,7 +1961,7 @@ kind = header-negative
 base = header-block-one-example
 fault = missing-required-field
 reject = item-count
-rlp = f9025fa0039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a04444444444444444444444444444444444444444444444444444444444444444880102030405060708a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f
+rlp = f902e3a0d264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3da01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a04444444444444444444444444444444444444444444444444444444444444444880102030405060708a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4fa0489542787d7482d68a5bbd92c21f8225be3b0420bf06f1232c01af1f9f4c4451a004d419113c03c7b976eea6b1e9334f91d529faa05a89355e64b8439d6b96f9cca0d2d2d35cf33c017a3bbe0d7867ce1f62948514d1294354c2a11795f046960df8a0daead9867c4447459915bdb77c163a1cfaa9e69e0f915c422a3f291bec8afcbc
 valid = no
 
 [header-non-canonical-integer]
@@ -1311,7 +1969,7 @@ kind = header-negative
 base = header-block-one-example
 fault = non-canonical-integer
 reject = non-canonical-integer
-rlp = f90266a0039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b901000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000084010000008200018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f
+rlp = f902eaa0d264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3da01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b901000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000084010000008200018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4fa0489542787d7482d68a5bbd92c21f8225be3b0420bf06f1232c01af1f9f4c4451a004d419113c03c7b976eea6b1e9334f91d529faa05a89355e64b8439d6b96f9cca0d2d2d35cf33c017a3bbe0d7867ce1f62948514d1294354c2a11795f046960df8a0daead9867c4447459915bdb77c163a1cfaa9e69e0f915c422a3f291bec8afcbc
 valid = no
 
 [header-short-tree-root]
@@ -1319,7 +1977,7 @@ kind = header-negative
 base = header-block-one-example
 fault = short-tree-root
 reject = field-size
-rlp = f90263a0039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c09f142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ea0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f
+rlp = f902e7a0d264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3da01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c09f142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ea0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4fa0489542787d7482d68a5bbd92c21f8225be3b0420bf06f1232c01af1f9f4c4451a004d419113c03c7b976eea6b1e9334f91d529faa05a89355e64b8439d6b96f9cca0d2d2d35cf33c017a3bbe0d7867ce1f62948514d1294354c2a11795f046960df8a0daead9867c4447459915bdb77c163a1cfaa9e69e0f915c422a3f291bec8afcbc
 valid = no
 
 [header-trailing-bytes]
@@ -1327,7 +1985,7 @@ kind = header-negative
 base = header-block-one-example
 fault = trailing-bytes
 reject = trailing-bytes
-rlp = f90264a0039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f00
+rlp = f902e8a0d264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3da01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4fa0489542787d7482d68a5bbd92c21f8225be3b0420bf06f1232c01af1f9f4c4451a004d419113c03c7b976eea6b1e9334f91d529faa05a89355e64b8439d6b96f9cca0d2d2d35cf33c017a3bbe0d7867ce1f62948514d1294354c2a11795f046960df8a0daead9867c4447459915bdb77c163a1cfaa9e69e0f915c422a3f291bec8afcbc00
 valid = no
 
 [header-eighteen-items]
@@ -1335,7 +1993,15 @@ kind = header-negative
 base = header-block-one-example
 fault = eighteen-items
 reject = item-count
-rlp = f90243a0039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a
+rlp = f90243a0d264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3da01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a
+valid = no
+
+[header-nineteen-items]
+kind = header-negative
+base = header-block-one-example
+fault = nineteen-items
+reject = item-count
+rlp = f90264a0d264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3da01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d493479400000000000000000000000000000000000004d2a01111111111111111111111111111111111111111111111111111111111111111a02222222222222222222222222222222222222222222222222222222222222222a03333333333333333333333333333333333333333333333333333333333333333b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000018401c9c3808301ec30846b37040e80a0444444444444444444444444444444444444444444444444444444444444444488010203040506070884342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f
 valid = no
 ```
 
@@ -1344,8 +2010,9 @@ would put it, after the base fee; `extra-trailing-field` appends an empty
 string; `missing-required-field` drops the base fee; `non-canonical-integer`
 writes the block number with a leading zero byte; `short-tree-root` cuts the
 coin tree root to 31 bytes; `trailing-bytes` appends one byte after the list;
-`eighteen-items` drops `dataMarkerRoot`, leaving the 18 items of a header from
-before it.
+`eighteen-items` drops `dataMarkerRoot` and the four fields after it, leaving
+the 18 items of a header from before it; `nineteen-items` drops the four
+fields of decision 0004, leaving the 19 items of a header from before it.
 
 ## 12. Not settled: fail closed
 
@@ -1353,14 +2020,20 @@ Each point rejects until the founder or a later specification settles it.
 
 1. **Spent-marker-set root in headers.** Settled (front desk decision,
    2026-10-25; spec 04, question 2): every header carries `dataMarkerRoot`,
-   the root of the data marker-set tree of section 6, and none carries a coin
-   marker-set root. The proof circuit checks the marker's absence under that
-   root (spec 02, S3, constraint 4; section 13, item 2 there), so a proof of
-   holding for data is verified; a proof of holding for coins stays rejected
-   (spec 02, section 13, item 3).
-2. **Reserved account addresses.** The addresses of the two tree-state accounts
-   and the two marker-set accounts are for the transaction-format
-   specification. Until fixed, no commit or reveal is valid.
+   the root of the data marker-set tree of section 6. The proof circuit checks
+   the marker's absence under that root (spec 02, S3, constraint 4; section
+   13, item 2 there), so a proof of holding for data is verified. The answer
+   of 2026-10-25 that the header carried no root for the coin set is
+   superseded by the stage 2 design: decision 0004 adds `coinMarkerRoot`,
+   field 21, the root of the coin marker-set tree of section 6, and leaves
+   `dataMarkerRoot` at field 18. A proof of holding for coins stays rejected
+   (spec 02, section 13, item 3): `coinMarkerRoot` does not settle spec 02,
+   question 2.
+2. **Reserved account addresses.** The addresses of the two tree-state
+   accounts, the two marker-set accounts and the accounts of the two lookup
+   indices and the coin marker-set tree (section 6) are for the
+   transaction-format specification. Until fixed, no commit or reveal is
+   valid.
 3. **Peer messages for pages.** The request and response messages of section 8
    in the node's peer protocol and in its JSON-RPC interface are for the node
    phase. Any message that returns tree data for a single commitment, position,
@@ -1395,9 +2068,12 @@ difference is listed here for the founder's review.
    data spent-marker-set root go into every header, and spec 04, question 2
    asks whether it should. By front desk decision (2026-10-25) this document
    adds it as the third header field, `dataMarkerRoot`, with the tree of
-   section 6, and adds no coin marker-set root. The proof circuit checks
-   the absence under it, as [spec 02](02-proof-statements.md), section 13,
-   item 2 says.
+   section 6. The proof circuit checks the absence under it, as
+   [spec 02](02-proof-statements.md), section 13, item 2 says. The rule of the
+   same decision that the data set alone gets a root is superseded by the
+   stage 2 design: decision 0004 adds the coin marker-set root
+   `coinMarkerRoot` as field 21. Spec 02, section 6 and spec 04, question 2
+   now say so too; coin proofs of holding stay rejected.
 4. **Epoch root after a rollover.** Spec 02, section 8 picks the epoch root of
    the tree of the leaf's type. Once a tree is full, later epoch roots are roots
    of the next tree and do not contain its leaves. Default here: a leaf in a
@@ -1425,6 +2101,17 @@ difference is listed here for the founder's review.
    that a header cannot authenticate; after review 01 (F4) they are hints only,
    and status is taken from receipts checked against `receiptsRoot` (section
    8).
+9. **Where the lookup tag is carried.** Decision 0004 puts the lookup tag in
+   the commit payload and, as `remainder_tag`, in the coin reveal binding of
+   [spec 02](02-proof-statements.md), section 7 (offset 415) and the private
+   transaction payload of [spec 07](07-private-transaction.md), section 3
+   (offset 1,311,066). Neither layout carries it yet; until it does, no
+   remainder can carry its tag, and the record's offsets are the ones to use.
+10. **Seal vectors of the 19-item header.** [Spec 08](08-randomx-seal.md),
+    section 4 now names the 23 fields its seal hash covers, but its seal
+    vectors are still computed over the 19-item header of before decision
+    0004, and the node's genesis derivation still writes 19 items. Their
+    vectors change with the node ticket.
 
 ## 14. Questions for the founder
 
@@ -1447,10 +2134,12 @@ Each has a default that this document already applies.
    13, item 4). Default (review 01, F1): the wallet waits until the next tree
    has started and proves against the final root, which every leaf of the full
    tree shares, so nothing names their block.
-6. **Coin marker-set root.** The header carries the data marker-set root only
-   (section 6). Default: no coin marker-set root, so a proof of holding for
-   coins stays rejected (spec 02, section 13, item 3); adding one later is a
-   new header field and a new header layout.
+6. **Coin marker-set root.** Answered by the stage 2 design, with the bytes of
+   decision 0004: the header carries `coinMarkerRoot`, field 21, the root of
+   the coin marker-set tree of section 6, beside `dataMarkerRoot`, field 18,
+   in a header of 23 items. Default for what it leaves open: a proof of
+   holding for coins stays rejected (spec 02, section 13, item 3), and the
+   coin root serves restore only, until spec 02, question 2 is settled.
 
 ## 15. Checking this document
 
@@ -1466,12 +2155,21 @@ gap. It checks that the required sections are present and numbered; that the
 tree depth is 32 with 2^32 leaves and the note size is spec 01's; that the page
 and storage tables are right; that the header field table lists the pinned base
 header in order with the base fee required, the two tree roots and
-`dataMarkerRoot` as field 18, exactly 19 fields, that no forbidden field and no
-other marker-set root is in it, and that every genesis field is listed with its
+`dataMarkerRoot` as field 18, then `coinLookupRoot`, `dataLookupRoot`,
+`coinMarkerRoot` and `lookupDigest` as fields 19 to 22, exactly 23 fields, that
+the marker-set roots are fields 18 and 21 and no other is in it, that no
+forbidden field is in it, that the decision table of section 1 records the
+change decision 0004 makes and no sentence keeps the rule it supersedes, and
+that every genesis field is listed with its
 source and agrees with the genesis vector; that every tree, rollover and header
 vector is right; that every marker-set vector is recomputed by the script's own
 indexed tree (leaves, counts, roots, the absence witness and its three rejected
 markers) and every header's `dataMarkerRoot` is the root of one; that every
+lookup tag, lookup index, lookup witness, coin marker-set, block lookup
+digest, genesis-field and global-position vector is recomputed byte for byte
+with the script's own code from spec 01's keys and markers, every witness is
+accepted for what it shows and rejected for its listed values, and every
+header's four new fields are values of those vectors; that every
 `witness-extension` vector is recomputed with the script's own tree code (the
 witness before, the page read whole or the root climbed from the stored
 in-page siblings, the page-root tail against the header root, which rejects a

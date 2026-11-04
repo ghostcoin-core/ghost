@@ -290,9 +290,12 @@ The statement is the same for both types. **Proposed:** version 1 accepts it
 for `DATA`; for `COIN` it is rejected until the founder settles question 2.
 The data spent-marker set and its header root are fixed by
 [spec 05](05-trees-and-headers.md), section 6 ("The data marker-set tree") and
-section 10 (`dataMarkerRoot`, field 18); there is no coin marker-set root. The
-proof circuit checks constraint 4 (section 13, item 2), so a proof of holding
-for `DATA` is verified; one for `COIN` stays rejected.
+section 10 (`dataMarkerRoot`, field 18). The header also carries a coin
+marker-set root, `coinMarkerRoot`, field 21 ([decision
+0004](../decisions/0004-lookup-formats.md); spec 05, section 6, "The coin
+marker-set tree"), for restore; it does not settle question 2. The proof
+circuit checks constraint 4 (section 13, item 2), so a proof of holding for
+`DATA` is verified; one for `COIN` stays rejected.
 
 **Public inputs.**
 
