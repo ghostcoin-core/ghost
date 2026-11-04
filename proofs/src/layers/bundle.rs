@@ -90,6 +90,9 @@ pub enum LayerKind {
     Batch = 1,
     Root = 2,
     Shrink = 3,
+    /// A chunk of ML-DSA-44 verifications ([`crate::mldsa`]): the child of a
+    /// batch of chunks.
+    Chunk = 4,
 }
 
 /// The label every tag starts with: "ghost-layers" as an element of three

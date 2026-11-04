@@ -38,11 +38,12 @@ use super::circuit::{BITS, Circuit, SWAP};
 use super::poseidon2::{self, PERM_COLS, WIDTH};
 use super::{EF, F, coeffs};
 use crate::ProofError;
+use crate::mldsa::tables::MlTable;
 use crate::scale::{ScaleConfig, layer_config, tagged_challenger};
 use crate::stark::FriShape;
 
 /// The bus every wire value travels on.
-const BUS: &str = "wire";
+pub(crate) const BUS: &str = "wire";
 /// Coefficients of an extension value.
 const D: usize = 8;
 /// The wire of a circuit's first public value.
@@ -58,6 +59,8 @@ pub(crate) enum Table {
     Perm,
     Bits,
     Pack,
+    /// A table of an ML-DSA chunk ([`crate::mldsa::tables`]), after the five.
+    Ml(MlTable),
 }
 
 pub(crate) const TABLES: [Table; 5] = [Table::Wires, Table::Arith, Table::Perm, Table::Bits, Table::Pack];
@@ -102,6 +105,15 @@ impl TableAir {
     pub(crate) fn num_publics(&self) -> usize {
         self.num_publics
     }
+
+    /// Whether the table's constraints read the next row: only some ML-DSA
+    /// tables do.
+    pub(crate) fn reads_next(&self) -> bool {
+        match self.table {
+            Table::Ml(t) => crate::mldsa::tables::reads_next(t),
+            _ => false,
+        }
+    }
 }
 
 /// Input lanes a permutation row may exchange, with the values it was sent
@@ -125,6 +137,7 @@ pub(crate) fn main_width(table: Table, lanes: usize) -> usize {
         Table::Perm => PERM_COLS + SENT + 1,
         Table::Bits => BITS + 1,
         Table::Pack => D,
+        Table::Ml(t) => crate::mldsa::tables::main_width(t),
     }
 }
 
@@ -139,6 +152,7 @@ pub(crate) fn preprocessed_width(table: Table, lanes: usize, num_publics: usize)
         Table::Bits => 2 * BITS + 2,
         // The extension wire, the eight coefficient wires, the row enable.
         Table::Pack => 1 + D + 1,
+        Table::Ml(t) => crate::mldsa::tables::preprocessed_width(t),
     }
 }
 
@@ -156,7 +170,7 @@ impl BaseAir<F> for TableAir {
     }
 
     fn main_next_row_columns(&self) -> Vec<usize> {
-        Vec::new()
+        if self.reads_next() { (0..BaseAir::<F>::width(self)).collect() } else { Vec::new() }
     }
 
     fn preprocessed_next_row_columns(&self) -> Vec<usize> {
@@ -190,6 +204,10 @@ where
     AB: InteractionBuilder<F = F>,
 {
     fn eval(&self, builder: &mut AB) {
+        if let Table::Ml(t) = self.table {
+            crate::mldsa::tables::eval(t, builder);
+            return;
+        }
         let prep: Vec<AB::Expr> = builder.preprocessed().current_slice().iter().map(|&v| v.into()).collect();
         let local: Vec<AB::Expr> = builder.main().current_slice().iter().map(|&v| v.into()).collect();
         let zero = || AB::Expr::ZERO;
@@ -313,6 +331,7 @@ where
                     send_base(builder, &prep[1 + k], coeff, &en);
                 }
             }
+            Table::Ml(_) => {}
         }
     }
 }
@@ -455,6 +474,7 @@ pub(crate) fn table_airs_within(
                     m[r * width + 1 + D] = F::ONE;
                 }
             }
+            Table::Ml(t) => m = crate::mldsa::tables::preprocessed(t, &circuit.ml, height).values,
         }
         airs.push(TableAir {
             table,
@@ -467,9 +487,38 @@ pub(crate) fn table_airs_within(
     Ok(airs)
 }
 
+/// The tables of a circuit with ML-DSA rows: the five of [`table_airs_within`]
+/// (with one lane a row when they fit), then the ten ML-DSA tables, each as
+/// tall as its rows need, at least the smallest height `fri` allows.
+pub(crate) fn table_airs_with_ml(
+    circuit: &Circuit,
+    fri: &FriShape,
+    max_log: usize,
+) -> Result<Vec<TableAir>, ProofError> {
+    let mut airs = table_airs_within(circuit, fri, max_log)?;
+    let num_publics = circuit.publics().len();
+    let limit = max_log.min(max_log_height(fri));
+    for t in crate::mldsa::tables::ML_TABLES {
+        let height = height_for(circuit.ml.entries(t), fri);
+        if height.trailing_zeros() as usize > limit {
+            return Err(ProofError::Proving);
+        }
+        let prep = crate::mldsa::tables::preprocessed(t, &circuit.ml, height);
+        airs.push(TableAir {
+            table: Table::Ml(t),
+            num_publics,
+            lanes: 1,
+            height,
+            preprocessed: Some(Arc::new(prep)),
+        });
+    }
+    Ok(airs)
+}
+
 /// The main traces of a circuit's tables, from its wire values.
 pub(crate) fn table_traces(circuit: &Circuit, airs: &[TableAir]) -> Vec<RowMajorMatrix<F>> {
     let mut reads = vec![0u32; circuit.num_wires()];
+    crate::mldsa::tables::count_reads(circuit, &mut reads);
     for row in circuit.arith_rows() {
         for w in [row.a, row.b, row.c, row.out] {
             reads[w.0 as usize] += 1;
@@ -495,6 +544,9 @@ pub(crate) fn table_traces(circuit: &Circuit, airs: &[TableAir]) -> Vec<RowMajor
     airs.iter()
         .map(|air| {
             let height = air.height();
+            if let Table::Ml(t) = air.table {
+                return crate::mldsa::tables::trace(t, circuit, height);
+            }
             let lanes = air.lanes;
             let width = main_width(air.table, lanes);
             let mut m = vec![F::ZERO; height * width];
@@ -553,6 +605,7 @@ pub(crate) fn table_traces(circuit: &Circuit, airs: &[TableAir]) -> Vec<RowMajor
                         }
                     }
                 }
+                Table::Ml(_) => {}
             }
             RowMajorMatrix::new(m, width)
         })

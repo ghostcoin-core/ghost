@@ -53,11 +53,13 @@ jobs:
   # self-hosted runners. The toolchain is pinned to an exact version, and
   # RUSTUP_TOOLCHAIN hands that same version to the script.
   #
-  # The proofs crate is split across two parallel jobs so each fits its
+  # The proofs crate is split across parallel jobs so each fits its
   # 10-minute limit: rust-proofs runs the library, doc and integration tests
-  # except the recursion layers, then the wasm32 check; rust-proofs-layers
-  # runs the recursion layer tests (proofs/tests/layers*.rs). Together they
-  # run the same tests as the rust-proofs step of scripts/ci-gate.sh.
+  # except the recursion layers and the ML-DSA chunk proofs, then the wasm32
+  # check; the rust-proofs-layers-* jobs run the recursion layer tests
+  # (proofs/tests/layers*.rs); the rust-proofs-mldsa* jobs run the ML-DSA
+  # chunk proof tests (proofs/tests/mldsa_chunk.rs). Together they run the
+  # same tests as the rust-proofs step of scripts/ci-gate.sh.
   rust-proofs:
     name: rust-proofs
     runs-on: ubuntu-24.04
@@ -81,9 +83,11 @@ jobs:
             ~/.cargo/git/db
             proofs/target
           key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-${{ hashFiles('proofs/Cargo.lock') }}
-      # Every file in proofs/tests/ except layers.rs and layers_*.rs, so a
-      # new test file runs here without editing this list.
-      - name: Test (release, all but the recursion layers)
+      # Every file in proofs/tests/ except layers.rs, layers_*.rs and
+      # mldsa_chunk.rs, so a new test file runs here without editing this
+      # list. mldsa_chunk_bench.rs stays here: its benchmark is #[ignore] and
+      # runs only by hand with -- --ignored --nocapture.
+      - name: Test (release, all but the recursion layers and ML-DSA chunks)
         shell: bash
         env:
           RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
@@ -93,7 +97,7 @@ jobs:
           for f in proofs/tests/*.rs; do
             name="$(basename "$f" .rs)"
             case "$name" in
-              layers | layers_*) ;;
+              layers | layers_* | mldsa_chunk) ;;
               *) tests+=(--test "$name") ;;
             esac
           done
@@ -261,6 +265,74 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
         run: cargo test --release --locked --manifest-path proofs/Cargo.toml --test layers --test layers_results --test layers_bench -- --exact --skip a_bundle_of_one_real_reveal_verifies --skip a_root_and_a_shrink_prove_an_aggregators_batches --skip the_real_shrink_fits_the_proof_field --skip a_bundle_of_32_verifies_and_its_contents_are_fixed
+
+  # The ML-DSA chunk proof tests (proofs/tests/mldsa_chunk.rs), split by test
+  # name across two jobs so each fits the 10-minute limit: the fold of the
+  # chunk proofs through a batch, a root and a shrink runs alone in
+  # rust-proofs-mldsa-fold, every other test in rust-proofs-mldsa.
+  rust-proofs-mldsa:
+    name: rust-proofs-mldsa
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUST_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      # Its own cache key apart from rust-proofs and the layers jobs: the
+      # mldsa jobs build the same test binary, so they share this key with
+      # each other.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            proofs/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-mldsa-${{ hashFiles('proofs/*.lock') }}
+      # Every ML-DSA chunk test but the fold, which runs in its own job below.
+      - name: Test (release) the ML-DSA chunk proofs
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+        run: cargo test --release --locked --manifest-path proofs/Cargo.toml --test mldsa_chunk -- --exact --skip chunks_fold_into_one_public_root_proof
+
+  rust-proofs-mldsa-fold:
+    name: rust-proofs-mldsa-fold
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUST_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      # Its own cache key apart from rust-proofs and the layers jobs: the
+      # mldsa jobs build the same test binary, so they share this key with
+      # each other.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            proofs/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-mldsa-${{ hashFiles('proofs/*.lock') }}
+      # The fold of the chunk proofs into one public root proof, alone.
+      - name: Test (release) the ML-DSA chunk fold
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+        run: cargo test --release --locked --manifest-path proofs/Cargo.toml --test mldsa_chunk -- --exact chunks_fold_into_one_public_root_proof
 
   rust-client:
     name: rust-client

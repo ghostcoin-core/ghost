@@ -452,7 +452,7 @@ pub struct PipelinePlan {
     pub shrink_bytes_bound: usize,
 }
 
-fn planned(spec: &verifier::LayerSpec, cons: &[verifier::TableConstraints], entries: [usize; 5]) -> PlannedLayer {
+pub(crate) fn planned(spec: &verifier::LayerSpec, cons: &[verifier::TableConstraints], entries: [usize; 5]) -> PlannedLayer {
     PlannedLayer {
         lanes: spec.airs.iter().map(tables::TableAir::lanes).collect(),
         heights: spec.airs.iter().map(tables::TableAir::height).collect(),

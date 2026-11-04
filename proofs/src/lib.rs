@@ -34,6 +34,9 @@
 //!   Poseidon2 commitments and transcript, the degree-8 extension and 96
 //!   queries: [`prove_coin_reveal_v2_scale`] and
 //!   [`verify_coin_reveal_v2_scale`], beside the shipped configuration.
+//! - The scale build's public signatures (stage 2 design, "Public signature
+//!   size"): ML-DSA-44 verifications proven in chunks and folded by the
+//!   batch, root and shrink layers, in [`mldsa`].
 //!
 //! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`] and
 //! [`verify_coin_reveal_v2`], with its header in `include/ghost_proofs.h`.
@@ -86,6 +89,7 @@ mod hold;
 pub mod layers;
 #[cfg(test)]
 mod lookup_check;
+pub mod mldsa;
 mod native;
 mod policy_reveal;
 mod reveal;

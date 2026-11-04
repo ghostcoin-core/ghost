@@ -218,7 +218,7 @@ fn uni_shape(child: LayerShape, log_height: usize) -> UniShape {
 
 /// The layers run no grinding of their own before the lookup challenges or
 /// the out-of-domain point, which the in-circuit verifier relies on.
-fn check_config(shape: LayerShape) -> Result<(), ProofError> {
+pub(crate) fn check_config(shape: LayerShape) -> Result<(), ProofError> {
     let config = crate::scale::layer_config([0; 32], &shape.fri(), crate::scale::tagged_challenger(&[]))?;
     if config.lookup_proof_of_work_bits() != 0 || config.ood_proof_of_work_bits() != 0 {
         return Err(ProofError::Proving);
@@ -339,7 +339,10 @@ pub(crate) fn layer_key_of(
     let fits = match kind {
         LayerKind::Root => child.kind == LayerKind::Batch && capacity > 0,
         LayerKind::Shrink => child.kind == LayerKind::Root && capacity == 1,
-        LayerKind::Batch => false,
+        // A batch of chunk proofs; a batch of uni-STARK children has its own
+        // key ([`batch_key_of`]).
+        LayerKind::Batch => child.kind == LayerKind::Chunk && capacity > 0,
+        LayerKind::Chunk => false,
     };
     if !fits {
         return Err(ProofError::Proving);
@@ -376,7 +379,12 @@ pub(crate) fn prove_layer_of(
     zk_seed: [u8; 32],
     unchecked: bool,
 ) -> Result<Vec<u8>, ProofError> {
-    if key.kind == LayerKind::Batch
+    let layer_children = match key.kind {
+        LayerKind::Batch => child.kind == LayerKind::Chunk,
+        LayerKind::Root | LayerKind::Shrink => true,
+        LayerKind::Chunk => false,
+    };
+    if !layer_children
         || key.child_key != child.native_digest()
         || children.is_empty()
         || children.len() > key.capacity
@@ -579,7 +587,9 @@ pub(crate) fn proof_bytes_bound(
     };
     let rounds: Vec<Vec<Mat>> = alloc::vec![
         (0..n).map(|i| mat(i, 8, 1, hiding)).collect(),
-        (0..n).map(|i| mat(i, BaseAir::<F>::width(&airs[i]), 1, hiding)).collect(),
+        (0..n)
+            .map(|i| mat(i, BaseAir::<F>::width(&airs[i]), 1 + usize::from(airs[i].reads_next()), hiding))
+            .collect(),
         (0..n)
             .flat_map(|i| (0..chunks[i]).map(move |_| i))
             .map(|i| mat(i, 8, 1, hiding))
@@ -597,6 +607,9 @@ pub(crate) fn proof_bytes_bound(
         let w = BaseAir::<F>::width(&airs[i]);
         let pw = BaseAir::<F>::preprocessed_width(&airs[i]);
         bytes += len(w) + w * EF + 1;
+        if airs[i].reads_next() {
+            bytes += len(w) + w * EF;
+        }
         bytes += 1 + len(pw) + pw * EF + 1;
         bytes += len(chunks[i]) + chunks[i] * (len(8) + 8 * EF);
         bytes += 1 + len(8) + 8 * EF;

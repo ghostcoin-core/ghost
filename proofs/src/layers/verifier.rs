@@ -26,7 +26,7 @@ use p3_uni_stark::{AirConstraints, StarkShape};
 use super::bundle::{LayerKind, NativeDigest};
 use super::circuit::{Circuit, Wire};
 use super::pcs::{CircuitChallenger, ClaimMat, ClaimRound, Digest, ExtVal, digest_hint, seed_elements, verify_pcs};
-use super::symbolic::{OodValues, fold_constraints};
+use super::symbolic::{OodValues, fold_constraints, fold_constraints_linear};
 use super::tables::{TableAir, Table, degree_bits};
 use super::{EF, F, LayerShape, basis, coeffs};
 use crate::scale::{ScaleChallenger, ScaleConfig, tagged_challenger};
@@ -479,8 +479,14 @@ pub(crate) fn layer_shape_ok(spec: &LayerSpec, cons: &[TableConstraints], proof:
         let inst = &proof.opened_values.instances[i];
         let o = &inst.base_opened_values;
         let aux = aux_columns(&spec.lookups[i]);
-        o.trace_local.len() == BaseAir::<F>::width(air)
-            && o.trace_next.is_none()
+        let width = BaseAir::<F>::width(air);
+        let next_ok = if air.reads_next() {
+            o.trace_next.as_ref().is_some_and(|n| n.len() == width)
+        } else {
+            o.trace_next.is_none()
+        };
+        o.trace_local.len() == width
+            && next_ok
             && o.preprocessed.as_ref().is_some_and(|p| {
                 p.local.len() == BaseAir::<F>::preprocessed_width(air) && p.next.is_none()
             })
@@ -574,6 +580,7 @@ pub(crate) fn verify_layer(
     };
     let opened = |i: usize| proof.and_then(|p| p.opened_values.instances.get(i));
     let mut trace_local = Vec::with_capacity(n);
+    let mut trace_next = Vec::with_capacity(n);
     let mut prep_local = Vec::with_capacity(n);
     let mut chunks = Vec::with_capacity(n);
     let mut random = Vec::with_capacity(n);
@@ -583,6 +590,11 @@ pub(crate) fn verify_layer(
         let o = opened(i);
         let base = o.map(|o| &o.base_opened_values);
         trace_local.push(ext_hints(c, base.map(|b| &b.trace_local[..]), BaseAir::<F>::width(air)));
+        trace_next.push(if air.reads_next() {
+            ext_hints(c, base.and_then(|b| b.trace_next.as_deref()), BaseAir::<F>::width(air))
+        } else {
+            Vec::new()
+        });
         prep_local.push(ext_hints(
             c,
             base.and_then(|b| b.preprocessed.as_ref().map(|p| &p.local[..])),
@@ -618,7 +630,15 @@ pub(crate) fn verify_layer(
         },
         ClaimRound {
             commit: main_commit,
-            mats: (0..n).map(|i| single(log_ns[i], &trace_local[i])).collect(),
+            mats: (0..n)
+                .map(|i| {
+                    let mut mat = single(log_ns[i], &trace_local[i]);
+                    if airs[i].reads_next() {
+                        mat.points.push((zeta_nexts[i], trace_next[i].clone()));
+                    }
+                    mat
+                })
+                .collect(),
             preprocessed: false,
         },
         ClaimRound {
@@ -681,7 +701,11 @@ pub(crate) fn verify_layer(
         let challenges: Vec<Wire> = bus_ids[i].iter().flat_map(|&b| [prefixes[b], lookup_beta.ext]).collect();
         let values = OodValues {
             main_local: trace_local[i].iter().map(|v| v.ext).collect(),
-            main_next: alloc::vec![zero; BaseAir::<F>::width(air)],
+            main_next: if air.reads_next() {
+                trace_next[i].iter().map(|v| v.ext).collect()
+            } else {
+                alloc::vec![zero; BaseAir::<F>::width(air)]
+            },
             prep_local: prep_local[i].iter().map(|v| v.ext).collect(),
             prep_next: alloc::vec![zero; BaseAir::<F>::preprocessed_width(air)],
             periodic: Vec::new(),
@@ -694,7 +718,14 @@ pub(crate) fn verify_layer(
             is_last_row: sels.is_last_row,
             is_transition: sels.is_transition,
         };
-        let folded = fold_constraints(c, &cons[i].base, &cons[i].ext, &cons[i].order, &values, alpha.ext);
+        // A chunk proof's ML-DSA tables are folded with linear values, in
+        // fewer rows; every other table keeps the fold the layers' keys were
+        // built with.
+        let folded = if spec.kind == LayerKind::Chunk && matches!(air.table(), Table::Ml(_)) {
+            fold_constraints_linear(c, &cons[i].base, &cons[i].ext, &cons[i].order, &values, alpha.ext)
+        } else {
+            fold_constraints(c, &cons[i].base, &cons[i].ext, &cons[i].order, &values, alpha.ext)
+        };
         let lhs = c.mul(folded, sels.inv_vanishing);
         c.assert_eq(lhs, quotient);
     }
