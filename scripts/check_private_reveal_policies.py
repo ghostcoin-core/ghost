@@ -117,7 +117,7 @@ VERIFY_GAS = 110_000
 # linked into the node, takes the action's charge.
 MEASURED_RUNS = 1_000
 MEASURED_SLOWEST_MS = {"ordinary": Fraction(3692, 100), "policy": Fraction(4399, 100),
-                       "action": Fraction(3889, 100)}
+                       "action": Fraction(4271, 100)}
 MEASURED_ROWS = {"ordinary": "`S1` version 2", "policy": "`S4`", "action": "`KNOW_ACTION_v1`"}
 VERIFY = {k: max(VERIFY_GAS, -(-ms * GAS_PER_MS // VERIFY_ROUNDING) * VERIFY_ROUNDING)
           for k, ms in MEASURED_SLOWEST_MS.items()}
