@@ -88,6 +88,8 @@ pub(crate) struct Circuit {
     perms: Vec<PermRow>,
     bits: Vec<BitsRow>,
     packs: Vec<PackRow>,
+    /// The rows of the ML-DSA tables, empty in a layer's circuit.
+    pub(crate) ml: crate::mldsa::tables::MlRows,
     failure: Option<String>,
 }
 
@@ -107,6 +109,7 @@ impl Circuit {
             perms: Vec::new(),
             bits: Vec::new(),
             packs: Vec::new(),
+            ml: crate::mldsa::tables::MlRows::default(),
             failure: None,
         };
         // Wires 0 and 1 are the constants zero and one.
