@@ -915,10 +915,54 @@ def check_tag_table(text):
     return errors
 
 
+# The lookup path of section 8 draws conclusions from note decryption only for
+# a leaf and note authenticated beyond the lookup and marker-set witnesses,
+# which authenticate neither. The phrases each part must keep.
+LOOKUP_PATH_RULE = ("**Authenticated leaf and note.**", "never authenticates the commitment",
+                    "coin-tree witness", "byte for byte", "`receiptsRoot`",
+                    "never passes over the entry as a copied tag",
+                    "never reports the value claimed or fully revealed", "**unknown**")
+LOOKUP_PATH_STEPS = {
+    3: ("authenticate both", "Only for an authenticated leaf and note", "unknown"),
+    4: ("authenticate both", "An authenticated note that decrypts",
+        "an authenticated note that does not decrypt", "unknown, not claimed"),
+    5: ("authenticated as above",),
+}
+
+
+def check_lookup_path(text):
+    """Section 8's lookup path authenticates every leaf and note it draws a
+    conclusion from, and reports an unauthenticated case as unknown."""
+    try:
+        body = section(text, "Remainder and the current commitment")
+    except ValueError:
+        return ["no section 'Remainder and the current commitment'"]
+    start = body.find("**The lookup path")
+    end = body.find("**The bucket path", start)
+    if start < 0 or end < 0:
+        return ["section 8 has no lookup path followed by the superseded bucket path"]
+    path = body[start:end]
+    flat = " ".join(path.split())
+    errors = [f"the lookup path does not say {phrase!r}" for phrase in LOOKUP_PATH_RULE
+              if phrase not in flat]
+    steps = {int(m.group(1)): " ".join(m.group(2).split())
+             for m in re.finditer(r"^(\d+)\. (.*?)(?=^\d+\. |^\s*$)", path, re.M | re.S)}
+    for number, phrases in LOOKUP_PATH_STEPS.items():
+        step = steps.get(number)
+        if step is None:
+            errors.append(f"the lookup path has no step {number}")
+            continue
+        for phrase in phrases:
+            if phrase not in step:
+                errors.append(f"lookup path step {number} does not say {phrase!r}")
+    return errors
+
+
 def run(path):
     errors = keccak_self_test()
     text = Path(path).read_text(encoding="utf-8")
     errors += check_tag_table(text)
+    errors += check_lookup_path(text)
     vectors = parse_vectors(section(text, "Test vectors"))
     errors += check_coverage(vectors)
     errors += check_salt_pairs(vectors)

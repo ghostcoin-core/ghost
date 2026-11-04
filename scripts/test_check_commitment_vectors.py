@@ -964,6 +964,47 @@ class LookupTagTest(unittest.TestCase):
         body = checker.section(self.text, "Test vectors")
         self.assertIn("**Superseded as the restore route**", body)
 
+    def test_lookup_path_authenticates_leaf_and_note(self):
+        # A lookup or marker-set witness authenticates neither the leaf nor the
+        # note at the position it names, so a decryption failure counts only
+        # for an authenticated leaf and note; otherwise the result is unknown.
+        self.assertEqual(checker.check_lookup_path(self.text), [])
+        for phrase in checker.LOOKUP_PATH_RULE:
+            with self.subTest(phrase=phrase):
+                start = self.text.index("**The lookup path")
+                end = self.text.index("**The bucket path", start)
+                pattern = r"\s+".join(re.escape(part) for part in phrase.split())
+                body = re.sub(pattern, "x", self.text[start:end])
+                self.assertNotEqual(body, self.text[start:end])
+                self.assertIn(f"the lookup path does not say {phrase!r}",
+                              self.run_on(self.text[:start] + body + self.text[end:]))
+        # The unsafe wording of a copied tag and of a claimed successor, drawn
+        # from an unauthenticated note, is refused.
+        old_three = ("3. Read that leaf and its note, authenticate both (above), and do step 4 on\n"
+                     "   them. Only for an authenticated leaf and note does a note that does not\n"
+                     "   decrypt, or a commitment that does not recompute the leaf, mean a copied\n"
+                     "   tag")
+        self.assertIn(old_three, self.text)
+        text = self.text.replace(old_three, "3. Read that leaf and its note and do step 4 on them. A\n"
+                                            "   note that does not decrypt, or a commitment that does\n"
+                                            "   not recompute the leaf, belongs to a copied tag", 1)
+        errors = self.run_on(text)
+        self.assertIn("lookup path step 3 does not say 'authenticate both'", errors)
+        self.assertIn("lookup path step 3 does not say 'Only for an authenticated leaf and note'", errors)
+        old_four = "an authenticated note that does not decrypt"
+        self.assertIn(old_four, self.text)
+        errors = self.run_on(self.text.replace(old_four, "a note that does not decrypt", 1))
+        self.assertIn(f"lookup path step 4 does not say {old_four!r}", errors)
+        old_unknown = "the restore is unknown, not\n   claimed"
+        self.assertIn(old_unknown, self.text)
+        errors = self.run_on(self.text.replace(old_unknown, "the value is\n   claimed", 1))
+        self.assertIn("lookup path step 4 does not say 'unknown, not claimed'", errors)
+        # Without the lookup path at all, the section is incomplete.
+        start = self.text.index("**The lookup path")
+        end = self.text.index("**The bucket path", start)
+        self.assertIn("section 8 has no lookup path followed by the superseded bucket path",
+                      self.run_on(self.text[:start] + self.text[end:]))
+
 
 if __name__ == "__main__":
     unittest.main()

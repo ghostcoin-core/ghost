@@ -206,7 +206,8 @@ LOOKUP_SUBSECTIONS = {
         "ghost/note-lookup/v1", "first 16 bytes", "global position", "coinLookupRoot",
         "dataLookupRoot", "ghost/coin-lookup-leaf/v1", "ghost/data-lookup-leaf/v1", "47 bytes",
         "1,332 bytes", "sentinel", "copied tag", "first entry", "absence witness",
-        "membership witness"),
+        "membership witness", "What a witness does not authenticate", "receiptsRoot",
+        "proves nothing unless both are authenticated"),
     "The block lookup digest": (
         "lookupDigest", "field 22", "ghost/block-lookup-digest/v1", "transaction order",
         "coinStart", "dataStart"),

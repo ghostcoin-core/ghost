@@ -662,6 +662,18 @@ another length, or one that does not fold to `R`, is rejected.
     `R`; the tag is absent, and the witness is its **absence witness** (vector
     `coin-lookup-absence`).
 
+**What a witness does not authenticate.** A lookup witness, like a coin or
+data marker-set witness, authenticates only its own leaf's fields: tags,
+markers and global positions. It does not authenticate the commitment stored
+at the position it names, nor the note stored with it. A wallet takes that
+leaf as authenticated only from its coin-tree or data-tree witness against a
+tree root of a header on its own checked chain, and that note only once it
+equals the note in the receipt of the appending transaction, checked against
+the block's `receiptsRoot` (section 8, item 5). A note that fails to decrypt,
+or a commitment that does not recompute its leaf, proves nothing unless both
+are authenticated; until then the restore's answer is unknown, never a copied
+tag, "claimed" or "fully revealed" (spec 01, section 8, "The lookup path").
+
 **Storage and limit.** The two lookup indices and the coin marker set are
 journaled storage of reserved system accounts, in a layout of the node's own
 in which the genesis sentinels occupy no non-zero slot (so the genesis state

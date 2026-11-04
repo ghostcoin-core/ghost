@@ -634,30 +634,65 @@ each spend appended, and the block lookup digest (`lookupDigest`)
 ([spec 05](05-trees-and-headers.md), sections 6 and 10). In place of steps 2,
 3 and 5, for a coin key:
 
+**Authenticated leaf and note.** A lookup witness or a marker-set witness
+authenticates only the fields of its own leaf: a tag, a marker and global
+positions. It never authenticates the commitment stored at a position or the
+note bytes stored with it, and an endpoint that serves valid witnesses can
+still serve an altered leaf or note. So the wallet takes a leaf and its note at
+a global position as **authenticated** only when both hold:
+
+- the leaf: its coin-tree witness at that position (tree index `k` and
+  position `p` of the global position, [spec 05](05-trees-and-headers.md),
+  section 2) folds to the coin tree root of a header on the wallet's own
+  checked chain;
+- the note: its 156 bytes equal, byte for byte, the note in the receipt of the
+  transaction that appended that leaf, with that receipt checked against its
+  block's `receiptsRoot` in the wallet's own checked chain (spec 05, section 8,
+  item 5).
+
+A conclusion drawn from a note that does not decrypt, or from a commitment that
+does not recompute its leaf, counts only for an authenticated leaf and note.
+For a leaf or note that is not authenticated (its witness or receipt is
+missing, wrong or not yet fetched), the wallet concludes nothing from the
+failure: it never passes over the entry as a copied tag and never reports the
+value claimed or fully revealed. It fetches the leaf, the note and the receipt
+from another endpoint, and until it has them it reports the restore as
+**unknown**, incomplete at that number, never "nothing found", "unspent",
+"spent" or "claimed".
+
 1. Take an anchor: a header on the wallet's own checked chain, and its roots.
 2. Get the lookup witness for `lookupTag_0` against the anchor's
    `coinLookupRoot`. If it shows the tag absent, the key had made no coin
    commitment by the anchor. If it shows the first entry, its global position
    is that of number 0's leaf.
-3. Read that leaf and its note and do step 4 on them. A note that does not
-   decrypt, or a commitment that does not recompute the leaf, belongs to a
-   copied tag (spec 05, section 6, "The lookup indices"): the membership
-   witness of that entry names the next entry with the same tag, which is the
-   next candidate.
+3. Read that leaf and its note, authenticate both (above), and do step 4 on
+   them. Only for an authenticated leaf and note does a note that does not
+   decrypt, or a commitment that does not recompute the leaf, mean a copied
+   tag (spec 05, section 6, "The lookup indices"): the membership witness of
+   that entry then names the next entry with the same tag, which is the next
+   candidate. If the leaf or note cannot be authenticated, the restore is
+   unknown at this number.
 4. Compute the found commitment's marker and get its coin marker-set witness
    against the anchor's `coinMarkerRoot`. An absence witness shows it unspent
    under the anchor. A membership witness shows it spent and gives `appended`,
    the global position of the leaf its reveal appended: read that leaf and its
-   note; a note that decrypts under `k_note` is the next number, and the wallet
-   repeats this step with it; one that does not means the value was claimed
-   into another key or fully revealed.
+   note and authenticate both (above). An authenticated note that decrypts
+   under `k_note` and recomputes its leaf is the next number, and the wallet
+   repeats this step with it; an authenticated note that does not decrypt
+   means the value was claimed into another key or fully revealed. If the leaf
+   or note at `appended` cannot be authenticated, the restore is unknown, not
+   claimed and not fully revealed.
 5. For every block after the anchor, read the block's lists of new tags and
    spent markers whole, check them against the block's `lookupDigest`, and
-   apply any tag or marker of the key's found there.
+   apply any tag or marker of the key's found there; a leaf and note those
+   lists lead to are authenticated as above before any conclusion is drawn
+   from them.
 
 A witness counts only if it folds to the root of a header on the wallet's own
 checked chain and has the one length spec 05, section 6 fixes; a missing or
-wrong witness is rejected and nothing is guessed. A data key does the same
+wrong witness is rejected and nothing is guessed. A restore result, "found",
+"nothing found", "unspent", "spent" or "claimed", is final only once every
+leaf and note it rests on is authenticated; until then it is unknown. A data key does the same
 with `dataLookupRoot` and the data marker-set witness against `dataMarkerRoot`;
 data commitments have no remainder, so number 0 is its only commitment. How a
 wallet gets a witness without naming its tag or marker to an endpoint, the
