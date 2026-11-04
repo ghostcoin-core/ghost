@@ -195,6 +195,17 @@ accepts the web app's proofs. No recorded proof fixture exists, so none was
 regenerated. The benchmark records and the measured numbers on this page keep
 the revision they were measured at.
 
+At this revision `p3-batch-stark` publishes each AIR's LogUp terminal unmasked,
+even under the hiding PCS, and the share of a lookup across several AIRs is a
+partial sum over that AIR's trace. Checked on 2026-11-04: every statement
+proven with the batch STARK (the batch, root and shrink layers and the ML-DSA
+chunks) has a public witness, so none relies on hiding its terminals, and the
+reveal and every statement with a secret witness are uni-STARK proofs with no
+lookups. A statement with a secret witness may use lookups across AIRs only
+after every crate moves to a revision with the masking on main. The table
+is in the stage 2 design, "Proof library for the layers", and
+`benchmarks/scale/layer_witness.py` holds the repository to it.
+
 ## Cost on the chain
 
 From the native run (a Linux virtual machine on the same Mac Studio, threads
