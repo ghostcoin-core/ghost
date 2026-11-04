@@ -21,6 +21,7 @@ pub(crate) mod circuit;
 pub(crate) mod keys;
 pub(crate) mod pcs;
 pub(crate) mod poseidon2;
+pub(crate) mod security;
 pub(crate) mod symbolic;
 pub(crate) mod tables;
 pub(crate) mod verifier;
@@ -487,6 +488,37 @@ pub fn plan_pipeline<A: ChildAir>(
     layer: LayerShape,
     shrink: LayerShape,
 ) -> Result<PipelinePlan, ProofError> {
+    Ok(pipeline_specs(air, child, child_log_height, per_batch, batches, layer, shrink)?.plan())
+}
+
+/// The batch, root and shrink of [`plan_pipeline`], each with its
+/// constraints and entries.
+struct PipelineSpecs {
+    layers: [(verifier::LayerSpec, Vec<verifier::TableConstraints>, [usize; 5]); 3],
+    shrink_bytes_bound: usize,
+}
+
+impl PipelineSpecs {
+    fn plan(&self) -> PipelinePlan {
+        let [batch, root, shrink] = &self.layers;
+        PipelinePlan {
+            batch: planned(&batch.0, &batch.1, batch.2),
+            root: planned(&root.0, &root.1, root.2),
+            shrink: planned(&shrink.0, &shrink.1, shrink.2),
+            shrink_bytes_bound: self.shrink_bytes_bound,
+        }
+    }
+}
+
+fn pipeline_specs<A: ChildAir>(
+    air: &A,
+    child: LayerShape,
+    child_log_height: usize,
+    per_batch: usize,
+    batches: usize,
+    layer: LayerShape,
+    shrink: LayerShape,
+) -> Result<PipelineSpecs, ProofError> {
     let slots = air.binding_slots().positions();
     let air = AirOf(air);
     let np = bundle::LAYER_PUBLICS;
@@ -502,11 +534,38 @@ pub fn plan_pipeline<A: ChildAir>(
     let shrink_cons = verifier::table_constraints(&shrink_spec);
     let shrink_bytes_bound =
         keys::proof_bytes_bound(&shrink_spec.airs, &shrink_spec.lookups, &shrink_cons, shrink);
-    Ok(PipelinePlan {
-        batch: planned(&batch, &batch_cons, batch_entries),
-        root: planned(&root, &root_cons, root_entries),
-        shrink: planned(&shrink_spec, &shrink_cons, shrink_entries),
+    Ok(PipelineSpecs {
+        layers: [
+            (batch, batch_cons, batch_entries),
+            (root, root_cons, root_entries),
+            (shrink_spec, shrink_cons, shrink_entries),
+        ],
         shrink_bytes_bound,
+    })
+}
+
+pub use security::{FIELD_MARGIN_BITS, PipelineEstimate, ProofEstimate, UNCAPPED_COLLISION_BITS, reveal_estimate};
+
+/// The pinned library's security estimator at the real shape of the batch,
+/// root and shrink of [`plan_pipeline`] (same arguments), with the plan
+/// itself. See [`security`] for how a layer's five tables enter the
+/// estimator.
+pub fn estimate_pipeline<A: ChildAir>(
+    air: &A,
+    child: LayerShape,
+    child_log_height: usize,
+    per_batch: usize,
+    batches: usize,
+    layer: LayerShape,
+    shrink: LayerShape,
+) -> Result<PipelineEstimate, ProofError> {
+    let specs = pipeline_specs(air, child, child_log_height, per_batch, batches, layer, shrink)?;
+    let [batch, root, shrink] = &specs.layers;
+    Ok(PipelineEstimate {
+        plan: specs.plan(),
+        batch: security::layer_estimate(&batch.0, &batch.1),
+        root: security::layer_estimate(&root.0, &root.1),
+        shrink: security::layer_estimate(&shrink.0, &shrink.1),
     })
 }
 

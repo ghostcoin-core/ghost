@@ -371,7 +371,15 @@ pub(crate) struct TableConstraints {
     pub(crate) log_chunks: usize,
 }
 
-fn table_layout(air: &TableAir) -> AirLayout {
+impl TableConstraints {
+    /// The table's constraints, its AIR's and its lookups', base and
+    /// extension together.
+    pub(crate) fn len(&self) -> usize {
+        self.base.len() + self.ext.len()
+    }
+}
+
+pub(crate) fn table_layout(air: &TableAir) -> AirLayout {
     AirLayout {
         preprocessed_width: BaseAir::<F>::preprocessed_width(air),
         main_width: BaseAir::<F>::width(air),
