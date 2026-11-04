@@ -101,7 +101,7 @@ pub const HOLD_BLOCKS: u64 = 8_640;
 pub const HOLD_SECONDS: u64 = 259_200;
 /// The gas of a policy action, `G_ACTION` (spec 10, section 10.3). The action
 /// cost at a base fee is `G_ACTION * baseFee` ([`action_cost`]).
-pub const G_ACTION: u64 = 15_585_968;
+pub const G_ACTION: u64 = 15_905_968;
 /// Length of an action salt.
 pub const ACTION_SALT_BYTES: usize = 32;
 /// Length of an entry point selector of the Guard contract.
