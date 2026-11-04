@@ -129,7 +129,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             proofs/target
-          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-layers-${{ hashFiles('proofs/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-layers-${{ hashFiles('proofs/*.lock') }}
       # layers_bench.rs is built here; its benchmark is #[ignore] and runs
       # only by hand with -- --ignored --nocapture.
       - name: Test (release) the recursion layers
