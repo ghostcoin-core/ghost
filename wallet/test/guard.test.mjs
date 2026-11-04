@@ -38,7 +38,7 @@ const COMMITTED = 1_000_000_000_000n;
 const PAID = 100_000_000n;
 const FEE = 21_000n;
 const BASE_FEE = 3n;
-const ACTION_COST = 15_585_968n * BASE_FEE;
+const ACTION_COST = 15_905_968n * BASE_FEE;
 const RECIPIENT = `0x${"99".repeat(20)}`;
 const SLOT_HEIGHT = 5_000n;
 

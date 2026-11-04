@@ -983,8 +983,8 @@ fn warnings_for_words_handover_and_a_small_slot() {
     assert_eq!(hand_over_warning(plain), None);
 
     // The slot is not above the action cost.
-    assert_eq!(G_ACTION, 15_585_968);
-    assert_eq!(action_cost(1_000_000_000), Some(15_585_968_000_000_000));
+    assert_eq!(G_ACTION, 15_905_968);
+    assert_eq!(action_cost(1_000_000_000), Some(15_905_968_000_000_000));
     assert_eq!(action_cost(u128::MAX), None);
     let c = cost();
     assert_eq!(slot_cost_warning(amount(c), c), Some(GuardWarning::SlotNotAboveActionCost));
