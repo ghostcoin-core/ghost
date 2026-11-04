@@ -160,14 +160,41 @@ macro_rules! scale_backend {
             pub(super) type Config = StarkConfig<Pcs, Challenge, Challenger>;
 
             pub(super) fn config(zk_seed: [u8; 32], fri: &FriShape) -> Result<Config, ProofError> {
+                config_with(zk_seed, fri, Challenger::new(perm()))
+            }
+
+            /// [`config`] with the transcript starting from `challenger`.
+            pub(super) fn config_with(
+                zk_seed: [u8; 32],
+                fri: &FriShape,
+                challenger: Challenger,
+            ) -> Result<Config, ProofError> {
                 let mut master = StdRng::from_seed(zk_seed);
                 let salts = StdRng::from_rng(&mut master);
                 let masks = StdRng::from_rng(&mut master);
                 let val_mmcs = ValMmcs::new(Hash::new(perm()), Compress::new(perm()), 0, salts);
                 let fri = fri_parameters(fri, ChallengeMmcs::new(val_mmcs.clone()));
                 let pcs = Pcs::new(MemoDft::default(), val_mmcs, fri, NUM_RANDOM_CODEWORDS, masks);
-                let config = Config::new(pcs, Challenger::new(perm()));
+                let config = Config::new(pcs, challenger);
                 if config.is_zk() == 1 { Ok(config) } else { Err(ProofError::NotZeroKnowledge) }
+            }
+
+            /// One full authentication path per query from a pruned
+            /// multiproof over salted rows, for a verifier that checks each
+            /// query's path on its own.
+            pub(super) fn restore_paths(
+                dims: &[p3_matrix::Dimensions],
+                indices: &[usize],
+                salted_rows: &[Vec<Vec<F>>],
+                pruned: &p3_merkle_tree::PrunedMerklePaths<F, DIGEST>,
+            ) -> Option<Vec<Vec<[F; DIGEST]>>> {
+                let mmcs = p3_merkle_tree::MerkleTreeMmcs::<Packed, Packed, Hash, Compress, 2, DIGEST>::new(
+                    Hash::new(perm()),
+                    Compress::new(perm()),
+                    0,
+                );
+                let paths = mmcs.restore_and_recompute_paths(dims, indices, salted_rows, pruned).ok()?;
+                Some(paths.into_iter().map(|p| p.siblings).collect())
             }
 
             pub(super) fn prove(
@@ -224,6 +251,67 @@ macro_rules! scale_backend {
 
 scale_backend!(digest9, SCALE_DIGEST_ELEMS);
 scale_backend!(digest8, SCALE_DIGEST_ELEMS - 1);
+
+/// The configuration of a reveal proof at the scale build, and of every
+/// recursion layer above it (`crate::layers`), which differ from it only by
+/// their FRI shape and the tag their transcript starts from.
+pub(crate) type ScaleConfig = digest9::Config;
+
+/// The duplex challenger of [`ScaleConfig`].
+pub(crate) type ScaleChallenger = Challenger;
+
+/// The opening proof of [`ScaleConfig`]: the hiding columns' openings and
+/// the FRI proof.
+pub(crate) type PcsProof = p3_batch_stark::PcsProof<ScaleConfig>;
+
+/// The width-24 Poseidon2 permutation of [`ScaleConfig`].
+pub(crate) fn scale_permutation() -> Perm {
+    perm()
+}
+
+/// A challenger that has absorbed `tag` before anything else.
+pub(crate) fn tagged_challenger(tag: &[F]) -> Challenger {
+    use p3_challenger::CanObserve;
+    let mut challenger = Challenger::new(perm());
+    for &t in tag {
+        challenger.observe(t);
+    }
+    challenger
+}
+
+/// [`ScaleConfig`] at the FRI shape `fri`, its transcript starting from
+/// `challenger`. Used by the recursion layers.
+pub(crate) fn layer_config(zk_seed: [u8; 32], fri: &FriShape, challenger: Challenger) -> Result<ScaleConfig, ProofError> {
+    digest9::config_with(zk_seed, fri, challenger)
+}
+
+/// One full authentication path per query (siblings from the leaf up) from
+/// a pruned multiproof of [`ScaleConfig`]'s Merkle trees, over rows that
+/// already carry their salts. `None` when the multiproof does not expand.
+pub(crate) fn scale_restore_paths(
+    dims: &[p3_matrix::Dimensions],
+    indices: &[usize],
+    salted_rows: &[Vec<Vec<F>>],
+    pruned: &p3_merkle_tree::PrunedMerklePaths<F, SCALE_DIGEST_ELEMS>,
+) -> Option<Vec<Vec<[F; SCALE_DIGEST_ELEMS]>>> {
+    digest9::restore_paths(dims, indices, salted_rows, pruned)
+}
+
+/// The FRI shape of the reveal proof at `shape`.
+pub(crate) const fn reveal_fri(shape: ScaleShape) -> FriShape {
+    shape.fri()
+}
+
+/// Salt elements of a Merkle leaf.
+pub(crate) const SCALE_SALT_ELEMS: usize = SALT_ELEMS;
+/// Random codewords hiding FRI appends to each committed matrix.
+pub(crate) const SCALE_RANDOM_CODEWORDS: usize = NUM_RANDOM_CODEWORDS;
+
+/// The version 2 coin reveal's AIR at the height the scale configuration
+/// gives it for `num_queries` queries.
+pub(crate) fn reveal_air(num_queries: usize) -> StatementAir {
+    air_for(crate::reveal_v2::schedule(), num_queries)
+}
 
 /// The library's minimum trace height for zero-knowledge at this
 /// configuration: `N >= 2 * (num_queries + D * points)` (`HidingFriPcs`).
