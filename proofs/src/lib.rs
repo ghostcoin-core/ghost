@@ -83,6 +83,7 @@ mod binding;
 mod data;
 mod hash;
 mod hold;
+pub mod layers;
 #[cfg(test)]
 mod lookup_check;
 mod native;

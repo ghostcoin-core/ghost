@@ -91,6 +91,7 @@ version = "0.1.0"
 dependencies = [
  "p3-air",
  "p3-baby-bear",
+ "p3-batch-stark",
  "p3-challenger",
  "p3-commit",
  "p3-dft",
@@ -98,6 +99,7 @@ dependencies = [
  "p3-fri",
  "p3-keccak",
  "p3-keccak-air",
+ "p3-lookup",
  "p3-matrix",
  "p3-maybe-rayon",
  "p3-merkle-tree",
@@ -224,6 +226,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "p3-batch-stark"
+version = "0.8.0"
+source = "git+https://github.com/Plonky3/Plonky3?rev=0d803737b681774186cd283b1fd2d8e493655c82#0d803737b681774186cd283b1fd2d8e493655c82"
+dependencies = [
+ "hashbrown",
+ "p3-air",
+ "p3-challenger",
+ "p3-commit",
+ "p3-field",
+ "p3-lookup",
+ "p3-matrix",
+ "p3-maybe-rayon",
+ "p3-uni-stark",
+ "p3-util",
+ "serde",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "p3-challenger"
 version = "0.8.0"
 source = "git+https://github.com/Plonky3/Plonky3?rev=0d803737b681774186cd283b1fd2d8e493655c82#0d803737b681774186cd283b1fd2d8e493655c82"
@@ -324,6 +346,23 @@ dependencies = [
  "p3-maybe-rayon",
  "p3-util",
  "rand",
+ "tracing",
+]
+
+[[package]]
+name = "p3-lookup"
+version = "0.8.0"
+source = "git+https://github.com/Plonky3/Plonky3?rev=0d803737b681774186cd283b1fd2d8e493655c82#0d803737b681774186cd283b1fd2d8e493655c82"
+dependencies = [
+ "hashbrown",
+ "itertools",
+ "num-bigint",
+ "p3-air",
+ "p3-field",
+ "p3-matrix",
+ "p3-maybe-rayon",
+ "serde",
+ "thiserror",
  "tracing",
 ]
 
