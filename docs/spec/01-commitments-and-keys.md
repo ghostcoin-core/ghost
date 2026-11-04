@@ -35,7 +35,8 @@ specification. Section 14 holds test vectors, and
 | What the key holds | Only the secret digits and the checksum: no amount, tree position or extra secret | Outline ("Do not carry over") |
 | Derivation | Each secret is the tagged SHA3-256 of the key bytes, one tag per secret | Outline ("Technical starting picks"); layout **Proposed** |
 | Remainder blinding | Derived from the digits and the commitment's hop number, used once per key on any one chain (section 8) | Outline ("Coin rules"; "Do not carry over"); counter **Proposed** |
-| Finding the current remainder | Bulk trial decryption of the notes, then the marker of each found commitment against the spent-marker set | Threat model, section 6 item 8; method **Proposed** |
+| Finding the current remainder | Private lookup: the key's lookup tags against the lookup index of its type, and each found commitment's marker against the coin marker-set tree, every answer checked against a header root (section 8, "The lookup path"); bulk trial decryption of every note stays as the fallback. The bucket path is superseded | Threat model, section 6 item 8; [stage 2 design](../scale/stage2-design.md), "Wallet restore volume"; [decision 0004](../decisions/0004-lookup-formats.md) |
+| Lookup tag | The first 16 bytes of `S("ghost/note-lookup/v1", k_note, i as 8 bytes)`, written beside every new leaf (commit, remainder, claim commitment); never an input of the commitment, the leaf or the note (section 7) | Decision 0004 |
 | Encrypted note | 156 bytes on the chain: random nonce, ChaCha20-Poly1305 ciphertext of a fixed 128-byte plaintext, tag. Note version 2 carries the commitment's salt (section 9) | Outline ("Core protocol" 11); scheme and layout **Proposed**; note version 2 front desk decision |
 | Versions | Version suffix on every tag, a version byte in every type tag, a key format code, a note version and a scheme ID | Outline ("Extension points" 1 and 4); values **Proposed** |
 
@@ -251,6 +252,14 @@ the tag as well as the inputs.
 | `ghost/coin-reveal-binding/v1` | Keccak-256 | Binding digest of a coin reveal ([spec 03](03-coin-rules.md), section 7, step 6) | fixed by the proof-statement specification | | |
 | `ghost/data-reveal-binding/v1` | Keccak-256 | Binding digest of a data reveal or revocation ([spec 04](04-data-commitments.md), section 6) | fixed by the proof-statement specification | | |
 | `ghost/hold-binding/v1` | Keccak-256 | Binding digest of a proof of holding ([spec 04](04-data-commitments.md), section 5) | fixed by the proof-statement specification | | |
+| `ghost/note-lookup/v1` | SHA3-256 | Lookup tag of the key's commitment number `i`, its first 16 bytes | `k_note`, `i` as 8 bytes | 61 | not in a proof |
+| `ghost/coin-lookup-leaf/v1` | Keccak-256 | Leaf of the coin lookup index | `tag`, `position`, `nextTag`, `nextPosition`, `nextIndex` | 73 | 1 |
+| `ghost/coin-lookup-node/v1` | Keccak-256 | Inner node of the coin lookup index | level as 1 byte, left child, right child | 91 | 1 per level |
+| `ghost/data-lookup-leaf/v1` | Keccak-256 | Leaf of the data lookup index | `tag`, `position`, `nextTag`, `nextPosition`, `nextIndex` | 73 | 1 |
+| `ghost/data-lookup-node/v1` | Keccak-256 | Inner node of the data lookup index | level as 1 byte, left child, right child | 91 | 1 per level |
+| `ghost/coin-marker-set-leaf/v1` | Keccak-256 | Leaf of the coin spent-marker set tree | `value`, `nextValue`, `nextIndex`, `appended` | 104 | 1 |
+| `ghost/coin-marker-set-node/v1` | Keccak-256 | Inner node of the coin spent-marker set tree | level as 1 byte, left child, right child | 95 | 1 per level |
+| `ghost/block-lookup-digest/v1` | Keccak-256 | Block lookup digest, header field `lookupDigest` | the encoding of the block's list | 55 + 16 a tag + 32 a marker | not in a proof |
 
 Notes on the table:
 
@@ -276,9 +285,18 @@ Notes on the table:
   this document gives no vectors for them.
 - **Note tag.** `ghost/note-tag/v1` takes `k_note`, not the key bytes, and
   only the first 3 bytes of its output are used: they open the nonce of the
-  note of commitment number `i` (section 9), so a wallet reads only the note
-  buckets its own tags fall in (section 8). Whoever holds `k_note` can read
-  the key's notes already, so the tag shows them nothing more.
+  note of commitment number `i` (section 9). They served the bucket path of
+  earlier drafts, which the lookup path of section 8 supersedes; the nonce
+  keeps them until a later revision withdraws them. Whoever holds `k_note`
+  can read the key's notes already, so the tag shows them nothing more.
+- **Lookup tag and lookup trees.** `ghost/note-lookup/v1` also takes `k_note`
+  and keeps the first 16 bytes of its output, the lookup tag of section 7. It
+  is derived off the chain and never recomputed inside a proof, so it is
+  SHA3-256. The lookup index, coin marker-set and block lookup digest tags are
+  Keccak-256 and their own, so no leaf or node of one tree can stand for one
+  of another; their shapes, inserts and witnesses are in
+  [spec 05](05-trees-and-headers.md), section 6, with the byte formats of
+  [decision 0004](../decisions/0004-lookup-formats.md).
 - **SHAKE256** is not used in version 1. Every derived value is 32 bytes, which
   SHA3-256 gives directly.
 - **Cost.** With the tag strings in the input, the opening of a coin
@@ -474,12 +492,32 @@ b_i    = S("ghost/blinding/v1",      key_bytes, i as 8 bytes)
 k_note = S("ghost/note-key/v1",      key_bytes)
 k_data = S("ghost/data-key/v1",      key_bytes)
 tag_i  = the first 3 bytes of S("ghost/note-tag/v1", k_note, i as 8 bytes)
+lookupTag_i = the first 16 bytes of S("ghost/note-lookup/v1", k_note, i as 8 bytes)
 ```
 
-Each is 32 bytes and used as is, except the note lookup tag `tag_i`, which is
-the first 3 bytes of its digest and is derived from `k_note` (sections 8 and
-9). Keccak-256 inside the proof takes any 32-byte value, so there is no
-reduction step and no value to reject.
+Each is 32 bytes and used as is, except the 3-byte nonce tag `tag_i` of
+section 9 and the lookup tag `lookupTag_i`, which are the first 3 and the
+first 16 bytes of their digests and are derived from `k_note`. Keccak-256
+inside the proof takes any 32-byte value, so there is no reduction step and no
+value to reject.
+
+**Lookup tag ([decision 0004](../decisions/0004-lookup-formats.md)).** The
+domain string is the 20 ASCII bytes `ghost/note-lookup/v1`, written with its
+length byte `0x14`; `k_note` is the 32-byte note key and `i` is 8 bytes,
+big-endian, the width the note gives the number (section 9). The hash input is
+61 bytes; of the 32-byte digest the first 16 bytes are kept and the last 16
+dropped, with no other reduction. Whoever writes a note writes the lookup tag
+of its number beside the new leaf: the wallet for a commit, the revealing
+wallet for a remainder, and the claiming wallet, with the new key's `k_note`
+and number 0, for a claim's new commitment. The tag is not an input of `F`,
+`C`, the marker, any tree node or the note's associated data; it enters only
+the lookup index of its type and the block lookup digest
+([spec 05](05-trees-and-headers.md), section 6). A tag of 16 zero bytes is
+rejected, because the all-zero key belongs to the lookup index's sentinel; a
+derived tag is zero with probability 2^-128. Consensus checks only its width,
+never that it was derived as above. It is not the 3-byte nonce tag `tag_i`,
+which has its own domain `ghost/note-tag/v1`. Vectors: section 14, "Lookup tag
+vectors".
 
 - **Separate tags.** No derived value can be computed from another: each is a
   one-way function of the key bytes under its own tag. In particular `k_data`
@@ -552,7 +590,8 @@ same input takes the same number again, and numbers have no gaps.
 
 **How the same key finds its current remainder (Proposed).** On a clean device,
 from the digits alone (outline, "First milestone" 4; threat model, C21 and
-C41):
+C41). The restore route is the lookup path below; the full scan of these steps
+is its fallback, and the steps after the scan (4, 6 and 7) are shared by both:
 
 1. Check the checksum and derive `s`, `r` and `k_note` (sections 6 and 7).
 2. Fetch the note history of the coin tree in bulk: every leaf with its
@@ -582,43 +621,100 @@ C41):
    burned (milestone 1 review).
 7. The next number to use is one more than the current remainder's `i`.
 
-**The bucket path (front desk decision).** A large tree makes steps 2 and 3 slow: every
-note of the tree, downloaded and tried. Every note's nonce therefore starts
-with its lookup tag `tag_i` (sections 7 and 9), which only the key can
-compute, and a wallet may read only the buckets its own tags fall in. A
-bucket is the set of notes of one tree whose tag starts with the same `m`
-bits, `m = bucket_bits(n) = clamp(floor(log2(n / 4096)), 0, 24)` for a tree of
-`n` leaves at the anchor ([spec 05](05-trees-and-headers.md), section 8). So
-an expected bucket holds at least 4,096 notes, `m = 0` (the whole tree) below
-8,192 notes, and `m = 24`, every bit of the tag, at most. In place of steps 2
-and 3:
+**The lookup path ([stage 2 design](../scale/stage2-design.md), "Wallet
+restore volume"; [decision 0004](../decisions/0004-lookup-formats.md)).** The
+restore route. A large tree makes steps 2 and 3 slow: every note of the tree,
+downloaded and tried. But a key's numbers have no gaps and each is the
+remainder of the one before (above), so the wallet can compute the lookup tag
+`lookupTag_i` of every number from the digits before it asks for anything
+(section 7). Every new leaf carries its tag, and every header carries the
+roots of the lookup index of each type (`coinLookupRoot`, `dataLookupRoot`),
+of the coin marker-set tree (`coinMarkerRoot`), whose leaves record the leaf
+each spend appended, and the block lookup digest (`lookupDigest`)
+([spec 05](05-trees-and-headers.md), sections 6 and 10). In place of steps 2,
+3 and 5, for a coin key:
 
-1. Compute `m` from the tree's leaf count at the anchor, and `tag_0` to
-   `tag_15`.
-2. Ask for the buckets of the first `m` bits of those 16 tags in one request:
-   always 16 numbers, even when the wallet expects fewer, so the request does
-   not show how many hops the key made. Each distinct prefix is read once,
-   in this batch and every later one.
-3. Try `k_note` on every note of the buckets read, then continue with steps 4
-   to 7 on the notes that decrypt, with the positions the buckets gave.
-4. If number 15 was found, do the same for `tag_16` to `tag_31`, and so on,
-   16 numbers a batch. Numbers have no gaps (above), so a batch whose last
-   number is not found is the last batch.
+**Authenticated leaf and note.** A lookup witness or a marker-set witness
+authenticates only the fields of its own leaf: a tag, a marker and global
+positions. It never authenticates the commitment stored at a position or the
+note bytes stored with it, and an endpoint that serves valid witnesses can
+still serve an altered leaf or note. So the wallet takes a leaf and its note at
+a global position as **authenticated** only when both hold:
 
-A bucket read shows an endpoint `m` bits of a key-derived hash, among at least
-4,096 expected other notes, 16 at a time; not a leaf, an amount or a position.
-It returns notes by a hint, not completeness: an endpoint can withhold a note,
-and the wallet then shows less, never more. The full scan of steps 2 and 3
-remains, and is the fallback whenever a bucket result is in doubt. A bucket
-result is unchecked like any page result until its notes are checked against
-the block receipts (step 5); proving that a returned leaf sits at its
-position is not specified yet. A note whose nonce does not start with its tag
-still decrypts (section 9), but no bucket read returns it; only the full scan
-finds it.
+- the leaf: its coin-tree witness at that position (tree index `k` and
+  position `p` of the global position, [spec 05](05-trees-and-headers.md),
+  section 2) folds to the coin tree root of a header on the wallet's own
+  checked chain;
+- the note: its 156 bytes equal, byte for byte, the note in the receipt of the
+  transaction that appended that leaf, with that receipt checked against its
+  block's `receiptsRoot` in the wallet's own checked chain (spec 05, section 8,
+  item 5).
 
-Every note ciphertext uses a nonce whose 9 bytes after the tag are fresh and
-random, and the tag is a one-way function of `k_note` that differs with every
-number, every marker is a hash of a
+A conclusion drawn from a note that does not decrypt, or from a commitment that
+does not recompute its leaf, counts only for an authenticated leaf and note.
+For a leaf or note that is not authenticated (its witness or receipt is
+missing, wrong or not yet fetched), the wallet concludes nothing from the
+failure: it never passes over the entry as a copied tag and never reports the
+value claimed or fully revealed. It fetches the leaf, the note and the receipt
+from another endpoint, and until it has them it reports the restore as
+**unknown**, incomplete at that number, never "nothing found", "unspent",
+"spent" or "claimed".
+
+1. Take an anchor: a header on the wallet's own checked chain, and its roots.
+2. Get the lookup witness for `lookupTag_0` against the anchor's
+   `coinLookupRoot`. If it shows the tag absent, the key had made no coin
+   commitment by the anchor. If it shows the first entry, its global position
+   is that of number 0's leaf.
+3. Read that leaf and its note, authenticate both (above), and do step 4 on
+   them. Only for an authenticated leaf and note does a note that does not
+   decrypt, or a commitment that does not recompute the leaf, mean a copied
+   tag (spec 05, section 6, "The lookup indices"): the membership witness of
+   that entry then names the next entry with the same tag, which is the next
+   candidate. If the leaf or note cannot be authenticated, the restore is
+   unknown at this number.
+4. Compute the found commitment's marker and get its coin marker-set witness
+   against the anchor's `coinMarkerRoot`. An absence witness shows it unspent
+   under the anchor. A membership witness shows it spent and gives `appended`,
+   the global position of the leaf its reveal appended: read that leaf and its
+   note and authenticate both (above). An authenticated note that decrypts
+   under `k_note` and recomputes its leaf is the next number, and the wallet
+   repeats this step with it; an authenticated note that does not decrypt
+   means the value was claimed into another key or fully revealed. If the leaf
+   or note at `appended` cannot be authenticated, the restore is unknown, not
+   claimed and not fully revealed.
+5. For every block after the anchor, read the block's lists of new tags and
+   spent markers whole, check them against the block's `lookupDigest`, and
+   apply any tag or marker of the key's found there; a leaf and note those
+   lists lead to are authenticated as above before any conclusion is drawn
+   from them.
+
+A witness counts only if it folds to the root of a header on the wallet's own
+checked chain and has the one length spec 05, section 6 fixes; a missing or
+wrong witness is rejected and nothing is guessed. A restore result, "found",
+"nothing found", "unspent", "spent" or "claimed", is final only once every
+leaf and note it rests on is authenticated; until then it is unknown. A data key does the same
+with `dataLookupRoot` and the data marker-set witness against `dataMarkerRoot`;
+data commitments have no remainder, so number 0 is its only commitment. How a
+wallet gets a witness without naming its tag or marker to an endpoint, the
+private retrieval of the stage 2 design, is not fixed by this document; a
+wallet never asks for a witness by naming a tag, a position or a marker in the
+clear (threat model, section 6 item 8). Until a private retrieval is
+specified, a wallet that cannot get the witnesses that way builds them itself
+from bulk data or uses the full scan of steps 2 and 3, which remains the
+fallback.
+
+**The bucket path (superseded).** Earlier drafts restored by reading the notes
+whose 3-byte nonce tag `tag_i` starts with an `m`-bit prefix, `m =
+bucket_bits(n)` ([spec 05](05-trees-and-headers.md), section 8). The stage 2
+design supersedes it as the restore route: an endpoint that logged the
+prefixes a wallet read could link a later reveal's new leaf, whose tag falls in
+a bucket it saw requested, to the restoring wallet. A wallet no longer
+restores by buckets. The nonce tag and the bucket-rule vectors of section 14
+stay, marked superseded, until a later revision withdraws them.
+
+Every note ciphertext uses a nonce whose 9 bytes after the nonce tag are fresh
+and random, each lookup tag is a one-way function of `k_note` that differs
+with every number, every marker is a hash of a
 different `b_i` and a different salt, and no request names a
 single value, so restore publishes and
 requests nothing that ties the sequence together (outline, "First milestone" 4).
@@ -652,7 +748,7 @@ of one number, and a key writes few notes of one number (a retry, section 8).
 The nonce is an input of the cipher, so the tag is authenticated: a note whose
 tag was changed fails to decrypt. A reader takes the nonce as it is and never
 checks its content, so a note whose nonce is 12 random bytes still decrypts;
-only the bucket reads of section 8 pass it by.
+only the superseded bucket path of section 8 would have passed it by.
 The scheme uses only symmetric primitives, so the note is not a quantum
 weakness beyond the square-root search on its 256-bit key (threat model, C2).
 
@@ -701,6 +797,23 @@ Two notes of different numbers of one key have unrelated tags. Two notes of
 one number, a retry on another branch, share their tag, as about one pair in
 2^24 of unrelated notes does by chance.
 Anyone shown the digits can read every note of the key (threat model, T6).
+
+**The lookup tag beside the note.** The 16-byte lookup tag of section 7 is
+not part of the note: it is carried beside it, in the same transaction, by
+whoever writes the note
+([decision 0004](../decisions/0004-lookup-formats.md), "Lookup tag"):
+
+| New leaf | Where the tag is carried | What binds it |
+|---|---|---|
+| Coin commit | The last 16 bytes of the commit payload, after the note | The account signature of the commit transaction |
+| Data commit | The last 16 bytes of the commit payload, after the note | The account signature of the commit transaction |
+| Remainder of a coin reveal | `remainder_tag`, the last 16 bytes of the private transaction payload, after the note | The coin reveal binding, as the field `remainder_tag` after `remainder_note` |
+| A claim's new commitment | The same `remainder_tag` field: a claim is a reveal | The same |
+
+The note and its 156 bytes are unchanged by it. Without `k_note` the tag looks
+like any other random bytes; two leaves of one number, a retry on another
+branch, share it, and anyone may copy a tag into a commit they pay for, which
+the lookup index orders after the original (spec 05, section 6).
 
 **The salt and the note.** A commitment can be opened only with its salt, so
 the holder must be able to read the salt back from the chain. A commit
@@ -801,6 +914,9 @@ format version.
 - The data encryption itself: [spec 04](04-data-commitments.md), section 4 sets
   its rules; this document fixes only `k_data`.
 - Chain identifier values.
+- How a wallet gets lookup and marker-set witnesses without naming its tag or
+  marker (the private retrieval of the stage 2 design), and the restore
+  server that would answer it.
 
 ## 12. Conflicts with other chapters
 
@@ -848,6 +964,17 @@ difference is listed here for the founder's review.
    against all leaves at once under a quantum search, above that target. The 12-group and 24-group
    digit keys that spec 09 still describes are no longer generated or
    accepted.
+9. **Where the lookup tag is carried.** [Decision
+   0004](../decisions/0004-lookup-formats.md) puts the lookup tag after the
+   note in the commit payload and, as `remainder_tag`, in the coin reveal
+   binding of [spec 02](02-proof-statements.md), section 7 (offset 415) and the
+   private transaction payload of [spec 07](07-private-transaction.md),
+   section 3 (offset 1,311,066). Neither chapter carries the field yet; until
+   they do, the tag's place in those layouts is the record's, and section 9
+   above follows it.
+10. **Restore by buckets.** [Spec 05](05-trees-and-headers.md), section 8
+    still describes the bucket read of the superseded bucket path among the
+    allowed reads. This document no longer restores by it (section 8).
 
 ## 13. Questions for the founder
 
@@ -995,13 +1122,64 @@ note-key = 08f3c586fe83f60374f0551ad5a25ddab61fd4fc70ab71572c0aae3b042c82ab
 data-key = 8656f5cbfdecd73bb29f88309564a1610be34a6e12db2e6152778df15dc7cca3
 ```
 
+### Lookup tag vectors
+
+The lookup tag of section 7 ([decision 0004](../decisions/0004-lookup-formats.md)):
+numbers 0, 1 and 2 of the example key, and number 0 of the data example key.
+`note-key` is the `k_note` of the same key bytes (that of `[derivation-words]`
+and `[derivation-words-data]`), `index-bytes` is `i` as 8 bytes, `digest` the
+whole SHA3-256 output `S("ghost/note-lookup/v1", k_note, i as 8 bytes)` and
+`tag` its first 16 bytes. Their kind is `lookup-tag`. The same blocks are in
+spec 05, section 11, where the lookup index vectors use them.
+
+```text
+[lookup-tag-index-0]
+kind = lookup-tag
+key-bytes = 20000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+note-key = 35136c4a7bdccb4b26159c15f86567a483ac58e1b2c40dca49a5d099272c4181
+index = 0
+index-bytes = 0000000000000000
+digest = 74c5d993f5f018e3174926b2c8e8fb68e9444bfe3fdb48a847ef99c2446ef1a5
+tag = 74c5d993f5f018e3174926b2c8e8fb68
+
+[lookup-tag-index-1]
+kind = lookup-tag
+key-bytes = 20000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+note-key = 35136c4a7bdccb4b26159c15f86567a483ac58e1b2c40dca49a5d099272c4181
+index = 1
+index-bytes = 0000000000000001
+digest = 98f00763f51d9e982a7814297473729f085ae21e5a0f398ffbe70a4c95d159af
+tag = 98f00763f51d9e982a7814297473729f
+
+[lookup-tag-index-2]
+kind = lookup-tag
+key-bytes = 20000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+note-key = 35136c4a7bdccb4b26159c15f86567a483ac58e1b2c40dca49a5d099272c4181
+index = 2
+index-bytes = 0000000000000002
+digest = b3e8df15fdd3d0f3ac8c7562c50ba57ec7d2688a9a57a685661be28f9d4b13f8
+tag = b3e8df15fdd3d0f3ac8c7562c50ba57e
+
+[lookup-tag-data-index-0]
+kind = lookup-tag
+key-bytes = 207f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f
+note-key = 08f3c586fe83f60374f0551ad5a25ddab61fd4fc70ab71572c0aae3b042c82ab
+index = 0
+index-bytes = 0000000000000000
+digest = 9d77715bd859976996087ca266cf37b02c73e1deff301d4ae4ed04d77c88546f
+tag = 9d77715bd859976996087ca266cf37b0
+```
+
 ### Note tag and bucket vectors
 
-The lookup tag of the example key's numbers 0 and 1 (sections 7 and 9):
+**Superseded as the restore route** (section 8, "The bucket path"): these
+vectors stay, and are still checked, until a later revision withdraws the
+nonce tag. The 3-byte nonce tag of the example key's numbers 0 and 1
+(sections 7 and 9):
 `digest` is `S("ghost/note-tag/v1", k_note, i as 8 bytes)` under the note key
 derived from `key-bytes` (that of `[derivation-words]`), and `tag`, its first
 3 bytes, opens the nonce of the note of number `i`. Their kind is `note-tag`.
-The bucket rule `m = bucket_bits(n)` of section 8 for a tree of `notes`
+The superseded bucket rule `m = bucket_bits(n)` for a tree of `notes`
 leaves gives `bits`, from the whole tree below 8,192 notes to the clamp at 24
 bits; 3,650,000,000 notes is a year at 10 million a day (modeled). Their kind
 is `bucket-rule`.

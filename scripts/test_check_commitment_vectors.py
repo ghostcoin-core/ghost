@@ -428,7 +428,8 @@ class CheckerTest(unittest.TestCase):
         self.assertTrue(any("ghost/empty-leaf/v2 is listed" in e for e in errors))
 
     def test_tags_are_distinct_ascii_with_version(self):
-        self.assertEqual(len(checker.ALL_TAGS), 22)
+        # 22 tags, and the 8 of decision 0004.
+        self.assertEqual(len(checker.ALL_TAGS), 30)
         for tag in checker.ALL_TAGS:
             self.assertRegex(tag, r"^ghost/[a-z0-9-]+/v[12]$")
         v2 = sorted(t for t in checker.ALL_TAGS if t.endswith("/v2"))
@@ -850,6 +851,159 @@ class SaltTest(unittest.TestCase):
                 self.assertTrue(any("[data-commit-salted] commitment" in e for e in errors), errors)
                 self.assertTrue(any("[data-commit-salted-other] commitment" in e for e in errors), errors)
         self.assertEqual(checker.run(SPEC)[0], [])
+
+
+class LookupTagTest(unittest.TestCase):
+    """The lookup tag of decision 0004 and the tag rows of its trees."""
+
+    setUp = CheckerTest.setUp
+    run_on = CheckerTest.run_on
+    replace_field = CheckerTest.replace_field
+    field = CheckerTest.field
+
+    def test_lookup_tag_vectors(self):
+        vectors = {v["name"]: v for v in
+                   checker.parse_vectors(checker.section(self.text, "Test vectors"))}
+        for name, source, index in (("lookup-tag-index-0", "derivation-words", 0),
+                                    ("lookup-tag-index-1", "derivation-words", 1),
+                                    ("lookup-tag-index-2", "derivation-words", 2),
+                                    ("lookup-tag-data-index-0", "derivation-words-data", 0)):
+            with self.subTest(name=name):
+                v = vectors[name]
+                self.assertEqual(v["kind"], "lookup-tag")
+                kb = bytes.fromhex(vectors[source]["key-bytes"])
+                self.assertEqual(v["key-bytes"], kb.hex())
+                # An independent recomputation with hashlib: k_note, then the
+                # 61-byte input under the 20-byte domain and its first 16 bytes.
+                note_key = hashlib.sha3_256(b"\x11ghost/note-key/v1" + kb).digest()
+                self.assertEqual(v["note-key"], note_key.hex())
+                data = b"\x14ghost/note-lookup/v1" + note_key + index.to_bytes(8, "big")
+                self.assertEqual(len(data), 61)
+                digest = hashlib.sha3_256(data).digest()
+                self.assertEqual(v["digest"], digest.hex())
+                self.assertEqual(v["tag"], digest[:16].hex())
+                self.assertNotEqual(v["tag"], vectors.get(f"note-tag-index-{index}", {}).get("tag"))
+        # A changed tag, digest, note key or index bytes is caught.
+        for vector, name in (("lookup-tag-index-0", "tag"), ("lookup-tag-index-1", "digest"),
+                             ("lookup-tag-index-2", "note-key"), ("lookup-tag-data-index-0", "tag"),
+                             ("lookup-tag-index-1", "index-bytes")):
+            with self.subTest(vector=vector, field=name):
+                text = self.replace_field(vector, name, _flip_hex(self.field(vector, name)))
+                self.assertTrue(any(f"[{vector}] {name}" in e for e in self.run_on(text)))
+        errors = self.run_on(self.replace_field("lookup-tag-index-1", "index", "3"))
+        self.assertTrue(any("[lookup-tag-index-1] digest" in e for e in errors), errors)
+        # Three bytes of the digest, or the nonce tag's domain, are caught.
+        with mock.patch.object(checker, "NOTE_LOOKUP_TAG_BYTES", 3):
+            errors = checker.run(SPEC)[0]
+        self.assertTrue(any("[lookup-tag-index-0] tag" in e for e in errors), errors)
+        with mock.patch.object(checker, "TAG_NOTE_LOOKUP", checker.TAG_NOTE_TAG):
+            errors = checker.run(SPEC)[0]
+        self.assertTrue(any("[lookup-tag-index-0] digest" in e for e in errors), errors)
+        # Without them, or without the data key's, the document is incomplete.
+        start = self.text.index("### Lookup tag vectors")
+        end = self.text.index("### Note tag and bucket vectors")
+        self.assertIn("no vector of kind lookup-tag", self.run_on(self.text[:start] + self.text[end:]))
+        start = self.text.index("[lookup-tag-data-index-0]")
+        end = self.text.index("```", start)
+        self.assertIn("lookup-tag vectors must cover the example key and the data example key",
+                      self.run_on(self.text[:start] + self.text[end:]))
+        start = self.text.index("[lookup-tag-index-1]")
+        end = self.text.index("[lookup-tag-data-index-0]")
+        self.assertIn("lookup-tag vectors must cover index 0 and index 1",
+                      self.run_on(self.text[:start] + self.text[end:]))
+
+    def test_lookup_tag_rows(self):
+        body = checker.section(self.text, "Tagged hashing")
+        rows = {r["Tag"]: r for r in checker._table_rows(body)}
+        expect = {
+            "ghost/note-lookup/v1": ("SHA3-256", "61", "not in a proof"),
+            "ghost/coin-lookup-leaf/v1": ("Keccak-256", "73", "1"),
+            "ghost/coin-lookup-node/v1": ("Keccak-256", "91", "1 per level"),
+            "ghost/data-lookup-leaf/v1": ("Keccak-256", "73", "1"),
+            "ghost/data-lookup-node/v1": ("Keccak-256", "91", "1 per level"),
+            "ghost/coin-marker-set-leaf/v1": ("Keccak-256", "104", "1"),
+            "ghost/coin-marker-set-node/v1": ("Keccak-256", "95", "1 per level"),
+            "ghost/block-lookup-digest/v1": ("Keccak-256", "55 + 16 a tag + 32 a marker",
+                                             "not in a proof"),
+        }
+        for tag, want in expect.items():
+            with self.subTest(tag=tag):
+                self.assertIn(tag, checker.ALL_TAGS)
+                row = rows[f"`{tag}`"]
+                self.assertEqual((row["Hash"], row["Input bytes"], row["Keccak permutations"]), want)
+                text = self.text.replace(f"| `{tag}` |", "| lookup |", 1)
+                text = text.replace(f"`{tag}` also takes", "It also takes", 1)
+                self.assertIn(f"tag {tag} is used but not listed in the tag table", self.run_on(text))
+        self.assertEqual(checker.TAG_LAYOUTS["ghost/coin-lookup-leaf/v1"], (16, 5, 16, 5, 5))
+        self.assertEqual(checker.TAG_LAYOUTS["ghost/coin-marker-set-leaf/v1"], (32, 32, 5, 5))
+        # A wrong size, permutation count or hash is caught.
+        for old, new, fragment in (
+                ("`nextIndex`, `appended` | 104 | 1 |", "`nextIndex`, `appended` | 103 | 1 |",
+                 "tag ghost/coin-marker-set-leaf/v1: table says '103' input bytes, recomputed 104"),
+                ("`k_note`, `i` as 8 bytes | 61 |", "`k_note`, `i` as 8 bytes | 58 |",
+                 "tag ghost/note-lookup/v1: table says"),
+                ("| 55 + 16 a tag + 32 a marker | not in a proof |", "| 55 | not in a proof |",
+                 "tag ghost/block-lookup-digest/v1: table says")):
+            with self.subTest(old=old):
+                self.assertIn(old, self.text)
+                errors = self.run_on(self.text.replace(old, new, 1))
+                self.assertTrue(any(fragment in e for e in errors), errors)
+        start = self.text.index("| `ghost/coin-lookup-node/v1` |")
+        end = self.text.index("\n", start)
+        text = self.text[:start] + self.text[start:end].replace("| 91 | 1 per level |", "| 91 | 1 |") + \
+            self.text[end:]
+        self.assertIn("tag ghost/coin-lookup-node/v1: table says '1' Keccak permutations, recomputed "
+                      "'1 per level'", self.run_on(text))
+
+    def test_bucket_path_is_superseded(self):
+        flat = " ".join(self.text.split())
+        self.assertIn("**The bucket path (superseded).**", flat)
+        self.assertIn("A wallet no longer restores by buckets.", flat)
+        self.assertNotIn("**The bucket path (front desk decision).**", flat)
+        self.assertIn("**The lookup path (", flat)
+        body = checker.section(self.text, "Test vectors")
+        self.assertIn("**Superseded as the restore route**", body)
+
+    def test_lookup_path_authenticates_leaf_and_note(self):
+        # A lookup or marker-set witness authenticates neither the leaf nor the
+        # note at the position it names, so a decryption failure counts only
+        # for an authenticated leaf and note; otherwise the result is unknown.
+        self.assertEqual(checker.check_lookup_path(self.text), [])
+        for phrase in checker.LOOKUP_PATH_RULE:
+            with self.subTest(phrase=phrase):
+                start = self.text.index("**The lookup path")
+                end = self.text.index("**The bucket path", start)
+                pattern = r"\s+".join(re.escape(part) for part in phrase.split())
+                body = re.sub(pattern, "x", self.text[start:end])
+                self.assertNotEqual(body, self.text[start:end])
+                self.assertIn(f"the lookup path does not say {phrase!r}",
+                              self.run_on(self.text[:start] + body + self.text[end:]))
+        # The unsafe wording of a copied tag and of a claimed successor, drawn
+        # from an unauthenticated note, is refused.
+        old_three = ("3. Read that leaf and its note, authenticate both (above), and do step 4 on\n"
+                     "   them. Only for an authenticated leaf and note does a note that does not\n"
+                     "   decrypt, or a commitment that does not recompute the leaf, mean a copied\n"
+                     "   tag")
+        self.assertIn(old_three, self.text)
+        text = self.text.replace(old_three, "3. Read that leaf and its note and do step 4 on them. A\n"
+                                            "   note that does not decrypt, or a commitment that does\n"
+                                            "   not recompute the leaf, belongs to a copied tag", 1)
+        errors = self.run_on(text)
+        self.assertIn("lookup path step 3 does not say 'authenticate both'", errors)
+        self.assertIn("lookup path step 3 does not say 'Only for an authenticated leaf and note'", errors)
+        old_four = "an authenticated note that does not decrypt"
+        self.assertIn(old_four, self.text)
+        errors = self.run_on(self.text.replace(old_four, "a note that does not decrypt", 1))
+        self.assertIn(f"lookup path step 4 does not say {old_four!r}", errors)
+        old_unknown = "the restore is unknown, not\n   claimed"
+        self.assertIn(old_unknown, self.text)
+        errors = self.run_on(self.text.replace(old_unknown, "the value is\n   claimed", 1))
+        self.assertIn("lookup path step 4 does not say 'unknown, not claimed'", errors)
+        # Without the lookup path at all, the section is incomplete.
+        start = self.text.index("**The lookup path")
+        end = self.text.index("**The bucket path", start)
+        self.assertIn("section 8 has no lookup path followed by the superseded bucket path",
+                      self.run_on(self.text[:start] + self.text[end:]))
 
 
 if __name__ == "__main__":

@@ -818,7 +818,12 @@ Each has a default that rejects or adds nothing until the founder decides.
    only against a root the verifier takes from a header it trusts, and stay
    rejected until the proof circuit checks the absence. Rejected: a sparse
    tree of depth 256, buckets by marker prefix, non-membership in the storage
-   trie, and a second root per type; no coin marker-set root is added.
+   trie, and a second root per type. The 2026-10-25 answer added no root for
+   the coin set; the stage 2 design supersedes that part, and
+   [decision 0004](../decisions/0004-lookup-formats.md) adds `coinMarkerRoot`,
+   field 21, the root of the coin marker-set tree of spec 05, section 6, for
+   restore. `dataMarkerRoot` stays field 18, and coin proofs of holding stay
+   rejected.
 3. **Remainder on a data reveal.** Should a data reveal create a remainder
    commitment? Default: none.
 4. **Revoke purpose.** Is revoke a purpose separate from the ordinary reveal?

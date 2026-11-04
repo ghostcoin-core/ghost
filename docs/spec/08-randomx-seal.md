@@ -89,7 +89,7 @@ and only the output is consensus.
 
 ## 4. Seal hash
 
-The header is the RLP list of spec 05, section 10: 19 fields, every one
+The header is the RLP list of spec 05, section 10: 23 fields, every one
 required. The seal hash is
 
 ```text
@@ -105,8 +105,9 @@ bytes of the `nonce` value cleared.
 The seal hash therefore covers every field except the two seal fields:
 `parentHash`, `uncleHash`, `coinbase`, the three base roots, `logsBloom`,
 `difficulty`, `number`, `gasLimit`, `gasUsed`, `timestamp`, `extraData`,
-`baseFee`, both tree roots, `coinTreeRoot` and `dataTreeRoot`, and
-`dataMarkerRoot`. This is
+`baseFee`, both tree roots, `coinTreeRoot` and `dataTreeRoot`,
+`dataMarkerRoot`, `coinLookupRoot`, `dataLookupRoot`, `coinMarkerRoot` and
+`lookupDigest`. This is
 the seal coverage spec 05, section 4 requires: no relay can change a root
 without redoing the work.
 

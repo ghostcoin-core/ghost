@@ -10,9 +10,13 @@ check_commitment_vectors.py. It checks that:
   3. the page-size and storage tables are right;
   4. the header field table is the pinned base header in order with the base
      fee required, then the two tree roots and the data marker-set root as
-     field 18, exactly 19 fields; that no forbidden field and no other
-     marker-set root is in it; and that every genesis field is listed once with
-     its source and agrees with the genesis vector;
+     field 18, then coinLookupRoot, dataLookupRoot, coinMarkerRoot and
+     lookupDigest as fields 19 to 22, exactly 23 fields (decision 0004); that
+     the marker-set roots are dataMarkerRoot (18) and coinMarkerRoot (21), the
+     coin marker-set root of section 6, and no other; that no forbidden field
+     is in it; that the decision table records the change from the 2026-10-25
+     rule and no sentence keeps that rule; and that every genesis field is
+     listed once with its source and agrees with the genesis vector;
   5. every tree, page and rollover vector is right, and the tree vectors over
      spec 01's commitments hold exactly those of its words-key vectors; every
      marker-set vector is recomputed with this script's own indexed tree
@@ -24,6 +28,15 @@ check_commitment_vectors.py. It checks that:
      read and its cost and that no query names a marker, its "Forbidden."
      paragraph and TH-19 name the reads, and its "Marker status." Rule and
      section 12, item 4 keep an unchecked status "unknown";
+  5a. every lookup vector of decision 0004 is recomputed with this script's
+     own code from spec 01's keys and markers: the lookup tags, the empty and
+     populated coin and data lookup indices (leaves, counts, roots), the
+     first-entry, absence and membership witnesses of the coin lookup index
+     (byte for byte, accepted for what they show and rejected for the listed
+     tags), the coin marker-set tree (empty, populated, absence and membership
+     witnesses with the appended position), the block lookup digests, the
+     genesis values of the four new header fields and the global positions;
+     every header's four new fields are the values of such vectors;
   6. every header vector re-encodes byte for byte with this script's own RLP
      code, every negative vector is re-derived and rejected for the stated
      reason, and the header vectors equal the output of the separately written
@@ -39,6 +52,8 @@ Usage:
 Exit status is non-zero on any gap.
 """
 
+import functools
+import hashlib
 import importlib.util
 import re
 import sys
@@ -75,9 +90,11 @@ TH_SECTIONS = ("Trees and rollover", "Historical roots", "Markers", "Reorganisat
 # Words each section must use, so that its subject is covered.
 SECTION_WORDS = {
     "Historical roots": ("canonical", "discarded branch", "age limit", "before its including block"),
-    "Markers": ("ghost/coin-marker/v2", "ghost/data-marker/v2","state root", "pool admission"),
+    "Markers": ("ghost/coin-marker/v2", "ghost/data-marker/v2","state root", "pool admission",
+                "coinMarkerRoot", "appended", "1,359 bytes", "coinLookupRoot", "dataLookupRoot",
+                "1,332 bytes", "lookupDigest", "transaction order"),
     "Reorganisation": ("frontier", "tree index", "marker", "pool", "no longer canonical",
-                       "depth limit"),
+                       "depth limit", "lookup indices", "coin marker set"),
     "Wallet tree data": ("whole", "page-root list", "witness"),
     "History availability": ("full node", "snap-synced", "header-only", "indexer"),
 }
@@ -111,6 +128,94 @@ SPEC_01_MARKERS = {
 # to the low leaf.
 ABSENCE_REJECTS = ("reject-equal", "reject-below", "reject-above-next")
 
+# Decision 0004: the lookup tag, the two lookup indices and the coin
+# marker-set tree of section 6, and the block lookup digest.
+TAG_NOTE_KEY = "ghost/note-key/v1"
+TAG_NOTE_LOOKUP = "ghost/note-lookup/v1"
+LOOKUP_TREE_TAGS = {"coin": ("ghost/coin-lookup-leaf/v1", "ghost/coin-lookup-node/v1"),
+                    "data": ("ghost/data-lookup-leaf/v1", "ghost/data-lookup-node/v1")}
+TAG_COIN_SET_LEAF = "ghost/coin-marker-set-leaf/v1"
+TAG_COIN_SET_NODE = "ghost/coin-marker-set-node/v1"
+TAG_LOOKUP_DIGEST = "ghost/block-lookup-digest/v1"
+LOOKUP_TAG_BYTES = 16
+POSITION_BYTES = 5
+COUNT_BYTES = 4
+NONE_POSITION = 2**40 - 1  # ff ff ff ff ff: "no leaf"
+LOOKUP_LEAF_BYTES = 16 + 5 + 16 + 5 + 5
+COIN_SET_LEAF_BYTES = 32 + 32 + 5 + 5
+LOOKUP_WITNESS_BYTES = LOOKUP_LEAF_BYTES + POSITION_BYTES + 32 * MARKER_SET_DEPTH
+COIN_SET_WITNESS_BYTES = COIN_SET_LEAF_BYTES + POSITION_BYTES + 32 * MARKER_SET_DEPTH
+# The lookup tags of section 11: (spec 01 derivation vector, number).
+LOOKUP_TAG_VECTORS = {
+    "lookup-tag-index-0": ("derivation-words", 0),
+    "lookup-tag-index-1": ("derivation-words", 1),
+    "lookup-tag-index-2": ("derivation-words", 2),
+    "lookup-tag-data-index-0": ("derivation-words-data", 0),
+}
+# The lookup indices of section 11: tree and entries (lookup-tag vector,
+# global position), inserted in order.
+LOOKUP_INDEX_VECTORS = {
+    "coin-lookup-empty": ("coin", ()),
+    "data-lookup-empty": ("data", ()),
+    "coin-lookup-one-leaf": ("coin", (("lookup-tag-index-0", 0),)),
+    "coin-lookup-two-leaves": ("coin", (("lookup-tag-index-0", 0), ("lookup-tag-index-1", 1))),
+    "coin-lookup-copied-tag": ("coin", (("lookup-tag-index-0", 0), ("lookup-tag-index-1", 1),
+                                        ("lookup-tag-index-0", 2))),
+    "data-lookup-one-leaf": ("data", (("lookup-tag-data-index-0", 0),)),
+}
+# The coin marker sets of section 11: spends (spec 01 vector whose coin marker
+# is spent, global position its reveal appended), in order.
+COIN_SET_VECTORS = {
+    "coin-marker-set-empty": (),
+    "coin-marker-set-one-marker": (("coin-commit-salted", 1),),
+    "coin-marker-set-two-markers": (("coin-commit-salted", 1), ("coin-remainder-salted", 2)),
+}
+# A marker no commitment of spec 01 has, for the absence witness.
+ABSENT_MARKER = bytes([0x88]) * 32
+# The block lookup digests of section 11: coin start, coin tags, data start,
+# data tags, coin markers and data markers (spec 01 vectors).
+LOOKUP_DIGEST_VECTORS = {
+    "lookup-digest-empty": (0, (), 0, (), (), ()),
+    "lookup-digest-example": (1, ("lookup-tag-index-1",), 0, ("lookup-tag-data-index-0",),
+                              ("coin-commit-salted",), ()),
+    "lookup-digest-block-one-example": (
+        0, ("lookup-tag-index-0", "lookup-tag-index-1"), 0, ("lookup-tag-data-index-0",),
+        ("coin-commit-salted",), ("data-commit-salted", "data-commit-salted-other")),
+}
+# The vector each header example's four new fields must be the value of.
+HEADER_LOOKUP_SOURCES = {
+    "header-genesis-example": ("coin-lookup-empty", "data-lookup-empty", "coin-marker-set-empty",
+                               "lookup-digest-empty"),
+    "header-block-one-example": ("coin-lookup-two-leaves", "data-lookup-one-leaf",
+                                 "coin-marker-set-one-marker", "lookup-digest-block-one-example"),
+}
+LOOKUP_VECTOR_NAMES = (tuple(LOOKUP_TAG_VECTORS) + tuple(LOOKUP_INDEX_VECTORS)
+                       + ("coin-lookup-absence", "coin-lookup-first-entry", "coin-lookup-membership")
+                       + tuple(COIN_SET_VECTORS)
+                       + ("coin-marker-set-membership", "coin-marker-set-absence")
+                       + tuple(LOOKUP_DIGEST_VECTORS)
+                       + ("header-genesis-new-fields", "global-position-examples"))
+# The subsections of section 6 on the trees of decision 0004, with the words
+# each must use.
+LOOKUP_SUBSECTIONS = {
+    "The coin marker-set tree": (
+        "coinMarkerRoot", "field 21", "ghost/coin-marker-set-leaf/v1",
+        "ghost/coin-marker-set-node/v1", "appended", "ff ff ff ff ff", "74 bytes", "1,359 bytes",
+        "absence witness", "membership witness", "stay rejected"),
+    "The lookup indices": (
+        "ghost/note-lookup/v1", "first 16 bytes", "global position", "coinLookupRoot",
+        "dataLookupRoot", "ghost/coin-lookup-leaf/v1", "ghost/data-lookup-leaf/v1", "47 bytes",
+        "1,332 bytes", "sentinel", "copied tag", "first entry", "absence witness",
+        "membership witness", "What a witness does not authenticate", "receiptsRoot",
+        "proves nothing unless both are authenticated"),
+    "The block lookup digest": (
+        "lookupDigest", "field 22", "ghost/block-lookup-digest/v1", "transaction order",
+        "coinStart", "dataStart"),
+}
+LOOKUP_KINDS = ("lookup-tag", "lookup-index", "lookup-witness", "lookup-membership",
+                "coin-marker-set", "coin-marker-set-membership", "coin-marker-set-absence",
+                "lookup-digest", "genesis-fields", "global-position")
+
 # Witness extension of section 8. A page-root tail starts at a multiple of
 # TAIL_PAGES pages, and a page read whole is read with decoys PAGE_READ pages a
 # request.
@@ -137,7 +242,7 @@ PARAMETERS = ("TREE_DEPTH", "LEAVES_PER_TREE", "PAGE_LEAVES", "LEAF_BYTES", "NOT
 
 # The Ghost header: the base header of the pinned Core-Geth commit (Go Ethereum
 # 1.13.15) in its order, the base fee required, then the two tree roots and the
-# data marker-set root.
+# data marker-set root, then the four fields of decision 0004.
 # (name, kind, size): "fixed" is exactly size bytes, "bytes" at most size bytes,
 # "int" a canonical integer below 2^size.
 HEADER = (
@@ -160,12 +265,36 @@ HEADER = (
     ("coinTreeRoot", "fixed", 32),
     ("dataTreeRoot", "fixed", 32),
     ("dataMarkerRoot", "fixed", 32),
+    ("coinLookupRoot", "fixed", 32),
+    ("dataLookupRoot", "fixed", 32),
+    ("coinMarkerRoot", "fixed", 32),
+    ("lookupDigest", "fixed", 32),
 )
 HEADER_NAMES = tuple(name for name, _, _ in HEADER)
-GHOST_FIELDS = ("coinTreeRoot", "dataTreeRoot", "dataMarkerRoot")
-# The one marker-set root in the header, and its index.
+# The four fields decision 0004 adds, in order, and the index of the first.
+LOOKUP_FIELDS = ("coinLookupRoot", "dataLookupRoot", "coinMarkerRoot", "lookupDigest")
+LOOKUP_FIELD_FIRST = 19
+GHOST_FIELDS = ("coinTreeRoot", "dataTreeRoot", "dataMarkerRoot") + LOOKUP_FIELDS
+# The data marker-set root and its index, unchanged since 2026-10-25.
 MARKER_FIELD = "dataMarkerRoot"
 MARKER_FIELD_INDEX = 18
+# The coin marker-set root of section 6 and its index (decision 0004).
+COIN_MARKER_FIELD = "coinMarkerRoot"
+COIN_MARKER_FIELD_INDEX = 21
+# The marker-set roots of the header, in order; no other may be added.
+MARKER_FIELDS = ((MARKER_FIELD_INDEX, MARKER_FIELD), (COIN_MARKER_FIELD_INDEX, COIN_MARKER_FIELD))
+# The rows of the decision table of section 1 that record the change, with the
+# words each must use.
+DECISION_ROWS = {
+    "Header": LOOKUP_FIELDS + ("decision 0004",),
+    "Spent-marker-set root in the header": (
+        "dataMarkerRoot", "field 18", "coinMarkerRoot", "field 21", "2026-10-25", "superseded",
+        "stage 2 design", "decision 0004", "coin ones stay rejected"),
+    "Header encoding": ("23 items",) + LOOKUP_FIELDS,
+}
+# Sentences of the 2026-10-25 rule that decision 0004 supersedes; none may stay.
+OLD_RULE_PHRASES = ("no coin marker-set root", "no coin spent-marker-set root",
+                    "exactly three new fields", "the data set alone has a root")
 FORBIDDEN_FIELDS = ("withdrawalsRoot", "blobGasUsed", "excessBlobGas", "parentBeaconRoot")
 # Genesis fields that spec 06, section 8.3 fixes, with the word it uses.
 SPEC06_GENESIS = {"parentHash": "parentHash", "uncleHash": "uncle hash", "coinbase": "coinbase",
@@ -174,7 +303,7 @@ SPEC06_GENESIS = {"parentHash": "parentHash", "uncleHash": "uncle hash", "coinba
 D_START = 2**24
 
 REQUIRED_FAULTS = ("forbidden-field", "extra-trailing-field", "missing-required-field",
-                   "non-canonical-integer", "eighteen-items")
+                   "non-canonical-integer", "eighteen-items", "nineteen-items")
 # Conflicts this chapter must list: (chapter, place) both in one item.
 REQUIRED_CONFLICTS = (("spec 03", "question 6"), ("spec 04", "question 2"),
                       ("spec 02", "section 8"), ("spec 06", "8.3"))
@@ -307,8 +436,15 @@ def first_code(cell):
 # ---------------------------------------------------------------------------
 
 def tagged(tag, *parts):
+    return _tagged(tag, b"".join(parts))
+
+
+@functools.lru_cache(maxsize=None)
+def _tagged(tag, data):
+    """K(tag, data). Cached: the same trees are hashed again for every
+    document checked, and the hash is a pure function of its input."""
     raw = tag.encode("ascii")
-    return keccak256(bytes([len(raw)]) + raw + b"".join(parts))
+    return keccak256(bytes([len(raw)]) + raw + data)
 
 
 def empty_leaf():
@@ -387,12 +523,451 @@ def witness(tag, page_leaves, page_roots, position, page_depth):
 
 def append(index, count, filled_this_block):
     """One append under the rules of section 3: (includable, index, count,
-    position)."""
+    position). A leaf whose global position would be 2^40 - 1 or more has no
+    lookup entry and is rejected (decision 0004)."""
     if count < LEAVES:
+        if index * LEAVES + count >= NONE_POSITION:
+            return False, index, count, None
         return True, index, count + 1, count
-    if filled_this_block or index >= INDEX_MAX:
+    if filled_this_block or index >= INDEX_MAX or (index + 1) * LEAVES >= NONE_POSITION:
         return False, index, count, None
     return True, index + 1, 1, 0
+
+
+def global_position(tree_index, position):
+    """g = k * 2^32 + p as 5 bytes, or LookupRejected past the last usable leaf."""
+    if not 0 <= position < LEAVES or tree_index < 0:
+        raise LookupRejected("no such leaf position")
+    g = tree_index * LEAVES + position
+    if g >= NONE_POSITION:
+        raise LookupRejected("the global position would be 2^40 - 1 or more")
+    return g.to_bytes(POSITION_BYTES, "big")
+
+
+# ---------------------------------------------------------------------------
+# Lookup indices, the coin marker-set tree and the block lookup digest
+# (decision 0004), this script's own
+# ---------------------------------------------------------------------------
+
+class LookupRejected(Exception):
+    pass
+
+
+def lookup_tag(note_key, index):
+    """(digest, tag): S("ghost/note-lookup/v1", k_note, i as 8 bytes) and its
+    first 16 bytes."""
+    raw = TAG_NOTE_LOOKUP.encode("ascii")
+    digest = hashlib.sha3_256(bytes([len(raw)]) + raw + note_key + index.to_bytes(8, "big")).digest()
+    return digest, digest[:LOOKUP_TAG_BYTES]
+
+
+def note_key(key_bytes):
+    raw = TAG_NOTE_KEY.encode("ascii")
+    return hashlib.sha3_256(bytes([len(raw)]) + raw + key_bytes).digest()
+
+
+def pos5(value):
+    return value.to_bytes(POSITION_BYTES, "big")
+
+
+def indexed_zeros(node_tag):
+    """Z_0 to Z_40 of a depth-40 indexed tree with this node tag."""
+    z = [empty_leaf()]
+    for level in range(MARKER_SET_DEPTH):
+        z.append(node(node_tag, level, z[level], z[level]))
+    return z
+
+
+def indexed_layers(leaf_hashes, node_tag):
+    """Every level as position -> node, level 0 the leaf hashes, 40 the root."""
+    z = indexed_zeros(node_tag)
+    layers = [dict(enumerate(leaf_hashes))]
+    for level in range(MARKER_SET_DEPTH):
+        below = layers[-1]
+        layers.append({pos: node(node_tag, level, below.get(2 * pos, z[level]),
+                                 below.get(2 * pos + 1, z[level]))
+                       for pos in sorted({p // 2 for p in below})})
+    return layers
+
+
+def indexed_root(leaf_hashes, node_tag):
+    return indexed_layers(leaf_hashes, node_tag)[MARKER_SET_DEPTH][0]
+
+
+def indexed_siblings(leaf_hashes, node_tag, position):
+    z = indexed_zeros(node_tag)
+    layers = indexed_layers(leaf_hashes, node_tag)
+    return [layers[level].get((position >> level) ^ 1, z[level]) for level in range(MARKER_SET_DEPTH)]
+
+
+def indexed_fold(leaf_hash, position, siblings, node_tag):
+    at = leaf_hash
+    for level, sibling in enumerate(siblings):
+        if (position >> level) & 1:
+            at = node(node_tag, level, sibling, at)
+        else:
+            at = node(node_tag, level, at, sibling)
+    return at
+
+
+# A lookup leaf is (tag, position, nextTag, nextPosition, nextIndex): two
+# 16-byte tags and three integers written as 5 bytes.
+
+def lookup_genesis():
+    """The used leaves of an empty lookup index: the all-zero sentinel."""
+    return [(bytes(16), 0, bytes(16), 0, 0)]
+
+
+def lookup_leaf_bytes(leaf):
+    tag, position, next_tag, next_position, next_index = leaf
+    return tag + pos5(position) + next_tag + pos5(next_position) + pos5(next_index)
+
+
+def lookup_leaf_hash(tree, leaf):
+    return tagged(LOOKUP_TREE_TAGS[tree][0], lookup_leaf_bytes(leaf))
+
+
+def lookup_key(tag, position):
+    return tag + pos5(position)
+
+
+def lookup_insert(leaves, tag, position):
+    """Insert the entry of the leaf with `tag` at global `position`."""
+    if len(tag) != LOOKUP_TAG_BYTES or tag == bytes(16):
+        raise LookupRejected("the zero tag is rejected")
+    if not 0 <= position < NONE_POSITION:
+        raise LookupRejected("no lookup position for this leaf")
+    if any(position <= leaf[1] for leaf in leaves[1:]):
+        raise LookupRejected("a new leaf's position is above every position in the index")
+    n = len(leaves)
+    q = lookup_key(tag, position)
+    found = [i for i, (t, p, nt, np, _) in enumerate(leaves)
+             if lookup_key(t, p) < q and (nt == bytes(16) or q < lookup_key(nt, np))]
+    if len(found) != 1:
+        raise LookupRejected(f"{len(found)} low leaves")
+    low = leaves[found[0]]
+    leaves.append((tag, position, low[2], low[3], low[4]))
+    leaves[found[0]] = (low[0], low[1], tag, position, n)
+
+
+def lookup_index(tree, entries):
+    leaves = lookup_genesis()
+    for tag, position in entries:
+        lookup_insert(leaves, tag, position)
+    return leaves
+
+
+def lookup_hashes(tree, leaves):
+    return [lookup_leaf_hash(tree, leaf) for leaf in leaves]
+
+
+def lookup_root(tree, leaves):
+    return indexed_root(lookup_hashes(tree, leaves), LOOKUP_TREE_TAGS[tree][1])
+
+
+def lookup_low(leaves, tag):
+    """The index position of the low leaf of the query tag || 0^5."""
+    q = lookup_key(tag, 0)
+    found = [i for i, (t, p, nt, np, _) in enumerate(leaves)
+             if lookup_key(t, p) < q and (nt == bytes(16) or q <= lookup_key(nt, np))]
+    if len(found) != 1:
+        raise LookupRejected(f"{len(found)} low leaves")
+    return found[0]
+
+
+def lookup_witness(tree, leaves, at):
+    """The 1,332-byte witness of the leaf at index position `at`."""
+    siblings = indexed_siblings(lookup_hashes(tree, leaves), LOOKUP_TREE_TAGS[tree][1], at)
+    return lookup_leaf_bytes(leaves[at]) + pos5(at) + b"".join(siblings)
+
+
+def open_lookup_witness(tree, root, witness):
+    """The leaf and index position a witness shows under `root`, or
+    LookupRejected."""
+    if len(witness) != LOOKUP_WITNESS_BYTES:
+        raise LookupRejected("witness-size")
+    leaf = (witness[0:16], int.from_bytes(witness[16:21], "big"), witness[21:37],
+            int.from_bytes(witness[37:42], "big"), int.from_bytes(witness[42:47], "big"))
+    at = int.from_bytes(witness[47:52], "big")
+    siblings = [witness[52 + 32 * i:84 + 32 * i] for i in range(MARKER_SET_DEPTH)]
+    leaf_tag, node_tag = LOOKUP_TREE_TAGS[tree]
+    if indexed_fold(tagged(leaf_tag, witness[:LOOKUP_LEAF_BYTES]), at, siblings, node_tag) != root:
+        raise LookupRejected("root")
+    return leaf, at
+
+
+def lookup_answer(tree, root, tag, witness):
+    """("first", global position) or ("absent", None) for a lookup witness for
+    `tag`, or LookupRejected."""
+    if len(tag) != LOOKUP_TAG_BYTES or tag == bytes(16):
+        raise LookupRejected("zero-tag")
+    (low_tag, _, next_tag, next_position, _), _ = open_lookup_witness(tree, root, witness)
+    if not low_tag < tag:
+        raise LookupRejected("not-above-low")
+    if next_tag == bytes(16) or next_tag > tag:
+        return ("absent", None)
+    if next_tag == tag:
+        return ("first", next_position)
+    raise LookupRejected("not-below-next")
+
+
+def lookup_membership(tree, root, tag, position, witness):
+    """The leaf a membership witness shows for (tag, position), or
+    LookupRejected."""
+    if len(tag) != LOOKUP_TAG_BYTES or tag == bytes(16):
+        raise LookupRejected("zero-tag")
+    leaf, _ = open_lookup_witness(tree, root, witness)
+    if leaf[0] != tag or leaf[1] != position:
+        raise LookupRejected("other-entry")
+    return leaf
+
+
+# A coin marker-set leaf is (value, nextValue, nextIndex, appended).
+
+def coin_set_genesis():
+    return [(bytes(32), bytes(32), 0, NONE_POSITION)]
+
+
+def coin_set_leaf_bytes(leaf):
+    value, next_value, next_index, appended = leaf
+    return value + next_value + pos5(next_index) + pos5(appended)
+
+
+def coin_set_insert(leaves, marker, appended):
+    """Insert the marker a coin reveal spends, with the global position of the
+    leaf the reveal appended (NONE_POSITION for none)."""
+    if len(marker) != 32 or marker == bytes(32):
+        raise LookupRejected("the marker 0 is never valid")
+    if any(leaf[0] == marker for leaf in leaves):
+        raise LookupRejected("the marker is already in the set")
+    if not 0 <= appended <= NONE_POSITION:
+        raise LookupRejected("appended is not a global position or none")
+    n = len(leaves)
+    found = [i for i, (v, nv, _, _) in enumerate(leaves)
+             if v < marker and (nv == bytes(32) or marker < nv)]
+    if len(found) != 1:
+        raise LookupRejected(f"{len(found)} low leaves")
+    low = leaves[found[0]]
+    leaves.append((marker, low[1], low[2], appended))
+    leaves[found[0]] = (low[0], marker, n, low[3])
+
+
+def coin_set(spends):
+    leaves = coin_set_genesis()
+    for marker, appended in spends:
+        coin_set_insert(leaves, marker, appended)
+    return leaves
+
+
+def coin_set_hashes(leaves):
+    return [tagged(TAG_COIN_SET_LEAF, coin_set_leaf_bytes(leaf)) for leaf in leaves]
+
+
+def coin_set_root(leaves):
+    return indexed_root(coin_set_hashes(leaves), TAG_COIN_SET_NODE)
+
+
+def coin_set_witness(leaves, at):
+    """The 1,359-byte witness of the leaf at position `at`."""
+    siblings = indexed_siblings(coin_set_hashes(leaves), TAG_COIN_SET_NODE, at)
+    return coin_set_leaf_bytes(leaves[at]) + pos5(at) + b"".join(siblings)
+
+
+def coin_set_low(leaves, marker):
+    found = [i for i, (v, nv, _, _) in enumerate(leaves)
+             if v < marker and (nv == bytes(32) or marker < nv)]
+    if len(found) != 1:
+        raise LookupRejected(f"{len(found)} low leaves")
+    return found[0]
+
+
+def open_coin_set_witness(root, witness):
+    if len(witness) != COIN_SET_WITNESS_BYTES:
+        raise LookupRejected("witness-size")
+    leaf = (witness[0:32], witness[32:64], int.from_bytes(witness[64:69], "big"),
+            int.from_bytes(witness[69:74], "big"))
+    at = int.from_bytes(witness[74:79], "big")
+    siblings = [witness[79 + 32 * i:111 + 32 * i] for i in range(MARKER_SET_DEPTH)]
+    if indexed_fold(tagged(TAG_COIN_SET_LEAF, witness[:COIN_SET_LEAF_BYTES]), at, siblings,
+                    TAG_COIN_SET_NODE) != root:
+        raise LookupRejected("root")
+    return leaf, at
+
+
+def coin_set_absence(root, marker, witness):
+    """None if the witness shows `marker` unspent under `root`; LookupRejected
+    otherwise."""
+    if len(marker) != 32 or marker == bytes(32):
+        raise LookupRejected("zero-marker")
+    (value, next_value, _, _), _ = open_coin_set_witness(root, witness)
+    if not value < marker:
+        raise LookupRejected("not-above-low")
+    if not (next_value == bytes(32) or marker < next_value):
+        raise LookupRejected("not-below-next")
+
+
+def coin_set_membership(root, marker, witness):
+    """The appended global position (None for none) a membership witness shows
+    for a spent `marker`, or LookupRejected."""
+    if len(marker) != 32 or marker == bytes(32):
+        raise LookupRejected("zero-marker")
+    (value, _, _, appended), _ = open_coin_set_witness(root, witness)
+    if value != marker:
+        raise LookupRejected("other-marker")
+    return None if appended == NONE_POSITION else appended
+
+
+def lookup_digest(coin_start, coin_tags, data_start, data_tags, coin_markers, data_markers):
+    """(encoding, digest) of a block's lookup list."""
+    body = pos5(coin_start) + len(coin_tags).to_bytes(COUNT_BYTES, "big") + b"".join(coin_tags)
+    body += pos5(data_start) + len(data_tags).to_bytes(COUNT_BYTES, "big") + b"".join(data_tags)
+    for items in (coin_markers, data_markers):
+        body += len(items).to_bytes(COUNT_BYTES, "big") + b"".join(items)
+    return body, tagged(TAG_LOOKUP_DIGEST, body)
+
+
+def _lookup_leaf_line(leaf):
+    return " ".join(part.hex() for part in (leaf[0], pos5(leaf[1]), leaf[2], pos5(leaf[3]),
+                                            pos5(leaf[4])))
+
+
+def _coin_set_leaf_line(leaf):
+    return " ".join(part.hex() for part in (leaf[0], leaf[1], pos5(leaf[2]), pos5(leaf[3])))
+
+
+def lookup_vectors(spec01):
+    """The lookup vector blocks of section 11, computed by this script from
+    spec 01's vectors (name -> its fields): name -> list of (key, value)."""
+    def field(name, key):
+        value = spec01.get(name, {}).get(key)
+        if value is None:
+            raise LookupRejected(f"spec 01 has no {key} in vector {name}")
+        return bytes.fromhex(value)
+
+    out, tags = {}, {}
+    for name, (source, index) in LOOKUP_TAG_VECTORS.items():
+        key_bytes = field(source, "key-bytes")
+        k_note = note_key(key_bytes)
+        if k_note != field(source, "note-key"):
+            raise LookupRejected(f"spec 01's {source} note-key is not k_note of its key bytes")
+        digest, tag = lookup_tag(k_note, index)
+        tags[name] = tag
+        out[name] = [("kind", "lookup-tag"), ("key-bytes", key_bytes.hex()),
+                     ("note-key", k_note.hex()), ("index", str(index)),
+                     ("index-bytes", index.to_bytes(8, "big").hex()),
+                     ("digest", digest.hex()), ("tag", tag.hex())]
+
+    indices = {}
+    for name, (tree, entries) in LOOKUP_INDEX_VECTORS.items():
+        pairs = [(tags[t], g) for t, g in entries]
+        leaves = lookup_index(tree, pairs)
+        indices[name] = (tree, leaves)
+        rows = [("kind", "lookup-index"), ("tree", tree),
+                ("entries", " ".join(f"{t.hex()}@{g}" for t, g in pairs)),
+                ("count", str(len(leaves)))]
+        rows += [(f"leaf-{i}", _lookup_leaf_line(leaf)) for i, leaf in enumerate(leaves)]
+        rows.append(("root", lookup_root(tree, leaves).hex()))
+        out[name] = rows
+
+    # The absence witness: number 2 against the two-leaf coin index.
+    tree, two = indices["coin-lookup-two-leaves"]
+    tag = tags["lookup-tag-index-2"]
+    at = lookup_low(two, tag)
+    low = two[at]
+    rows = [("kind", "lookup-witness"), ("tree", tree), ("set", "coin-lookup-two-leaves"),
+            ("root", lookup_root(tree, two).hex()), ("tag", tag.hex()), ("low-position", str(at)),
+            ("low-leaf", _lookup_leaf_line(low)), ("witness", lookup_witness(tree, two, at).hex()),
+            ("outcome", "absent")]
+    if low[0] != bytes(16):
+        rows.append(("reject-equal", low[0].hex()))
+        rows.append(("reject-below", (int.from_bytes(low[0], "big") - 1).to_bytes(16, "big").hex()))
+    else:
+        rows.append(("reject-zero", bytes(16).hex()))
+    if low[2] != bytes(16):
+        rows.append(("reject-next-tag", low[2].hex()))
+        rows.append(("reject-above-next", (int.from_bytes(low[2], "big") + 1).to_bytes(16, "big").hex()))
+    out["coin-lookup-absence"] = rows
+
+    # The first entry of a copied tag, and the membership witness of the copy.
+    tree, copied = indices["coin-lookup-copied-tag"]
+    root = lookup_root(tree, copied).hex()
+    tag = tags["lookup-tag-index-0"]
+    at = lookup_low(copied, tag)
+    out["coin-lookup-first-entry"] = [
+        ("kind", "lookup-witness"), ("tree", tree), ("set", "coin-lookup-copied-tag"),
+        ("root", root), ("tag", tag.hex()), ("low-position", str(at)),
+        ("low-leaf", _lookup_leaf_line(copied[at])),
+        ("witness", lookup_witness(tree, copied, at).hex()), ("outcome", "first"),
+        ("position", str(copied[at][3]))]
+    copy_position = LOOKUP_INDEX_VECTORS["coin-lookup-copied-tag"][1][-1][1]
+    at = next(i for i, leaf in enumerate(copied) if leaf[0] == tag and leaf[1] == copy_position)
+    out["coin-lookup-membership"] = [
+        ("kind", "lookup-membership"), ("tree", tree), ("set", "coin-lookup-copied-tag"),
+        ("root", root), ("tag", tag.hex()), ("position", str(copy_position)),
+        ("leaf-position", str(at)), ("leaf", _lookup_leaf_line(copied[at])),
+        ("witness", lookup_witness(tree, copied, at).hex())]
+
+    sets = {}
+    for name, spends in COIN_SET_VECTORS.items():
+        pairs = [(field(source, "marker"), appended) for source, appended in spends]
+        leaves = coin_set(pairs)
+        sets[name] = leaves
+        rows = [("kind", "coin-marker-set"),
+                ("spends", " ".join(f"{m.hex()}@{a}" for m, a in pairs)),
+                ("count", str(len(leaves)))]
+        rows += [(f"leaf-{i}", _coin_set_leaf_line(leaf)) for i, leaf in enumerate(leaves)]
+        rows.append(("root", coin_set_root(leaves).hex()))
+        out[name] = rows
+    two = sets["coin-marker-set-two-markers"]
+    root = coin_set_root(two).hex()
+    spent, appended = COIN_SET_VECTORS["coin-marker-set-two-markers"][0]
+    spent = field(spent, "marker")
+    at = next(i for i, leaf in enumerate(two) if leaf[0] == spent)
+    out["coin-marker-set-membership"] = [
+        ("kind", "coin-marker-set-membership"), ("set", "coin-marker-set-two-markers"),
+        ("root", root), ("marker", spent.hex()), ("leaf-position", str(at)),
+        ("leaf", _coin_set_leaf_line(two[at])), ("witness", coin_set_witness(two, at).hex()),
+        ("appended", str(appended))]
+    at = coin_set_low(two, ABSENT_MARKER)
+    out["coin-marker-set-absence"] = [
+        ("kind", "coin-marker-set-absence"), ("set", "coin-marker-set-two-markers"),
+        ("root", root), ("marker", ABSENT_MARKER.hex()), ("low-position", str(at)),
+        ("low-leaf", _coin_set_leaf_line(two[at])), ("witness", coin_set_witness(two, at).hex()),
+        ("valid", "yes"), ("reject-spent", spent.hex())]
+
+    for name, (coin_start, ctags, data_start, dtags, cmarkers, dmarkers) in LOOKUP_DIGEST_VECTORS.items():
+        lists = ([tags[t] for t in ctags], [tags[t] for t in dtags],
+                 [field(s, "marker") for s in cmarkers], [field(s, "marker") for s in dmarkers])
+        body, digest = lookup_digest(coin_start, lists[0], data_start, lists[1], lists[2], lists[3])
+        out[name] = [("kind", "lookup-digest"), ("coin-start", str(coin_start)),
+                     ("coin-tags", " ".join(x.hex() for x in lists[0])),
+                     ("data-start", str(data_start)),
+                     ("data-tags", " ".join(x.hex() for x in lists[1])),
+                     ("coin-markers", " ".join(x.hex() for x in lists[2])),
+                     ("data-markers", " ".join(x.hex() for x in lists[3])),
+                     ("encoding", body.hex()), ("digest", digest.hex())]
+
+    out["header-genesis-new-fields"] = [("kind", "genesis-fields")] + [
+        (name, value.hex()) for name, value in genesis_lookup_fields().items()]
+
+    rows = [("kind", "global-position")]
+    for k, p in ((0, 0), (0, LEAVES - 1), (1, 0), (255, LEAVES - 2), (255, LEAVES - 1)):
+        try:
+            value = global_position(k, p).hex()
+        except LookupRejected:
+            value = "rejected"
+        rows.append((f"tree-{k}-position-{p}", value))
+    rows.append(("none", pos5(NONE_POSITION).hex()))
+    out["global-position-examples"] = rows
+    return out
+
+
+def genesis_lookup_fields():
+    """The genesis values of fields 19 to 22."""
+    return {"coinLookupRoot": lookup_root("coin", lookup_genesis()),
+            "dataLookupRoot": lookup_root("data", lookup_genesis()),
+            "coinMarkerRoot": coin_set_root(coin_set_genesis()),
+            "lookupDigest": lookup_digest(0, [], 0, [], [], [])[1]}
 
 
 # ---------------------------------------------------------------------------
@@ -627,7 +1202,11 @@ def with_fault(fields, fault):
     elif fault == "short-tree-root":
         items[at("coinTreeRoot")] = rlp_encode(fields["coinTreeRoot"][:31])
     elif fault == "eighteen-items":
-        items.pop(at(MARKER_FIELD))
+        # A header from before dataMarkerRoot: fields 0 to 17 only.
+        items = items[:at(MARKER_FIELD)]
+    elif fault == "nineteen-items":
+        # A header from before decision 0004: fields 0 to 18 only.
+        items = items[:at(LOOKUP_FIELDS[0])]
     elif fault == "trailing-bytes":
         body = b"".join(items)
         return _prefix(0xC0, len(body)) + body + b"\x00"
@@ -654,6 +1233,8 @@ class Checker:
         self.marker_roots = set()
         self.marker_sets = {}
         self.headers = {}
+        # Values of the lookup vectors as the chapter states them, by name.
+        self.lookup_values = {}
 
     def fail(self, message):
         self.errors.append(message)
@@ -668,11 +1249,15 @@ class Checker:
         self.check_page_table()
         self.check_storage_table()
         self.check_header_table()
+        self.check_decision_table()
+        self.check_old_rule()
+        self.check_lookup_text()
         self.check_genesis_table_shape()
         self.check_tree_vectors()
         self.check_spec01_leaves()
         self.check_append_vectors()
         self.check_marker_set_vectors()
+        self.check_lookup_vectors()
         self.check_witness_extension_vectors()
         self.check_restore_reads()
         self.check_header_vectors()
@@ -825,10 +1410,15 @@ class Checker:
             return
         names = [row["Field"].strip("`") for row in rows]
         markers = [(i, name) for i, name in enumerate(names) if "marker" in name.lower()]
-        if markers != [(MARKER_FIELD_INDEX, MARKER_FIELD)]:
-            self.fail(f"header marker fields are {markers}: the one marker-set root must be "
-                      f"'{MARKER_FIELD}', field {MARKER_FIELD_INDEX}, and no coin marker-set "
-                      "root may be added")
+        if markers != list(MARKER_FIELDS):
+            self.fail(f"header marker fields are {markers}: the marker-set roots must be "
+                      f"'{MARKER_FIELD}', field {MARKER_FIELD_INDEX}, and '{COIN_MARKER_FIELD}', "
+                      f"field {COIN_MARKER_FIELD_INDEX}, the coin marker-set root of section 6, "
+                      "and no other marker-set root may be added")
+        lookup = [(i, name) for i, name in enumerate(names) if name in LOOKUP_FIELDS]
+        want = [(LOOKUP_FIELD_FIRST + i, name) for i, name in enumerate(LOOKUP_FIELDS)]
+        if lookup != want:
+            self.fail(f"header lookup fields are {lookup}: decision 0004 fixes {want}")
         if len(names) != len(HEADER):
             self.fail(f"the header table lists {len(names)} fields, expected exactly {len(HEADER)}")
         if names != list(HEADER_NAMES):
@@ -867,6 +1457,45 @@ class Checker:
                 self.fail(f"forbidden field '{name}' is not listed")
         for name in listed & set(names):
             self.fail(f"forbidden field '{name}' is in the header")
+
+    def check_decision_table(self):
+        """Section 1 records the change decision 0004 makes to the header."""
+        lines = self.section("Decisions at a glance") or []
+        rows = table_with(lines, ("Topic", "Choice", "Status"))
+        if rows is None:
+            self.fail("no decision table (Topic, Choice, Status) in section 1")
+            return
+        by_topic = {row["Topic"]: " ".join((row["Choice"] + " " + row["Status"]).split()) for row in rows}
+        for topic, words in DECISION_ROWS.items():
+            text = by_topic.get(topic)
+            if text is None:
+                self.fail(f"the decision table has no row '{topic}'")
+                continue
+            for word in words:
+                if word.lower() not in text.lower():
+                    self.fail(f"decision table row '{topic}' does not record '{word}'")
+
+    def check_old_rule(self):
+        """No sentence keeps the 2026-10-25 rule that decision 0004 supersedes."""
+        flat = " ".join(self.text.split()).lower()
+        for phrase in OLD_RULE_PHRASES:
+            if phrase in flat:
+                self.fail(f"the chapter still says '{phrase}', the 2026-10-25 rule that "
+                          "decision 0004 supersedes")
+
+    def check_lookup_text(self):
+        lines = self.section("Markers")
+        if lines is None:
+            return
+        for title, words in LOOKUP_SUBSECTIONS.items():
+            body = subsection(lines, title)
+            if body is None:
+                self.fail(f"section 'Markers' has no subsection '{title}'")
+                continue
+            text = " ".join(" ".join(body).split()).lower()
+            for word in words:
+                if word.lower() not in text:
+                    self.fail(f"subsection '{title}' does not mention '{word}'")
 
     def genesis_rows(self):
         lines = self.section("Header encoding")
@@ -939,6 +1568,7 @@ class Checker:
                  "coinTreeRoot": empty_roots(TAG_COIN_NODE)[DEPTH],
                  "dataTreeRoot": empty_roots(TAG_DATA_NODE)[DEPTH],
                  MARKER_FIELD: marker_set_root(marker_set_genesis())}
+        fixed.update(genesis_lookup_fields())
         for name, value in fixed.items():
             if genesis.get(name) != value:
                 self.fail(f"header-genesis-example: '{name}' is not the genesis value")
@@ -1068,6 +1698,8 @@ class Checker:
             self.fail("no vector for an append in the block that filled the tree")
         if not any(full and not ok and index == INDEX_MAX for full, _, ok, index in cases):
             self.fail("no vector for an exhausted tree index")
+        if not any(not full and not ok for full, _, ok, _ in cases):
+            self.fail("no vector for an append at the last global position (decision 0004)")
 
     def _hex32(self, name, key, raw):
         if raw is None or not HEX_RE.match(raw) or len(raw) != 64:
@@ -1176,6 +1808,134 @@ class Checker:
                 self.fail(f"vector {name}: {key} does not have its relation to the low leaf")
             if check_absence(root, m, witness) is None:
                 self.fail(f"vector {name}: the witness is accepted for {key}")
+
+    def check_lookup_vectors(self):
+        """Every lookup vector of decision 0004, recomputed from spec 01's keys
+        and markers, and every witness accepted for what it shows and rejected
+        for the listed values."""
+        blocks = self.blocks()
+        try:
+            spec01 = {v["name"]: v for v in
+                      _ccv.parse_vectors(_ccv.section(self.spec01, "Test vectors"))}
+            expected = lookup_vectors(spec01)
+        except (ValueError, LookupRejected) as e:
+            self.fail(f"the lookup vectors cannot be recomputed from spec 01 ({e})")
+            return
+        for name, rows in expected.items():
+            if name not in blocks:
+                self.fail(f"no vector {name}")
+                continue
+            if blocks[name] != rows:
+                have = dict(blocks[name])
+                bad = [k for k, value in rows if have.get(k) != value] or ["field order"]
+                bad += [k for k in have if k not in dict(rows)]
+                self.fail(f"vector {name}: {', '.join(bad)} differ from the recomputed vector")
+        for name, lines in blocks.items():
+            if dict(lines).get("kind") in LOOKUP_KINDS and name not in expected:
+                self.fail(f"vector {name} is not a lookup vector this script computes")
+        by_kind = {}
+        for name in expected:
+            v = dict(blocks.get(name, []))
+            self.lookup_values[name] = v
+            kind = v.get("kind")
+            if kind == "lookup-index" and v.get("tree") in LOOKUP_TREE_TAGS and "root" in v:
+                by_kind.setdefault(f"{v['tree']}-lookup", set()).add(v["root"])
+            elif kind == "coin-marker-set" and "root" in v:
+                by_kind.setdefault("coin-marker-set", set()).add(v["root"])
+            elif kind == "lookup-digest" and "digest" in v:
+                by_kind.setdefault("lookup-digest", set()).add(v["digest"])
+        self.lookup_values["by-kind"] = {k: {x for x in s if HEX_RE.match(x) and len(x) == 64}
+                                         for k, s in by_kind.items()}
+        self.check_lookup_witnesses()
+        rows = table_with(self.section("Header encoding") or [], ("Field", "Genesis value", "Fixed by"))
+        genesis = dict(blocks.get("header-genesis-new-fields", []))
+        for row in rows or []:
+            name = row["Field"].strip("`")
+            if name in LOOKUP_FIELDS and first_code(row["Genesis value"]) != genesis.get(name):
+                self.fail(f"genesis field '{name}' differs from vector header-genesis-new-fields")
+
+    def _witness_inputs(self, name, keys):
+        v = self.lookup_values.get(name, {})
+        try:
+            return v, [bytes.fromhex(v[k]) for k in keys]
+        except (KeyError, ValueError):
+            self.fail(f"vector {name}: {', '.join(keys)} are not hex")
+            return v, None
+
+    def check_lookup_witnesses(self):
+        tree = "coin"
+        v, raw = self._witness_inputs("coin-lookup-absence", ("root", "tag", "witness"))
+        if raw is not None:
+            root, tag, witness = raw
+            try:
+                if lookup_answer(tree, root, tag, witness) != ("absent", None):
+                    self.fail("vector coin-lookup-absence: the witness does not show the tag absent")
+            except LookupRejected as e:
+                self.fail(f"vector coin-lookup-absence: the witness is rejected ({e})")
+            for key in (k for k in v if k.startswith("reject-")):
+                try:
+                    if lookup_answer(tree, root, bytes.fromhex(v[key]), witness) == ("absent", None):
+                        self.fail(f"vector coin-lookup-absence: the witness shows {key} absent")
+                except (LookupRejected, ValueError):
+                    pass
+            try:
+                lookup_answer("data", root, tag, witness)
+                self.fail("vector coin-lookup-absence: the coin witness is accepted under the data tags")
+            except LookupRejected:
+                pass
+        v, raw = self._witness_inputs("coin-lookup-first-entry", ("root", "tag", "witness"))
+        if raw is not None:
+            root, tag, witness = raw
+            try:
+                answer = lookup_answer(tree, root, tag, witness)
+                if answer != ("first", number(v.get("position", ""))):
+                    self.fail(f"vector coin-lookup-first-entry: the witness answers {answer}, not "
+                              f"the first entry at position {v.get('position')}")
+            except LookupRejected as e:
+                self.fail(f"vector coin-lookup-first-entry: the witness is rejected ({e})")
+        v, raw = self._witness_inputs("coin-lookup-membership", ("root", "tag", "witness"))
+        if raw is not None:
+            root, tag, witness = raw
+            position = number(v.get("position", "")) or 0
+            try:
+                lookup_membership(tree, root, tag, position, witness)
+            except LookupRejected as e:
+                self.fail(f"vector coin-lookup-membership: the witness is rejected ({e})")
+            try:
+                lookup_membership(tree, root, tag, position - 1, witness)
+                self.fail("vector coin-lookup-membership: the witness is accepted for another position")
+            except LookupRejected:
+                pass
+        v, raw = self._witness_inputs("coin-marker-set-membership", ("root", "marker", "witness"))
+        if raw is not None:
+            root, marker, witness = raw
+            try:
+                appended = coin_set_membership(root, marker, witness)
+                if str(appended) != v.get("appended"):
+                    self.fail(f"vector coin-marker-set-membership: the witness shows appended "
+                              f"{appended}, the vector says {v.get('appended')}")
+            except LookupRejected as e:
+                self.fail(f"vector coin-marker-set-membership: the witness is rejected ({e})")
+        v, raw = self._witness_inputs("coin-marker-set-absence", ("root", "marker", "witness"))
+        if raw is not None:
+            root, marker, witness = raw
+            try:
+                coin_set_absence(root, marker, witness)
+            except LookupRejected as e:
+                self.fail(f"vector coin-marker-set-absence: the witness is rejected ({e})")
+            try:
+                coin_set_absence(root, bytes.fromhex(v.get("reject-spent", "")), witness)
+                self.fail("vector coin-marker-set-absence: the witness is accepted for reject-spent")
+            except (LookupRejected, ValueError):
+                pass
+        for name, size in (("coin-lookup-absence", LOOKUP_WITNESS_BYTES),
+                           ("coin-lookup-first-entry", LOOKUP_WITNESS_BYTES),
+                           ("coin-lookup-membership", LOOKUP_WITNESS_BYTES),
+                           ("coin-marker-set-membership", COIN_SET_WITNESS_BYTES),
+                           ("coin-marker-set-absence", COIN_SET_WITNESS_BYTES)):
+            raw = self.lookup_values.get(name, {}).get("witness", "")
+            if not HEX_RE.match(raw) or len(raw) != 2 * size:
+                self.fail(f"vector {name}: the witness is {len(raw) // 2} bytes, expected {size}")
 
     def _hex_list(self, name, key, v, count=None):
         values = [self._hex32(name, key, x) for x in v.get(key, "").split()]
@@ -1391,6 +2151,19 @@ class Checker:
                     self.fail(f"vector {name}: {field} is not the root of any {tree} tree vector")
             if fields[MARKER_FIELD] not in self.marker_roots:
                 self.fail(f"vector {name}: {MARKER_FIELD} is not the root of any marker-set vector")
+            stated = {kind: {bytes.fromhex(v) for v in values}
+                      for kind, values in self.lookup_values.get("by-kind", {}).items()}
+            for field, kind, what in (("coinLookupRoot", "coin-lookup", "coin lookup-index"),
+                                      ("dataLookupRoot", "data-lookup", "data lookup-index"),
+                                      ("coinMarkerRoot", "coin-marker-set", "coin-marker-set"),
+                                      ("lookupDigest", "lookup-digest", "lookup-digest")):
+                if fields[field] not in stated.get(kind, set()):
+                    self.fail(f"vector {name}: {field} is not the value of any {what} vector")
+            for field, source in zip(LOOKUP_FIELDS, HEADER_LOOKUP_SOURCES.get(name, ())):
+                key = "digest" if field == "lookupDigest" else "root"
+                want = self.lookup_values.get(source, {}).get(key)
+                if want is not None and fields[field].hex() != want:
+                    self.fail(f"vector {name}: {field} is not the {key} of {source}")
         genesis = self.headers.get("header-genesis-example")
         one = self.headers.get("header-block-one-example")
         if genesis is None or one is None:
@@ -1507,8 +2280,10 @@ class Checker:
         if not known:
             self.fail("no tag table found in spec 01")
             return
+        lookup_tags = [t for pair in LOOKUP_TREE_TAGS.values() for t in pair]
         for tag in (TAG_COIN_NODE, TAG_DATA_NODE, TAG_EMPTY_LEAF, TAG_MARKER_SET_LEAF,
-                    TAG_MARKER_SET_NODE):
+                    TAG_MARKER_SET_NODE, TAG_NOTE_LOOKUP, TAG_COIN_SET_LEAF, TAG_COIN_SET_NODE,
+                    TAG_LOOKUP_DIGEST, *lookup_tags):
             if tag not in known:
                 self.fail(f"tree tag {tag} is not in the tag table of spec 01")
         for tag in sorted(set(TAG_RE.findall(self.text))):
