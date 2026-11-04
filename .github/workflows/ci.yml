@@ -52,13 +52,18 @@ jobs:
   # this repository is public, and public repositories never get the
   # self-hosted runners. The toolchain is pinned to an exact version, and
   # RUSTUP_TOOLCHAIN hands that same version to the script.
+  #
+  # The proofs crate is split across two parallel jobs so each fits its
+  # 10-minute limit: rust-proofs runs the library, doc and integration tests
+  # except the recursion layers, then the wasm32 check; rust-proofs-layers
+  # runs the recursion layer tests (proofs/tests/layers*.rs). Together they
+  # run the same tests as the rust-proofs step of scripts/ci-gate.sh.
   rust-proofs:
     name: rust-proofs
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       RUST_TOOLCHAIN: 1.99.1
-      CRATE: proofs
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -76,10 +81,61 @@ jobs:
             ~/.cargo/git/db
             proofs/target
           key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-${{ hashFiles('proofs/Cargo.lock') }}
-      - name: Test (release) and check wasm32-unknown-unknown
+      # Every file in proofs/tests/ except layers.rs and layers_*.rs, so a
+      # new test file runs here without editing this list.
+      - name: Test (release, all but the recursion layers)
+        shell: bash
         env:
           RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
-        run: scripts/ci-gate.sh "rust-$CRATE"
+        run: |
+          set -euo pipefail
+          tests=()
+          for f in proofs/tests/*.rs; do
+            name="$(basename "$f" .rs)"
+            case "$name" in
+              layers | layers_*) ;;
+              *) tests+=(--test "$name") ;;
+            esac
+          done
+          echo "integration tests: ${tests[*]}"
+          cargo test --release --locked --manifest-path proofs/Cargo.toml --lib "${tests[@]}"
+          cargo test --release --locked --manifest-path proofs/Cargo.toml --doc
+      - name: Check wasm32-unknown-unknown
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+        run: cargo check --locked --manifest-path proofs/Cargo.toml --lib --target wasm32-unknown-unknown
+
+  rust-proofs-layers:
+    name: rust-proofs-layers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUST_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      # Its own cache key: both proofs jobs save proofs/target, and a shared
+      # key would let one job's build overwrite the other's.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            proofs/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-layers-${{ hashFiles('proofs/Cargo.lock') }}
+      # layers_bench.rs is built here; its benchmark is #[ignore] and runs
+      # only by hand with -- --ignored --nocapture.
+      - name: Test (release) the recursion layers
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+        run: cargo test --release --locked --manifest-path proofs/Cargo.toml --test layers --test layers_results --test layers_bench
 
   rust-client:
     name: rust-client
