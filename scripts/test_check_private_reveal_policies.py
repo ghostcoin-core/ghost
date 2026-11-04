@@ -141,8 +141,17 @@ VERIFICATION = (
     ("is **10.61 ms**", "is **10.50 ms**", "section 10.2: recorded slowest ms"),
     ("= 10.79 ms", "= 10.80 ms", "section 10.2: scaled slowest"),
     ("->  107,900 gas", "->  107,000 gas", "section 10.2: scaled gas is 107000"),
-    ("VERIFY_GAS_ACTION = 110,000", "VERIFY_GAS_ACTION = 100,000",
-     "section 10.2: VERIFY_GAS is 100000"),
+    ("estimate = 110,000", "estimate = 100,000", "section 10.2: estimate is 100000"),
+    ("| `S4` | 1,000 | 1,000 | 43.99 | 440,000 |", "| `S4` | 999 | 1,000 | 43.99 | 440,000 |",
+     "fewer than 1,000"),
+    ("| `S4` | 1,000 | 1,000 | 43.99 | 440,000 |", "| `S4` | 1,000 | 1,000 | 43.98 | 440,000 |",
+     "section 10.2: `S4` slowest ms"),
+    ("| `S4` | 1,000 | 1,000 | 43.99 | 440,000 |", "| `S4` | 1,000 | 1,000 | 43.99 | 430,000 |",
+     "section 10.2: `S4` charge"),
+    ("| `KNOW_ACTION_v1` | 1,000 | 1,000 | 38.89 | 390,000 |\n", "",
+     "the measurement has no row for `KNOW_ACTION_v1`"),
+    ("raised to 370,000, 440,000 and 390,000 gas", "raised to 370,000, 430,000 and 390,000 gas",
+     "section 17: measured charges"),
     ("10.61 ms * (3,890 / 3,824)", "10.61 ms * (3,856 / 3,824)", "section 10.2: width ratio"),
     ("exceeds 11.0 ms (110,000 gas)", "exceeds 12.0 ms (110,000 gas)",
      "section 10.2: threshold ms"),
@@ -151,12 +160,13 @@ VERIFICATION = (
     ("`VERIFY_GAS_DATA = 92,300`", "`VERIFY_GAS_DATA = 92,000`", "VERIFY_GAS_DATA is 92000"),
     ("measures at least 1,000 verifications", "measures at least 100 verifications",
      "fewer than 1,000"),
-    ("| 110,000 each |", "| 100,000 each |", "constant VERIFY_GAS_ORD is 100000"),
-    ("`PREIMAGE_VERIFY_GAS = 110,000`", "`PREIMAGE_VERIFY_GAS = 100,000`",
-     "PREIMAGE_VERIFY_GAS is 100000"),
+    ("| `VERIFY_GAS_ORD` | 370,000 |", "| `VERIFY_GAS_ORD` | 360,000 |",
+     "constant VERIFY_GAS_ORD is 360000"),
+    ("`PREIMAGE_VERIFY_GAS = 390,000`", "`PREIMAGE_VERIFY_GAS = 110,000`",
+     "PREIMAGE_VERIFY_GAS is 110000"),
     ("10.61 ms in nine runs", "10.61 ms in eight runs", "section 2: runs"),
     ("10.61 ms in nine runs", "10.60 ms in nine runs", "section 2: recorded slowest ms"),
-    ("from the recorded 10.61 ms (section 10.2)", "from the recorded 10.62 ms (section 10.2)",
+    ("from the recorded 10.61 ms (section 10.2) and", "from the recorded 10.62 ms (section 10.2) and",
      "section 15: recorded slowest ms"),
     ("110,000 gas for each new statement", "100,000 gas for each new statement",
      "section 17: verification charge"),
@@ -164,13 +174,13 @@ VERIFICATION = (
     ("`BYTE_GAS = 16`", "`BYTE_GAS = 8`", "section 10.1: BYTE_GAS is 8"),
 )
 GAS = (
-    ("| `G_PRIV` | 21,111,656 |", "| `G_PRIV` | 21,111,657 |",
-     "constant G_PRIV is 21111657, recomputed 21111656"),
-    ("| `G_POLICY` | 21,274,216 |", "| `G_POLICY` | 21,274,215 |",
-     "constant G_POLICY is 21274215, recomputed 21274216"),
-    ("| `G_ACTION` | 15,585,968 |", "| `G_ACTION` | 15,585,967 |",
-     "constant G_ACTION is 15585967, recomputed 15585968"),
-    ("+ 110,000 + 160,000` |", "+ 110,000 + 150,000` |", "the formula of G_POLICY gives"),
+    ("| `G_PRIV` | 21,371,656 |", "| `G_PRIV` | 21,371,657 |",
+     "constant G_PRIV is 21371657, recomputed 21371656"),
+    ("| `G_POLICY` | 21,604,216 |", "| `G_POLICY` | 21,604,215 |",
+     "constant G_POLICY is 21604215, recomputed 21604216"),
+    ("| `G_ACTION` | 15,865,968 |", "| `G_ACTION` | 15,865,967 |",
+     "constant G_ACTION is 15865967, recomputed 15865968"),
+    ("+ 440,000 + 160,000` |", "+ 440,000 + 150,000` |", "the formula of G_POLICY gives"),
     ("| `ACTION_CALL_GAS` | 250,000 |", "| `ACTION_CALL_GAS` | 200,000 |",
      "the table's own entries give"),
     ("| `SLOT_OPEN_GAS` | 160,000 |", "| `SLOT_OPEN_GAS` | 140,000 |",
@@ -179,7 +189,7 @@ GAS = (
      "constant ACTION_STATE_GAS is 10000"),
     ("| `ORD_ENVELOPE_BYTES` | 1,311,291 |", "| `ORD_ENVELOPE_BYTES` | 1,311,067 |",
      "constant ORD_ENVELOPE_BYTES is 1311067"),
-    ("`G_ACTION` 15,585,968;", "`G_ACTION` 15,585,969;", "section 1: gas"),
+    ("`G_ACTION` 15,865,968;", "`G_ACTION` 15,865,969;", "section 1: gas"),
     ("92,300 = 21,090,372`", "92,300 = 21,090,373`", "section 10.5: G_DATA is 21090373"),
     ("payload stays 1,311,066 bytes", "payload stays 1,311,290 bytes",
      "section 10.5: data payload is 1311290"),
@@ -202,17 +212,17 @@ FEES = (
     ("price = 1,125,050,001", "price = 1,125,050,000", "section 10.3: price is 1125050000"),
     ("[window-genesis-policy]", "[window-genesis-other]",
      "no worked example [window-genesis-policy]"),
-    ("rises by 26,340,120,643,412 wei", "rises by 26,340,120,643,413 wei",
+    ("rises by 348,104,420,929,412 wei", "rises by 348,104,420,929,413 wei",
      "section 10.3: fee rise is"),
     ("version 1's\n26,100,495,343,659,410", "version 1's\n26,100,495,343,659,411",
      "section 10.3: version 1 fee is"),
-    ("(about 0.1 percent)", "(about 0.2 percent)", "fee rise percent"),
-    ("= 15,585,968,000,000,000` wei", "= 15,585,968,000,000,001` wei",
+    ("(about 1.3 percent)", "(about 1.4 percent)", "fee rise percent"),
+    ("= 15,865,968,000,000,000` wei", "= 15,865,968,000,000,001` wei",
      "section 10.3: lowest debit is"),
-    ("about 0.0156 GHOST", "about 0.0157 GHOST", "lowest debit in GHOST"),
-    ("`G_ACTION` is 15.6 million", "`G_ACTION` is 15.5 million", "G_ACTION in millions"),
-    ("is 36.7 million", "is 36.8 million", "G_ACTION + G_PRIV in millions"),
-    ("are 31.2 million", "are 31.1 million", "two actions in millions"),
+    ("about 0.0159 GHOST", "about 0.0158 GHOST", "lowest debit in GHOST"),
+    ("`G_ACTION` is 15.9 million", "`G_ACTION` is 15.8 million", "G_ACTION in millions"),
+    ("is 37.2 million", "is 37.3 million", "G_ACTION + G_PRIV in millions"),
+    ("are 31.7 million", "are 31.6 million", "two actions in millions"),
     ("`MaxBytes = 16 * 1,311,451 = 20,983,216`", "`MaxBytes = 16 * 1,311,291 = 20,980,656`",
      "section 11: MaxBytes envelope"),
     ("= 7,594,984`", "= 7,594,985`", "section 11: MaxActionBytes is"),
@@ -239,11 +249,11 @@ PROPERTIES = (
     ("still takes `G_DATA`.", "still takes its gas.", "RP-24 does not fix"),
 )
 FORMULAS = (
-    ("+ 15,000 + 250,000 = 15,585,968", "+ 15,000 + 250,000 = 15,585,969",
-     "section 19: G_ACTION: '15,585,969' is 15585969"),
-    ("16*1,311,291 + 21,000 + 110,000 = 21,111,656", "16*1,311,291 + 21,000 + 100,000 = 21,111,656",
-     "section 19: G_PRIV: '16*1,311,291 + 21,000 + 100,000' is"),
-    ("+ 110,000 + 160,000 = 21,274,216", "+ 110,000 + 160,000 = 21,274,217",
+    ("+ 15,000 + 250,000 = 15,865,968", "+ 15,000 + 250,000 = 15,865,969",
+     "section 19: G_ACTION: '15,865,969' is 15865969"),
+    ("16*1,311,291 + 21,000 + 370,000 = 21,371,656", "16*1,311,291 + 21,000 + 360,000 = 21,371,656",
+     "section 19: G_PRIV: '16*1,311,291 + 21,000 + 360,000' is"),
+    ("+ 440,000 + 160,000 = 21,604,216", "+ 440,000 + 160,000 = 21,604,217",
      "section 19: G_POLICY"),
     ("1+20+32+32+32+32+1+64+10", "1+20+32+32+32+32+1+64+11", "section 19: capsule"),
     ("12 + (128 + 224) + 16 = 380", "12 + (128 + 224) + 16 = 381", "section 19: NOTE_BYTES"),
@@ -307,7 +317,7 @@ class CheckerTest(unittest.TestCase):
     def test_damaged_file_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "10.md"
-            path.write_text(self.damaged("| `G_PRIV` | 21,111,656 |", "| `G_PRIV` | 21,111,600 |"),
+            path.write_text(self.damaged("| `G_PRIV` | 21,371,656 |", "| `G_PRIV` | 21,111,600 |"),
                             encoding="utf-8")
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
@@ -410,20 +420,23 @@ class CheckerTest(unittest.TestCase):
         self.assertEqual(printed, checker.constants())
         # The RP-24 gas of each type, as section 10.3 and 10.5 state it.
         self.assertEqual({k: printed[k] for k in checker.RP24},
-                         {"G_PRIV": 21_111_656, "G_POLICY": 21_274_216, "G_ACTION": 15_585_968,
+                         {"G_PRIV": 21_371_656, "G_POLICY": 21_604_216, "G_ACTION": 15_865_968,
                           "G_DATA": 21_090_372})
         table = checker.Checker(self.text)
         table.run()
         for name, value in printed.items():
             if name in table.params:
                 self.assertEqual(table.params[name], value, name)
-        self.assertEqual(printed["VERIFY_GAS_ORD"], 110_000)
+        self.assertEqual(printed["VERIFY_GAS_ORD"], 370_000)
+        self.assertEqual(printed["VERIFY_GAS_POLICY"], 440_000)
+        self.assertEqual(printed["VERIFY_GAS_ACTION"], 390_000)
+        self.assertEqual(printed["PREIMAGE_VERIFY_GAS"], 390_000)
         self.assertEqual(printed["VERIFY_GAS_DATA"], 92_300)
 
     def test_constants_not_printed_for_a_damaged_specification(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "10.md"
-            path.write_text(self.damaged("| `G_ACTION` | 15,585,968 |", "| `G_ACTION` | 1 |"),
+            path.write_text(self.damaged("| `G_ACTION` | 15,865,968 |", "| `G_ACTION` | 1 |"),
                             encoding="utf-8")
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
@@ -458,25 +471,31 @@ class CheckerTest(unittest.TestCase):
         errors = checker.check_text(self.text)
         self.assertTrue(any("VERIFY_GAS 110000 is not the scaled charge rounded up, 120000" in e
                             for e in errors), errors)
-        self.assertTrue(any("the slowest ordinary verification, 11.09 ms, is above" in e
-                            for e in errors), errors)
 
     def test_raised_constant_moves_every_gas_figure(self):
-        # Raising VERIFY_GAS recomputes G_PRIV, G_POLICY, G_ACTION and the
-        # window fee examples, so the document's figures no longer match.
-        self.patched(RECORDED_SLOWEST_MS=Fraction(1090, 100), VERIFY_GAS=120_000)
+        # A slower measurement raises each charge and recomputes G_PRIV,
+        # G_POLICY, G_ACTION and the window fee examples, so the document's
+        # figures no longer match.
+        self.patched(VERIFY={"ordinary": 380_000, "policy": 450_000, "action": 400_000,
+                             "preimage": 400_000})
         errors = checker.check_text(self.text)
-        for fragment in ("constant G_PRIV is 21111656, recomputed 21121656",
-                         "constant G_POLICY is 21274216, recomputed 21284216",
-                         "constant G_ACTION is 15585968, recomputed 15595968",
-                         "example window-genesis-ordinary: g is 21111656",
-                         "example window-genesis-policy: g is 21274216",
+        for fragment in ("constant G_PRIV is 21371656, recomputed 21381656",
+                         "constant G_POLICY is 21604216, recomputed 21614216",
+                         "constant G_ACTION is 15865968, recomputed 15875968",
+                         "example window-genesis-ordinary: g is 21371656",
+                         "example window-genesis-policy: g is 21604216",
                          "section 19: G_PRIV"):
             self.assertTrue(any(fragment in e for e in errors), (fragment, errors))
-        # The document's own 110,000 is what the slowest verification is
-        # judged against, until the document is raised too.
-        self.assertTrue(any("is above VERIFY_GAS_ORD / GAS_PER_MS = 11 ms" in e for e in errors),
-                        errors)
+        self.assertTrue(any("section 10.2: `S1` version 2 charge" in e for e in errors), errors)
+
+    def test_measured_slowest_above_its_charge_fails(self):
+        # A measured slowest above the charge the document states.
+        self.patched(MEASURED_SLOWEST_MS=dict(checker.MEASURED_SLOWEST_MS,
+                                              policy=Fraction(4401, 100)))
+        errors = checker.check_text(self.text)
+        self.assertTrue(any("`S4` slowest ms" in e for e in errors), errors)
+        self.assertTrue(any("VERIFY_GAS_POLICY 440000 is not the measured slowest rounded up" in e
+                            for e in errors), errors)
 
     # The arithmetic itself
 

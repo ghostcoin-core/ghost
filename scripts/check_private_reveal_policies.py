@@ -110,6 +110,18 @@ RECORDED_SLOWEST_MS = Fraction(1061, 100)
 # VERIFY_GAS is the scaled charge rounded up to a multiple of this.
 VERIFY_ROUNDING = 10_000
 VERIFY_GAS = 110_000
+# The slowest of at least 1,000 valid and 1,000 invalid verifications of each
+# statement in the node's own verifier, in milliseconds (section 10.2). Each
+# statement's charge is its slowest rounded up to VERIFY_ROUNDING; the
+# preimage statement, which has the action's trace dimensions and is not yet
+# linked into the node, takes the action's charge.
+MEASURED_RUNS = 1_000
+MEASURED_SLOWEST_MS = {"ordinary": Fraction(3692, 100), "policy": Fraction(4399, 100),
+                       "action": Fraction(3889, 100)}
+MEASURED_ROWS = {"ordinary": "`S1` version 2", "policy": "`S4`", "action": "`KNOW_ACTION_v1`"}
+VERIFY = {k: max(VERIFY_GAS, -(-ms * GAS_PER_MS // VERIFY_ROUNDING) * VERIFY_ROUNDING)
+          for k, ms in MEASURED_SLOWEST_MS.items()}
+VERIFY["preimage"] = VERIFY["action"]
 
 # The proof parameters of proofs/src/stark.rs that the bound depends on.
 STARK = {"EXTENSION_DEGREE": 5, "LOG_BLOWUP": 3, "NUM_QUERIES": 43, "MAX_TRACE_HEIGHT": 2048}
@@ -525,6 +537,8 @@ def expected():
         "MAX_TRACE_WIDTH": max(w for _, w in dims.values()),
         "ACTION_CALLDATA_MAX": ACTION_CALLDATA_MAX,
         "VERIFY_GAS": VERIFY_GAS, "VERIFY_GAS_DATA": V1_VERIFY_GAS,
+        "VERIFY_GAS_ORD": VERIFY["ordinary"], "VERIFY_GAS_POLICY": VERIFY["policy"],
+        "VERIFY_GAS_ACTION": VERIFY["action"], "PREIMAGE_VERIFY_GAS": VERIFY["preimage"],
         "SLOT_WORDS": slot_words, "SLOT_OPEN_GAS": slot_words * NEW_STORAGE_WORD_GAS,
         "ACTION_STATE_GAS": 3 * STORAGE_UPDATE_GAS, "REGISTRY_GAS": 2 * NEW_STORAGE_WORD_GAS,
         "ACTION_CALL_GAS": 250_000,
@@ -532,9 +546,9 @@ def expected():
         "OVERRIDE_SUM_MAX": 32 * 255,
         "RECOMMIT_BYTE_GAS": BYTE_GAS * (32 + 16 + NOTE_BYTES),
     }
-    e["G_PRIV"] = gas_of(e["ORD_ENVELOPE_BYTES"], VERIFY_GAS)
-    e["G_POLICY"] = gas_of(e["POLICY_ENVELOPE_BYTES"], VERIFY_GAS, e["SLOT_OPEN_GAS"])
-    e["G_ACTION"] = gas_of(e["ACTION_ENVELOPE_BYTES"], VERIFY_GAS,
+    e["G_PRIV"] = gas_of(e["ORD_ENVELOPE_BYTES"], VERIFY["ordinary"])
+    e["G_POLICY"] = gas_of(e["POLICY_ENVELOPE_BYTES"], VERIFY["policy"], e["SLOT_OPEN_GAS"])
+    e["G_ACTION"] = gas_of(e["ACTION_ENVELOPE_BYTES"], VERIFY["action"],
                            e["ACTION_STATE_GAS"] + e["ACTION_CALL_GAS"])
     e["G_DATA"] = gas_of(e["DATA_ENVELOPE_BYTES"], V1_VERIFY_GAS)
     e["V1_G_PRIV"] = e["G_DATA"]
@@ -548,8 +562,8 @@ def constants():
              "ACTION_PROOF_BYTES", "MAX_TRACE_WIDTH", "SLOT_OPEN_GAS", "ACTION_STATE_GAS",
              "ACTION_CALL_GAS", "REGISTRY_GAS") + RP24
     out = {name: e[name] for name in names}
-    out.update(VERIFY_GAS_ORD=VERIFY_GAS, VERIFY_GAS_POLICY=VERIFY_GAS,
-               VERIFY_GAS_ACTION=VERIFY_GAS, PREIMAGE_VERIFY_GAS=VERIFY_GAS,
+    out.update(VERIFY_GAS_ORD=VERIFY["ordinary"], VERIFY_GAS_POLICY=VERIFY["policy"],
+               VERIFY_GAS_ACTION=VERIFY["action"], PREIMAGE_VERIFY_GAS=VERIFY["preimage"],
                VERIFY_GAS_DATA=V1_VERIFY_GAS, GAS_PER_MS=GAS_PER_MS)
     return out
 
@@ -1143,8 +1157,8 @@ class Checker:
             "NOTE_BYTES": e["NOTE_BYTES"], "ORD_ENVELOPE_BYTES": e["ORD_ENVELOPE_BYTES"],
             "POLICY_ENVELOPE_BYTES": e["POLICY_ENVELOPE_BYTES"],
             "ACTION_ENVELOPE_BYTES": e["ACTION_ENVELOPE_BYTES"],
-            "VERIFY_GAS_ORD": VERIFY_GAS, "VERIFY_GAS_POLICY": VERIFY_GAS,
-            "VERIFY_GAS_ACTION": VERIFY_GAS, "SLOT_OPEN_GAS": e["SLOT_OPEN_GAS"],
+            "VERIFY_GAS_ORD": VERIFY["ordinary"], "VERIFY_GAS_POLICY": VERIFY["policy"],
+            "VERIFY_GAS_ACTION": VERIFY["action"], "SLOT_OPEN_GAS": e["SLOT_OPEN_GAS"],
             "ACTION_STATE_GAS": e["ACTION_STATE_GAS"], "ACTION_CALL_GAS": e["ACTION_CALL_GAS"],
             "G_PRIV": e["G_PRIV"], "G_POLICY": e["G_POLICY"], "G_ACTION": e["G_ACTION"],
             "FEE_WINDOW": FEE_WINDOW, "FEE_STEPS": FEE_STEPS, "TIP_DIVISOR": TIP_DIVISOR,
@@ -1231,10 +1245,37 @@ class Checker:
                       (e["dims"]["ordinary"][1], V1_WIDTH))
             self.same("section 10.2: scaled slowest", millis(m.group(4)), stated)
             self.same("section 10.2: scaled gas", num(m.group(5)), int(stated * GAS_PER_MS))
-        m = self.find(r"VERIFY_GAS_ORD = VERIFY_GAS_POLICY = VERIFY_GAS_ACTION = " + N
-                      + r" \(rounded up\)", code, "section 10.2 VERIFY_GAS")
+        m = self.find(r"estimate = " + N + r" \(rounded up\)", code, "section 10.2 estimate")
         if m:
-            self.same("section 10.2: VERIFY_GAS", num(m.group(1)), VERIFY_GAS)
+            self.same("section 10.2: estimate", num(m.group(1)), VERIFY_GAS)
+        # The measurement: one row per statement, its runs, its slowest and
+        # the charge that slowest rounds up to.
+        rows = {}
+        for line in lines:
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) == 5 and cells[0] in MEASURED_ROWS.values():
+                rows[cells[0]] = cells[1:]
+        names = {"ordinary": "VERIFY_GAS_ORD", "policy": "VERIFY_GAS_POLICY",
+                 "action": "VERIFY_GAS_ACTION"}
+        for kind, row_name in MEASURED_ROWS.items():
+            row = rows.get(row_name)
+            if row is None:
+                self.fail(f"section 10.2: the measurement has no row for {row_name}")
+                continue
+            valid, invalid, ms, gas = row
+            for label, n in (("valid", valid), ("invalid", invalid)):
+                if to_int(n) is None or to_int(n) < 1000:
+                    self.fail(f"section 10.2: {row_name} has {n} {label} runs, fewer than 1,000")
+            self.same(f"section 10.2: {row_name} runs", (to_int(valid), to_int(invalid)),
+                      (MEASURED_RUNS, MEASURED_RUNS))
+            self.same(f"section 10.2: {row_name} slowest ms", millis(ms),
+                      MEASURED_SLOWEST_MS[kind])
+            self.same(f"section 10.2: {row_name} charge", to_int(gas.strip("`")), VERIFY[kind])
+            if VERIFY[kind] != max(VERIFY_GAS, round_up(math.ceil(MEASURED_SLOWEST_MS[kind]
+                                                                 * GAS_PER_MS), VERIFY_ROUNDING)):
+                self.fail(f"{names[kind]} {VERIFY[kind]} is not the measured slowest rounded up")
+            if not verification_within_charge(MEASURED_SLOWEST_MS[kind], VERIFY[kind]):
+                self.fail(f"the measured slowest {kind} verification is above its charge")
         want = round_up(math.ceil(exact * GAS_PER_MS), VERIFY_ROUNDING)
         if VERIFY_GAS != want:
             self.fail(f"VERIFY_GAS {VERIFY_GAS} is not the scaled charge rounded up, {want}")
@@ -1265,7 +1306,7 @@ class Checker:
         for kind, name in verify.items():
             rows, width = e["dims"][kind]
             slowest = RECORDED_SLOWEST_MS * Fraction(max(width, V1_WIDTH), V1_WIDTH)
-            gas = self.params.get(name, VERIFY_GAS)
+            gas = self.params.get(name, VERIFY[kind])
             if rows > STARK["MAX_TRACE_HEIGHT"] or not verification_within_charge(slowest, gas):
                 self.fail(f"the slowest {kind} verification, {float(slowest):.2f} ms, is above "
                           f"{name} / GAS_PER_MS = {Fraction(gas, GAS_PER_MS)} ms")
@@ -1274,7 +1315,7 @@ class Checker:
         if m:
             self.same("section 2: recorded slowest ms", millis(m.group(1)), RECORDED_SLOWEST_MS)
             self.same_word("section 2: runs", m.group(2), 9)
-        m = self.find(r"are set from the recorded " + MS + r" ms", self.section(15),
+        m = self.find(r"were set from the recorded " + MS + r" ms", self.section(15),
                       "section 15 item 1")
         if m:
             self.same("section 15: recorded slowest ms", millis(m.group(1)), RECORDED_SLOWEST_MS)
@@ -1283,10 +1324,15 @@ class Checker:
         if m:
             self.same("section 17: verification charge", num(m.group(1)), VERIFY_GAS)
             self.same("section 17: recorded slowest ms", millis(m.group(2)), RECORDED_SLOWEST_MS)
+        m = self.find(r"charges are raised to (\d{1,3}(?:,\d{3})*), (\d{1,3}(?:,\d{3})*) and "
+                      r"(\d{1,3}(?:,\d{3})*) gas", self.section(17), "section 17 measured charges")
+        if m:
+            self.same("section 17: measured charges", tuple(num(x) for x in m.groups()),
+                      (VERIFY["ordinary"], VERIFY["policy"], VERIFY["action"]))
         m = self.find(r"`PREIMAGE_VERIFY_GAS = " + N + "`", self.sub("9.3"),
                       "section 9.3 PREIMAGE_VERIFY_GAS")
         if m:
-            self.same("section 9.3: PREIMAGE_VERIFY_GAS", num(m.group(1)), VERIFY_GAS)
+            self.same("section 9.3: PREIMAGE_VERIFY_GAS", num(m.group(1)), VERIFY["preimage"])
 
     def check_gas_mentions(self):
         e = self.e
