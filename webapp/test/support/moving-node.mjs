@@ -81,9 +81,21 @@ const fromHexBytes = (hex) => Uint8Array.from(Buffer.from(hex.slice(2), "hex"));
 // whenever its proof's root is more than `deepest` blocks below the tip.
 // With `refuseEnvelope`, the first envelope sent is refused on that send and
 // on every later send of it (`stale.refused` counts them), while any other
-// envelope is judged as above. `clock.ms` is the flow's time (see flowOn); a
-// proof moves it on by `proveMs`.
-export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, deepest = STALE_ROOT_DEPTH, refuseEnvelope = false }) {
+// envelope is judged as above. With `refuseWindowFee`, that many sends are
+// refused first, before any other judgement, as the node refuses a reveal
+// whose fee window moved on after the quote: code -32000 and the node's exact
+// words, "reveal fee is not the window fee: have F, want G" (`windowFee.refused`
+// counts them). `clock.ms` is the flow's time (see flowOn); a proof moves it
+// on by `proveMs`.
+export function movingNode({
+  step,
+  proveBlocks,
+  proveMs = 0,
+  refuseFirst = 0,
+  deepest = STALE_ROOT_DEPTH,
+  refuseEnvelope = false,
+  refuseWindowFee = 0,
+}) {
   const ghost = loadGhostSync();
   const topic = (tag) => ghost.keccak256(concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]));
   const commitTopic = toHex(topic(COMMIT_TAG));
@@ -105,6 +117,7 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
   const coins = [];
   const stale = refuseEnvelope ? { envelope: null, refused: 0 } : null;
   let refuse = refuseFirst;
+  const windowFee = { left: refuseWindowFee, refused: 0 };
 
   // A block holding `logs`, each the one log of its own transaction's
   // receipt: { topics, data } (hex).
@@ -186,7 +199,16 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
     const depth = tip() - proof.rootHeight;
     const send = { envelope: proof.envelope, proof: proof.n, tip: tip(), depth, error: null };
     sends.push(send);
-    if (stale && (stale.envelope === null || stale.envelope === proof.envelope)) {
+    if (windowFee.left > 0) {
+      windowFee.left -= 1;
+      windowFee.refused += 1;
+      // The window the node checks the reveal in has another fee than the
+      // one the proof carries, as in the CI run's refusal.
+      const want = (BigInt(proof.fee) * 4n) / 5n;
+      send.error = `reveal fee is not the window fee: have ${BigInt(proof.fee)}, want ${want}`;
+      throw Object.assign(new Error(send.error), { code: -32000 });
+    }
+    if (stale &&(stale.envelope === null || stale.envelope === proof.envelope)) {
       stale.envelope = proof.envelope;
       stale.refused += 1;
       send.error = HEAD_MOVED;
@@ -388,7 +410,7 @@ export function movingNode({ step, proveBlocks, proveMs = 0, refuseFirst = 0, de
     },
   };
 
-  return { fetch, prover, networks, requests, sends, proofs, reveals, balances, coins, stale, tip, clock };
+  return { fetch, prover, networks, requests, sends, proofs, reveals, balances, coins, stale, windowFee, tip, clock };
 }
 
 // A flow on the stand-in whose waits are recorded and pass at once, moving

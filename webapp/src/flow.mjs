@@ -134,7 +134,8 @@ export const WALLET_APPROVAL = "approve the Vanish in your wallet";
 // The JSON-RPC code of a request the wallet does not know: a wallet without
 // ghost_newReceiveAddress answers it so.
 const METHOD_NOT_FOUND = -32601;
-// Times a reveal is proved again when the fee window changes meanwhile.
+// Times a reveal is proved again when the fee window changes meanwhile, a
+// send the node refuses as not the window fee (WINDOW_FEE_REFUSED) included.
 const FEE_ATTEMPTS = 3;
 // The node's refusal of a reveal it could not check while new blocks kept
 // arriving (ghost-node's ghostpool): a transient, not a verdict on the
@@ -144,6 +145,12 @@ const FEE_ATTEMPTS = 3;
 // still: a node that seals a block every few milliseconds never does.
 export const HEAD_MOVED = "chain head kept moving while the reveal was checked";
 export const HEAD_MOVED_SENDS = 5;
+// The node's refusal of a reveal whose fee is not the fee of the window the
+// node checks it in ("reveal fee is not the window fee: have F, want G"): the
+// window moved on between the app's quote and the send. It is a changed fee,
+// not a verdict on the reveal, so the app counts it as one (FEE_ATTEMPTS),
+// quotes the fee again and proves again.
+export const WINDOW_FEE_REFUSED = "reveal fee is not the window fee";
 // A node whose head keeps moving can refuse every send of one proof: the
 // same envelope then never lands. Once a proof's HEAD_MOVED_SENDS sends are
 // all refused (or taken and let go), the reveal is proved again, of the same
@@ -255,6 +262,12 @@ export function receiptBytes(receipt) {
 // object, so a second copy of rpc.mjs (a bundle, a test) still matches.
 export function isHeadMoved(err) {
   return Number(err?.code) === SERVER_ERROR && String(err?.message ?? "").includes(HEAD_MOVED);
+}
+
+// The window fee refusal (WINDOW_FEE_REFUSED) as it arrives over JSON-RPC,
+// told by its shape on the wire in the same way.
+export function isWindowFeeRefused(err) {
+  return Number(err?.code) === SERVER_ERROR && String(err?.message ?? "").includes(WINDOW_FEE_REFUSED);
 }
 
 // The reveal cannot be made yet; the message says what it waits for.
@@ -1948,7 +1961,11 @@ export function createFlow({
   // by then, since a node that refused one envelope that often may never
   // take it. A refusal surfaces, with nothing asked after it, only once
   // `headMovedMs` has passed since the first proof or on the last send of
-  // the `headMovedProofs`-th proof. Any other refusal is final. Every
+  // the `headMovedProofs`-th proof. A send the node refuses because its fee
+  // is not the window fee (WINDOW_FEE_REFUSED: the window moved on after the
+  // quote) counts as a changed fee: the fee is quoted again and the reveal
+  // proved again, within the same FEE_ATTEMPTS as a fee that lapsed while
+  // proving. Any other refusal is final. Every
   // proof after the first is of the first proof's input coin (`pinned`), so
   // an endpoint that took a send and still answered with the refusal cannot
   // have the remainder pay the same reveal again.
@@ -2033,6 +2050,11 @@ export function createFlow({
         try {
           hash = await rpc.call("eth_sendRawTransaction", [toHex(proved.envelope)]);
         } catch (err) {
+          if (isWindowFeeRefused(err)) {
+            feeChanges += 1;
+            progress("the fee window changed; proving again with its fee");
+            continue attempts;
+          }
           if (!isHeadMoved(err)) throw err;
           refusal = err;
         }
