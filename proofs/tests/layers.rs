@@ -373,33 +373,44 @@ fn a_batch_claiming_other_children_than_it_verified_fails() {
 /// fails verification. A real reveal made on testnet2, batched under a
 /// testnet1 binding, is refused: by the honest prover, and, proven anyway,
 /// by the verifier under the testnet1 tag.
+///
+/// The testnet1 reveal is proven afresh on every run. The testnet2 reveal is
+/// the same reveal proven once on testnet2 and kept in
+/// `tests/fixtures/foreign_chain_reveal_testnet2.txt`; it is verified here
+/// before use (and on its own by
+/// `foreign_chain_reveal_fixture_verifies_and_rejects_wrong_binding`), so
+/// this test proves one reveal instead of two. The batch key, which does not
+/// depend on the reveal, is built on a second thread while the reveal is
+/// proven; the two batch proofs run one after the other, as each takes most
+/// of a test sandbox's memory.
 #[test]
 fn a_bundle_of_one_real_reveal_verifies() {
     use ghost_proofs::*;
     let _guard = one_at_a_time();
-    let shape = ScaleShape {
-        num_queries: TEST.num_queries,
-        digest_elems: 9,
-    };
-    let params = ChainParams {
-        chain_id: *b"testnet1",
-        version: PROTOCOL_VERSION_2,
-        domain: [0x47; 32],
-    };
-    progress("bundle of one reveal: start");
-    let (tx, proof) = reveal_fixture::prove(&params, shape);
-    verify_coin_reveal_v2_scale_shaped(&params, &tx, &proof, shape).unwrap();
-    progress("bundle of one reveal: reveal proven");
+    let t = std::time::Instant::now();
+    let shape = reveal_fixture::shape();
+    let params = reveal_fixture::testnet1();
     let child = layers::RevealChild::new(TEST.num_queries);
+    progress("bundle of one reveal: start");
+    let ((tx, proof), key) = std::thread::scope(|s| {
+        let key = s.spawn(|| layers::batch_key(&child, TEST, child.log_height(), 1, LEAN));
+        let reveal = reveal_fixture::prove(&params, shape);
+        (reveal, key.join().expect("the batch key builder panicked"))
+    });
+    let key = key.unwrap();
+    verify_coin_reveal_v2_scale_shaped(&params, &tx, &proof, shape).unwrap();
+    progress(&format!(
+        "bundle of one reveal: reveal proven and key built after {:?}, table heights {:?}",
+        t.elapsed(),
+        key.table_heights()
+    ));
     let publics = layers::RevealChild::public_values(&params, &tx);
     let binding = layers::Binding::of(&params);
     assert_eq!(binding.chain_id, *b"testnet1");
-    let key = layers::batch_key(&child, TEST, child.log_height(), 1, LEAN).unwrap();
-    progress(&format!("bundle of one reveal: key, table heights {:?}", key.table_heights()));
     let start = layers::START_DIGEST;
     let children = vec![(proof.as_bytes().to_vec(), publics.clone())];
     let batch = layers::prove_batch(&key, &child, &binding, 0, &start, &children, [3; 32]).unwrap();
-    progress("bundle of one reveal: proven");
+    progress(&format!("bundle of one reveal: proven after {:?}", t.elapsed()));
     layers::verify_batch(&key, &binding, 0, &start, &[publics.clone()], &batch).unwrap();
 
     let mut other = tx.clone();
@@ -407,17 +418,19 @@ fn a_bundle_of_one_real_reveal_verifies() {
     let changed = layers::RevealChild::public_values(&params, &other);
     assert_ne!(changed, publics);
     assert!(layers::verify_batch(&key, &binding, 0, &start, &[changed], &batch).is_err());
-    let other_chain = ChainParams {
-        chain_id: *b"testnet2",
-        ..params
-    };
+    let other_chain = reveal_fixture::testnet2();
     let elsewhere = layers::RevealChild::public_values(&other_chain, &tx);
     assert!(layers::verify_batch(&key, &binding, 0, &start, &[elsewhere], &batch).is_err());
 
     // A real reveal proven on testnet2, with its own public values, batched
-    // under the testnet1 binding.
-    let (tx2, proof2) = reveal_fixture::prove(&other_chain, shape);
+    // under the testnet1 binding: the same reveal as above, its testnet2
+    // proof read from the fixture and verified on testnet2 first.
+    let stored = reveal_fixture::load_testnet2();
+    let (tx2, proof2) = (stored.tx, stored.proof);
+    assert_eq!(tx2, tx, "the fixture holds the same reveal, proven on testnet2");
+    assert_ne!(proof2, proof);
     verify_coin_reveal_v2_scale_shaped(&other_chain, &tx2, &proof2, shape).unwrap();
+    assert!(verify_coin_reveal_v2_scale_shaped(&params, &tx2, &proof2, shape).is_err());
     let publics2 = layers::RevealChild::public_values(&other_chain, &tx2);
     let foreign = vec![(proof2.as_bytes().to_vec(), publics2.clone())];
     assert_eq!(
@@ -425,17 +438,279 @@ fn a_bundle_of_one_real_reveal_verifies() {
         Err(ProofError::Rejected),
         "the honest prover refuses a testnet2 reveal under a testnet1 binding"
     );
-    progress("bundle of one reveal: testnet2 reveal refused");
+    progress(&format!("bundle of one reveal: testnet2 reveal refused after {:?}", t.elapsed()));
     let tag = key.tag(&binding, 0);
     let forged = layers::prove_batch_unchecked(&key, &child, &tag, &start, &foreign, [13; 32]).unwrap();
-    progress("bundle of one reveal: testnet2 reveal proven anyway");
+    progress(&format!("bundle of one reveal: testnet2 reveal proven anyway after {:?}", t.elapsed()));
     assert!(layers::verify_batch(&key, &binding, 0, &start, &[publics2.clone()], &forged).is_err());
     let binding2 = layers::Binding::of(&other_chain);
     assert!(layers::verify_batch(&key, &binding2, 0, &start, &[publics2], &forged).is_err());
 }
 
+/// The kept testnet2 reveal is what its file says: a version 2 coin reveal
+/// proven on testnet2 at the tests' reveal shape, which verifies there, and
+/// nowhere else. Its proof is refused on testnet1, under another protocol
+/// version or genesis domain, at another shape, for a changed transaction
+/// field, and with a changed or cut proof; a changed file is refused by the
+/// reader.
+///
+/// Set `GHOST_REGENERATE_REVEAL_FIXTURE=1` to prove the reveal on testnet2
+/// again and rewrite the file before the checks, after a change to the
+/// reveal's proof format.
+#[test]
+fn foreign_chain_reveal_fixture_verifies_and_rejects_wrong_binding() {
+    use ghost_proofs::*;
+    let shape = reveal_fixture::shape();
+    let testnet2 = reveal_fixture::testnet2();
+    if std::env::var_os(reveal_fixture::REGENERATE).is_some() {
+        let (tx, proof) = reveal_fixture::prove(&testnet2, shape);
+        let dir = std::path::Path::new(reveal_fixture::TESTNET2_PATH).parent().unwrap();
+        std::fs::create_dir_all(dir).unwrap();
+        let text = reveal_fixture::encode(&reveal_fixture::Stored {
+            params: testnet2.clone(),
+            shape,
+            tx,
+            proof,
+        });
+        std::fs::write(reveal_fixture::TESTNET2_PATH, text).unwrap();
+    }
+    let text = std::fs::read_to_string(reveal_fixture::TESTNET2_PATH).unwrap();
+    let stored = reveal_fixture::decode(&text).unwrap();
+    assert_eq!(stored.params, testnet2);
+    assert_eq!(stored.params.chain_id, *b"testnet2");
+    assert_eq!(stored.shape, shape);
+    assert_eq!(reveal_fixture::encode(&stored), text, "the file is in its one written form");
+    let (tx, proof) = (stored.tx, stored.proof);
+    verify_coin_reveal_v2_scale_shaped(&testnet2, &tx, &proof, shape).unwrap();
+
+    // The wrong binding: another chain, protocol version or domain.
+    let testnet1 = reveal_fixture::testnet1();
+    assert!(verify_coin_reveal_v2_scale_shaped(&testnet1, &tx, &proof, shape).is_err());
+    let other_version = ChainParams {
+        version: [0x00, 0x03],
+        ..testnet2.clone()
+    };
+    assert!(verify_coin_reveal_v2_scale_shaped(&other_version, &tx, &proof, shape).is_err());
+    let other_domain = ChainParams {
+        domain: [0x48; 32],
+        ..testnet2.clone()
+    };
+    assert!(verify_coin_reveal_v2_scale_shaped(&other_domain, &tx, &proof, shape).is_err());
+    // The layers see the chain too: the reveal's public values under
+    // testnet1 are not those it was proven under.
+    assert_ne!(
+        layers::RevealChild::public_values(&testnet1, &tx),
+        layers::RevealChild::public_values(&testnet2, &tx)
+    );
+    // Another shape.
+    let wider = ScaleShape {
+        num_queries: shape.num_queries + 1,
+        ..shape
+    };
+    assert!(verify_coin_reveal_v2_scale_shaped(&testnet2, &tx, &proof, wider).is_err());
+
+    // A changed transaction field.
+    let mut fee = tx.clone();
+    fee.fee[31] ^= 1;
+    assert!(verify_coin_reveal_v2_scale_shaped(&testnet2, &fee, &proof, shape).is_err());
+    let mut recipient = tx.clone();
+    recipient.recipient[0] ^= 1;
+    assert!(verify_coin_reveal_v2_scale_shaped(&testnet2, &recipient, &proof, shape).is_err());
+    let mut marker = tx.clone();
+    marker.marker[0] ^= 1;
+    assert!(verify_coin_reveal_v2_scale_shaped(&testnet2, &marker, &proof, shape).is_err());
+
+    // A changed or cut proof.
+    let bytes = proof.as_bytes();
+    for at in [bytes.len() / 3, bytes.len() / 2, 2 * bytes.len() / 3] {
+        let mut changed = bytes.to_vec();
+        changed[at] ^= 1;
+        let changed = Proof::from_bytes(changed);
+        assert!(
+            verify_coin_reveal_v2_scale_shaped(&testnet2, &tx, &changed, shape).is_err(),
+            "a proof changed at byte {at} of {}",
+            bytes.len()
+        );
+    }
+    let cut = Proof::from_bytes(bytes[..bytes.len() - 1].to_vec());
+    assert!(verify_coin_reveal_v2_scale_shaped(&testnet2, &tx, &cut, shape).is_err());
+
+    // A changed file: another chain named, a field missing or repeated, a
+    // stray line.
+    let renamed = text.replacen("chain_id 746573746e657432", "chain_id 746573746e657431", 1);
+    assert_ne!(renamed, text);
+    let renamed = reveal_fixture::decode(&renamed).unwrap();
+    assert_eq!(renamed.params, testnet1);
+    assert!(verify_coin_reveal_v2_scale_shaped(&renamed.params, &renamed.tx, &renamed.proof, shape).is_err());
+    let without_fee: String = text.lines().filter(|l| !l.starts_with("fee ")).map(|l| format!("{l}\n")).collect();
+    assert!(reveal_fixture::decode(&without_fee).is_err());
+    let fee_line = text.lines().find(|l| l.starts_with("fee ")).unwrap();
+    assert!(reveal_fixture::decode(&format!("{text}{fee_line}\n")).is_err());
+    assert!(reveal_fixture::decode(&format!("{text}stray 00\n")).is_err());
+    assert!(reveal_fixture::decode(&format!("{text}proof 0\n")).is_err());
+}
+
 mod reveal_fixture {
     use ghost_proofs::*;
+
+    /// The file of the reveal proven on testnet2.
+    pub const TESTNET2_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/foreign_chain_reveal_testnet2.txt");
+
+    /// The environment variable that has the fixture test prove the testnet2
+    /// reveal again and rewrite its file.
+    pub const REGENERATE: &str = "GHOST_REGENERATE_REVEAL_FIXTURE";
+
+    /// The shape of the reveal proofs the layers tests batch: the tests'
+    /// two queries, full-length digests.
+    pub fn shape() -> ScaleShape {
+        ScaleShape {
+            num_queries: super::TEST.num_queries,
+            digest_elems: 9,
+        }
+    }
+
+    /// The chain of the tests' bundles.
+    pub fn testnet1() -> ChainParams {
+        ChainParams {
+            chain_id: *b"testnet1",
+            version: PROTOCOL_VERSION_2,
+            domain: [0x47; 32],
+        }
+    }
+
+    /// Another chain: testnet1's versions and domain, another identifier.
+    pub fn testnet2() -> ChainParams {
+        ChainParams {
+            chain_id: *b"testnet2",
+            ..testnet1()
+        }
+    }
+
+    /// A reveal as kept in a file: the chain and shape it was proven at, its
+    /// transaction and its proof.
+    pub struct Stored {
+        pub params: ChainParams,
+        pub shape: ScaleShape,
+        pub tx: CoinRevealV2,
+        pub proof: Proof,
+    }
+
+    /// The bytes of a proof on each `proof` line.
+    const PROOF_LINE_BYTES: usize = 64;
+
+    const HEADER: &str = "\
+# A version 2 coin reveal proven on testnet2: reveal_fixture::prove in
+# proofs/tests/layers.rs, its chain and shape below. Read by
+# a_bundle_of_one_real_reveal_verifies and checked by
+# foreign_chain_reveal_fixture_verifies_and_rejects_wrong_binding. To write
+# it again, run that test with GHOST_REGENERATE_REVEAL_FIXTURE=1.
+# Each line is a name and a value, in hex but for the shape's numbers; the
+# proof runs over many lines.
+";
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn unhex(text: &str) -> Result<Vec<u8>, String> {
+        if text.len() % 2 != 0 {
+            return Err(format!("odd hex length {}", text.len()));
+        }
+        (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(|e| format!("{e}: {text}")))
+            .collect()
+    }
+
+    fn array<const N: usize>(text: &str) -> Result<[u8; N], String> {
+        let bytes = unhex(text)?;
+        bytes.try_into().map_err(|b: Vec<u8>| format!("{} bytes, not {N}", b.len()))
+    }
+
+    /// The file's text for `stored`.
+    pub fn encode(stored: &Stored) -> String {
+        let (p, tx) = (&stored.params, &stored.tx);
+        let mut out = String::from(HEADER);
+        for (name, value) in [
+            ("chain_id", hex(&p.chain_id)),
+            ("version", hex(&p.version)),
+            ("domain", hex(&p.domain)),
+            ("num_queries", stored.shape.num_queries.to_string()),
+            ("digest_elems", stored.shape.digest_elems.to_string()),
+            ("root", hex(&tx.root)),
+            ("marker", hex(&tx.marker)),
+            ("remainder", hex(&tx.remainder)),
+            ("remainder_note", hex(&tx.remainder_note)),
+            ("recipient", hex(&tx.recipient)),
+            ("out", hex(&tx.out)),
+            ("fee", hex(&tx.fee)),
+        ] {
+            out.push_str(&format!("{name} {value}\n"));
+        }
+        for chunk in stored.proof.as_bytes().chunks(PROOF_LINE_BYTES) {
+            out.push_str(&format!("proof {}\n", hex(chunk)));
+        }
+        out
+    }
+
+    /// The reveal in a file's text. Every field but the proof appears once;
+    /// the proof's lines join in order.
+    pub fn decode(text: &str) -> Result<Stored, String> {
+        let mut fields = std::collections::BTreeMap::new();
+        let mut proof = Vec::new();
+        for line in text.lines() {
+            if line.starts_with('#') {
+                continue;
+            }
+            let (name, value) = line.split_once(' ').ok_or_else(|| format!("no value: {line}"))?;
+            if name == "proof" {
+                proof.extend(unhex(value)?);
+            } else if fields.insert(name, value).is_some() {
+                return Err(format!("{name} twice"));
+            }
+        }
+        let mut take = |name: &str| fields.remove(name).ok_or_else(|| format!("no {name}"));
+        let number = |value: &str| value.parse::<usize>().map_err(|e| format!("{e}: {value}"));
+        let stored = Stored {
+            params: ChainParams {
+                chain_id: array(take("chain_id")?)?,
+                version: array(take("version")?)?,
+                domain: array(take("domain")?)?,
+            },
+            shape: ScaleShape {
+                num_queries: number(take("num_queries")?)?,
+                digest_elems: number(take("digest_elems")?)?,
+            },
+            tx: CoinRevealV2 {
+                root: array(take("root")?)?,
+                marker: array(take("marker")?)?,
+                remainder: array(take("remainder")?)?,
+                remainder_note: array(take("remainder_note")?)?,
+                recipient: array(take("recipient")?)?,
+                out: array(take("out")?)?,
+                fee: array(take("fee")?)?,
+            },
+            proof: Proof::from_bytes(proof),
+        };
+        if let Some(name) = fields.keys().next() {
+            return Err(format!("unknown field {name}"));
+        }
+        if stored.proof.as_bytes().is_empty() {
+            return Err("no proof".into());
+        }
+        Ok(stored)
+    }
+
+    /// The testnet2 reveal from its file, checked to be the chain and shape
+    /// the tests expect.
+    pub fn load_testnet2() -> Stored {
+        let text = std::fs::read_to_string(TESTNET2_PATH).unwrap_or_else(|e| panic!("{TESTNET2_PATH}: {e}"));
+        let stored = decode(&text).unwrap_or_else(|e| panic!("{TESTNET2_PATH}: {e}"));
+        assert_eq!(stored.params, testnet2(), "{TESTNET2_PATH} names another chain");
+        assert_eq!(stored.shape, shape(), "{TESTNET2_PATH} holds another shape");
+        stored
+    }
 
     fn path() -> [[u8; 32]; TREE_DEPTH] {
         let mut path = [[0u8; 32]; TREE_DEPTH];
