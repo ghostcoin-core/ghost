@@ -30,15 +30,33 @@
 //! header hash and its difficulty; the leaf at index `i` is the header at
 //! height `i`, from genesis to the tip.
 //!
+//! # What the sampled check credits
+//!
 //! A path proves only that a header is a leaf of the range, not that it is an
-//! ancestor of the tip: a range of copied honest headers followed by a tail
-//! mined on some other parent passes every sample. So the tail is tied to the
-//! leaves below it: the header before the tail's first is sent too, checked
-//! in full (path, difficulty, key block and seal) and must be the parent the
-//! tail's first header names. A range whose tail does not extend the leaf
-//! below it is refused outright; moving the break further down means sealing
-//! every header between it and the tail, which is the work of a fork at the
-//! break, and an unsealed header there is what the samples catch.
+//! ancestor of the tip. A range of copied honest headers through height
+//! `H - 2`, a sealed header at `H - 1` whose parent is not the leaf at
+//! `H - 2`, and a sealed tail from `H` linked to it passes every sample and
+//! the tail's own checks: the range then claims the honest chain's work for a
+//! tip that has only the tail's. So the sampled check credits only the work
+//! of the contiguous tail, the last `tail_headers` headers, whose links by
+//! `parentHash` it checked one by one: [`CheckedChain::credited_work`] is that
+//! work and never more. The work below the tail is returned as
+//! [`CheckedChain::claimed_prefix_work`], and it is **unauthenticated**: the
+//! root claims it, the samples found no unsealed header in it, but nothing
+//! binds those leaves to the tip's ancestry. A caller must not add it to the
+//! credited work, compare chains by it or treat it as proof of work done. A
+//! caller that needs the whole chain's work uses [`HeaderCheck::Full`], which
+//! checks every link from genesis and credits all of it.
+//!
+//! Binding the sampled leaves to the tip's ancestry (the FlyClient ancestry
+//! check over the header's `headerMmrRoot`, with its written bound) is not
+//! built here.
+//!
+//! The header before the tail's first is sent too, checked in the same way
+//! as a tail header (path, difficulty, key block and seal), and must be the
+//! parent the tail's first header names, so a tail mined on a parent the
+//! range does not hold is refused outright. That header's work is not
+//! credited, and it says nothing of the headers below it.
 //!
 //! The flow has two steps, so the caller can fetch in bulk:
 //! [`HeaderSampler::check_tail`] checks the tail, and the header before it,
@@ -388,14 +406,22 @@ impl CheckedTail {
         self.leaf_count
     }
 
-    /// The work of every header up to the tip, as the root claims it.
+    /// The work of every header up to the tip, as the root claims it; only
+    /// [`tail_work`](Self::tail_work) of it is checked by links.
     pub fn total_work(&self) -> u128 {
         self.total_work
     }
 
-    /// The work before the tail's first header: samples are drawn below it.
+    /// The work before the tail's first header, as the root claims it:
+    /// samples are drawn below it.
     pub fn tail_start_work(&self) -> u128 {
         self.tail_start_work
+    }
+
+    /// The work of the tail's headers, each checked and linked by its parent
+    /// hash to the one before it: the work a sampled check credits.
+    pub fn tail_work(&self) -> u128 {
+        self.total_work - self.tail_start_work
     }
 
     pub fn tip_hash(&self) -> [u8; 32] {
@@ -426,12 +452,20 @@ pub enum Request {
     EveryHeader { count: u64 },
 }
 
-/// A header chain checked to its tip.
+/// A header chain checked to its tip; see "What the sampled check credits"
+/// in the module documentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CheckedChain {
     pub tip_hash: [u8; 32],
     pub tip_height: u64,
-    pub total_work: u128,
+    /// The work the check authenticated: under a sampled check, the work of
+    /// the contiguous tail linked by parent hashes and never more; under the
+    /// full check, the work of every header from genesis.
+    pub credited_work: u128,
+    /// The work below the tail that the root claims, **unauthenticated**:
+    /// nothing binds those leaves to the tip's ancestry. Never add it to
+    /// `credited_work`. Zero under the full check, which credits it.
+    pub claimed_prefix_work: u128,
     /// The headers before the tail that were checked: the samples, or every
     /// one of them.
     pub checked_before_tail: u64,
@@ -652,8 +686,9 @@ impl HeaderSampler {
     /// Unless the tail starts at genesis, `parent` is the header before the
     /// tail's first, with its key block and path: it is checked in the same
     /// way, and the tail's first header must name it as its parent and be
-    /// stamped after it. This ties the tail to the leaves below it, whose work
-    /// the samples then credit.
+    /// stamped after it. This refuses a tail mined on a parent the range does
+    /// not hold; it does not bind the leaves further down to the tip, and its
+    /// own work is not credited.
     pub fn check_tail(
         &mut self,
         root: &[u8; 32],
@@ -745,6 +780,9 @@ impl HeaderSampler {
     /// its seed height, or the genesis header) and a valid seal under that
     /// key block. The cheap checks of every sample come first, then the
     /// seals, grouped by key block; the first refusal found is returned.
+    ///
+    /// The chain returned credits only the tail's work; the work below it is
+    /// the unauthenticated `claimed_prefix_work`.
     pub fn check_samples(
         &mut self,
         tail: &CheckedTail,
@@ -776,7 +814,8 @@ impl HeaderSampler {
         Ok(CheckedChain {
             tip_hash: tail.tip_hash,
             tip_height: tail.tip_height,
-            total_work: tail.total_work,
+            credited_work: tail.tail_work(),
+            claimed_prefix_work: tail.tail_start_work,
             checked_before_tail: samples.len() as u64,
         })
     }
@@ -785,7 +824,8 @@ impl HeaderSampler {
     /// tail, in order, is checked as [`HeaderChain`] checks it (parent,
     /// number, timestamp, difficulty, seal under the key block on its own
     /// branch), the tail's headers follow them, and the mountain range built
-    /// from all of them must be the tail's root. The tail's seals were checked
+    /// from all of them must be the tail's root. The work of every header is
+    /// credited. The tail's seals were checked
     /// by [`check_tail`](Self::check_tail) and are not hashed again. The
     /// sampler's own RandomX caches are dropped first.
     pub fn check_every_header(
@@ -824,10 +864,15 @@ impl HeaderSampler {
         if root_of_leaves(&leaves) != Some(tail.root) {
             return Err(SampleError::FullRoot);
         }
+        // Every header was linked and checked, and the root is built from
+        // their leaves, so their whole work is credited.
+        let credited_work = leaves.iter().try_fold(0u128, |sum, leaf| sum.checked_add(leaf.work));
+        let credited_work = credited_work.ok_or(SampleError::FullRoot)?;
         Ok(CheckedChain {
             tip_hash: tail.tip_hash,
             tip_height: tail.tip_height,
-            total_work: tail.total_work,
+            credited_work,
+            claimed_prefix_work: 0,
             checked_before_tail: count,
         })
     }

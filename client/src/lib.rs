@@ -62,7 +62,8 @@
 //!   by cumulative work with the caller's generator, each with its seal, its
 //!   key block and its path to a Merkle mountain range root the caller gives;
 //!   the sample count from an attacker ratio and an assurance target, and a
-//!   full check of every header as an option.
+//!   full check of every header as an option. A sampled check credits only
+//!   the linked tail's work; the work below it is returned unauthenticated.
 //!
 //! # Secrets
 //!

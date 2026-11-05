@@ -589,7 +589,14 @@ fn sampler_catches_a_forked_invalid_stretch_at_the_stated_rate() {
         let landed = points.iter().filter(|&&p| in_stretch(p)).count() as u64;
         hits += landed;
         match sampler.check_samples(&tail, &points, &chain.answer(&points)) {
-            Ok(checked) => assert_eq!(landed, 0, "seed {seed}: a sample hit the stretch and passed: {checked:?}"),
+            Ok(checked) => {
+                assert_eq!(landed, 0, "seed {seed}: a sample hit the stretch and passed: {checked:?}");
+                // A pass credits the linked tail alone, not the claimed work.
+                assert_eq!(checked.credited_work, tail.tail_work());
+                assert_eq!(checked.credited_work, TAIL.into());
+                assert_eq!(checked.claimed_prefix_work, chain.at(chain.count() - TAIL));
+                assert_eq!(checked.credited_work + checked.claimed_prefix_work, total);
+            }
             Err(SampleError::Sample { index, fault: Fault::Seal(SealError::AboveTarget) }) => {
                 assert!(in_stretch(points[index]), "seed {seed}: refused outside the stretch");
                 caught += 1;
@@ -626,7 +633,9 @@ fn honest_chain_passes_with_the_wallets_own_points() {
         let points = points(request);
         let checked = sampler.check_samples(&tail, &points, &chain.answer(&points)).unwrap();
         assert_eq!(checked.tip_hash, tail.tip_hash());
-        assert_eq!(checked.total_work, chain.tree.total());
+        assert_eq!(checked.credited_work, chain.tree.total() - chain.at(16));
+        assert_eq!(checked.credited_work, u128::from(TAIL));
+        assert_eq!(checked.claimed_prefix_work, chain.at(16));
         assert_eq!(checked.checked_before_tail, count);
     }
     assert_ne!(
@@ -828,17 +837,79 @@ fn copied_honest_headers_under_a_disconnected_tail_are_refused() {
     let points = points(sampler.request(&tail, &mut StdRng::seed_from_u64(5)));
     let checked = sampler.check_samples(&tail, &points, &chain.answer(&points)).unwrap();
     assert_eq!(checked.tip_hash, fork.last().unwrap().hash());
-    assert_eq!(checked.total_work, chain.tree.total());
+    assert_eq!(checked.credited_work, u128::from(TAIL));
+    assert_eq!(checked.claimed_prefix_work, chain.at(first));
 
-    // A tail that starts at genesis has no header before it.
+    // A tail that starts at genesis has no header before it, and is the
+    // whole chain: all of its work is linked and credited.
     let mut short = vec![genesis()];
     extend(&mut short, 0, TAIL - 1);
     let chain = Chain::new(&short);
-    assert!(sampler.check_tail(&chain.root, None, &chain.tail(), LATER).is_ok());
+    let tail = sampler.check_tail(&chain.root, None, &chain.tail(), LATER).unwrap();
+    assert_eq!(sampler.required_samples(&tail), 0);
+    let checked = sampler.check_samples(&tail, &[], &[]).unwrap();
+    assert_eq!(checked.credited_work, chain.tree.total());
+    assert_eq!(checked.claimed_prefix_work, 0);
     assert_eq!(
         sampler.check_tail(&chain.root, Some(&chain.sample(0)), &chain.tail(), LATER),
         Err(SampleError::TailParent { fault: Fault::Height })
     );
+}
+
+/// The attack the link below the tail does not stop: copied honest leaves
+/// through `H - 2`, a sealed replacement header at `H - 1` whose parent is
+/// not the leaf at `H - 2`, then a sealed tail from `H` linked to it. Every
+/// header the sampled check can see is sealed and on its path, so it passes,
+/// but it credits only the tail's work; the copied work comes back as the
+/// unauthenticated claimed prefix. The full check refuses the range at the
+/// replacement.
+#[test]
+fn copied_leaves_under_a_sealed_replacement_credit_only_the_tail() {
+    let _one = one_at_a_time();
+    let honest_drafts = honest();
+    let honest = Chain::new(&honest_drafts);
+    let first = honest.count() - TAIL;
+    let mut forged = honest_drafts[..first as usize - 1].to_vec();
+    let replacement = stamped([0x77; 32], first - 1, 4, SLOW);
+    assert_ne!(replacement.parent, forged.last().unwrap().hash());
+    assert_eq!(replacement.difficulty, 1);
+    forged.push(replacement);
+    extend(&mut forged, 4, TAIL);
+    let chain = Chain::new(&forged);
+    assert_eq!(chain.count(), honest.count());
+    // The root claims the honest chain's whole work for the forged tip.
+    assert_eq!(chain.tree.total(), honest.tree.total());
+    assert_eq!(chain.tree.leaves[..first as usize - 1], honest.tree.leaves[..first as usize - 1]);
+
+    let mut sampled = sampler(settings(0.5, 2.0));
+    let tail = chain.check_tail(&mut sampled, LATER).expect("the replacement and the tail are sealed and linked");
+    assert_eq!(tail.tip_hash(), forged.last().unwrap().hash());
+    assert_eq!(tail.tail_work(), u128::from(TAIL));
+    for seed in 0..64 {
+        let points = points(sampled.request(&tail, &mut StdRng::seed_from_u64(seed)));
+        let checked = sampled.check_samples(&tail, &points, &chain.answer(&points)).unwrap();
+        assert_eq!(checked.tip_hash, forged.last().unwrap().hash());
+        // Only the tail linked by parent hashes is credited, never more.
+        assert_eq!(checked.credited_work, u128::from(TAIL));
+        assert_eq!(checked.credited_work, tail.tail_work());
+        assert!(checked.credited_work < chain.tree.total());
+        // The copied work is returned apart, as claimed.
+        assert_eq!(checked.claimed_prefix_work, honest.at(first));
+        assert_eq!(checked.credited_work + checked.claimed_prefix_work, honest.tree.total());
+    }
+
+    let mut full = sampler(SampleSettings { tail_headers: TAIL, check: HeaderCheck::Full });
+    let tail = chain.check_tail(&mut full, LATER).unwrap();
+    assert_eq!(full.request(&tail, &mut StdRng::seed_from_u64(1)), Request::EveryHeader { count: first });
+    assert_eq!(
+        full.check_every_header(&tail, &chain.rlp[..first as usize], LATER),
+        Err(SampleError::Full { height: first - 1, error: ChainError::UnknownParent })
+    );
+    // The honest chain under the same check is credited all of its work.
+    let honest_tail = honest.check_tail(&mut full, LATER).unwrap();
+    let checked = full.check_every_header(&honest_tail, &honest.rlp[..first as usize], LATER).unwrap();
+    assert_eq!(checked.credited_work, honest.tree.total());
+    assert_eq!(checked.claimed_prefix_work, 0);
 }
 
 /// Past the first epoch the key block is the chain's own leaf at the seed
@@ -921,7 +992,8 @@ fn full_check_option_checks_every_header() {
     assert_eq!(checked.tip_hash, drafts[7].hash());
     assert_eq!(checked.tip_height, 7);
     assert_eq!(checked.checked_before_tail, 4);
-    assert_eq!(checked.total_work, 4096 + 7);
+    assert_eq!(checked.credited_work, 4096 + 7);
+    assert_eq!(checked.claimed_prefix_work, 0);
 
     assert_eq!(sampler.check_every_header(&tail, &below[..3], LATER), Err(SampleError::FullCount));
     let shifted = vec![below[1].clone(), below[1].clone(), below[2].clone(), below[3].clone()];
