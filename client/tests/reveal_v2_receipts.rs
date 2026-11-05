@@ -1,14 +1,15 @@
 //! The receipt log of the version 2 ordinary reveal (spec 10, section 4): its
 //! remainder note is the 380-byte note version 3 the reveal binds, so its log
-//! carries that note whole, under its own first topic
-//! `K("ghost/reveal-receipt/v2")`, in 472 bytes, and its record holds the note
-//! as the tree stores it, unpadded. The version 1 reveal log keeps its 248
-//! bytes and its 156-byte note.
+//! carries that note whole, in 472 bytes, under the one reveal topic
+//! `K("ghost/reveal-receipt/v1")` the node writes for both versions, and its
+//! record holds the note as the tree stores it, unpadded. The version 1
+//! reveal log keeps its 248 bytes and its 156-byte note; the length alone
+//! tells the two apart.
 
 use ghost_client::hash::k;
 use ghost_client::receipts::{
     check_block_receipts, check_leaves, check_markers, receipts_root, CheckedBlock, CoinRecord, ReceiptError,
-    COIN_TREE_ACCOUNT, REVEAL_LOG_BYTES, REVEAL_V2_LOG_BYTES, TAG_REVEAL_RECEIPT, TAG_REVEAL_RECEIPT_V2,
+    COIN_TREE_ACCOUNT, REVEAL_LOG_BYTES, REVEAL_V2_LOG_BYTES, TAG_REVEAL_RECEIPT,
 };
 use ghost_client::{
     encrypt_note, restore_coins, Amount, Capsule, Commitment, Current, Marker, NoteContents, PhantomKey, Rule, Salt,
@@ -80,13 +81,14 @@ fn check(receipts: &[Vec<u8>]) -> Result<CheckedBlock, ReceiptError> {
     check_block_receipts(receipts, &receipts_root(receipts))
 }
 
-fn v2_topic() -> [u8; 32] {
-    k(TAG_REVEAL_RECEIPT_V2, &[])
+/// The one reveal topic, of both reveal versions.
+fn reveal_topic() -> [u8; 32] {
+    k(TAG_REVEAL_RECEIPT, &[])
 }
 
 #[test]
 fn a_version_2_reveal_log_carries_the_whole_note() {
-    assert_eq!(TAG_REVEAL_RECEIPT_V2, "ghost/reveal-receipt/v2");
+    assert_eq!(TAG_REVEAL_RECEIPT, "ghost/reveal-receipt/v1");
     assert_eq!(REVEAL_V2_LOG_BYTES, 4 + 4 + 32 + 380 + 20 + 32);
     assert_eq!(REVEAL_V2_LOG_BYTES, 472);
     assert_eq!(REVEAL_LOG_BYTES, 248, "the version 1 log keeps its length");
@@ -125,7 +127,7 @@ fn a_version_2_reveal_log_carries_the_whole_note() {
     assert_eq!(reveal_log.len(), REVEAL_V2_LOG_BYTES);
     let receipts = vec![
         receipt(&[log(&[k("ghost/commit-receipt/v1", &[])], &commit_data(0, &commit.commitment, &note, &commit.salt))]),
-        receipt(&[log(&[v2_topic(), marker], &reveal_log)]),
+        receipt(&[log(&[reveal_topic(), marker], &reveal_log)]),
     ];
     let block = check(&receipts).expect("an honest block checks");
     let records = block.records();
@@ -171,21 +173,21 @@ fn a_reveal_log_off_its_layout_is_refused() {
     let note = [0x44; NOTE_BYTES];
     let v2 = reveal_data(3, &leaf, &note);
     let v1 = reveal_data(3, &leaf, &note[..REVEAL_NOTE_BYTES]);
-    assert!(check(&[receipt(&[log(&[v2_topic(), [9; 32]], &v2)])]).is_ok());
-    assert!(check(&[receipt(&[log(&[k(TAG_REVEAL_RECEIPT, &[]), [9; 32]], &v1)])]).is_ok());
+    assert!(check(&[receipt(&[log(&[reveal_topic(), [9; 32]], &v2)])]).is_ok());
+    assert!(check(&[receipt(&[log(&[reveal_topic(), [9; 32]], &v1)])]).is_ok());
 
     let refused = [
-        // The 156-byte note under the version 2 topic.
-        log(&[v2_topic(), [9; 32]], &v1),
-        // The 380-byte note under the version 1 topic.
-        log(&[k(TAG_REVEAL_RECEIPT, &[]), [9; 32]], &v2),
-        // A byte short or over, a salt after it.
-        log(&[v2_topic(), [9; 32]], &v2[1..]),
-        log(&[v2_topic(), [9; 32]], &[&v2[..], &[0]].concat()),
-        log(&[v2_topic(), [9; 32]], &[&v2[..], &[0x45; SALT_BYTES]].concat()),
+        // A byte short or over, a salt after it, of either version.
+        log(&[reveal_topic(), [9; 32]], &v2[1..]),
+        log(&[reveal_topic(), [9; 32]], &[&v2[..], &[0]].concat()),
+        log(&[reveal_topic(), [9; 32]], &[&v2[..], &[0x45; SALT_BYTES]].concat()),
+        log(&[reveal_topic(), [9; 32]], &v1[1..]),
+        log(&[reveal_topic(), [9; 32]], &[&v1[..], &[0]].concat()),
         // No marker, or a third topic.
-        log(&[v2_topic()], &v2),
-        log(&[v2_topic(), [9; 32], [9; 32]], &v2),
+        log(&[reveal_topic()], &v2),
+        log(&[reveal_topic(), [9; 32], [9; 32]], &v2),
+        // A first topic that is no coin tree topic.
+        log(&[k("ghost/reveal-receipt/v3", &[]), [9; 32]], &v2),
     ];
     for (i, bad) in refused.iter().enumerate() {
         assert!(

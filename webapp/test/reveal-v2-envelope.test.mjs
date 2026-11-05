@@ -150,11 +150,10 @@ test("the version 2 fee: g_priv of spec 10, section 10.3", () => {
   assert.equal(FEE_WINDOW, 4);
 });
 
-test("a version 2 reveal log carries the whole 380-byte note; its 156-byte form is refused", () => {
+test("a version 2 reveal log carries the whole 380-byte note under the one reveal topic", () => {
   const topics = {
     commit: tagTopic("ghost/commit-receipt/v1"),
     reveal: tagTopic("ghost/reveal-receipt/v1"),
-    revealV2: tagTopic("ghost/reveal-receipt/v2"),
   };
   const marker = new Uint8Array(32).fill(9);
   const note = Uint8Array.from({ length: 380 }, (_, i) => (i * 7 + 1) & 0xff);
@@ -163,20 +162,21 @@ test("a version 2 reveal log carries the whole 380-byte note; its 156-byte form 
   const log = (first, data) => ({ succeeded: true, topics: [fromHex(first, 32), marker], data });
   const data = concat([head, note, tail]);
   assert.equal(data.length, 472);
-  const record = coinRecord(log(topics.revealV2, data), topics);
+  const record = coinRecord(log(topics.reveal, data), topics);
   assert.equal(toHex(record.note), toHex(note), "the note as the tree stores it, not padded");
   assert.equal(toHex(record.marker), toHex(marker));
   assert.equal(record.position, 4);
   assert.equal(record.salt, null);
   assert.equal(record.v, null);
-  // The 156-byte note under the version 2 topic is not its length; the
-  // 380-byte note under the version 1 topic is not that log's length.
+  // The version 1 log, under the same topic, still reads as it did, its note
+  // zero-padded.
   const old = concat([head, note.subarray(0, 156), tail]);
-  assert.throws(() => coinRecord(log(topics.revealV2, old), topics), /reveal log's data is not its length/);
-  assert.throws(() => coinRecord(log(topics.reveal, data), topics), /reveal log's data is not its length/);
-  // The version 1 log still reads as it did, its note zero-padded.
   const v1 = coinRecord(log(topics.reveal, old), topics);
   assert.equal(toHex(v1.note), toHex(concat([note.subarray(0, 156), new Uint8Array(224)])));
+  // Any other length is refused.
+  for (const bad of [data.subarray(1), concat([data, Uint8Array.of(0)]), old.subarray(1), concat([old, Uint8Array.of(0)])]) {
+    assert.throws(() => coinRecord(log(topics.reveal, bad), topics), /reveal log's data is not its length/);
+  }
 });
 
 test("Vanish, a partial Summon and a Claim send version 2 reveals with 380-byte notes that restore", async () => {
@@ -252,7 +252,8 @@ test("Vanish, a partial Summon and a Claim send version 2 reveals with 380-byte 
     assert.ok(spent && spent.spent && spent.number === 0n);
 
     // The block's receipt carries the version 2 reveal log with the whole
-    // note, as the app read it to find the spent marker.
+    // note under the node's one reveal topic, as the app read it to find the
+    // spent marker.
     const block = node.blocks[node.reveals[0].block];
     const answer = await fetch(node.url, {
       method: "POST",
@@ -260,13 +261,12 @@ test("Vanish, a partial Summon and a Claim send version 2 reveals with 380-byte 
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getBlockReceipts", params: [toHex(block.hash)] }),
     }).then((r) => r.json());
     const logs = answer.result.flatMap((receipt) => receipt.logs);
-    const revealLogs = logs.filter((l) => l.topics[0] === tagTopic("ghost/reveal-receipt/v2"));
+    const revealLogs = logs.filter((l) => l.topics[0] === tagTopic("ghost/reveal-receipt/v1"));
     assert.equal(revealLogs.length, 1);
     assert.equal(revealLogs[0].topics[1], toHex(decoded.marker));
     const logData = fromHex(revealLogs[0].data);
-    assert.equal(logData.length, 472);
+    assert.equal(logData.length, 472, "the version 2 length, not a version 1 log's 248");
     assert.equal(toHex(logData.subarray(40, 420)), toHex(decoded.note));
-    assert.equal(logs.filter((l) => l.topics[0] === tagTopic("ghost/reveal-receipt/v1")).length, 0, "no version 1 log");
 
     node.foreignCommits(1);
     node.mineTo(76);
