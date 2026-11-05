@@ -23,7 +23,7 @@
 //! |---|---|---|
 //! | salted commit | `K("ghost/commit-receipt/v1")` | tree index (4), position (4), leaf (32), `v` (32), note (380), salt (16) |
 //! | reveal, version 1 | `K("ghost/reveal-receipt/v1")`, marker | tree index (4), position (4), remainder (32), note (156), recipient (20), out (32) |
-//! | reveal, version 2 | `K("ghost/reveal-receipt/v2")`, marker | tree index (4), position (4), remainder (32), note (380), recipient (20), out (32) |
+//! | reveal, version 2 | `K("ghost/reveal-receipt/v1")`, marker | tree index (4), position (4), remainder (32), note (380), recipient (20), out (32) |
 //!
 //! A commit log is 468 bytes: the 380-byte note of note version 3, then the
 //! commitment's salt the node appends. The 244-byte log of a commit with a
@@ -33,9 +33,12 @@
 //! its record holds that note zero-padded to 380 bytes, as the tree stores
 //! it. The ordinary reveal of spec 10, section 4 (version `0x0002`) binds a
 //! 380-byte note version 3, so its log has the same fields with that note
-//! whole, 472 bytes, under its own first topic; a 380-byte note under the
-//! version 1 topic, or a 156-byte one under the version 2 topic, is refused.
-//! No reveal log carries a salt: a remainder's salt is only in its note.
+//! whole, 472 bytes. The node writes both reveal versions under the one
+//! topic `K("ghost/reveal-receipt/v1")` and tells them apart by data length
+//! (ghost-node `core/ghostpriv/reveal.go`, `revealLogSize` and
+//! `revealLogSizeV1`): a 248-byte reveal log is version 1, a 472-byte one
+//! version 2, and any other length is refused. No reveal log carries a salt:
+//! a remainder's salt is only in its note.
 //!
 //! Integers are big-endian. Logs of any other address are not read here.
 //!
@@ -59,10 +62,9 @@ pub const COIN_TREE_ACCOUNT: [u8; 20] = [
 ];
 /// Tag of the first topic of a commit log.
 pub const TAG_COMMIT_RECEIPT: &str = "ghost/commit-receipt/v1";
-/// Tag of the first topic of a version 1 reveal log.
+/// Tag of the first topic of a reveal log, of either version: the data
+/// length tells a version 1 log from a version 2 one.
 pub const TAG_REVEAL_RECEIPT: &str = "ghost/reveal-receipt/v1";
-/// Tag of the first topic of the log of a version 2 ordinary reveal.
-pub const TAG_REVEAL_RECEIPT_V2: &str = "ghost/reveal-receipt/v2";
 /// Data bytes of a salted (version 2) commit log, the only commit log read:
 /// tree index, position, leaf, `v`, note, then the commitment's salt.
 pub const SALTED_COMMIT_LOG_BYTES: usize = 4 + 4 + 32 + 32 + NOTE_BYTES + SALT_BYTES;
@@ -415,30 +417,16 @@ fn coin_record(topics: &[[u8; 32]], data: &[u8]) -> Result<CoinRecord, &'static 
         if topics.len() != 2 {
             return Err("a reveal log does not have exactly two topics");
         }
-        if data.len() != REVEAL_LOG_BYTES {
-            return Err("a reveal log's data is not its length");
-        }
+        let version_2 = match data.len() {
+            REVEAL_V2_LOG_BYTES => true,
+            REVEAL_LOG_BYTES => false,
+            _ => return Err("a reveal log's data is not its length"),
+        };
         let mut data = Fields(data);
         let remainder = data.appended_head();
-        let note = pad_reveal_note(&data.take());
-        let recipient = data.take();
-        let out = data.take();
-        Ok(CoinRecord::Reveal {
-            remainder: AppendedLeaf { note, ..remainder },
-            marker: Marker::from_bytes(topics[1]),
-            recipient,
-            out,
-        })
-    } else if *first == k(TAG_REVEAL_RECEIPT_V2, &[]) {
-        if topics.len() != 2 {
-            return Err("a reveal log does not have exactly two topics");
-        }
-        if data.len() != REVEAL_V2_LOG_BYTES {
-            return Err("a reveal log's data is not its length");
-        }
-        let mut data = Fields(data);
-        let remainder = data.appended_head();
-        let note = data.take();
+        // A version 2 log's 380-byte note as the tree stores it; a version 1
+        // log's 156-byte note zero-padded to 380.
+        let note = if version_2 { data.take() } else { pad_reveal_note(&data.take()) };
         let recipient = data.take();
         let out = data.take();
         Ok(CoinRecord::Reveal {

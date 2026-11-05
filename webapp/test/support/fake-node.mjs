@@ -9,9 +9,11 @@
 // tree account as address, the topic K("ghost/commit-receipt/v1") and the
 // tree index, position, leaf, value, the 380-byte note and the commit's salt;
 // a reveal is the ordinary reveal of spec 10, section 4 (type 0x50, version
-// 0x0002, 1,311,291 bytes), and its log has K("ghost/reveal-receipt/v2") and
-// the marker as topics and the tree index, position, remainder, the 380-byte
-// remainder note the reveal binds, recipient and amount out (472 bytes). A
+// 0x0002, 1,311,291 bytes), and its log has K("ghost/reveal-receipt/v1"), the
+// node's one reveal topic for both reveal versions, and the marker as topics
+// and the tree index, position, remainder, the 380-byte remainder note the
+// reveal binds, recipient and amount out (472 bytes: the length is what tells
+// it from a version 1 reveal's 248-byte log). A
 // version 1 reveal is refused, as a version 2 node refuses it. Every note in
 // the tree is 380 bytes: a reveal's remainder note is stored there as it is,
 // as the node stores it. The header's receiptsRoot is computed from their consensus encoding
@@ -350,7 +352,8 @@ export async function startFakeNode({
   const blockReceipts = [];
   const tagTopic = (tag) => ghost.keccak256(concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]));
   const COMMIT_TOPIC = tagTopic("ghost/commit-receipt/v1");
-  const REVEAL_TOPIC = tagTopic("ghost/reveal-receipt/v2");
+  // The node's one reveal topic, of both reveal versions.
+  const REVEAL_TOPIC = tagTopic("ghost/reveal-receipt/v1");
   const coinTreeAccount = fromHex(COIN_TREE_ACCOUNT, 20);
 
   // The tree index and the position in it of the leaf at `index` of
@@ -390,9 +393,9 @@ export async function startFakeNode({
     topics: [COMMIT_TOPIC],
     data: concat([u32(treeOf(index)), u32(positionOf(index)), commitment, word(value), note, salt]),
   });
-  // A version 2 reveal's log: the marker as second topic; tree index,
-  // position, remainder, the 380-byte remainder note, recipient and amount
-  // out (472 bytes).
+  // A version 2 reveal's log: the one reveal topic, the marker as second
+  // topic; tree index, position, remainder, the 380-byte remainder note,
+  // recipient and amount out (472 bytes).
   const revealLog = (index, reveal) => ({
     address: coinTreeAccount,
     topics: [REVEAL_TOPIC, reveal.marker],

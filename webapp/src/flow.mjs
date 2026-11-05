@@ -84,15 +84,17 @@ export const LEAVES_PER_TREE = 2 ** 32;
 // and the tree index, position, remainder (32), the remainder note,
 // recipient (20) and amount out (32). The ordinary reveal the app sends
 // (type 0x50, version 0x0002, spec 10, section 4) binds a 380-byte note
-// version 3: its log has K("ghost/reveal-receipt/v2") and that note whole.
-// The log of a version 1 reveal, K("ghost/reveal-receipt/v1"), keeps its
-// 156-byte note, which the tree stores zero-padded to 380 bytes, so its
-// record holds it so. The scan of a chain whose coin tree has rolled over
-// reads them here (checkTreesAgainstReceipts).
+// version 3, and its log carries that note whole. The node writes both
+// reveal versions under the one topic K("ghost/reveal-receipt/v1") and tells
+// them apart by data length (ghost-node core/ghostpriv/reveal.go,
+// revealLogSize and revealLogSizeV1): 472 bytes with the 380-byte note for
+// version 2, 248 bytes with the 156-byte note for version 1, which the tree
+// stores zero-padded to 380 bytes, so its record holds it so. The scan of a
+// chain whose coin tree has rolled over reads them here
+// (checkTreesAgainstReceipts).
 const COIN_TREE_ACCOUNT = "0x67686f7374000000000000000000000000000001";
 const COMMIT_RECEIPT_TAG = "ghost/commit-receipt/v1";
 const REVEAL_RECEIPT_TAG = "ghost/reveal-receipt/v1";
-const REVEAL_V2_RECEIPT_TAG = "ghost/reveal-receipt/v2";
 // Every scan reads the headers from this many blocks below the settled
 // block S (SETTLE_DEPTH below the tip) up to the tip, to find a leaf's block.
 export const LEAF_WINDOW = 32;
@@ -562,7 +564,8 @@ async function askRuleForDecoy(prover, scan) {
 // Data bytes of a commit log (tree index, position, leaf, `v`, note, salt:
 // 468), of a version 1 reveal log (tree index, position, remainder, 156-byte
 // note, recipient, out: 248) and of a version 2 reveal log (the same with
-// the 380-byte note: 472).
+// the 380-byte note: 472). Both reveal logs have the one reveal topic; the
+// length alone tells their versions apart.
 const COMMIT_LOG_BYTES = 4 + 4 + 32 + 32 + NOTE_BYTES + SALT_BYTES;
 const REVEAL_LOG_BYTES = 4 + 4 + 32 + REVEAL_NOTE_BYTES + 20 + 32;
 const REVEAL_V2_LOG_BYTES = 4 + 4 + 32 + NOTE_BYTES + 20 + 32;
@@ -588,9 +591,10 @@ function coinLogsOf(list) {
 // but for a commit, `marker` null but for a reveal, `v` the committed amount
 // of a commit, null for a reveal), read exactly as client/src/receipts.rs
 // reads it. `topics`
-// are the hex first topics of a commit log, a version 1 reveal log
-// (`reveal`) and a version 2 reveal log (`revealV2`). A log that is not
-// exactly one of them is refused.
+// are the hex first topics of a commit log (`commit`) and of a reveal log
+// (`reveal`), the one topic of both reveal versions: a 248-byte reveal log
+// is version 1, a 472-byte one version 2. A log that is not exactly one of
+// them is refused.
 export function coinRecord(log, topics) {
   if (!log.succeeded) throw new Error("a failed receipt has a coin tree log");
   const { data } = log;
@@ -608,17 +612,18 @@ export function coinRecord(log, topics) {
   }
   if (first === topics.reveal) {
     if (log.topics.length !== 2) throw new Error("a reveal log does not have exactly two topics");
-    if (data.length !== REVEAL_LOG_BYTES) throw new Error("a reveal log's data is not its length");
-    // The 156-byte remainder note, zero-padded to 380 as the tree stores it.
-    const note = new Uint8Array(NOTE_BYTES);
-    note.set(data.subarray(40, 40 + REVEAL_NOTE_BYTES));
-    return { ...head(), note, salt: null, marker: log.topics[1], v: null };
-  }
-  if (topics.revealV2 !== undefined && first === topics.revealV2) {
-    if (log.topics.length !== 2) throw new Error("a reveal log does not have exactly two topics");
-    if (data.length !== REVEAL_V2_LOG_BYTES) throw new Error("a reveal log's data is not its length");
-    // The 380-byte remainder note of the version 2 reveal, as the tree stores it.
-    return { ...head(), note: data.slice(40, 40 + NOTE_BYTES), salt: null, marker: log.topics[1], v: null };
+    if (data.length === REVEAL_V2_LOG_BYTES) {
+      // The 380-byte remainder note of the version 2 reveal, as the tree stores it.
+      return { ...head(), note: data.slice(40, 40 + NOTE_BYTES), salt: null, marker: log.topics[1], v: null };
+    }
+    if (data.length === REVEAL_LOG_BYTES) {
+      // The 156-byte remainder note of a version 1 reveal, zero-padded to 380
+      // as the tree stores it.
+      const note = new Uint8Array(NOTE_BYTES);
+      note.set(data.subarray(40, 40 + REVEAL_NOTE_BYTES));
+      return { ...head(), note, salt: null, marker: log.topics[1], v: null };
+    }
+    throw new Error("a reveal log's data is not its length");
   }
   throw new Error("a coin tree log's first topic is neither a commit nor a reveal");
 }
@@ -1322,8 +1327,8 @@ export function createFlow({
     return trees;
   }
 
-  // The hex first topics of a commit log and of a version 1 and a version 2
-  // reveal log, K(tag) of their tags (client/src/hash.rs: Keccak-256 of the
+  // The hex first topics of a commit log and of a reveal log (both reveal
+  // versions share it), K(tag) of their tags (client/src/hash.rs: Keccak-256 of the
   // tag's length byte and the tag), asked of the worker once per page
   // session.
   let logTopics = null;
@@ -1336,7 +1341,6 @@ export function createFlow({
     logTopicsHere ??= {
       commit: here(COMMIT_RECEIPT_TAG),
       reveal: here(REVEAL_RECEIPT_TAG),
-      revealV2: here(REVEAL_V2_RECEIPT_TAG),
     };
     return logTopicsHere;
   }
@@ -1345,7 +1349,6 @@ export function createFlow({
     logTopics ??= {
       commit: await topic(COMMIT_RECEIPT_TAG),
       reveal: await topic(REVEAL_RECEIPT_TAG),
-      revealV2: await topic(REVEAL_V2_RECEIPT_TAG),
     };
     return logTopics;
   }

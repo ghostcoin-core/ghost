@@ -163,8 +163,8 @@ test("a commit log with a note of another length is refused", () => {
   }
 });
 
-// A reveal log carries the version 1 reveal's 156-byte remainder note (248
-// bytes); its record holds that note zero-padded to 380, as the tree does.
+// A version 1 reveal log carries the 156-byte remainder note (248 bytes); its
+// record holds that note zero-padded to 380, as the tree does.
 test("a reveal log's 156-byte note is read zero-padded to 380 bytes", () => {
   const topics = { commit: toHex(new Uint8Array(32).fill(1)), reveal: toHex(new Uint8Array(32).fill(2)) };
   const marker = new Uint8Array(32).fill(9);
@@ -177,9 +177,15 @@ test("a reveal log's 156-byte note is read zero-padded to 380 bytes", () => {
   assert.equal(toHex(record.note), toHex(concat([oldNote, new Uint8Array(224)])));
   assert.equal(record.salt, null);
   assert.equal(toHex(record.marker), toHex(marker));
-  // A reveal log with a 380-byte note is not its length.
+  // A 472-byte reveal log under the same topic is version 2: its 380-byte
+  // note is read whole (the node tells the versions apart by length).
   const long = concat([new Uint8Array(4), Uint8Array.of(0, 0, 0, 4), new Uint8Array(32).fill(8), note, tail]);
-  assert.throws(() => coinRecord(log(long), topics), /reveal log's data is not its length/);
+  assert.equal(long.length, 472);
+  assert.equal(toHex(coinRecord(log(long), topics).note), toHex(note));
+  // Any other length is refused.
+  for (const bad of [data.subarray(1), concat([data, Uint8Array.of(0)]), long.subarray(1), concat([long, Uint8Array.of(0)])]) {
+    assert.throws(() => coinRecord(log(bad), topics), /reveal log's data is not its length/);
+  }
 });
 
 // The stand-in's tree page methods answer in exactly the node's shape
