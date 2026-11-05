@@ -1,15 +1,16 @@
 //! The commit log of a salted commit: 468 bytes, the 380-byte note then the
 //! salt. The salt is read into the record and the run's salt beside each leaf
 //! is checked against it. A reveal log keeps its 156-byte remainder note,
-//! which the record holds zero-padded to 380 bytes, as the tree stores it.
+//! which the record holds zero-padded to 380 bytes, as the tree stores it; a
+//! 472-byte reveal log under the same topic is version 2, its note whole.
 
 use ghost_client::hash::k;
 use ghost_client::receipts::{
     check_block_receipts, check_leaves, receipts_root, CheckedBlock, CoinRecord, ReceiptError,
-    COIN_TREE_ACCOUNT, REVEAL_LOG_BYTES, SALTED_COMMIT_LOG_BYTES,
+    COIN_TREE_ACCOUNT, REVEAL_LOG_BYTES, REVEAL_V2_LOG_BYTES, SALTED_COMMIT_LOG_BYTES,
 };
 use ghost_client::{
-    encrypt_note, encrypt_note_v2, pad_reveal_note, restore_coins, Amount, Capsule, Commitment, Current,
+    encrypt_note, encrypt_note_v2, pad_reveal_note, restore_coins, Amount, Capsule, Commitment, Current, Marker,
     NoteContents, PhantomKey, Rule, Salt, TreeLeaf, NOTE_BYTES, REVEAL_NOTE_BYTES, SALT_BYTES,
 };
 use rand::rngs::StdRng;
@@ -200,6 +201,24 @@ fn salted_commit_log_carries_the_salt() {
         );
     }
 
+    // A reveal log carrying the padded 380-byte note is 472 bytes: the
+    // version 2 length under the one reveal topic, read with its note whole.
+    let padded = reveal_data(2, &remainder_leaf, &remainder_note);
+    assert_eq!(padded.len(), REVEAL_V2_LOG_BYTES);
+    let block = check(&[receipt(&[log(&[k("ghost/reveal-receipt/v1", &[]), [9; 32]], &padded)])])
+        .expect("a 472-byte reveal log reads as version 2");
+    assert_eq!(block.records().len(), 1);
+    let CoinRecord::Reveal { remainder, marker, recipient, out } = &block.records()[0] else {
+        panic!("a reveal log is a reveal record");
+    };
+    assert_eq!(remainder.note, remainder_note, "the 380-byte note as the log carries it");
+    assert_eq!((remainder.tree_index, remainder.position), (0, 2));
+    assert_eq!(remainder.leaf, remainder_leaf);
+    assert_eq!(remainder.salt, None);
+    assert_eq!(*marker, Marker::from_bytes([9; 32]));
+    assert_eq!(*recipient, [0x22; 20]);
+    assert_eq!(*out, [0x01; 32]);
+
     // A commit log of neither length, and a reveal log with a salt, are
     // refused.
     let refused = [
@@ -211,11 +230,6 @@ fn salted_commit_log_carries_the_salt() {
         ),
         // A commit log with a 156-byte note: the 244 bytes of version 0x0002.
         log(&[commit_topic()], &commit_data(1, &commit.commitment, &note[..REVEAL_NOTE_BYTES], Some(&salt))),
-        // A reveal log carrying the padded 380-byte note.
-        log(
-            &[k("ghost/reveal-receipt/v1", &[]), [9; 32]],
-            &reveal_data(2, &remainder_leaf, &remainder_note),
-        ),
     ];
     assert_eq!(REVEAL_LOG_BYTES + SALT_BYTES, 264);
     for (i, bad) in refused.iter().enumerate() {
