@@ -57,6 +57,12 @@
 //! - [`header_chain`]: a header chain checked from a trusted start: the ASERT
 //!   difficulty of every header (spec 06, section 4.3), its seal under the key
 //!   block on its own branch, total work, the best chain and reorganisations.
+//! - [`header_sample`]: the header chain checked by sampling (stage 2 design,
+//!   "Wallet restore volume"): the last 64 headers in full and headers drawn
+//!   by cumulative work with the caller's generator, each with its seal, its
+//!   key block and its path to a Merkle mountain range root the caller gives;
+//!   the sample count from an attacker ratio and an assurance target, and a
+//!   full check of every header as an option.
 //!
 //! # Secrets
 //!
@@ -69,8 +75,9 @@
 //!
 //! # Randomness
 //!
-//! Key generation, the salt of every new commitment and note encryption take
-//! the caller's cryptographically secure generator (any [`rand_core::CryptoRng`]), and proving takes 32
+//! Key generation, the salt of every new commitment, note encryption and the
+//! header samples take the caller's cryptographically secure generator (any
+//! [`rand_core::CryptoRng`]), and proving takes 32
 //! random bytes from the caller. The crate never reads the operating system's
 //! random source itself, so it builds for `wasm32-unknown-unknown` without one;
 //! the web app passes the browser's source.
@@ -86,6 +93,7 @@ pub mod derive;
 pub mod guard;
 pub mod hash;
 pub mod header_chain;
+pub mod header_sample;
 pub mod key;
 mod key_words;
 pub mod lookup;
@@ -120,6 +128,11 @@ pub use guard::{
 };
 pub use header_chain::{
     required_difficulty, Added, ChainError, ChainParams, HeaderChain, PinnedStart, StartError, U256,
+};
+pub use header_sample::{
+    bits_per_sample, draw_point, mmr_root, sample_count, verify_mmr_path, CheckedChain, CheckedTail, Fault,
+    HeaderCheck, HeaderSampler, LeafPosition, MmrNode, MmrPath, PathError, ProvenHeader, ProvenSample, Request,
+    SampleError, SampleSettings, MMR_NODE_BYTES, TAIL_HEADERS,
 };
 pub use key::{check_groups, FormattedKey, KeyError, KeyFormat, PhantomKey};
 pub use lookup::{
