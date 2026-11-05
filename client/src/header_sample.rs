@@ -407,13 +407,17 @@ impl CheckedTail {
     }
 
     /// The work of every header up to the tip, as the root claims it; only
-    /// [`tail_work`](Self::tail_work) of it is checked by links.
+    /// [`tail_work`](Self::tail_work) of it is checked by links. The rest is
+    /// **unauthenticated** under a sampled check (nothing binds the leaves
+    /// below the tail to the tip's ancestry): never credit, compare or rank
+    /// chains by this sum; use [`CheckedChain::credited_work`].
     pub fn total_work(&self) -> u128 {
         self.total_work
     }
 
     /// The work before the tail's first header, as the root claims it:
-    /// samples are drawn below it.
+    /// samples are drawn below it. Unauthenticated, as
+    /// [`CheckedChain::claimed_prefix_work`] is.
     pub fn tail_start_work(&self) -> u128 {
         self.tail_start_work
     }
