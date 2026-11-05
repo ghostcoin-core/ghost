@@ -371,18 +371,19 @@ fn a_batch_claiming_other_children_than_it_verified_fails() {
 
 /// A batch of one real version 2 coin reveal verifies, and a changed reveal
 /// fails verification. A real reveal made on testnet2, batched under a
-/// testnet1 binding, is refused: by the honest prover, and, proven anyway,
-/// by the verifier under the testnet1 tag.
+/// testnet1 binding, is refused: by the honest prover, and, as a batch
+/// forced through under the testnet1 tag, by the verifier.
 ///
-/// The testnet1 reveal is proven afresh on every run. The testnet2 reveal is
-/// the same reveal proven once on testnet2 and kept in
-/// `tests/fixtures/foreign_chain_reveal_testnet2.txt`; it is verified here
-/// before use (and on its own by
+/// The testnet1 reveal and its batch are proven afresh on every run. The
+/// testnet2 reveal is the same reveal proven once on testnet2, and the forced
+/// batch of it is proven once under the testnet1 tag; both are kept in
+/// `tests/fixtures/foreign_chain_reveal_testnet2.txt` with the digest of the
+/// batch key the forced batch was made under, which must be the key built
+/// here. Both are verified here (and on their own by
 /// `foreign_chain_reveal_fixture_verifies_and_rejects_wrong_binding`), so
-/// this test proves one reveal instead of two. The batch key, which does not
-/// depend on the reveal, is built on a second thread while the reveal is
-/// proven; the two batch proofs run one after the other, as each takes most
-/// of a test sandbox's memory.
+/// this test proves one reveal and one batch instead of two of each. The
+/// batch key, which does not depend on the reveal, is built on a second
+/// thread while the reveal is proven.
 #[test]
 fn a_bundle_of_one_real_reveal_verifies() {
     use ghost_proofs::*;
@@ -390,14 +391,13 @@ fn a_bundle_of_one_real_reveal_verifies() {
     let t = std::time::Instant::now();
     let shape = reveal_fixture::shape();
     let params = reveal_fixture::testnet1();
-    let child = layers::RevealChild::new(TEST.num_queries);
+    let child = reveal_fixture::child();
     progress("bundle of one reveal: start");
     let ((tx, proof), key) = std::thread::scope(|s| {
-        let key = s.spawn(|| layers::batch_key(&child, TEST, child.log_height(), 1, LEAN));
+        let key = s.spawn(|| reveal_fixture::batch_key(&child));
         let reveal = reveal_fixture::prove(&params, shape);
         (reveal, key.join().expect("the batch key builder panicked"))
     });
-    let key = key.unwrap();
     verify_coin_reveal_v2_scale_shaped(&params, &tx, &proof, shape).unwrap();
     progress(&format!(
         "bundle of one reveal: reveal proven and key built after {:?}, table heights {:?}",
@@ -426,25 +426,21 @@ fn a_bundle_of_one_real_reveal_verifies() {
     // under the testnet1 binding: the same reveal as above, its testnet2
     // proof read from the fixture and verified on testnet2 first.
     let stored = reveal_fixture::load_testnet2();
-    let (tx2, proof2) = (stored.tx, stored.proof);
-    assert_eq!(tx2, tx, "the fixture holds the same reveal, proven on testnet2");
-    assert_ne!(proof2, proof);
-    verify_coin_reveal_v2_scale_shaped(&other_chain, &tx2, &proof2, shape).unwrap();
-    assert!(verify_coin_reveal_v2_scale_shaped(&params, &tx2, &proof2, shape).is_err());
-    let publics2 = layers::RevealChild::public_values(&other_chain, &tx2);
-    let foreign = vec![(proof2.as_bytes().to_vec(), publics2.clone())];
+    assert_eq!(stored.tx, tx, "the fixture holds the same reveal, proven on testnet2");
+    assert_ne!(stored.proof, proof);
+    verify_coin_reveal_v2_scale_shaped(&other_chain, &stored.tx, &stored.proof, shape).unwrap();
+    assert!(verify_coin_reveal_v2_scale_shaped(&params, &stored.tx, &stored.proof, shape).is_err());
+    let foreign = vec![reveal_fixture::foreign_child(&stored)];
     assert_eq!(
         layers::prove_batch(&key, &child, &binding, 0, &start, &foreign, [13; 32]),
         Err(ProofError::Rejected),
         "the honest prover refuses a testnet2 reveal under a testnet1 binding"
     );
     progress(&format!("bundle of one reveal: testnet2 reveal refused after {:?}", t.elapsed()));
-    let tag = key.tag(&binding, 0);
-    let forged = layers::prove_batch_unchecked(&key, &child, &tag, &start, &foreign, [13; 32]).unwrap();
-    progress(&format!("bundle of one reveal: testnet2 reveal proven anyway after {:?}", t.elapsed()));
-    assert!(layers::verify_batch(&key, &binding, 0, &start, &[publics2.clone()], &forged).is_err());
-    let binding2 = layers::Binding::of(&other_chain);
-    assert!(layers::verify_batch(&key, &binding2, 0, &start, &[publics2], &forged).is_err());
+    // The batch of it forced through under the testnet1 tag, made once with
+    // this key and kept in the fixture: refused under either chain.
+    reveal_fixture::assert_forced_batch_refused(&key, &stored);
+    progress(&format!("bundle of one reveal: forced testnet2 batch refused after {:?}", t.elapsed()));
 }
 
 /// The kept testnet2 reveal is what its file says: a version 2 coin reveal
@@ -452,27 +448,34 @@ fn a_bundle_of_one_real_reveal_verifies() {
 /// nowhere else. Its proof is refused on testnet1, under another protocol
 /// version or genesis domain, at another shape, for a changed transaction
 /// field, and with a changed or cut proof; a changed file is refused by the
-/// reader.
+/// reader. The kept batch of it, forced through under the testnet1 tag, was
+/// made under the tests' batch key and is refused under either chain.
 ///
 /// Set `GHOST_REGENERATE_REVEAL_FIXTURE=1` to prove the reveal on testnet2
-/// again and rewrite the file before the checks, after a change to the
-/// reveal's proof format.
+/// and its forced batch again and rewrite the file before the checks, after
+/// a change to the reveal's proof format or to the batch circuit.
 #[test]
 fn foreign_chain_reveal_fixture_verifies_and_rejects_wrong_binding() {
     use ghost_proofs::*;
+    let _guard = one_at_a_time();
     let shape = reveal_fixture::shape();
     let testnet2 = reveal_fixture::testnet2();
+    let child = reveal_fixture::child();
+    let key = reveal_fixture::batch_key(&child);
     if std::env::var_os(reveal_fixture::REGENERATE).is_some() {
         let (tx, proof) = reveal_fixture::prove(&testnet2, shape);
-        let dir = std::path::Path::new(reveal_fixture::TESTNET2_PATH).parent().unwrap();
-        std::fs::create_dir_all(dir).unwrap();
-        let text = reveal_fixture::encode(&reveal_fixture::Stored {
+        let mut stored = reveal_fixture::Stored {
             params: testnet2.clone(),
             shape,
             tx,
             proof,
-        });
-        std::fs::write(reveal_fixture::TESTNET2_PATH, text).unwrap();
+            batch_key: key.digest(),
+            forced_batch: Vec::new(),
+        };
+        stored.forced_batch = reveal_fixture::force_batch(&key, &child, &stored);
+        let dir = std::path::Path::new(reveal_fixture::TESTNET2_PATH).parent().unwrap();
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(reveal_fixture::TESTNET2_PATH, reveal_fixture::encode(&stored)).unwrap();
     }
     let text = std::fs::read_to_string(reveal_fixture::TESTNET2_PATH).unwrap();
     let stored = reveal_fixture::decode(&text).unwrap();
@@ -480,6 +483,24 @@ fn foreign_chain_reveal_fixture_verifies_and_rejects_wrong_binding() {
     assert_eq!(stored.params.chain_id, *b"testnet2");
     assert_eq!(stored.shape, shape);
     assert_eq!(reveal_fixture::encode(&stored), text, "the file is in its one written form");
+
+    // The forced batch: made under this key and refused under either chain.
+    // The honest prover will not make it.
+    reveal_fixture::assert_forced_batch_refused(&key, &stored);
+    let testnet1_binding = layers::Binding::of(&reveal_fixture::testnet1());
+    assert_eq!(
+        layers::prove_batch(
+            &key,
+            &child,
+            &testnet1_binding,
+            0,
+            &layers::START_DIGEST,
+            &[reveal_fixture::foreign_child(&stored)],
+            [13; 32]
+        ),
+        Err(ProofError::Rejected)
+    );
+
     let (tx, proof) = (stored.tx, stored.proof);
     verify_coin_reveal_v2_scale_shaped(&testnet2, &tx, &proof, shape).unwrap();
 
@@ -548,6 +569,15 @@ fn foreign_chain_reveal_fixture_verifies_and_rejects_wrong_binding() {
     assert!(reveal_fixture::decode(&format!("{text}{fee_line}\n")).is_err());
     assert!(reveal_fixture::decode(&format!("{text}stray 00\n")).is_err());
     assert!(reveal_fixture::decode(&format!("{text}proof 0\n")).is_err());
+    // The forced batch missing, or its key missing or cut.
+    let without = |name: &str| -> String {
+        text.lines().filter(|l| !l.starts_with(name)).map(|l| format!("{l}\n")).collect()
+    };
+    assert!(reveal_fixture::decode(&without("forced_batch ")).is_err());
+    assert!(reveal_fixture::decode(&without("batch_key ")).is_err());
+    let key_line = text.lines().find(|l| l.starts_with("batch_key ")).unwrap();
+    let cut_key = text.replacen(key_line, &key_line[..key_line.len() - 2], 1);
+    assert!(reveal_fixture::decode(&cut_key).is_err());
 }
 
 mod reveal_fixture {
@@ -588,26 +618,79 @@ mod reveal_fixture {
     }
 
     /// A reveal as kept in a file: the chain and shape it was proven at, its
-    /// transaction and its proof.
+    /// transaction and its proof; then a batch of that proof forced through
+    /// under the testnet1 tag ([`force_batch`]) and the digest of the batch
+    /// key it was made under.
     pub struct Stored {
         pub params: ChainParams,
         pub shape: ScaleShape,
         pub tx: CoinRevealV2,
         pub proof: Proof,
+        pub batch_key: [u32; 9],
+        pub forced_batch: Vec<u8>,
     }
 
-    /// The bytes of a proof on each `proof` line.
+    /// The bytes of a proof on each `proof` or `forced_batch` line.
     const PROOF_LINE_BYTES: usize = 64;
 
     const HEADER: &str = "\
 # A version 2 coin reveal proven on testnet2: reveal_fixture::prove in
-# proofs/tests/layers.rs, its chain and shape below. Read by
+# proofs/tests/layers.rs, its chain and shape below. Then a batch of it
+# forced through under the testnet1 tag (reveal_fixture::force_batch) and
+# the digest of the batch key it was made under. Read by
 # a_bundle_of_one_real_reveal_verifies and checked by
 # foreign_chain_reveal_fixture_verifies_and_rejects_wrong_binding. To write
 # it again, run that test with GHOST_REGENERATE_REVEAL_FIXTURE=1.
 # Each line is a name and a value, in hex but for the shape's numbers; the
-# proof runs over many lines.
+# proof and the forced batch run over many lines.
 ";
+
+    /// The reveal child of the tests' batches, at the tests' queries.
+    pub fn child() -> layers::RevealChild {
+        layers::RevealChild::new(super::TEST.num_queries)
+    }
+
+    /// The key of the tests' batch of one reveal.
+    pub fn batch_key(child: &layers::RevealChild) -> layers::LayerKey {
+        layers::batch_key(child, super::TEST, child.log_height(), 1, super::LEAN).expect("the batch key builds")
+    }
+
+    /// The kept testnet2 reveal as a batch child: its proof and its public
+    /// values on testnet2.
+    pub fn foreign_child(stored: &Stored) -> (Vec<u8>, Vec<super::F>) {
+        let publics = layers::RevealChild::public_values(&stored.params, &stored.tx);
+        (stored.proof.as_bytes().to_vec(), publics)
+    }
+
+    /// A batch of the kept testnet2 reveal at index 0 from the start digest,
+    /// proven under the testnet1 tag although the reveal's chain is not
+    /// testnet1's: a batch the honest prover refuses to make.
+    pub fn force_batch(key: &layers::LayerKey, child: &layers::RevealChild, stored: &Stored) -> Vec<u8> {
+        let tag = key.tag(&layers::Binding::of(&testnet1()), 0);
+        let children = [foreign_child(stored)];
+        layers::prove_batch_unchecked(key, child, &tag, &layers::START_DIGEST, &children, [13; 32])
+            .expect("the forced batch proves")
+    }
+
+    /// The kept forced batch was made under `key`, and the verifier refuses
+    /// it under the testnet1 binding it was forced under and under the
+    /// testnet2 binding of its reveal.
+    pub fn assert_forced_batch_refused(key: &layers::LayerKey, stored: &Stored) {
+        assert_eq!(
+            stored.batch_key,
+            key.digest(),
+            "{TESTNET2_PATH} holds a batch made under another batch key; write it again"
+        );
+        let contents = [foreign_child(stored).1];
+        for params in [testnet1(), stored.params.clone()] {
+            let binding = layers::Binding::of(&params);
+            assert_eq!(
+                layers::verify_batch(key, &binding, 0, &layers::START_DIGEST, &contents, &stored.forced_batch),
+                Err(ProofError::Rejected),
+                "the forced testnet2 batch under {binding:?}"
+            );
+        }
+    }
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -651,14 +734,20 @@ mod reveal_fixture {
         for chunk in stored.proof.as_bytes().chunks(PROOF_LINE_BYTES) {
             out.push_str(&format!("proof {}\n", hex(chunk)));
         }
+        let key: Vec<u8> = stored.batch_key.iter().flat_map(|w| w.to_be_bytes()).collect();
+        out.push_str(&format!("batch_key {}\n", hex(&key)));
+        for chunk in stored.forced_batch.chunks(PROOF_LINE_BYTES) {
+            out.push_str(&format!("forced_batch {}\n", hex(chunk)));
+        }
         out
     }
 
-    /// The reveal in a file's text. Every field but the proof appears once;
-    /// the proof's lines join in order.
+    /// The reveal in a file's text. Every field but the proof and the forced
+    /// batch appears once; the lines of each of those two join in order.
     pub fn decode(text: &str) -> Result<Stored, String> {
         let mut fields = std::collections::BTreeMap::new();
         let mut proof = Vec::new();
+        let mut forced_batch = Vec::new();
         for line in text.lines() {
             if line.starts_with('#') {
                 continue;
@@ -666,6 +755,8 @@ mod reveal_fixture {
             let (name, value) = line.split_once(' ').ok_or_else(|| format!("no value: {line}"))?;
             if name == "proof" {
                 proof.extend(unhex(value)?);
+            } else if name == "forced_batch" {
+                forced_batch.extend(unhex(value)?);
             } else if fields.insert(name, value).is_some() {
                 return Err(format!("{name} twice"));
             }
@@ -692,12 +783,20 @@ mod reveal_fixture {
                 fee: array(take("fee")?)?,
             },
             proof: Proof::from_bytes(proof),
+            batch_key: {
+                let bytes: [u8; 36] = array(take("batch_key")?)?;
+                core::array::from_fn(|i| u32::from_be_bytes(core::array::from_fn(|j| bytes[4 * i + j])))
+            },
+            forced_batch,
         };
         if let Some(name) = fields.keys().next() {
             return Err(format!("unknown field {name}"));
         }
         if stored.proof.as_bytes().is_empty() {
             return Err("no proof".into());
+        }
+        if stored.forced_batch.is_empty() {
+            return Err("no forced batch".into());
         }
         Ok(stored)
     }
