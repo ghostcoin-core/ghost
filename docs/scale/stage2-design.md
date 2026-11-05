@@ -34,7 +34,7 @@ The header grows by these five 32-byte fields, from 582 to 742 bytes (modeled).
 ### What a wallet does
 
 1. Derive the note key and the lookup tags from the digits alone (spec 01, section 7); nothing else is needed or stored. <!-- no-figure -->
-2. Check the header chain, beside everything else: the last 64 headers in full, and headers sampled from genesis by cumulative work with the wallet's own randomness, each with its RandomX seal, its key block and an MMR path to the tip (modeled: 599 samples at one year of chain, 702 at five). The sampling density over the chain's work `x` is `1 / ((1 - x) ln(1/delta))` on `[0, 1 - delta]`, `delta` the share of the 64-header tail; against an attacker whose valid work after its fork is at most a ratio `c` of the honest work, every fork point leaves an invalid stretch that one sample hits with probability at least `ln(1/c) / ln(1/delta)` (modeled: the FlyClient argument, derived for this page; the bound for Ghost's difficulty rule is not yet established).
+2. Check the header chain, beside everything else: the last 64 headers in full, and headers sampled from genesis by cumulative work with the wallet's own randomness, each with its RandomX seal, its key block and an MMR path to the tip (modeled: 599 samples at one year of chain, 702 at five). The sampling density over the chain's work `x` is `1 / ((1 - x) ln(1/delta))` on `[0, 1 - delta]`, `delta` the share of the 64-header tail; against an attacker whose valid work after its fork is at most a ratio `c` of the honest work, every fork point leaves an invalid stretch that one sample hits with probability at least `ln(1/c) / ln(1/delta)` (modeled: proved for Ghost's difficulty rule under "Written sampling bound for Ghost's difficulty rule" below, with an ancestry and a parent check that the client does not make yet, not yet established until built).
 3. Probe the lookup hints by PIR: the tag of number zero, then numbers 1, 2, 4 and on, doubling until a tag is absent, then halving between the last present and the first absent; every restore makes exactly 22 probes, padded, which covers up to 1,023 hops (modeled). A probe returns at most a position: the hint table is not authenticated, and nothing is believed from it until the checks of step 5.
 4. Fetch, for the highest number found, by PIR from the snapshot: its note; its coin-tree witness (64 leaves and a page's witness records); the hint, the leaf and the witness of its spent marker in the coin marker-set tree; and the leaf and witness of the lookup index, which proves "no first commitment" when nothing was found and is padding otherwise; plus one query to the hint overflow table for the bucket of the first tag (modeled: 31 queries in all, the same for every restore). The level-20 nodes of each tree and the blocks after the snapshot are read in bulk (modeled: 3,500 tags and markers a block for at most 20 blocks).
 5. Check everything before use: the note decrypts under the note key with the leaf as associated data and recomputes the leaf (spec 01, section 8, step 4); the coin witness takes the leaf at its position to the snapshot header's coin root; the marker's absence witness (a low leaf whose value and next value bracket the marker) or membership witness takes it to the snapshot's `coinMarkerRoot`; the snapshot header is one of the 64 tail headers on the wallet's checked chain; and the bulk lists of the later blocks match each block's lookup digest (modeled: no figure). A missing or wrong item fails one of these checks and is rejected, never guessed.
@@ -77,7 +77,7 @@ Header sampling against a stronger attacker. The samples are set for an attacker
 | 0.75 (modeled) | 0.0434 | 26.0 bits |
 | 0.90 (modeled) | 0.0157 | 9.4 bits |
 
-A wallet that checks every header resists any attacker below half the hashrate; a sampling wallet resists one below about a third with 64 bits of assurance a restore, and less above it (modeled). The threat model already records that a majority of Ghost's hashrate can be rented for about a dollar an hour at launch (threat-model.md, section 9; an estimate there, not yet established), and a majority defeats a full header check too. Whether a phone may sample, how many bits it must reach and whether a full check stays offered for large amounts are founder decisions (listed below).
+A wallet that checks every header resists any attacker below half the hashrate; a sampling wallet resists one below about a third with at most 64 bits of assurance a restore, less the luck that Ghost's rule leaves an attacker who raises its difficulty (the luck table under "Written sampling bound for Ghost's difficulty rule"), and less above it (modeled). The threat model already records that a majority of Ghost's hashrate can be rented for about a dollar an hour at launch (threat-model.md, section 9; an estimate there, not yet established), and a majority defeats a full header check too. Whether a phone may sample, how many bits it must reach and whether a full check stays offered for large amounts are founder decisions (listed below).
 
 Growth of a full node, and what a restore server keeps beyond it:
 
@@ -95,11 +95,112 @@ The trees are counted with every inner node stored (modeled: 64 bytes a leaf), t
 
 Full-node growth misses the proposed 2 TB a year by 412.8 GB (modeled). The 380-byte note of spec 10, section 3.2 makes the first stage's own count of leaves, notes and markers 1,620.6 GB a year, under 2 TB on its own, and this design's lookup tags, trees and header MMR add 792.2 GB (all modeled). At the 156-byte note the total was 1,595.2 GB and met the proposal (modeled). The ceiling is a proposal of workload.md (not yet established), and what to do about it is listed for the founder below.
 
+### Written sampling bound for Ghost's difficulty rule
+
+This is the proof that step 2 rests on, written for Ghost's own rule, ASERT anchored at genesis with each header's own timestamp (spec 06, sections 4.3 and 5.1), in place of the FlyClient argument step 2 quoted (modeled: a proof from the checks and assumptions stated here; nothing in it was run on a chain). Its arithmetic is `benchmarks/scale/header_sample_bound.py`. `benchmarks/tests/test_header_sample_bound.py` checks that the first slice's table above, as `benchmarks/scale/header_sample_bits.py` prints it, is the bound's, figure for figure, and `client/tests/header_sample_bound.rs` checks Lemma B against the client's own difficulty rule and counts the header proof's bytes.
+
+```text
+Honest chain   headers 0 .. N-1, each of work D_i (its difficulty), total W
+The proof      a tip and its range: n' leaves of (header hash, work), claimed total W';
+               the last 64 headers (the tail) checked in full, then m samples
+Shares         a point x of the claimed work as a share of W', 0 <= x < 1
+delta          the tail's share of W', which the wallet reads from the tail's paths
+Density        f(x) = 1 / ((1 - x) ln(1/delta)) on [0, 1 - delta], drawn as x = 1 - delta^u
+Fork point a   the last leaf such that the range's leaves 0 .. a are the honest chain's
+R, H           the claimed work after the fork, W' - W_a, and the honest work after it, W - W_a
+I, V           the claimed work of the invalid and of the valid leaves after the fork, I + V = R
+c              the attacker's input: V <= c H
+```
+
+A leaf is **valid** when its header passes every check the wallet makes of a sample, and **invalid** otherwise; a sample that lands on an invalid leaf refuses the whole proof. The checks are the client's (the header hashes to its leaf with its own `difficulty` as the leaf's work; it carries exactly the difficulty the rule requires of its own height and timestamp; it is sealed under its key block; the key block is the range's leaf at its seed height and passes the same checks; every path reaches the tip's root) and two the client does not make yet:
+
+- **Ancestry.** The sample's own `headerMmrRoot` is the root of the range's leaves before it, as FlyClient checks. A leaf's path holds exactly the nodes of that shorter range (its left siblings and the peaks to its left), so the check costs no bytes (modeled: no more than the path). An honest header copied after the fork commits to the honest leaf after the fork, not to the range's, so it is invalid there unless Keccak-256 collides: every valid leaf after the fork was sealed on the attacker's own branch (modeled: proved here).
+- **Parent.** With each sample the server sends the header before it with its path, and the wallet checks that the sample names it as its parent and is stamped after it, and that it carries the difficulty the rule requires of it; its seal is not checked. The client already checks the header before the tail in this way, and its seal too (modeled: one more header and path a sample, counted below).
+
+Two assumptions stand beside the checks. The proof claims at least the honest chain's total work, `W' >= W`, the least a chain needs to be kept by a wallet that compares the tips it is offered and keeps the heaviest; a wallet that hears only one server has nothing to compare (not yet established: how many servers a wallet asks). And the attacker's input: `V <= cH`, whose cost in hashrate Lemma C gives.
+
+**Theorem (sampling).**
+
+```text
+If the invalid leaves carry a share iota = I / R of the claimed work after the fork, one sample
+lands on an invalid leaf with probability at least
+
+    p(iota) = ln(1 / (1 - iota)) / ln(1/delta),
+
+whatever the fork point and however the invalid leaves are placed. If V <= cH and W' >= W, then
+iota >= 1 - c, so
+
+    p >= ln(1/c) / ln(1/delta),
+
+and m samples drawn after the tail is checked all miss with probability at most (1 - p)^m = 2^(-m b),
+b = -log2(1 - p) bits a sample.
+```
+
+*Proof.* Let `x_a = W_a / W'` be the claimed work before the first leaf after the fork, so the work after the fork is the stretch `[x_a, 1)` of length `r = 1 - x_a = R / W'` (modeled: proved here). The tail is valid, so a fork inside the tail leaves no invalid leaf and nothing to prove; otherwise the invalid leaves after the fork form a set `S` inside `[x_a, 1 - delta]` of length `iota r`, a union of the leaves' stretches of work (modeled). The density `f` rises on `[0, 1 - delta]`, so of all such sets the leftmost interval `J = [x_a, x_a + iota r]` is the least likely: `S` and `J` share `S ∩ J`; the rest of `S` lies right of `J`'s end, where `f` is at least its value there, and the rest of `J` lies left of it, where `f` is at most that value; and the two rests have the same length (modeled: proved here). So
+
+```text
+P(S) >= P(J) = integral from x_a to 1 - (1 - iota) r of dx / ((1 - x) ln(1/delta))
+             = ln(r / ((1 - iota) r)) / ln(1/delta)  =  ln(1 / (1 - iota)) / ln(1/delta),
+```
+
+which does not depend on the fork point. If `V <= cH` and `W' >= W`, then `H <= R` and `I = R - V >= (1 - c) R`, so `iota >= 1 - c` and `p >= ln(1/c) / ln(1/delta)` (modeled: proved here). The wallet draws its points with its own generator after it has checked the tail against the root, so the range is fixed before the points exist and each sample misses with probability at most `1 - p`, independently: all `m` miss with probability at most `(1 - p)^m` (modeled). The wallet takes `m = ceil(target / b)` from the `delta` it reads, so the assurance reaches the target whatever `delta` the attacker's tail gives it; a lighter tail only costs more samples (modeled). This ends the proof.
+
+The bound at the page's settings, `delta` the share of 64 tail headers of 2,880 a day, the hit chance the least over fork points of the density integrated numerically over the leftmost invalid stretch (all modeled):
+
+| Valid work after the fork against the honest work, `c` (all modeled) | Hit chance a sample, one year | Bits a sample, one year | Bits a sample, five years |
+|---|---|---|---|
+| 0.25 (modeled) | 0.1428 | 0.2223 | 0.1885 |
+| 0.50 (modeled) | 0.0714 | 0.1069 | 0.0912 |
+| 0.75 (modeled) | 0.0296 | 0.0434 | 0.0372 |
+| 0.90 (modeled) | 0.0109 | 0.0157 | 0.0135 |
+
+Its bits a sample at one year are the first slice's table above, figure for figure, and the test of this bound fails if they differ (modeled). At five years 702 samples of 0.0912 bits give the same 64 bits (modeled).
+
+**Lemma A (a leaf's work is what its seal cost, checked from the header alone).** Spec 06, section 4.3 makes the required difficulty a function of the header's own height `n` and timestamp `ts` only, `D = g(lag)` with `lag = ts - G - 30 n`, and of no earlier header (modeled: proved here; the client test checks that the rule gives one difficulty for one lag at any height). So the wallet checks a sampled header's difficulty exactly from the header alone, and the leaf commits to that difficulty as its work (decision 0005), so a valid leaf's work is the difficulty its seal was checked at. A hash meets the target `M // D` with probability `(M // D + 1) / 2^256`, at most `(1 + 2^-128) / D` below the 2^128 cap on work of decision 0005, so a valid leaf costs whoever sealed it at least `D / (1 + 2^-128)` hashes on average (modeled: proved here). Rules whose difficulty depends on earlier headers need more in the tree to check a sampled difficulty, as Zcash's ZIP 221 puts timestamps and targets in its nodes; Ghost's rule needs nothing more than decision 0005's node of a hash and a work (modeled: proved here).
+
+**Lemma B (difficulty rises at most `rho = 1.0059` from a header to its child).** `g` never rises as `lag` grows: the target `T_START x factor x 2^(shifts - 16)` grows with the exponent, BCH's cubic `factor` grows with `frac` and stays below twice its value at zero, and `D = max(D_MIN, M // target)` (modeled: proved here, and checked by the client test at every lag below). A child is stamped after its parent (spec 06, section 5.1), `ts' >= ts + 1`, one block further, `n' = n + 1`, so `lag' >= lag - 29` and `D' <= g(lag - 29)`. The cubic is within 0.013% of `2^x` (spec 06, section 4.3), so `g(lag - 29) / g(lag) <= 2^(29/3600) x 1.00013 / 0.99987 = 1.00586`; the floor `D_MIN` only lowers the ratio, and the rounding of `M // target` is below 2^-128 of it, so `D' <= rho D` (modeled: proved here). The client's rule meets it at every lag from past the floor to a difficulty of 2^81, and its largest rise there is within 0.026% of 2^(29/3600), so the bound is close to tight; over two blocks, 58 seconds of lag, the rise exceeds `rho`, so the bound holds header by header, where a child is checked against its parent (measured: client/tests/header_sample_bound.rs over every lag of that range; a computation, the same on any machine).
+
+**Lemma C (luck along a linked chain).** Let the attacker hash `A = qH` times while the honest chain gains `H`, and let its valid leaves after the fork form one chain from the fork, each a child of the one before it and the first a child of the fork point, whose difficulty is `D_a`. For `q < c` it reaches `V >= cH` with probability at most
+
+```text
+exp(-(H / cap) (c ln(c/q) - c + q)),    cap = rho D_a + (rho - 1) c H.
+```
+
+*Proof.* By Lemma B each header is at most `rho` times its parent, so by induction `D_j <= rho D_a + (rho - 1)(D_(a+1) + ... + D_(j-1))`: it holds for the first, and `D_j <= D_(j-1) + (rho - 1) D_(j-1)` carries it on (modeled: proved here). So every header the attacker seals while `V < cH`, the one that crosses `cH` included, has `D < cap`. Count `V` over the headers it seals with `D <= cap`, on any branch it tries; a hash on such a header adds `D` with probability at most `(1 + 2^-128) / D` (Lemma A), and `(e^(lambda D) - 1) / D` grows with `D`, so `exp(lambda V - k t)` after `t` hashes, with `k = (1 + 2^-128)(e^(lambda cap) - 1) / cap`, never rises in expectation; hashes on other headers only lower it. Markov's inequality after `A` hashes, at `lambda = ln(c/q) / cap`, gives the bound with `2^-128` dropped (modeled: proved here). This ends the proof.
+
+With the honest difficulty steady at `D_a`, so that a fork of `K` honest headers has `H = K D_a`, the bound in bits (all modeled):
+
+| Attacker's hashrate against the honest hashrate, at `c` = 0.5 (all modeled) | Luck bound, fork of one day | Luck bound, fork of one year |
+|---|---|---|
+| 0.250, 20.0% of all hashrate (modeled) | 42.2 bits | 47.2 bits |
+| 0.333, 25.0% of all hashrate (modeled) | 15.8 bits | 17.6 bits |
+| 0.400, 28.6% of all hashrate (modeled) | 5.1 bits | 5.7 bits |
+| 0.500, 33.3% of all hashrate (modeled) | 0.0 bits | 0.0 bits |
+
+An attacker that kept its difficulty steady would face the luck of about `cK` headers. Ghost's rule lets it stamp its headers a second apart and raise its difficulty by up to 0.56% a header, which bunches its work into about `1 / ((rho - 1) c)` headers, some 339 at `c` = 0.5, and that is the luck which remains (modeled). So an attacker of a third of the hashrate, `q = c`, is the edge of the input, and below it a restore's assurance is the smaller of the sampling bound's 64 bits and the luck bound's (modeled). Together: an attacker whose valid work after the fork is a chain linked from the fork fools a sampled restore at the page's settings with probability at most `2^-64 + 2^-L`, `L` the luck bound above, because either `V < cH` and the theorem applies, or `V >= cH`, which is the luck (modeled: proved here).
+
+**Difficulty raised on a lone header.** Without the parent check nothing ties a sample to the header before it, and Lemma B does not apply. An attacker can stamp one header far ahead of the schedule, where the rule requires the whole honest work after the fork, seal it with its hashes, and build a range of valid leaves only, cheap headers at the floor before it and its own tail after it, which no sample refuses. This is the difficulty-raising attack of Bahack ("Theoretical Bitcoin Attacks with less than Half of the Computational Power", arXiv 1312.7013, 2013). With hashes `q` times the honest work after the fork it seals that header with probability `1 - e^(-q)`, 39.3% at a third of the hashrate, whatever the fork's depth (modeled). The parent check refuses the lone header: a valid sample needs a parent stamped before it that claims at least `1/rho` of its work, so a raised header ends either a chain the attacker sealed from the fork, which Lemma C covers, or a run that starts on an invalid parent, whose claimed work is invalid work the sampler can hit (modeled: proved here for the lone header).
+
+What the bound leaves open. A run of valid headers that starts on an invalid parent may start at up to `rho` times that parent's claimed work (Lemma B), so an attacker can turn invalid work into valid work by luck and lower the invalid share below `1 - c`. The theorem's general form `p(iota)` still holds for whatever share is left, but how far such runs let an attacker of a given hashrate lower it is not yet established: a bound for runs raised on invalid parents, or a check that refuses them. Until then the assurance against a share of the hashrate is the one above, for attackers that do not raise on invalid parents (not yet established beyond that).
+
+What the client credits. The client's sampled check makes neither the ancestry nor the parent check yet, and credits only the tail's work, never the work the range claims below it (client/src/header_sample.rs), so nothing in the client rests on this bound or on what it leaves open.
+
+**Header proof bytes.** `client/tests/header_sample_bound.rs` builds the proof the client's sampler checks on a chain of one and of five years at the target, every header on schedule at the start difficulty: each sample, the tail and the header before it, each with its key block and every path in the client's layout, the points drawn by the client's sampler from eight seeded generators, and every header spec 05's block-one example at its own height with all 24 items of decision 0005, whose first 19 decode with the client. It records the largest of the eight proofs (measured: a count, the same on any machine; the chain it counts on is modeled):
+
+| Header proof bytes (modeled and measured) | One year of chain | Five years of chain |
+|---|---|---|
+| Modeled: the stage 2 model's header proof, the figure of the table above | 1,247,246 bytes (1.2 MB) | 1,667,534 bytes (1.7 MB) |
+| Measured: the client's proof with every header and path entry sent once, the largest of seeds 1 to 8 | 873,346 bytes, under the model | 1,170,360 bytes, under the model |
+| Measured: the same with the parent check's header before each sample and its key block, sent once | 1,349,331 bytes, over the model | 1,732,518 bytes, over the model |
+| Measured: the client's proof as its structures hold it, each sample with its own key block and every path in full | 2,243,658 bytes, over the model | 2,806,770 bytes, over the model |
+
+The model's bytes hold for the client's proof only when a transport sends each header and each shared path entry once, which decision 0005 allows; the parent check's header a sample then puts the proof 8.2% over the model at one year and 3.9% over at five, and the client's structures as they are, with a key block in every sample and every path in full, are 1.8 and 1.7 times the model (measured). The largest of these moves the full-restore download of 193.6 MB and 417.6 MB by at most 1.1 MB, and turns no ceiling (modeled).
+
 ### What is not yet established for restore
 
 - The PIR scheme, its parameters at 128 classical bits and NIST Category 1, and its real communication, server time and preprocessing for these databases at the target's size (not yet established: a PIR server built from these databases and timed on named hardware; the 2.5 MB and 12.1 GB a second are published figures for another database).
 - The phone's RandomX hash and cache build (not yet established: the restore timed on named mid-range phones; the 128 ms and 2.08 s are build-machine measurements times an assumed four).
-- The sampling bound for Ghost's difficulty rule, the attacker ratio a phone must assume and the sample count it must reach (not yet established: a written proof from the FlyClient analysis for Ghost's difficulty adjustment, and a founder decision).
+- What the written sampling bound for Ghost's difficulty rule leaves open, and the attacker ratio a phone must assume and the sample count it must reach (not yet established: the ancestry and parent checks built into the client's sampled check, a bound for runs of valid headers raised on invalid parents or a check that refuses them, and a founder decision; the bound itself is written above, modeled).
 - The PIR client's memory and time on the phone (not yet established; the phone memory above counts one RandomX cache, the bulk data and 2 MB).
 - A restore and a keep-up check timed on a real phone against a chain of the target size (not yet established).
 
@@ -252,7 +353,7 @@ None of these changes the target. Each is needed for the design above, and each 
 
 - **Move the proof system's hash off the Keccak baseline.** Commitments and transcripts of every proof move to Poseidon2 over BabyBear width 24, and challenges to the degree-8 extension; the statement's Keccak-256 stays. designs.md records Keccak-256 as the provisional baseline with no automatic Poseidon2 fallback, so this is a deliberate choice: the first stage's lower bounds rule out the Keccak architectures against the fleet budget (modeled), and Poseidon2's evidence for exactly this instance is an open obligation (not yet established).
 - **The format changes of the restore design:** a 16-byte lookup tag with every new leaf, the lookup index and coin marker-set trees, the header MMR and the block lookup digest, five header fields and 742-byte headers (modeled), before the note and header formats are frozen; and withdrawing the bucket path of spec 01, section 8 in favour of PIR (no figure).
-- **Header sampling on phones:** the attacker ratio to assume (half the honest work, about a third of the hashrate, is this page's input) and the assurance a restore must reach (64 bits is the input), with a full header check kept for large amounts (modeled: the table under Wallet restore volume).
+- **Header sampling on phones:** the attacker ratio to assume (half the honest work, about a third of the hashrate, is this page's input) and the assurance a restore must reach (64 bits is the input), with a full header check kept for large amounts (modeled: the table under Wallet restore volume). The written bound adds what the hashrate input costs under Ghost's rule: at a third of the hashrate the luck of a raised difficulty leaves no assurance, and at a quarter the luck bound is 15.8 bits on a fork of one day (modeled: the luck table under "Written sampling bound for Ghost's difficulty rule").
 - **How often a wallet checks its coin:** the 50 MB a month of workload.md allows two authenticated checks a month at one year of chain and one at five (modeled); a larger keep-up ceiling or fewer checks are the two choices.
 - **The aggregator fleet:** 104 machines a block at the stated Poseidon2 cost, 156 with the 50 percent spare, against the 40 workload.md proposes; or keep 40, which holds only if a Poseidon2 permutation measures at 93 ns or less (modeled; the cost not yet established).
 - **The direct path of a single reveal:** a proof field of at least 2,330,908 bytes in a new transaction version of spec 07, or a single reveal always bundled by someone (modeled).
@@ -265,7 +366,7 @@ None of these changes the target. Each is needed for the design above, and each 
 The requirements the first stage carried into the third stage still stand (stage1-verdict.md), with these changes from this design:
 
 - **Real capacity** is now of architecture (c): a real batch, root and shrink on named hardware with memory against the 128 GiB machine (not yet established), replacing the cell model above.
-- **Wallet restore at scale** now has a design: what remains is the PIR scheme and its costs at the target's size, the sampling proof for Ghost's difficulty rule, and a restore and a check timed on real phones (not yet established).
+- **Wallet restore at scale** now has a design: what remains is the PIR scheme and its costs at the target's size, the ancestry and parent checks of the written sampling bound and what it leaves open, and a restore and a check timed on real phones (not yet established).
 - **Proven security of the whole bundle** now has every term computed (modeled) and five open proof obligations (not yet established), listed under its section.
 - **Digest length** and **proof length at the bundle's parameters** are answered by this design (modeled).
 - **Public verification proof** now has a design and a proving cost (modeled), and keeps its gas, admission and builder payment (not yet established).
@@ -279,7 +380,7 @@ These build the chosen design; none is part of this page. Each lists what closes
 2. **Poseidon2 recursion layers.** The batch, root and shrink layers with the verifier binding and domain separation of Aggregation cost, and their failure tests; a timed Poseidon2 permutation and real layer proofs on named hardware, recorded as measured, replacing the cell model (not yet established).
 3. **Security write-up.** The estimator run at every layer's parameters, the theorems and their numbers for each term, and the five proof obligations of the security section, ready for the outside review (not yet established).
 4. **ML-DSA-44 verification proofs.** The chunk AIR, the public root, the node's binding of account, key and transaction, the raw-signature fallback and the gas of a transaction without its signature (not yet established).
-5. **Header MMR and sampled header proof.** The header field, the node's MMR, the wallet's sampler and its proof for Ghost's difficulty rule, and the RandomX hash and cache times on named phones (not yet established).
+5. **Header MMR and sampled header proof.** The header field, the node's MMR, the wallet's sampler with the ancestry and parent checks its written bound needs, a bound for runs raised on invalid parents, and the RandomX hash and cache times on named phones (not yet established; the bound itself is written under Wallet restore volume, modeled).
 6. **Lookup tags, lookup index and coin marker-set tree.** The leaf and header format changes of spec 01 and spec 05 with their golden vectors, reorganisation tests and the node's storage measured at a chain of the target's daily volume (not yet established).
 7. **PIR restore server.** The hint tables, the overflow table, the snapshot every 20 blocks (modeled: an input) and a named lattice PIR scheme at 128 classical bits and Category 1, with its communication and server time measured at the target's database sizes (not yet established).
 8. **Wallet restore and keep-up.** The probes, follow-ups and checks of this page in the client, with tests that two keys with different coins make the same requests, that a wrong or missing item is refused, and that a spend only on a disconnected block shows unspent (not yet established).
@@ -292,6 +393,7 @@ Every figure above comes from these scripts and records (the script prints every
 - `benchmarks/scale/budget.py`, `benchmarks/scale/security_budget.py` and `benchmarks/scale/recursion_costs.py`: the inputs and sums it reuses.
 - `docs/scale/recursion-proxy.jsonl`: the measured (proxy) records its seconds a cell come from.
 - `benchmarks/scale/labels.py`: the label check.
+- `benchmarks/scale/header_sample_bound.py`, `benchmarks/tests/test_header_sample_bound.py` and `client/tests/header_sample_bound.rs`: the written sampling bound's tables, its check against the first slice's `benchmarks/scale/header_sample_bits.py`, Lemma B on the client's rule and the counted header proof bytes.
 - `benchmarks/scale/layer_witness.py` and `benchmarks/tests/test_scale_layer_witness.py`: the check that every statement proven with the batch STARK has a row in the table of "Proof library for the layers", that its prover takes only the inputs that row accounts for, and that no row relies on hiding the lookup terminals at a pin that publishes them.
 - `docs/scale/stage1-verdict.md`, `docs/scale/workload.md`, `docs/scale/designs.md`, `docs/scale/security.md`, `docs/scale/phone-results.md`, `docs/scale/recursion.md`, `docs/scale/throughput.md`, `docs/scale/public-encoding.md` and `docs/research/recovery-cost.md`: the pages this design reads.
 
@@ -301,4 +403,7 @@ python3 benchmarks/tests/test_scale_stage2.py
 python3 benchmarks/scale/labels.py docs/scale/stage2-design.md
 python3 benchmarks/scale/layer_witness.py
 python3 benchmarks/tests/test_scale_layer_witness.py
+python3 benchmarks/scale/header_sample_bound.py
+python3 -m unittest tests.test_header_sample_bound -v
+cargo test --manifest-path client/Cargo.toml --test header_sample_bound
 ```
