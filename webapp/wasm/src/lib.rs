@@ -26,12 +26,8 @@
 //! - restore and the reveal over the salt the node serves beside each leaf,
 //!   and restore by note buckets: the bucket bits of a tree, the key's lookup
 //!   tags and restore over leaves given with their positions;
-//! - the private transaction envelope of the ordinary reveal (spec 07,
-//!   section 3, as spec 10, section 4.1 sets it: type `0x50`, version
-//!   `0x0002`, the 380-byte remainder note, 1,311,291 bytes), proved and
-//!   verified as statement S1 version 2, and its decoding and verification,
-//!   which the test's stand-in node uses. The version 1 envelope, with its
-//!   156-byte note, is neither built nor read;
+//! - the private transaction envelope of spec 07, section 3, and its
+//!   decoding and verification, which the test's stand-in node uses;
 //! - the built-in wallet (spec 09, section 9): a new seed as 24 words, the
 //!   account a seed derives, and the account transaction (type 0x52) signed
 //!   with ML-DSA-44, plus its decoding and check for the stand-in node; and
@@ -88,38 +84,35 @@ use ghost_client::header_chain::{
     Added, ChainError, ChainParams as ChainConstants, HeaderChain, PinnedStart, U256,
 };
 use ghost_client::seal::header_fields;
-use ghost_client::reveal::{ChainParams, CoinRevealV2, Proof, TREE_DEPTH};
+use ghost_client::reveal::{ChainParams, CoinReveal, Proof, TREE_DEPTH};
 use ghost_client::{
     Amount, Capsule, CheckedBlock, Commitment, HeaderRoot, Marker, NOTE_BYTES, NoteContents, OwnedCoin, PhantomKey,
-    REVEAL_TX_TYPE, REVEAL_VERSION, ReceiptError, RevealTerms, Rule, SALT_BYTES, SALTED_COMMIT_DATA_BYTES,
+    REVEAL_NOTE_BYTES, ReceiptError, RevealTerms, Rule, SALT_BYTES, SALTED_COMMIT_DATA_BYTES,
     SALTED_COMMIT_FORMAT_VERSION, Salt, TreeLeaf, TreeStateChoice, check_block_receipts_against_header, check_leaves,
     check_markers, choose_tree_state, claim_to_new_key, encrypt_note, partial_reveal, receipts_root, restore_coins,
-    restore_coins_at, reveal_params, salted_commit_data,
+    restore_coins_at, salted_commit_data,
 };
 use ghost_client::note_tag::{LOOKUP_TAG_BYTES, bucket_bits, lookup_tag};
-use ghost_proofs::{Tree, empty_leaf, keccak256, tree_node, verify_coin_reveal_v2};
+use ghost_proofs::{
+    PROTOCOL_VERSION_1, Tree, empty_leaf, keccak256, tree_node, verify_salted_coin_reveal,
+};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-/// EIP-2718 type of the ordinary reveal (spec 07, section 2; spec 10,
-/// section 4).
-pub const TYPE_BYTE: u8 = REVEAL_TX_TYPE;
-/// The version of the ordinary reveal, `0x0002` (spec 10, section 4): the
-/// only one built or read. A version 2 node takes no version 1 reveal.
-pub const TX_VERSION: [u8; 2] = REVEAL_VERSION;
-const _: () = assert!(TYPE_BYTE == 0x50 && TX_VERSION[0] == 0x00 && TX_VERSION[1] == 0x02);
-/// Width of the proof field of the envelope: 1.25 MiB (spec 07, section 3,
-/// "Proof field"; unchanged by spec 10).
+/// EIP-2718 type of the private transaction (spec 07, section 2).
+pub const TYPE_BYTE: u8 = 0x50;
+/// The only transaction version (spec 07, section 2).
+pub const TX_VERSION: [u8; 2] = [0x00, 0x01];
+/// Width of the proof field of the envelope: 1.25 MiB, the settled width of
+/// version 1 for every reveal kind (spec 07, section 3, "Proof field").
 pub const PROOF_FIELD_BYTES: usize = 1_310_720;
 const _: () = assert!(PROOF_FIELD_BYTES == ghost_proofs::PROOF_FIELD_BYTES);
 /// The payload fields before the proof: version, chain identifier, marker,
 /// root, remainder, recipient, amount out and fee.
 const HEAD_BYTES: usize = 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32;
 /// Length of the envelope: the type byte and the payload, which ends with the
-/// 380-byte remainder note (note version 3) the version 2 reveal binds
-/// (spec 10, section 4.1).
-pub const ENVELOPE_BYTES: usize = 1 + HEAD_BYTES + PROOF_FIELD_BYTES + NOTE_BYTES;
-const _: () = assert!(ENVELOPE_BYTES == 1_311_291);
+/// 156-byte remainder note the version 1 reveal binds.
+pub const ENVELOPE_BYTES: usize = 1 + HEAD_BYTES + PROOF_FIELD_BYTES + REVEAL_NOTE_BYTES;
 
 /// The commit payload, the only one the app makes: the version `0x0003`, `F`,
 /// the coin's salt and the 380-byte note, 430 bytes (the node's
@@ -127,7 +120,7 @@ const _: () = assert!(ENVELOPE_BYTES == 1_311_291);
 pub const SALTED_COMMIT_PAYLOAD_BYTES: usize = SALTED_COMMIT_DATA_BYTES;
 const _: () = assert!(SALTED_COMMIT_PAYLOAD_BYTES == 430);
 const _: () = assert!(SALTED_COMMIT_FORMAT_VERSION[1] == 3);
-const _: () = assert!(NOTE_BYTES == 380 && NOTE_BYTES == ghost_proofs::NOTE_V3_BYTES);
+const _: () = assert!(NOTE_BYTES == 380 && REVEAL_NOTE_BYTES == 156);
 /// A salt beside a leaf, as an input carries it: 1 if the leaf has one, else
 /// 0, then the 16 bytes (zero when there is none).
 const SALT_RECORD_BYTES: usize = 1 + SALT_BYTES;
@@ -252,9 +245,12 @@ fn run(ptr: *const u8, len: usize, call: impl FnOnce(&mut Input) -> Result<Vec<u
     }
 }
 
-/// The chain constants of the ordinary reveal: version `0x0002`.
 fn params(chain_id: u64, domain: [u8; 32]) -> ChainParams {
-    reveal_params(chain_id, domain)
+    ChainParams {
+        chain_id: chain_id.to_be_bytes(),
+        version: PROTOCOL_VERSION_1,
+        domain,
+    }
 }
 
 fn amount(word: [u8; 32]) -> Result<Amount, String> {
@@ -292,15 +288,14 @@ fn push_salt(out: &mut Vec<u8>, salt: Option<&Salt>) {
     }
 }
 
-/// Verifies a reveal's proof as a version 2 node does: statement S1 version
-/// 2, against the verifier's own chain constants.
-fn verify_any(params: &ChainParams, reveal: &CoinRevealV2, proof: &Proof) -> Result<(), ghost_proofs::ProofError> {
-    verify_coin_reveal_v2(params, reveal, proof)
+/// Verifies a reveal's proof as the node does: as a salted reveal.
+fn verify_any(params: &ChainParams, reveal: &CoinReveal, proof: &Proof) -> Result<(), ghost_proofs::ProofError> {
+    verify_salted_coin_reveal(params, reveal, proof)
 }
 
-/// Verifies a reveal the worker made, as the node will.
+/// Verifies a reveal the worker made: its coin is salted.
 fn verify_made(params: &ChainParams, made: &ghost_client::BuiltReveal) -> Result<(), ghost_proofs::ProofError> {
-    verify_coin_reveal_v2(params, &made.reveal, &made.proof)
+    verify_salted_coin_reveal(params, &made.reveal, &made.proof)
 }
 
 /// The refusal of a coin whose salt record says it has none: only a salted
@@ -383,11 +378,9 @@ fn prefix_roots(leaves: &[[u8; 32]], from: usize, to: usize, z: &[[u8; 32]]) -> 
     roots
 }
 
-/// The envelope of the ordinary reveal (spec 07, section 3, with spec 10,
-/// section 4.1): type `0x50`, version `0x0002`, chain identifier, marker,
-/// root, remainder, recipient, amount out, fee, the proof zero-padded to
-/// [`PROOF_FIELD_BYTES`], then the 380-byte remainder note.
-fn encode_envelope(chain_id: u64, tx: &CoinRevealV2, proof: &Proof) -> Result<Vec<u8>, String> {
+/// The envelope of spec 07, section 3, with the proof field of
+/// [`PROOF_FIELD_BYTES`].
+fn encode_envelope(chain_id: u64, tx: &CoinReveal, proof: &Proof) -> Result<Vec<u8>, String> {
     let bytes = proof.as_bytes();
     if bytes.len() > PROOF_FIELD_BYTES {
         return Err(format!(
@@ -407,46 +400,6 @@ fn encode_envelope(chain_id: u64, tx: &CoinRevealV2, proof: &Proof) -> Result<Ve
     out.extend_from_slice(&tx.remainder_note);
     debug_assert_eq!(out.len(), ENVELOPE_BYTES);
     Ok(out)
-}
-
-/// The fields of an ordinary reveal's envelope, checked as a node checks
-/// them at decoding: the length and type byte, version `0x0002`, the chain
-/// identifier and amounts of at most 2^96 - 1 wei. Returns the public
-/// fields and the proof field. A version 1 envelope is refused.
-fn decode_envelope<'a>(chain_id: u64, envelope: &'a [u8]) -> Result<(CoinRevealV2, &'a [u8]), String> {
-    if envelope.len() != ENVELOPE_BYTES || envelope[0] != TYPE_BYTE {
-        return Err(String::from("not a private transaction of the expected size"));
-    }
-    let mut tx = Input { bytes: &envelope[1..], at: 0 };
-    if tx.array::<2>()? != TX_VERSION {
-        return Err(String::from("unknown transaction version"));
-    }
-    if tx.u64()? != chain_id {
-        return Err(String::from("wrong chain identifier"));
-    }
-    let marker = tx.array()?;
-    let root = tx.array()?;
-    let remainder = tx.array()?;
-    let recipient = tx.array()?;
-    let out: [u8; 32] = tx.array()?;
-    let fee: [u8; 32] = tx.array()?;
-    amount(out)?;
-    amount(fee)?;
-    let field = tx.take(PROOF_FIELD_BYTES)?;
-    let remainder_note = tx.array()?;
-    tx.end()?;
-    Ok((CoinRevealV2 { root, marker, remainder, remainder_note, recipient, out, fee }, field))
-}
-
-/// The output of a decoded envelope: transaction hash (32), marker (32),
-/// root (32), remainder (32), recipient (20), amount out (32), fee (32),
-/// remainder note (380).
-fn decoded_out(envelope: &[u8], tx: &CoinRevealV2) -> Vec<u8> {
-    let mut result = keccak256(envelope).to_vec();
-    for field in [&tx.marker[..], &tx.root, &tx.remainder, &tx.recipient, &tx.out, &tx.fee, &tx.remainder_note] {
-        result.extend_from_slice(field);
-    }
-    result
 }
 
 /// Allocate `len` bytes the caller may write into; freed with
@@ -960,21 +913,46 @@ fn key_for_claim(text: &str) -> Result<PhantomKey, String> {
     PhantomKey::parse(text).map_err(|e| format!("the new key is not valid: {e}"))
 }
 
-/// Decodes an ordinary reveal's envelope and verifies its proof, as a
-/// version 2 node would at decoding (spec 07, section 3; spec 10, section
-/// 4) and step 9 of admission: statement S1 version 2. A version 1 envelope
-/// is refused. Input: chain identifier (8), domain (32), the envelope.
-/// Output: that of [`decoded_out`], the remainder note 380 bytes.
+/// Decodes a private transaction envelope and verifies its proof, as a node
+/// would at decoding (spec 07, section 3) and step 9 of admission: as a
+/// salted reveal. Input:
+/// chain identifier (8), domain (32), the envelope. Output: transaction hash
+/// (32), marker (32), root (32), remainder (32), recipient (20), amount out
+/// (32), fee (32), remainder note (156).
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_decode_envelope(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
         let chain_id = input.u64()?;
         let params = params(chain_id, input.array()?);
         let envelope = input.rest();
-        let (reveal, field) = decode_envelope(chain_id, envelope)?;
-        let proof = Proof::from_bytes(field.to_vec());
+        if envelope.len() != ENVELOPE_BYTES || envelope[0] != TYPE_BYTE {
+            return Err(String::from("not a private transaction of the expected size"));
+        }
+        let mut tx = Input { bytes: &envelope[1..], at: 0 };
+        if tx.array::<2>()? != TX_VERSION {
+            return Err(String::from("unknown transaction version"));
+        }
+        if tx.u64()? != chain_id {
+            return Err(String::from("wrong chain identifier"));
+        }
+        let marker = tx.array()?;
+        let root = tx.array()?;
+        let remainder = tx.array()?;
+        let recipient = tx.array()?;
+        let out: [u8; 32] = tx.array()?;
+        let fee: [u8; 32] = tx.array()?;
+        amount(out)?;
+        amount(fee)?;
+        let proof = Proof::from_bytes(tx.take(PROOF_FIELD_BYTES)?.to_vec());
+        let remainder_note = tx.array()?;
+        tx.end()?;
+        let reveal = CoinReveal { root, marker, remainder, remainder_note, recipient, out, fee, rule: [0; 32] };
         verify_any(&params, &reveal, &proof).map_err(|e| format!("the proof does not verify: {e}"))?;
-        Ok(decoded_out(envelope, &reveal))
+        let mut result = keccak256(envelope).to_vec();
+        for field in [&marker[..], &root, &remainder, &recipient, &out, &fee, &remainder_note] {
+            result.extend_from_slice(field);
+        }
+        Ok(result)
     })
 }
 
@@ -1440,8 +1418,7 @@ pub extern "C" fn ghost_receipts_add(ptr: *const u8, len: usize) -> u32 {
 /// receipts already checked by [`ghost_receipts_add`]; whether that start
 /// is genesis (1); the leaf count of the start block (4); the leaves from
 /// that position to the tip's last, with their notes (count, 32 + 380 each,
-/// a version 2 reveal's note as it is, a version 1 reveal's 156-byte note
-/// zero-padded)
+/// a reveal's 156-byte note zero-padded)
 /// and the salt read beside each (count, 1 + 16 each: 0 and zeros for none);
 /// how many of the blocks, from the first, are up to the block the markers
 /// were read at (4); the spent markers read there (count, 32 each).
@@ -1539,17 +1516,19 @@ mod guard {
         StopRoot, TreeRoom, guard_cancel, guard_commit, guard_release, guard_spend, guard_transfer, restore_guard_coins,
         words_only_spend,
     };
-    use ghost_proofs::{PolicyReveal, verify_know_action, verify_policy_reveal};
+    use ghost_proofs::{CoinRevealV2, PolicyReveal, verify_coin_reveal_v2, verify_know_action, verify_policy_reveal};
 
+    /// The version of an ordinary reveal (type `0x50`) under spec 10, section
+    /// 4: `0x0002`.
+    pub const ORDINARY_VERSION: [u8; 2] = [0x00, 0x02];
     /// The type byte of a policy reveal (spec 10, section 5.1).
     pub const POLICY_TYPE_BYTE: u8 = 0x53;
     /// The version of a policy reveal: `0x0001`.
     pub const POLICY_VERSION: [u8; 2] = [0x00, 0x01];
     /// The envelope of an ordinary version 2 reveal: the type byte, version,
     /// chain identifier, marker, root, remainder, recipient, amount out, fee,
-    /// the proof field and the 380-byte remainder note (spec 10, section
-    /// 4.1), the one envelope of [`encode_envelope`].
-    pub const ORDINARY_ENVELOPE_BYTES: usize = ENVELOPE_BYTES;
+    /// the proof field and the 380-byte remainder note (spec 10, section 4.1).
+    pub const ORDINARY_ENVELOPE_BYTES: usize = 1 + 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32 + PROOF_FIELD_BYTES + NOTE_BYTES;
     /// The envelope of a policy reveal (spec 10, section 5.1).
     pub const POLICY_ENVELOPE_BYTES: usize = 1 + 350 + PROOF_FIELD_BYTES + NOTE_BYTES;
     const _: () = assert!(ORDINARY_ENVELOPE_BYTES == 1_311_291);
@@ -1667,10 +1646,19 @@ mod guard {
         Ok(())
     }
 
-    /// The envelope of an ordinary version 2 reveal (spec 10, section 4.1):
-    /// the wallet's own reveal envelope, whichever case the proof opens.
+    /// The envelope of an ordinary version 2 reveal (spec 10, section 4.1).
     pub fn ordinary_envelope(chain_id: u64, tx: &CoinRevealV2, proof: &Proof) -> Result<Vec<u8>, String> {
-        encode_envelope(chain_id, tx, proof)
+        let mut out = Vec::with_capacity(ORDINARY_ENVELOPE_BYTES);
+        out.push(TYPE_BYTE);
+        out.extend_from_slice(&ORDINARY_VERSION);
+        out.extend_from_slice(&chain_id.to_be_bytes());
+        for field in [&tx.marker[..], &tx.root, &tx.remainder, &tx.recipient, &tx.out, &tx.fee] {
+            out.extend_from_slice(field);
+        }
+        push_proof(&mut out, proof)?;
+        out.extend_from_slice(&tx.remainder_note);
+        debug_assert_eq!(out.len(), ORDINARY_ENVELOPE_BYTES);
+        Ok(out)
     }
 
     /// The envelope of a policy reveal (spec 10, section 5.1).
@@ -2344,22 +2332,23 @@ mod threads {
 #[cfg(feature = "test-tree-depth")]
 mod test_depth {
     use super::*;
-    use ghost_proofs::{coin_reveal_v2_binding, tagged};
+    use ghost_client::encrypt_note_v2;
+    use ghost_proofs::{salted_coin_reveal_binding, tagged};
 
     /// Levels of the test node's coin trees: 16,384 leaves each.
     pub const TEST_DEPTH_LEVELS: usize = 14;
     /// The tag of the test node's stub proof.
     const TEST_PROOF_TAG: &str = "ghost/test-proof/v1";
 
-    /// `K("ghost/test-proof/v1", binding digest)`, the digest of a version 2
-    /// ordinary reveal (spec 10, section 4.2).
-    fn stub(params: &ChainParams, reveal: &CoinRevealV2) -> [u8; 32] {
-        tagged(TEST_PROOF_TAG, &[&coin_reveal_v2_binding(params, reveal)])
+    /// `K("ghost/test-proof/v1", binding digest)`, the digest of a salted
+    /// reveal.
+    fn stub(params: &ChainParams, reveal: &CoinReveal) -> [u8; 32] {
+        tagged(TEST_PROOF_TAG, &[&salted_coin_reveal_binding(params, reveal)])
     }
 
     /// Whether a proof field is the stub of `reveal`: the stub in its first
     /// 32 bytes and zeros after.
-    fn is_stub_proof(params: &ChainParams, reveal: &CoinRevealV2, field: &[u8]) -> bool {
+    fn is_stub_proof(params: &ChainParams, reveal: &CoinReveal, field: &[u8]) -> bool {
         field.len() == PROOF_FIELD_BYTES
             && field[32..].iter().all(|&byte| byte == 0)
             && field[..32] == stub(params, reveal)
@@ -2437,19 +2426,11 @@ mod test_depth {
             let remainder_salt = Salt::random(&mut rng);
             let remainder =
                 holder.coin_commit_with_salt(next, left, Rule::EMPTY, remainder_salt).map_err(|e| e.to_string())?;
-            // Its note is note version 3 with the empty rule's capsule, 380
-            // bytes, as the version 2 reveal binds it.
             let contents = NoteContents::salted_coin(next, left, Rule::EMPTY, remainder_salt);
-            let remainder_note = encrypt_note(
-                &holder.note_key(),
-                chain_id,
-                &remainder.commitment,
-                &contents,
-                &Capsule::empty(),
-                &mut rng,
-            );
+            let remainder_note =
+                encrypt_note_v2(&holder.note_key(), chain_id, &remainder.commitment, &contents, &mut rng);
 
-            let reveal = CoinRevealV2 {
+            let reveal = CoinReveal {
                 root,
                 marker: *commit.marker.as_bytes(),
                 remainder: *remainder.commitment.as_bytes(),
@@ -2457,6 +2438,7 @@ mod test_depth {
                 recipient,
                 out: out.to_bytes(),
                 fee: fee.to_bytes(),
+                rule: *Rule::EMPTY.as_bytes(),
             };
             let proof = Proof::from_bytes(stub(&params, &reveal).to_vec());
             let envelope = encode_envelope(chain_id, &reveal, &proof)?;
@@ -2483,12 +2465,37 @@ mod test_depth {
             let chain_id = input.u64()?;
             let params = params(chain_id, input.array()?);
             let envelope = input.rest();
-            let (reveal, field) = decode_envelope(chain_id, envelope)?;
+            if envelope.len() != ENVELOPE_BYTES || envelope[0] != TYPE_BYTE {
+                return Err(String::from("not a private transaction of the expected size"));
+            }
+            let mut tx = Input { bytes: &envelope[1..], at: 0 };
+            if tx.array::<2>()? != TX_VERSION {
+                return Err(String::from("unknown transaction version"));
+            }
+            if tx.u64()? != chain_id {
+                return Err(String::from("wrong chain identifier"));
+            }
+            let marker = tx.array()?;
+            let root = tx.array()?;
+            let remainder = tx.array()?;
+            let recipient = tx.array()?;
+            let out: [u8; 32] = tx.array()?;
+            let fee: [u8; 32] = tx.array()?;
+            amount(out)?;
+            amount(fee)?;
+            let field = tx.take(PROOF_FIELD_BYTES)?;
+            let remainder_note = tx.array()?;
+            tx.end()?;
+            let reveal = CoinReveal { root, marker, remainder, remainder_note, recipient, out, fee, rule: [0; 32] };
             if !is_stub_proof(&params, &reveal, field) {
                 verify_any(&params, &reveal, &Proof::from_bytes(field.to_vec()))
                     .map_err(|e| format!("the proof does not verify: {e}"))?;
             }
-            Ok(decoded_out(envelope, &reveal))
+            let mut result = keccak256(envelope).to_vec();
+            for field in [&marker[..], &root, &remainder, &recipient, &out, &fee, &remainder_note] {
+                result.extend_from_slice(field);
+            }
+            Ok(result)
         })
     }
 }

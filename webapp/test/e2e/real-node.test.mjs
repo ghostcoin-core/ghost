@@ -11,9 +11,8 @@
 // then reads the chain itself: the commit transaction's type and sender, its
 // 430 bytes of version 0x0003 with the coin's salt and its 380-byte note, its
 // leaf, the salt and the note the node serves back beside it, the reveal's
-// marker, the version 2 reveal log (spec 10, section 4) with the remainder's
-// leaf and its whole 380-byte note, the same note read back from the tree,
-// the recipient's balance, and the claim.
+// marker, the remainder's leaf and its note zero-padded to 380 bytes, the
+// recipient's balance, and the claim.
 //
 // GHOST_NODE_GETH is the path to the geth binary (webapp/scripts/build-node.sh
 // builds one at the commit in NODE_COMMIT). Without it the test prints
@@ -441,29 +440,23 @@ if (!GETH) {
       assert.deepEqual(sentSeen.reveal, { txHash: reveal.txHash, out: GHOST / 4n }, "shown Sent with the amount and hash");
       assert.equal(reveal.stage, "done");
       assert.equal(reveal.block, Number(BigInt(revealReceipt.blockNumber)), "Done at the reveal's own block");
-      // Log data of the version 2 ordinary reveal (spec 10, section 4): tree
-      // index (4), position (4), remainder (32), the 380-byte remainder note
-      // of note version 3 (380), recipient (20), out (32).
+      // Log data: tree index (4), position (4), remainder (32), the version 1
+      // reveal's remainder note (156), recipient (20), out (32).
       const revealLog = fromHex(revealReceipt.logs[0].data);
-      assert.equal(revealLog.length, 472, "the version 2 reveal log");
+      assert.equal(revealLog.length, 248);
       const remainder = toHex(revealLog.slice(8, 40));
-      const remainderNote = revealLog.slice(40, 420);
-      assert.ok(
-        remainderNote.slice(156).some((b) => b !== 0),
-        "the remainder's note is a whole 380-byte note, not a 156-byte one zero-padded",
-      );
-      assert.equal(toHex(revealLog.slice(420, 440)), recipient);
-      assert.equal(BigInt(toHex(revealLog.slice(440, 472))), GHOST / 4n);
+      assert.equal(toHex(revealLog.slice(196, 216)), recipient);
+      assert.equal(BigInt(toHex(revealLog.slice(216, 248))), GHOST / 4n);
       assert.equal(await balance(recipient), GHOST / 4n, "the recipient holds what was revealed");
       tree = await chainTree();
       assert.ok(tree.markers.includes(marker), "the coin's marker is spent");
       assert.ok(tree.leaves.includes(remainder), "the remainder's leaf is in the coin tree");
       assert.equal(tree.salts[tree.leaves.indexOf(remainder)], null, "a remainder's salt is only in its note");
-      // The tree stores the remainder's 380-byte note as the log carries it.
+      // The tree stores the remainder's 156-byte note zero-padded to 380.
       assert.equal(
         tree.notes[tree.leaves.indexOf(remainder)],
-        toHex(remainderNote),
-        "the remainder's 380-byte note is read back with its leaf",
+        toHex(concat([revealLog.slice(40, 196), new Uint8Array(224)])),
+        "the remainder's note, zero-padded to 380 bytes",
       );
       let s = flow.state.summon;
       assert.equal(s.status, "unclaimed", "still unclaimed after a partial reveal");
@@ -490,9 +483,8 @@ if (!GETH) {
       assert.deepEqual(sentSeen.claim, { txHash: claimed.txHash, amount: claimed.amount }, "shown Sent with the amount and hash");
       assert.equal(claimed.block, Number(BigInt(claimReceipt.blockNumber)), "Done at the claim's own block");
       const claimLog = fromHex(claimReceipt.logs[0].data);
-      assert.equal(claimLog.length, 472, "a claim is a version 2 reveal too");
-      assert.equal(toHex(claimLog.slice(420, 440)), "0x0000000000000000000000000000000000000000");
-      assert.equal(BigInt(toHex(claimLog.slice(440, 472))), 0n, "a claim sends nothing out");
+      assert.equal(toHex(claimLog.slice(196, 216)), "0x0000000000000000000000000000000000000000");
+      assert.equal(BigInt(toHex(claimLog.slice(216, 248))), 0n, "a claim sends nothing out");
       tree = await chainTree();
       assert.ok(tree.leaves.includes(toHex(claimLog.slice(8, 40))), "the claimed coin's leaf is in the coin tree");
       assert.equal(await balance(recipient), GHOST / 4n, "the claim leaves the recipient's balance as it was");
