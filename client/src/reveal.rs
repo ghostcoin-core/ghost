@@ -18,27 +18,55 @@
 //! [`choose_tree_state`](crate::tree_state::choose_tree_state), never the root
 //! of the block that added the leaf.
 //!
-//! Every coin is salted (version 2) and is proved by
-//! [`ghost_proofs::prove_salted_coin_reveal`]: its salt and a fresh salt for
-//! the remainder, drawn from the caller's generator, are private witnesses,
-//! and the remainder's note is note version 2, carrying that fresh salt: the
-//! 156-byte note slot ([`crate::note::REVEAL_NOTE_BYTES`]) this reveal binds.
-//! The node stores it in the tree zero-padded to the 380 bytes of every note,
-//! and restore reads it so ([`crate::note::pad_reveal_note`]). Every builder
+//! Every reveal is the ordinary class of spec 10, section 4: type `0x50` at
+//! version `0x0002` ([`REVEAL_VERSION`]), proved by
+//! [`ghost_proofs::prove_coin_reveal_v2`] and checked by
+//! [`ghost_proofs::verify_coin_reveal_v2`]. Its binding has no `rule` field:
+//! the proof opens the input's rule as the empty rule
+//! ([`InputRule::plain`]), and the remainder's rule is the empty rule, a
+//! private witness. This wallet makes no other: a coin with a rule is refused
+//! here (the policy wallet is [`crate::guard`]).
+//!
+//! The coin and its remainder are salted (version 2): the coin's salt and a
+//! fresh salt for the remainder, drawn from the caller's generator, are
+//! private witnesses. The remainder's note is note version 3, 380 bytes
+//! ([`crate::note::NOTE_BYTES`]), with the empty rule's capsule, freshly
+//! encrypted under the holder's note key ([`crate::note::encrypt_note`]): the
+//! note the reveal binds is the note the tree stores, unpadded. The 156-byte
+//! remainder note of the version 1 reveal is no longer made. Every builder
 //! refuses what the prover refuses.
 
 use core::fmt;
 
 pub use ghost_proofs::{
-    ChainParams, CoinReveal, Proof, ProofError, RevealRequest, SaltedCoinOpening,
+    ChainParams, CoinRevealV2, CoinRevealV2Request, InputRule, Proof, ProofError, SaltedCoinOpening,
     SaltedCoinRemainder, TREE_DEPTH,
 };
+use ghost_proofs::{EMPTY_RULE, PROTOCOL_VERSION_2};
 use rand_core::CryptoRng;
 
 use crate::commit::{Amount, Commitment, Marker, Rule, Salt};
 use crate::key::PhantomKey;
-use crate::note::{encrypt_note_v2, NoteContents};
+use crate::note::{encrypt_note, Capsule, NoteContents, NOTE_BYTES};
 use crate::wipe::wipe;
+
+/// The type byte of the ordinary reveal (spec 10, section 4).
+pub const REVEAL_TX_TYPE: u8 = 0x50;
+/// The version the ordinary reveal binds and its envelope carries: `0x0002`
+/// (spec 10, section 4). A version 1 reveal is neither built nor accepted.
+pub const REVEAL_VERSION: [u8; 2] = PROTOCOL_VERSION_2;
+
+const _: () = assert!(NOTE_BYTES == ghost_proofs::NOTE_V3_BYTES);
+
+/// The chain constants an ordinary reveal binds: `chain_id`, the version
+/// `0x0002` and the genesis block hash as the domain.
+pub fn reveal_params(chain_id: u64, domain: [u8; 32]) -> ChainParams {
+    ChainParams {
+        chain_id: chain_id.to_be_bytes(),
+        version: REVEAL_VERSION,
+        domain,
+    }
+}
 
 /// Why a reveal was not built.
 #[derive(Clone, PartialEq, Eq)]
@@ -52,6 +80,9 @@ pub enum RevealError {
     /// A claim to the key that already holds the coin: the remainder would
     /// take number 0 a second time.
     ClaimToSameKey,
+    /// The chain constants are not those of version `0x0002`: a node takes
+    /// no other ordinary reveal.
+    WrongVersion,
 }
 
 impl fmt::Debug for RevealError {
@@ -60,6 +91,7 @@ impl fmt::Debug for RevealError {
             Self::Proof(error) => write!(f, "Proof({error:?})"),
             Self::NumbersExhausted => f.write_str("NumbersExhausted"),
             Self::ClaimToSameKey => f.write_str("ClaimToSameKey"),
+            Self::WrongVersion => f.write_str("WrongVersion"),
         }
     }
 }
@@ -70,6 +102,7 @@ impl fmt::Display for RevealError {
             Self::Proof(error) => write!(f, "the reveal was refused: {error}"),
             Self::NumbersExhausted => f.write_str("the key has no commitment number left"),
             Self::ClaimToSameKey => f.write_str("a claim must go to a new key"),
+            Self::WrongVersion => f.write_str("an ordinary reveal is version 0x0002"),
         }
     }
 }
@@ -121,7 +154,7 @@ pub struct RemainderCoin {
     pub number: u64,
     /// The amount left, `v'`.
     pub amount: Amount,
-    /// The rule, the input's.
+    /// The rule: the empty rule, whose capsule its note carries.
     pub rule: Rule,
     /// Its fresh salt, carried in its note.
     pub salt: Salt,
@@ -133,29 +166,40 @@ pub struct RemainderCoin {
 
 /// A built reveal: the public fields, the proof, and what the wallet tracks.
 pub struct BuiltReveal {
-    /// The public fields the transaction carries.
-    pub reveal: CoinReveal,
+    /// The public fields the transaction carries, the 380-byte remainder
+    /// note among them.
+    pub reveal: CoinRevealV2,
     /// The proof.
     pub proof: Proof,
     /// The remainder the reveal creates.
     pub remainder: RemainderCoin,
 }
 
-/// Runs the prover for one coin reveal of a salted coin, as the builders do.
+/// Runs the prover for one ordinary reveal of a plain salted coin, as the
+/// builders do: the input's rule is the empty rule ([`InputRule::plain`])
+/// and so is the remainder's.
 ///
 /// It is what a background worker runs. It starts no thread, reads no
 /// operating system random source or clock and uses no file or network, so
 /// it builds for `wasm32-unknown-unknown`; `zk_randomness` must be 32 fresh
 /// bytes from the caller's secure random source. It refuses what
-/// [`ghost_proofs::prove_salted_coin_reveal`] refuses.
+/// [`ghost_proofs::prove_coin_reveal_v2`] refuses.
 pub fn prove_reveal(
     params: &ChainParams,
     opening: &SaltedCoinOpening,
     remainder: &SaltedCoinRemainder,
-    request: &RevealRequest,
+    request: &CoinRevealV2Request,
     zk_randomness: [u8; 32],
-) -> Result<(CoinReveal, Proof), ProofError> {
-    ghost_proofs::prove_salted_coin_reveal(params, opening, remainder, request, zk_randomness)
+) -> Result<(CoinRevealV2, Proof), ProofError> {
+    ghost_proofs::prove_coin_reveal_v2(
+        params,
+        opening,
+        &InputRule::plain(),
+        remainder,
+        &EMPTY_RULE,
+        request,
+        zk_randomness,
+    )
 }
 
 /// A partial reveal: pays `out` to the recipient and keeps `v - out - fee`
@@ -230,6 +274,9 @@ fn build<R: CryptoRng + ?Sized>(
     rng: &mut R,
     zk_randomness: [u8; 32],
 ) -> Result<BuiltReveal, RevealError> {
+    if params.version != REVEAL_VERSION {
+        return Err(RevealError::WrongVersion);
+    }
     let left = coin
         .amount
         .wei()
@@ -238,7 +285,8 @@ fn build<R: CryptoRng + ?Sized>(
         .and_then(|wei| Amount::new(wei).ok())
         .ok_or(RevealError::Proof(ProofError::ConservationFails))?;
 
-    // The remainder is salted under a fresh salt.
+    // Only a coin with the empty rule is spent here, and its remainder keeps
+    // the empty rule; the remainder is salted under a fresh salt.
     let remainder_salt = Salt::random(rng);
     let commit = holder
         .coin_commit_with_salt(number, left, coin.rule, remainder_salt)
@@ -246,31 +294,31 @@ fn build<R: CryptoRng + ?Sized>(
     let remainder = RemainderCoin {
         number,
         amount: left,
-        rule: coin.rule,
+        rule: Rule::EMPTY,
         salt: remainder_salt,
         commitment: commit.commitment,
         marker: commit.marker,
     };
-    let contents = NoteContents::salted_coin(number, left, coin.rule, remainder_salt);
+    // Note version 3 with the empty rule's capsule, freshly encrypted for
+    // the new leaf: the 380 bytes the reveal binds and the tree stores.
+    let contents = NoteContents::salted_coin(number, left, Rule::EMPTY, remainder_salt);
     let chain_id = u64::from_be_bytes(params.chain_id);
-    // The version 1 reveal binds a 156-byte remainder note, so it is note
-    // version 2; the node stores it in the tree zero-padded to 380 bytes.
-    let remainder_note = encrypt_note_v2(
+    let remainder_note = encrypt_note(
         &holder.note_key(),
         chain_id,
         &remainder.commitment,
         &contents,
+        &Capsule::empty(),
         rng,
     );
 
     let input = key.key_bytes();
     let output = holder.key_bytes();
-    let request = RevealRequest {
+    let request = CoinRevealV2Request {
         root: terms.root,
         recipient: terms.recipient,
         out: out.to_bytes(),
         fee: terms.fee.to_bytes(),
-        rule: *coin.rule.as_bytes(),
         remainder_note,
     };
     let mut opening = SaltedCoinOpening {

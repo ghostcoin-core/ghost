@@ -1,21 +1,22 @@
 //! Restore of salted (version 2) coins from the digits and the leaf records,
 //! and the reveal of a restored salted coin, checked with the proofs crate's
-//! own verifier. Every note in the tree is 380 bytes: a note version 3, or a
-//! reveal's 156-byte note version 2 remainder note zero-padded, as the node
-//! stores it. A leaf whose note is an unsalted version 1 note is discarded,
-//! never restored.
+//! own verifier. Every note in the tree is 380 bytes: a note version 3 (a
+//! commit's, or the remainder note the version 2 ordinary reveal binds), or
+//! an earlier reveal's 156-byte note version 2 remainder note zero-padded,
+//! as the node stored it. A leaf whose note is an unsalted version 1 note is
+//! discarded, never restored.
 
 use ghost_client::note::{
     chacha20poly1305_seal, note_associated_data, NOTE_PLAINTEXT_BYTES, NOTE_V2_PLAINTEXT_BYTES,
 };
-use ghost_client::reveal::{ChainParams, CoinReveal, ProofError, TREE_DEPTH};
+use ghost_client::reveal::{ChainParams, CoinRevealV2, ProofError, TREE_DEPTH};
 use ghost_client::{
-    decrypt_note, decrypt_note_v2, encrypt_note, encrypt_note_v2, full_reveal, pad_reveal_note, partial_reveal,
-    restore_coins, Amount, Capsule, Commitment, Content, Current, DiscardReason, KeyFormat, Marker, NoteContents,
-    NoteError, OwnedCoin, PhantomKey, RevealError, RevealTerms, Rule, Salt, TreeLeaf, COIN_V2, DATA_V2, NOTE_BYTES,
-    REVEAL_NOTE_BYTES, SALT_BYTES,
+    decrypt_note, decrypt_note_with_capsule, encrypt_note, encrypt_note_v2, full_reveal, pad_reveal_note,
+    partial_reveal, restore_coins, reveal_params, Amount, Capsule, Commitment, Content, Current, DiscardReason,
+    KeyFormat, Marker, NoteContents, NoteError, OwnedCoin, PhantomKey, RevealError, RevealTerms, Rule, Salt, TreeLeaf,
+    COIN_V2, DATA_V2, NOTE_BYTES, REVEAL_NOTE_BYTES, SALT_BYTES,
 };
-use ghost_proofs::{empty_leaf, tree_node, verify_coin_reveal, verify_salted_coin_reveal, Tree, PROTOCOL_VERSION_1};
+use ghost_proofs::{empty_leaf, tree_node, verify_coin_reveal_v2, Tree, PROTOCOL_VERSION_1};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -27,7 +28,13 @@ const COMMITTED: u128 = 1_000_000_000;
 const PAID: u128 = 100_000_000;
 const FEE: u128 = 21_000;
 
+/// The chain constants of the ordinary reveal: version `0x0002`.
 fn params() -> ChainParams {
+    reveal_params(CHAIN_ID, [7; 32])
+}
+
+/// The same chain at version `0x0001`.
+fn version_1_params() -> ChainParams {
     ChainParams {
         chain_id: CHAIN_ID.to_be_bytes(),
         version: PROTOCOL_VERSION_1,
@@ -107,14 +114,14 @@ impl Chain {
     }
 
     /// Includes a reveal as the node does: its marker is spent, and its
-    /// remainder is appended with its 156-byte note zero-padded to 380 bytes
+    /// remainder is appended with its 380-byte note as the reveal binds it
     /// and no salt beside it (a remainder's salt is only in its note).
-    fn include(&mut self, reveal: &CoinReveal) -> u32 {
+    fn include(&mut self, reveal: &CoinRevealV2) -> u32 {
         self.spent.push(Marker::from_bytes(reveal.marker));
-        assert_eq!(reveal.remainder_note.len(), REVEAL_NOTE_BYTES);
+        assert_eq!(reveal.remainder_note.len(), NOTE_BYTES);
         self.push(TreeLeaf {
             commitment: Commitment::from_bytes(reveal.remainder),
-            note: pad_reveal_note(&reveal.remainder_note),
+            note: reveal.remainder_note,
             salt: None,
         })
     }
@@ -154,14 +161,16 @@ fn restored_salted_coin_reveals_with_its_salt() {
         assert_eq!(refused.err(), Some(RevealError::Proof(ProofError::NotInTree)));
     }
 
-    // With it, the reveal proves and the salted verifier accepts it.
+    // With it, the version 2 reveal proves and the version 2 verifier
+    // accepts it; under version 1 chain constants it does not verify.
     let zk_randomness = zk(&mut rng);
     let built = partial_reveal(&params(), &key(), &coin, &terms(root), amount(PAID), &mut rng, zk_randomness).unwrap();
-    assert_eq!(verify_salted_coin_reveal(&params(), &built.reveal, &built.proof), Ok(()));
-    assert!(verify_coin_reveal(&params(), &built.reveal, &built.proof).is_err());
+    assert_eq!(verify_coin_reveal_v2(&params(), &built.reveal, &built.proof), Ok(()));
+    assert!(verify_coin_reveal_v2(&version_1_params(), &built.reveal, &built.proof).is_err());
     assert_eq!(&built.reveal.marker, commit.marker.as_bytes());
 
-    // The remainder is salted under a fresh salt, carried in its note.
+    // The remainder is salted under a fresh salt, carried in its 380-byte
+    // note version 3, whose capsule is the empty rule's.
     let left = COMMITTED - PAID - FEE;
     let remainder_salt = built.remainder.salt;
     assert_ne!(remainder_salt, salt);
@@ -170,10 +179,17 @@ fn restored_salted_coin_reveals_with_its_salt() {
     assert_eq!(built.remainder.commitment, expected.commitment);
     assert_eq!(built.remainder.marker, expected.marker);
     assert_eq!(&built.reveal.remainder, expected.commitment.as_bytes());
-    let note = decrypt_note_v2(&key().note_key(), CHAIN_ID, &expected.commitment, &built.reveal.remainder_note).unwrap();
+    assert_eq!(built.reveal.remainder_note.len(), NOTE_BYTES);
+    let (note, capsule) =
+        decrypt_note_with_capsule(&key().note_key(), CHAIN_ID, &expected.commitment, &built.reveal.remainder_note)
+            .unwrap();
     assert_eq!(note.type_tag, COIN_V2);
     assert_eq!(note.salt, remainder_salt);
     assert_eq!((note.number, note.amount.wei()), (1, left));
+    assert!(capsule == Capsule::empty());
+    // Not a padded version 2 note: the capsule's 224 bytes are encrypted,
+    // so the note's tail is not zero.
+    assert!(built.reveal.remainder_note[REVEAL_NOTE_BYTES..].iter().any(|&byte| byte != 0));
 
     // Once included, restore finds the remainder from its note's salt alone.
     let remainder_position = chain.include(&built.reveal);
@@ -186,10 +202,10 @@ fn restored_salted_coin_reveals_with_its_salt() {
     assert_eq!(current.salt, remainder_salt);
     assert!(current.capsule == Capsule::empty());
 
-    // The padded remainder note with a non-zero byte in its padding is no
+    // The remainder note with a changed byte in its capsule's part is no
     // note of the key's: it is passed over, not read.
     let mut dirty = chain.leaves.clone();
-    dirty[remainder_position as usize].note[NOTE_BYTES - 1] = 1;
+    dirty[remainder_position as usize].note[NOTE_BYTES - 1] ^= 1;
     let passed = restore_coins(&key(), CHAIN_ID, 0, &dirty, &chain.spent).unwrap();
     assert_eq!(passed.found.len(), 1);
     assert!(passed.discarded.is_empty());
@@ -199,7 +215,7 @@ fn restored_salted_coin_reveals_with_its_salt() {
     let (root, path) = root_and_path(&chain.leaves, remainder_position);
     let zk_randomness = zk(&mut rng);
     let built = full_reveal(&params(), &key(), &current.owned(path), &terms(root), &mut rng, zk_randomness).unwrap();
-    assert_eq!(verify_salted_coin_reveal(&params(), &built.reveal, &built.proof), Ok(()));
+    assert_eq!(verify_coin_reveal_v2(&params(), &built.reveal, &built.proof), Ok(()));
     assert_eq!(&built.reveal.marker, current.marker.as_bytes());
     assert_ne!(built.remainder.salt, remainder_salt);
 }
@@ -216,8 +232,8 @@ fn leaf_without_a_salt_beside_it_restores_from_its_note() {
     let mut chain = Chain::new();
     let position = chain.push(TreeLeaf { commitment: commit.commitment, note, salt: None });
 
-    // The same remainder as a version 1 reveal writes it, a 156-byte note
-    // version 2 zero-padded to 380 bytes, restores the same coin.
+    // The same remainder as the version 1 reveal wrote it, a 156-byte note
+    // version 2 zero-padded to 380 bytes, still restores the same coin.
     let short = encrypt_note_v2(&key().note_key(), CHAIN_ID, &commit.commitment, &contents, &mut rng);
     let padded = vec![TreeLeaf { commitment: commit.commitment, note: pad_reveal_note(&short), salt: None }];
     let from_padded = restore_coins(&key(), CHAIN_ID, 0, &padded, &[]).unwrap();

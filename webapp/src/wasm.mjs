@@ -105,11 +105,17 @@ class Output {
 // Bytes of a salt beside a leaf, and of a salt record (lib.rs).
 export const SALT_BYTES = 16;
 const SALT_RECORD_BYTES = 1 + SALT_BYTES;
-// A note in the tree: note version 3, 380 bytes for every commitment (a
-// reveal's 156-byte remainder note is stored zero-padded to it).
+// A note in the tree: note version 3, 380 bytes for every commitment, the
+// remainder note a reveal carries among them (the 156-byte note of a version
+// 1 reveal, no longer built, is stored zero-padded to it).
 export const NOTE_BYTES = 380;
-// The remainder note a version 1 reveal carries in its envelope.
+// The note slot of the version 1 reveal and of the data reveal.
 export const REVEAL_NOTE_BYTES = 156;
+// The ordinary reveal's envelope (lib.rs, ENVELOPE_BYTES; spec 10, section
+// 4.1): type 0x50, version 0x0002, the 380-byte remainder note at its end.
+export const REVEAL_TYPE = 0x50;
+export const REVEAL_VERSION = Object.freeze([0x00, 0x02]);
+export const REVEAL_ENVELOPE_BYTES = 1_311_291;
 // A leaf with its note.
 export const LEAF_RECORD_BYTES = 32 + NOTE_BYTES;
 // A note's lookup tag: the first bytes of its nonce.
@@ -409,6 +415,9 @@ export class Ghost {
     };
   }
 
+  // Decodes an ordinary reveal's envelope (type 0x50, version 0x0002) and
+  // verifies its proof as statement S1 version 2; a version 1 envelope is
+  // refused.
   decodeEnvelope({ chainId, domain, envelope }) {
     const out = new Output(
       this.call("ghost_decode_envelope", new Input().u64(chainId).bytes(domain, 32).bytes(envelope).build()),
@@ -421,8 +430,8 @@ export class Ghost {
       recipient: out.take(20),
       out: fromWord(out.take(32)),
       fee: fromWord(out.take(32)),
-      // The 156-byte remainder note; the tree stores it zero-padded to 380.
-      note: out.take(REVEAL_NOTE_BYTES),
+      // The 380-byte remainder note, as the tree stores it.
+      note: out.take(NOTE_BYTES),
     };
   }
 

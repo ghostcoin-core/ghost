@@ -2,9 +2,16 @@
 // transaction fee of spec 07, sections 4 and 5, the base client's EIP-1559
 // base fee, the settled height of spec 02, section 8, and GHOST amounts.
 
-// Gas of every private transaction (spec 07, sections 2 and 4), the node's
-// GhostRevealGas: BYTE_GAS * ENVELOPE_BYTES + BASE_TX_GAS + VERIFY_GAS.
-export const G_PRIV = 21_090_372n;
+// Gas of the ordinary reveal the app sends (type 0x50, version 0x0002; spec
+// 10, sections 4.1 and 10.3), the node's GhostRevealGas:
+// BYTE_GAS * ORD_ENVELOPE_BYTES + BASE_TX_GAS + VERIFY_GAS_ORD
+// = 16 * 1,311,291 + 21,000 + 370,000 = 21,371,656. (Version 1's 21,090,372
+// was 16 * 1,311,067 + 21,000 + 92,300; the data reveal keeps that figure.)
+export const BYTE_GAS = 16n;
+export const BASE_TX_GAS = 21_000n;
+export const ORD_ENVELOPE_BYTES = 1_311_291n;
+export const VERIFY_GAS_ORD = 370_000n;
+export const G_PRIV = BYTE_GAS * ORD_ENVELOPE_BYTES + BASE_TX_GAS + VERIFY_GAS_ORD;
 // Blocks for which one fee is in force.
 export const FEE_WINDOW = 4;
 // Growth steps of headroom in the window price (spec 07, sections 4 and 5).

@@ -798,14 +798,20 @@ fn the_words_alone_make_a_policy_spend_and_nothing_else() {
     let with_words = prove_coin_reveal_v2(&params, &opening, &guessed, &remainder, &[0; 32], &request, [0; 32]);
     assert_eq!(with_words.err(), Some(ProofError::WrongOverrideSecret));
 
-    // The version 1 reveal refuses a coin with a rule.
+    // The wallet's ordinary reveal, version 2 with the input's rule opened
+    // as the empty rule, refuses a coin with a rule before proving; and no
+    // version 1 reveal is built at all.
+    let plain_params = ghost_client::reveal_params(CHAIN_ID, DOMAIN);
+    assert_eq!(plain_params, guard_chain().ordinary_params());
+    let plain_spend = partial_reveal(&plain_params, &receiver, coin, &terms(*root), amount(PAID), &mut rng, [0; 32]);
+    assert_eq!(plain_spend.err(), Some(ghost_client::RevealError::Proof(ProofError::RuleNotEmpty)));
     let v1_params = ghost_client::reveal::ChainParams {
         chain_id: CHAIN_ID.to_be_bytes(),
         version: ghost_proofs::PROTOCOL_VERSION_1,
         domain: DOMAIN,
     };
     let v1 = partial_reveal(&v1_params, &receiver, coin, &terms(*root), amount(PAID), &mut rng, [0; 32]);
-    assert!(v1.is_err());
+    assert_eq!(v1.err(), Some(ghost_client::RevealError::WrongVersion));
 
     // No cancel: a stop root that is not the card's does not open the slot,
     // whether random or made from the words' own derived bytes.
