@@ -44,15 +44,19 @@
 //! - a spent marker leads, through its leaf's `appended` position, to the
 //!   next leaf, read in a second session ([`continue_requests`],
 //!   [`check_continued`]): a note there that decrypts under the key is the
-//!   next number, one that does not means the value left the key (claimed
-//!   into another key or fully revealed), and a spend that appended nothing
-//!   means the same;
+//!   next number. One that does not proves nothing alone, since no witness
+//!   covers a note: the value left the key (claimed into another key) only
+//!   if the lookup index's absence witness shows the leaf does not carry the
+//!   key's tag of the next number at that position; if its membership
+//!   witness shows the tag there, the leaf is the key's and its note is
+//!   refused. A spend that appended nothing means the value left the key
+//!   (fully revealed);
 //! - nothing found, with the lookup index's absence witness, means the key
 //!   never made a commitment by the snapshot. A witness that shows the first
 //!   tag present after all leads to that leaf in a second session.
 //!
 //! A second session sends the same [`QUERIES`] queries in the order of the
-//! [`plan`], its probes all padding, so it looks like any restore. The hint
+//! [`plan`], every record hidden by PIR, so it looks like any restore. The hint
 //! tables are never believed, so a server whose hints are stale or wrong
 //! costs the wallet a second session, never a wrong result.
 //! [`restore_with_checks`] runs the sessions one after another.
@@ -100,7 +104,8 @@ use crate::hash::{self, keccak256, TAG_COIN_MARKER_SET_NODE, TAG_EMPTY_LEAF};
 use crate::header_sample::CheckedTail;
 use crate::key::PhantomKey;
 use crate::lookup::{
-    lookup_tag, verify_lookup, verify_marker_absence, verify_marker_membership, BlockLookupList, CoinMarkerLeaf,
+    lookup_tag, verify_lookup, verify_lookup_membership, verify_lookup_pair_absence, verify_marker_absence,
+    verify_marker_membership, BlockLookupList, CoinMarkerLeaf,
     CoinMarkerSet, CoinMarkerWitness, LookupAnswer, LookupIndex, LookupLeaf, LookupTag, LookupTree, LookupWitness,
     COIN_MARKER_LEAF_BYTES, LOOKUP_LEAF_BYTES, NO_POSITION, TREE_DEPTH as INDEX_DEPTH, ZERO_TAG,
 };
@@ -265,8 +270,9 @@ pub enum Decision {
     /// index holds the first tag the hints left out.
     Continue(NextLeaf),
     /// The value left the key: commitment `number` is spent and its spend
-    /// appended no leaf, or the leaf it appended is not the key's (claimed
-    /// into another key, or fully revealed).
+    /// appended no leaf (fully revealed), or the leaf it appended does not
+    /// carry the key's tag of the next number, by the lookup index's absence
+    /// witness under the snapshot (claimed into another key).
     LeftTheKey {
         /// The last commitment number of the key.
         number: u64,
@@ -866,9 +872,13 @@ fn checked_marker(
     }
 }
 
-/// The lookup index's answer for the first tag under the snapshot's
-/// `coinLookupRoot`.
-fn checked_lookup(anchor: &Anchor, requests: &RestoreRequests, tag: &LookupTag) -> Result<LookupAnswer, CheckError> {
+/// The lookup index leaf the session's lookup records hold that `select`
+/// picks, with its witness built from the minipage and page records: the
+/// witness is not yet checked against a root.
+fn lookup_witness(
+    requests: &RestoreRequests,
+    select: impl Fn(&LookupLeaf) -> bool,
+) -> Result<(LookupLeaf, Vec<u8>), CheckError> {
     let leaves_exchange = real_any(requests, QueryKind::LookupLeaves)?;
     let minipage = leaves_exchange.record;
     let bytes = record_bytes(leaves_exchange, QueryKind::LookupLeaves)?;
@@ -879,10 +889,7 @@ fn checked_lookup(anchor: &Anchor, requests: &RestoreRequests, tag: &LookupTag) 
         .into_iter()
         .map(|leaf| LookupLeaf::from_bytes(leaf.try_into().expect("47 bytes")))
         .collect();
-    let offset = leaves
-        .iter()
-        .position(|leaf| &leaf.tag < tag && (leaf.next_tag == ZERO_TAG || &leaf.next_tag >= tag))
-        .ok_or(CheckError::LookupWitness)?;
+    let offset = leaves.iter().position(select).ok_or(CheckError::LookupWitness)?;
     let position = minipage * MINIPAGE_LEAVES + offset as u64;
     let tree = LookupTree::Coin;
     let hashes = minipage_hashes(leaves.iter().map(|leaf| leaf.hash(tree)));
@@ -894,7 +901,42 @@ fn checked_lookup(anchor: &Anchor, requests: &RestoreRequests, tag: &LookupTag) 
         siblings: siblings.try_into().map_err(|_| CheckError::LookupWitness)?,
     }
     .to_bytes();
-    verify_lookup(tree, &anchor.snapshot.coin_lookup_root, &witness, tag).map_err(|_| CheckError::LookupWitness)
+    Ok((leaves[offset], witness))
+}
+
+/// The lookup index's answer for the first tag under the snapshot's
+/// `coinLookupRoot`.
+fn checked_lookup(anchor: &Anchor, requests: &RestoreRequests, tag: &LookupTag) -> Result<LookupAnswer, CheckError> {
+    let (_, witness) =
+        lookup_witness(requests, |leaf| &leaf.tag < tag && (leaf.next_tag == ZERO_TAG || &leaf.next_tag >= tag))?;
+    verify_lookup(LookupTree::Coin, &anchor.snapshot.coin_lookup_root, &witness, tag)
+        .map_err(|_| CheckError::LookupWitness)
+}
+
+/// Whether the coin lookup index under the snapshot's `coinLookupRoot`
+/// holds the pair (`tag`, `position`): `Ok(true)` with its membership
+/// witness, `Ok(false)` with the absence witness of its low leaf. Anything
+/// else is refused.
+fn checked_pair(
+    anchor: &Anchor,
+    requests: &RestoreRequests,
+    tag: &LookupTag,
+    position: u64,
+) -> Result<bool, CheckError> {
+    let pair = (*tag, position);
+    let (leaf, witness) = lookup_witness(requests, |leaf| {
+        leaf.key() == pair || (leaf.key() < pair && leaf.next_key().is_none_or(|next| pair < next))
+    })?;
+    let root = &anchor.snapshot.coin_lookup_root;
+    if leaf.key() == pair {
+        verify_lookup_membership(LookupTree::Coin, root, &witness, tag, position)
+            .map_err(|_| CheckError::LookupWitness)?;
+        Ok(true)
+    } else {
+        verify_lookup_pair_absence(LookupTree::Coin, root, &witness, tag, position)
+            .map_err(|_| CheckError::LookupWitness)?;
+        Ok(false)
+    }
 }
 
 /// Checks the session that read commitment `number` at `position`, and
@@ -912,9 +954,18 @@ fn check_found(
     let (commitment, note, path) = checked_leaf(anchor, requests, position)?;
     let coin = match open_leaf(key, chain_id, position, commitment, note)? {
         Some(coin) => coin,
-        // A leaf a spent marker leads to that is not the key's: the value was
-        // claimed into another key or fully revealed.
+        // A leaf a spent marker leads to whose note does not open. The coin
+        // witness authenticates the leaf, never the note served beside it,
+        // so a note that does not open proves nothing on its own. The key's
+        // own remainder carries the key's tag of `number` at its position:
+        // only an absence witness of that pair in the lookup index shows the
+        // leaf is another key's, the value claimed away. A membership witness
+        // shows the leaf is the key's, so its note is wrong and refused.
         None if from == Some(NextFrom::SpentMarker) => {
+            let tag = lookup_tag(&key.note_key(), number);
+            if checked_pair(anchor, requests, &tag, position)? {
+                return Err(CheckError::Note);
+            }
             return Ok(Decision::LeftTheKey {
                 number: number.checked_sub(1).ok_or(CheckError::NotTheSession)?,
             });
@@ -1058,13 +1109,36 @@ fn marker_position(answer: &Answer, marker: &[u8; 32]) -> Option<u64> {
         .map(|hint| hint.set_position)
 }
 
+/// The index position of the pair (`tag`, `position`) in a lookup hint
+/// bucket answer: its own entry, else the entry with the largest key below
+/// it (its low leaf). Unauthenticated, as every hint.
+fn pair_index_position(answer: &Answer, tag: &LookupTag, position: u64) -> Option<u64> {
+    let Answer::LookupHints(hints) = answer else {
+        return None;
+    };
+    let pair = (*tag, position);
+    hints
+        .iter()
+        .find(|hint| (hint.tag, hint.position) == pair)
+        .or_else(|| {
+            hints
+                .iter()
+                .filter(|hint| (hint.tag, hint.position) < pair)
+                .max_by_key(|hint| (hint.tag, hint.position))
+        })
+        .map(|hint| hint.index_position)
+}
+
 /// The requests of a second session for `next`: the same [`QUERIES`]
-/// queries in the order of the [`plan`], the [`PROBES`] probes all padding,
-/// then the follow-ups for the leaf at `next.position`: its note, its coin
+/// queries in the order of the [`plan`]. The first probe asks for the hint
+/// bucket of the expected number's tag and the other probes pad; then come
+/// the follow-ups for the leaf at `next.position`: its note, its coin
 /// minipage and page, its marker's hint, minipage and page (from the salt in
-/// its note, padding when the note is not the key's), the lookup index
-/// queries as padding and the overflow bucket of the first tag. To the
-/// server it is a restore like any other.
+/// its note, padding when the note does not open as the key's), the lookup
+/// index minipage and page of the pair (the expected tag, the position) when
+/// the note does not open (padding otherwise), and the overflow bucket of the
+/// first tag. Every record is hidden by the PIR query, so to the server it
+/// is a restore like any other.
 pub fn continue_requests<S, R>(
     key: &PhantomKey,
     chain_id: u64,
@@ -1076,11 +1150,18 @@ where
     S: LookupSource + ?Sized,
     R: CryptoRng + ?Sized,
 {
+    let note_key = key.note_key();
+    let position = next.position;
     let mut exchanges = Vec::with_capacity(QUERIES);
-    for _ in 0..PROBES {
+    // The first probe asks for the hint bucket of the expected number's tag,
+    // the index position of the pair's own entry or low leaf; the rest pad.
+    let next_tag = lookup_tag(&note_key, next.number);
+    let lookup_buckets = source.records(Database::LookupHints);
+    let probe_slot = send(source, rng, &mut exchanges, Some(hint_bucket(&next_tag, lookup_buckets)));
+    let pair_index = pair_index_position(&exchanges[probe_slot].answer, &next_tag, position);
+    for _ in 1..PROBES {
         send(source, rng, &mut exchanges, None);
     }
-    let position = next.position;
     let note_slot = send(source, rng, &mut exchanges, Some(position));
     let leaves_slot = send(source, rng, &mut exchanges, Some(position / MINIPAGE_LEAVES));
     send(source, rng, &mut exchanges, Some(position / PAGE_LEAVES));
@@ -1106,12 +1187,15 @@ where
     let set_position = marker.and_then(|m| marker_position(&exchanges[hint_slot].answer, &m));
     send(source, rng, &mut exchanges, set_position.map(|p| p / MINIPAGE_LEAVES));
     send(source, rng, &mut exchanges, set_position.map(|p| p / PAGE_LEAVES));
+    // A note that does not open: the lookup index leaf that shows whether the
+    // leaf carries the key's tag, the evidence the check needs.
+    let lookup_index = if marker.is_none() { pair_index } else { None };
     if let Some(marker) = marker.as_mut() {
         wipe(marker);
     }
-    send(source, rng, &mut exchanges, None);
-    send(source, rng, &mut exchanges, None);
-    let first = lookup_tag(&key.note_key(), 0);
+    send(source, rng, &mut exchanges, lookup_index.map(|p| p / MINIPAGE_LEAVES));
+    send(source, rng, &mut exchanges, lookup_index.map(|p| p / PAGE_LEAVES));
+    let first = lookup_tag(&note_key, 0);
     let overflow = source.records(Database::HintOverflow);
     send(source, rng, &mut exchanges, Some(hint_bucket(&first, overflow)));
     debug_assert_eq!(exchanges.len(), QUERIES);

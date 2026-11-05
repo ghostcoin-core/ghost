@@ -25,6 +25,8 @@
 //!   lookup index, and which entry follows it.
 //! - [`verify_lookup`]: the first entry carrying a tag, or that no leaf of the
 //!   type carries it (the absence witness).
+//! - [`verify_lookup_pair_absence`]: the leaf at a global position does not
+//!   carry a tag (the low leaf of the pair).
 //! - [`verify_marker_membership`]: a coin marker is spent, and the global
 //!   position of the leaf its reveal appended.
 //! - [`verify_marker_absence`]: a coin marker is unspent.
@@ -489,6 +491,32 @@ pub fn verify_lookup(
         })
     } else {
         Ok(LookupAnswer::Absent)
+    }
+}
+
+/// Checks an absence witness for the pair (`tag`, `position`) against a
+/// lookup index root: valid if and only if the tag is not zero, the leaf
+/// folds to `root`, its key is below the pair and its next key is above the
+/// pair or none. The leaf at global position `position` then carries another
+/// tag than `tag` under the root.
+pub fn verify_lookup_pair_absence(
+    tree: LookupTree,
+    root: &[u8; 32],
+    witness: &[u8],
+    tag: &LookupTag,
+    position: u64,
+) -> Result<(), WitnessError> {
+    let witness = LookupWitness::from_bytes(witness)?;
+    if tag == &ZERO_TAG {
+        return Err(WitnessError::ZeroKey);
+    }
+    witness.check_root(tree, root)?;
+    let key = (*tag, position);
+    let leaf = witness.leaf;
+    if leaf.key() < key && leaf.next_key().is_none_or(|next| key < next) {
+        Ok(())
+    } else {
+        Err(WitnessError::NotTheLowLeaf)
     }
 }
 

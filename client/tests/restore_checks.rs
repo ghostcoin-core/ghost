@@ -700,12 +700,18 @@ fn a_spent_marker_continues_in_a_second_session() {
     assert_eq!(next.position, coins[5].position);
     assert_eq!(next.from, NextFrom::SpentMarker);
 
-    // The second session is the same plan, its probes all padding.
+    // The second session is the same plan: the first probe asks for the
+    // bucket of the expected tag, the other probes pad, and with a note that
+    // opens the lookup index queries pad too.
     let requests = continue_requests(&wallet, CHAIN_ID, &next, &mut server, &mut rng);
     assert_eq!(requests.exchanges.len(), QUERIES);
     assert_eq!(requests.shapes(), plan().to_vec());
-    assert!(requests.exchanges[..PROBES].iter().all(|exchange| exchange.padding));
+    assert!(!requests.exchanges[0].padding);
+    assert_eq!(requests.exchanges[0].record, hint_bucket(&hidden, 64));
+    assert!(requests.exchanges[1..PROBES].iter().all(|exchange| exchange.padding));
     assert!(requests.exchanges[PROBES..PROBES + 6].iter().all(|exchange| !exchange.padding));
+    assert!(requests.exchange(QueryKind::LookupLeaves).unwrap().padding);
+    assert!(requests.exchange(QueryKind::LookupPage).unwrap().padding);
 
     let restored = restore_with_checks(&wallet, CHAIN_ID, &anchor, &mut server, &mut rng).unwrap();
     assert_eq!(restored.sessions, 2);
@@ -714,6 +720,81 @@ fn a_spent_marker_continues_in_a_second_session() {
     };
     assert_eq!(current.coin.number, 5);
     assert_eq!(u64::from(current.coin.position), coins[5].position);
+}
+
+fn restore_refusal(
+    key: &PhantomKey,
+    anchor: &Anchor,
+    server: &mut FakeServer,
+    rng: &mut StdRng,
+) -> CheckError {
+    match restore_with_checks(key, CHAIN_ID, anchor, server, rng) {
+        Ok(restored) => panic!("accepted after {} sessions: {:?}", restored.sessions, restored.decision),
+        Err(error) => error,
+    }
+}
+
+#[test]
+fn a_corrupted_continuation_note_is_refused_not_read_as_value_left() {
+    // The server hides the latest number in its hints, so the first session
+    // reads the spent number before it, and corrupts the note of the leaf
+    // that spend appended. The leaf and every witness stay valid; only the
+    // note is wrong.
+    let (wallet, coins, chain, mut rng) = world(0xc0_2207, 5);
+    let anchor = anchor_for(&chain, &[]);
+    let hidden = key_lookup_tag(&wallet, 5);
+    let latest = coins[5].position;
+    let corrupted = |chain: &Chain| {
+        let mut server = FakeServer::new(chain);
+        server.lookup_hints.retain(|hint| hint.tag != hidden);
+        server.notes.get_mut(&latest).unwrap()[200] ^= 1;
+        server
+    };
+
+    let mut server = corrupted(&chain);
+    assert_eq!(restore_refusal(&wallet, &anchor, &mut server, &mut rng), CheckError::Note);
+
+    // The second session fetched the lookup index leaf of the pair, which
+    // shows the leaf carries the key's tag of number 5.
+    let decision = first_session(&wallet, &anchor, &mut server, &mut rng).unwrap();
+    let Decision::Continue(next) = decision else {
+        panic!("not continued: {decision:?}");
+    };
+    let requests = continue_requests(&wallet, CHAIN_ID, &next, &mut server, &mut rng);
+    assert!(!requests.exchange(QueryKind::LookupLeaves).unwrap().padding);
+    assert!(!requests.exchange(QueryKind::LookupPage).unwrap().padding);
+    assert!(matches!(
+        ghost_client::restore_checks::check_continued(&wallet, CHAIN_ID, &anchor, &next, &requests),
+        Err(CheckError::Note)
+    ));
+
+    // Withholding that leaf, or changing it to fake an absence, is refused
+    // too, never read as value that left the key.
+    let mut withheld = corrupted(&chain).tamper(|request, answer| {
+        if let (Database::LookupLeaves, Answer::Record(bytes)) = (request.query.database, answer) {
+            bytes.clear();
+        }
+    });
+    assert_eq!(restore_refusal(&wallet, &anchor, &mut withheld, &mut rng), CheckError::LookupWitness);
+    let mut faked = corrupted(&chain).tamper(move |request, answer| {
+        if let (Database::LookupLeaves, Answer::Record(bytes)) = (request.query.database, answer) {
+            // Every leaf's next tag cleared: some leaf then looks like the
+            // pair's low leaf, but no longer folds to the root.
+            for leaf in bytes.chunks_exact_mut(47) {
+                leaf[16 + 5..16 + 5 + 16].fill(0);
+            }
+        }
+    });
+    assert_eq!(restore_refusal(&wallet, &anchor, &mut faked, &mut rng), CheckError::LookupWitness);
+    let mut padded = corrupted(&chain).tamper(|request, answer| {
+        if request.query.database == Database::LookupPages {
+            *answer = Answer::Leaves(Vec::new());
+        }
+    });
+    assert_eq!(
+        restore_refusal(&wallet, &anchor, &mut padded, &mut rng),
+        CheckError::Missing(QueryKind::LookupPage)
+    );
 }
 
 #[test]
