@@ -46,11 +46,6 @@
 //!   section 4).
 //! - [`restore`]: finding the key's current coin from the digits and the
 //!   chain's leaves, notes and spent markers (section 8).
-//! - [`restore_requests`]: the requests of a restore by private lookup, the
-//!   same 31 queries in the same order for every key (22 padded probes of
-//!   the lookup hints, then the fetches for the highest number found),
-//!   against a lookup source the caller implements (stage 2 design, "Wallet
-//!   restore volume").
 //! - [`receipts`]: a block's receipts checked against its header's
 //!   `receiptsRoot`, and the coin tree's leaves, notes and spent markers
 //!   checked against the records in them (spec 05, section 8, item 5).
@@ -83,8 +78,7 @@
 //! # Network
 //!
 //! The crate has no network code. Restore and the choice of tree state are
-//! pure functions over data the caller fetched in bulk; the requests of a
-//! restore by private lookup go to a lookup source the caller implements.
+//! pure functions over data the caller fetched in bulk.
 
 pub mod account;
 pub mod commit;
@@ -100,7 +94,6 @@ pub mod note_tag;
 pub mod randomx;
 pub mod receipts;
 pub mod restore;
-pub mod restore_requests;
 pub mod reveal;
 pub mod seal;
 pub mod slh_dsa;
