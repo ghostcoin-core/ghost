@@ -55,11 +55,12 @@ jobs:
   #
   # The proofs crate is split across parallel jobs so each fits its
   # 10-minute limit: rust-proofs runs the library, doc and integration tests
-  # except the recursion layers and the ML-DSA chunk proofs, then the wasm32
-  # check; the rust-proofs-layers-* jobs run the recursion layer tests
-  # (proofs/tests/layers*.rs); the rust-proofs-mldsa* jobs run the ML-DSA
-  # chunk proof tests (proofs/tests/mldsa_chunk.rs). Together they run the
-  # same tests as the rust-proofs step of scripts/ci-gate.sh.
+  # except the recursion layers and the ML-DSA chunk proofs (built with the
+  # parallel feature), then the wasm32 check; the rust-proofs-layers-* jobs
+  # run the recursion layer tests (proofs/tests/layers*.rs); the
+  # rust-proofs-mldsa* jobs run the ML-DSA chunk proof tests
+  # (proofs/tests/mldsa_chunk.rs). Together they run the same tests as the
+  # rust-proofs step of scripts/ci-gate.sh.
   rust-proofs:
     name: rust-proofs
     runs-on: ubuntu-24.04
@@ -82,11 +83,17 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             proofs/target
-          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-${{ hashFiles('proofs/Cargo.lock') }}
+          # "parallel" in the key: these tests build with the parallel
+          # feature, so a cache saved by a build without it is not reused.
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-parallel-${{ hashFiles('proofs/Cargo.lock') }}
       # Every file in proofs/tests/ except layers.rs, layers_*.rs and
       # mldsa_chunk.rs, so a new test file runs here without editing this
       # list. mldsa_chunk_bench.rs stays here: its benchmark is #[ignore] and
       # runs only by hand with -- --ignored --nocapture.
+      # The tests build with the parallel feature, as the rust-proofs-mldsa*
+      # jobs do: proving is single-threaded without it, and single-threaded
+      # this step ran within a minute of the 10-minute limit. The doc tests
+      # take the same feature so they reuse that build of the library.
       - name: Test (release, all but the recursion layers and ML-DSA chunks)
         shell: bash
         env:
@@ -102,8 +109,8 @@ jobs:
             esac
           done
           echo "integration tests: ${tests[*]}"
-          cargo test --release --locked --manifest-path proofs/Cargo.toml --lib "${tests[@]}"
-          cargo test --release --locked --manifest-path proofs/Cargo.toml --doc
+          cargo test --release --locked --features parallel --manifest-path proofs/Cargo.toml --lib "${tests[@]}"
+          cargo test --release --locked --features parallel --manifest-path proofs/Cargo.toml --doc
       - name: Check wasm32-unknown-unknown
         env:
           RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
