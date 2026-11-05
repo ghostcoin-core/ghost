@@ -31,6 +31,11 @@
 //!   capsule that opens its rule (spec 10, section 3.2), and the 156-byte
 //!   note version 2 of the data reveal's slot and of the remainders of the
 //!   version 1 reveal, which is no longer built.
+//! - [`lookup`]: the 16-byte lookup tag of a commitment number, membership,
+//!   first-entry and absence witnesses of the coin and data lookup indices,
+//!   membership and absence witnesses of the coin spent-marker set tree, the
+//!   trees rebuilt from a block's lists, and the block lookup digest (spec 01,
+//!   section 7; spec 05, section 6; decision 0004).
 //! - [`note_tag`]: the key-derived lookup tag at the start of every note's
 //!   nonce, the bucket rule, and restore from the note buckets of the key's
 //!   own tags (sections 8 and 9; spec 05, section 8).
@@ -83,6 +88,7 @@ pub mod hash;
 pub mod header_chain;
 pub mod key;
 mod key_words;
+pub mod lookup;
 pub mod note;
 pub mod note_tag;
 pub mod randomx;
@@ -116,6 +122,11 @@ pub use header_chain::{
     required_difficulty, Added, ChainError, ChainParams, HeaderChain, PinnedStart, StartError, U256,
 };
 pub use key::{check_groups, FormattedKey, KeyError, KeyFormat, PhantomKey};
+pub use lookup::{
+    check_lookup_digest, global_position, key_lookup_tag, verify_lookup, verify_lookup_membership,
+    verify_marker_absence, verify_marker_membership, BlockLookupList, CoinMarkerSet, LookupAnswer, LookupIndex,
+    LookupTree, WitnessError,
+};
 pub use note::{
     decrypt_note, decrypt_note_v2, decrypt_note_with_capsule, encrypt_note, encrypt_note_v2, pad_reveal_note, Capsule,
     NoteContents, NoteError, CAPSULE_BYTES, NOTE_BYTES, REVEAL_NOTE_BYTES,
