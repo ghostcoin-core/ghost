@@ -3,7 +3,7 @@
 // interface. Importing this file runs nothing.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -32,50 +32,10 @@ export const testDepthWasmPath =
   process.env.GHOST_WEBAPP_TEST_DEPTH_WASM ||
   resolve(testDepthTargetDir, "wasm32-unknown-unknown/release/ghost_webapp_wasm.wasm");
 
-// The sources the module is built from: the module's crate, the client
-// library and the proofs crate.
-const repoDir = resolve(webappDir, "..");
-const MODULE_SOURCES = [
-  "webapp/wasm/src",
-  "webapp/wasm/Cargo.toml",
-  "webapp/wasm/Cargo.lock",
-  "client/src",
-  "client/Cargo.toml",
-  "proofs/src",
-  "proofs/Cargo.toml",
-].map((p) => resolve(repoDir, p));
-
-// The newest modification time of the files under `paths`.
-function newestMtime(paths) {
-  let newest = 0;
-  const visit = (path) => {
-    if (!existsSync(path)) return;
-    const stat = statSync(path);
-    if (stat.isDirectory()) {
-      for (const name of readdirSync(path)) visit(resolve(path, name));
-    } else {
-      newest = Math.max(newest, stat.mtimeMs);
-    }
-  };
-  for (const path of paths) visit(path);
-  return newest;
-}
-
-// Builds the module at `path` with the toolchain CI pins: the default
-// module, or with `features` into `targetDir`. It builds when no module is
-// there yet, and again when the module is one this function builds (not
-// another build named by GHOST_WEBAPP_WASM or GHOST_WEBAPP_TEST_DEPTH_WASM)
-// and a source it is built from changed after it, so a test never runs a
-// module older than the sources.
+// Builds the module at `path`, when none is there yet, with the toolchain CI
+// pins: the default module, or with `features` into `targetDir`.
 export function buildModuleIfMissing(path, { features = null, targetDir = null } = {}) {
-  const output = resolve(
-    targetDir ?? resolve(webappDir, "wasm/target"),
-    "wasm32-unknown-unknown/release/ghost_webapp_wasm.wasm",
-  );
-  if (existsSync(path)) {
-    if (resolve(path) !== output) return;
-    if (statSync(path).mtimeMs >= newestMtime(MODULE_SOURCES)) return;
-  }
+  if (existsSync(path)) return;
   const env = { ...process.env, RUSTUP_TOOLCHAIN: process.env.RUSTUP_TOOLCHAIN || "1.99.1" };
   if (!env.RUSTUP_HOME && existsSync("/usr/local/rustup")) env.RUSTUP_HOME = "/usr/local/rustup";
   const manifest = resolve(webappDir, "wasm/Cargo.toml");

@@ -29,16 +29,12 @@
 //! - [`note`]: the encrypted note, ChaCha20-Poly1305 under the note key
 //!   (section 9): note version 3, 380 bytes for every commitment, with the
 //!   capsule that opens its rule (spec 10, section 3.2), and the 156-byte
-//!   note version 2 of the data reveal's slot and of the remainders of the
-//!   version 1 reveal, which is no longer built.
+//!   note version 2 a version 1 reveal's remainder still carries.
 //! - [`note_tag`]: the key-derived lookup tag at the start of every note's
 //!   nonce, the bucket rule, and restore from the note buckets of the key's
 //!   own tags (sections 8 and 9; spec 05, section 8).
 //! - [`reveal`]: a partial reveal, a full reveal and a claim to a new key,
-//!   the ordinary reveal of spec 10, section 4 (type `0x50`, version
-//!   `0x0002`, a 380-byte note version 3 remainder note with the empty
-//!   rule's capsule), proved by the proofs crate (section 8; spec 02,
-//!   section 4).
+//!   proved by the proofs crate (section 8; spec 02, section 4).
 //! - [`restore`]: finding the key's current coin from the digits and the
 //!   chain's leaves, notes and spent markers (section 8).
 //! - [`receipts`]: a block's receipts checked against its header's
@@ -122,15 +118,15 @@ pub use note::{
 };
 pub use receipts::{
     check_block_receipts, check_block_receipts_against_header, check_leaves, check_markers, receipts_root,
-    AppendedLeaf, CheckedBlock, CoinRecord, ReceiptError, REVEAL_V2_LOG_BYTES,
+    AppendedLeaf, CheckedBlock, CoinRecord, ReceiptError,
 };
 pub use restore::{
     restore_coins, restore_coins_at, Current, DiscardReason, DiscardedNote, FoundCoin, RestoreError, Restored, TreeLeaf,
     MAX_TREE_LEAVES,
 };
 pub use reveal::{
-    claim_to_new_key, full_reveal, partial_reveal, prove_reveal, reveal_params, BuiltReveal, OwnedCoin,
-    RemainderCoin, RevealError, RevealTerms, REVEAL_TX_TYPE, REVEAL_VERSION,
+    claim_to_new_key, full_reveal, partial_reveal, prove_reveal, BuiltReveal, OwnedCoin,
+    RemainderCoin, RevealError, RevealTerms,
 };
 pub use seal::{
     check_seal, header_fields, seal_hash, seed_height, verify_seal, HeaderError, HeaderFields, SealError,

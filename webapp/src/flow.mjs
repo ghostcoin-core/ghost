@@ -80,25 +80,20 @@ export const LEAVES_PER_TREE = 2 ** 32;
 // ghost-node docs/private-transactions.md, "Receipts"): the coin tree
 // account as address; a commit log has the topic K("ghost/commit-receipt/v1")
 // and the tree index (4), position (4), leaf (32), `v` (32), note (380) and
-// the commit's salt (16); a reveal log has the marker as its second topic
-// and the tree index, position, remainder (32), the remainder note,
-// recipient (20) and amount out (32). The ordinary reveal the app sends
-// (type 0x50, version 0x0002, spec 10, section 4) binds a 380-byte note
-// version 3: its log has K("ghost/reveal-receipt/v2") and that note whole.
-// The log of a version 1 reveal, K("ghost/reveal-receipt/v1"), keeps its
-// 156-byte note, which the tree stores zero-padded to 380 bytes, so its
-// record holds it so. The scan of a chain whose coin tree has rolled over
-// reads them here (checkTreesAgainstReceipts).
+// the commit's salt (16); a reveal log has K("ghost/reveal-receipt/v1")
+// and the marker as topics and the tree index, position, remainder (32),
+// the version 1 reveal's 156-byte remainder note, recipient (20) and amount
+// out (32). The tree stores that remainder note zero-padded to 380 bytes, so
+// its record holds it so. The scan of a chain whose coin tree has rolled
+// over reads them here (checkTreesAgainstReceipts).
 const COIN_TREE_ACCOUNT = "0x67686f7374000000000000000000000000000001";
 const COMMIT_RECEIPT_TAG = "ghost/commit-receipt/v1";
 const REVEAL_RECEIPT_TAG = "ghost/reveal-receipt/v1";
-const REVEAL_V2_RECEIPT_TAG = "ghost/reveal-receipt/v2";
 // Every scan reads the headers from this many blocks below the settled
 // block S (SETTLE_DEPTH below the tip) up to the tip, to find a leaf's block.
 export const LEAF_WINDOW = 32;
-// Every note in the tree is 380 bytes (note version 3, spec 10, section 3.2),
-// the remainder note of the app's version 2 reveal among them; a version 1
-// reveal's remainder note is 156 bytes, stored zero-padded.
+// Every note in the tree is 380 bytes (note version 3, spec 10, section 3.2);
+// a version 1 reveal's remainder note is 156 bytes, stored zero-padded.
 const NOTE_BYTES = 380;
 const REVEAL_NOTE_BYTES = 156;
 const SALT_BYTES = 16;
@@ -560,12 +555,10 @@ async function askRuleForDecoy(prover, scan) {
 }
 
 // Data bytes of a commit log (tree index, position, leaf, `v`, note, salt:
-// 468), of a version 1 reveal log (tree index, position, remainder, 156-byte
-// note, recipient, out: 248) and of a version 2 reveal log (the same with
-// the 380-byte note: 472).
+// 468) and of a reveal log (tree index, position, remainder, 156-byte note,
+// recipient, out: 248).
 const COMMIT_LOG_BYTES = 4 + 4 + 32 + 32 + NOTE_BYTES + SALT_BYTES;
 const REVEAL_LOG_BYTES = 4 + 4 + 32 + REVEAL_NOTE_BYTES + 20 + 32;
-const REVEAL_V2_LOG_BYTES = 4 + 4 + 32 + NOTE_BYTES + 20 + 32;
 
 // The coin tree logs of a block's receipts (eth_getBlockReceipts, each
 // receipt already put through receiptBytes), in receipt and log order: the
@@ -588,9 +581,8 @@ function coinLogsOf(list) {
 // but for a commit, `marker` null but for a reveal, `v` the committed amount
 // of a commit, null for a reveal), read exactly as client/src/receipts.rs
 // reads it. `topics`
-// are the hex first topics of a commit log, a version 1 reveal log
-// (`reveal`) and a version 2 reveal log (`revealV2`). A log that is not
-// exactly one of them is refused.
+// are the hex first topics of a commit and a reveal log. A log that is not
+// exactly a commit or a reveal log is refused.
 export function coinRecord(log, topics) {
   if (!log.succeeded) throw new Error("a failed receipt has a coin tree log");
   const { data } = log;
@@ -613,12 +605,6 @@ export function coinRecord(log, topics) {
     const note = new Uint8Array(NOTE_BYTES);
     note.set(data.subarray(40, 40 + REVEAL_NOTE_BYTES));
     return { ...head(), note, salt: null, marker: log.topics[1], v: null };
-  }
-  if (topics.revealV2 !== undefined && first === topics.revealV2) {
-    if (log.topics.length !== 2) throw new Error("a reveal log does not have exactly two topics");
-    if (data.length !== REVEAL_V2_LOG_BYTES) throw new Error("a reveal log's data is not its length");
-    // The 380-byte remainder note of the version 2 reveal, as the tree stores it.
-    return { ...head(), note: data.slice(40, 40 + NOTE_BYTES), salt: null, marker: log.topics[1], v: null };
   }
   throw new Error("a coin tree log's first topic is neither a commit nor a reveal");
 }
@@ -1322,31 +1308,21 @@ export function createFlow({
     return trees;
   }
 
-  // The hex first topics of a commit log and of a version 1 and a version 2
-  // reveal log, K(tag) of their tags (client/src/hash.rs: Keccak-256 of the
-  // tag's length byte and the tag), asked of the worker once per page
-  // session.
+  // The hex first topics of a commit and a reveal log, K(tag) of their tags
+  // (client/src/hash.rs: Keccak-256 of the tag's length byte and the tag),
+  // asked of the worker once per page session.
   let logTopics = null;
   // The same topics hashed in the page (commitAmounts, the spent markers of
   // checkReceipts).
   let logTopicsHere = null;
   const tagBytes = (tag) => concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]);
   function topicsHere() {
-    const here = (tag) => toHex(keccak256(tagBytes(tag)));
-    logTopicsHere ??= {
-      commit: here(COMMIT_RECEIPT_TAG),
-      reveal: here(REVEAL_RECEIPT_TAG),
-      revealV2: here(REVEAL_V2_RECEIPT_TAG),
-    };
+    logTopicsHere ??= { commit: toHex(keccak256(tagBytes(COMMIT_RECEIPT_TAG))), reveal: toHex(keccak256(tagBytes(REVEAL_RECEIPT_TAG))) };
     return logTopicsHere;
   }
   async function coinLogTopics() {
     const topic = async (tag) => toHex((await prover.request("keccak256", { bytes: tagBytes(tag) })).hash);
-    logTopics ??= {
-      commit: await topic(COMMIT_RECEIPT_TAG),
-      reveal: await topic(REVEAL_RECEIPT_TAG),
-      revealV2: await topic(REVEAL_V2_RECEIPT_TAG),
-    };
+    logTopics ??= { commit: await topic(COMMIT_RECEIPT_TAG), reveal: await topic(REVEAL_RECEIPT_TAG) };
     return logTopics;
   }
 
