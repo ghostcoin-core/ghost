@@ -155,6 +155,8 @@ struct FakeServer {
     markers: TreeRecords,
     lookup: TreeRecords,
     tamper: Option<Tamper>,
+    /// Serve tree 0's coin records at the same record of every tree index.
+    alias_trees: bool,
 }
 
 impl FakeServer {
@@ -195,6 +197,7 @@ impl FakeServer {
             markers: TreeRecords::marker_set(&set),
             lookup: TreeRecords::lookup_index(&index),
             tamper: None,
+            alias_trees: false,
         }
     }
 
@@ -232,15 +235,24 @@ impl LookupSource for FakeServer {
             Database::LookupHints => self.lookup_buckets,
             Database::HintOverflow => 8,
             Database::MarkerHints => self.marker_buckets,
-            Database::Notes => 1 << 20,
-            Database::CoinLeaves | Database::MarkerLeaves | Database::LookupLeaves => (1 << 20) / MINIPAGE_LEAVES,
-            Database::CoinPages | Database::MarkerPages | Database::LookupPages => (1 << 20) / PAGE_LEAVES,
+            Database::Notes => 1 << 40,
+            Database::CoinLeaves | Database::MarkerLeaves | Database::LookupLeaves => (1 << 40) / MINIPAGE_LEAVES,
+            Database::CoinPages | Database::MarkerPages | Database::LookupPages => (1 << 40) / PAGE_LEAVES,
         }
     }
 
     fn fetch(&mut self, request: &Request) -> Answer {
         assert!(request.record < self.records(request.query.database), "record beyond the database");
-        let record = request.record;
+        let mut record = request.record;
+        if self.alias_trees {
+            // Every coin tree index serves tree 0's notes, leaves and pages.
+            record %= match request.query.database {
+                Database::Notes => 1 << 32,
+                Database::CoinLeaves => (1 << 32) / MINIPAGE_LEAVES,
+                Database::CoinPages => (1 << 32) / PAGE_LEAVES,
+                _ => u64::MAX,
+            };
+        }
         let mut answer = match request.query.database {
             Database::LookupHints => {
                 Answer::LookupHints(Self::bucket(&self.lookup_hints, |hint| hint.tag, self.lookup_buckets, record))
@@ -332,10 +344,21 @@ fn header(parent: [u8; 32], number: u64, roots: Roots, lookup_digest: [u8; 32]) 
     header_with(23, parent, number, roots, lookup_digest)
 }
 
-/// A checked tail: `before` headers, the snapshot header carrying `roots`,
-/// then one header for each later list carrying its digest. Returns the tail
-/// and the snapshot header.
-fn tail_with(roots: Roots, before: usize, later: &[BlockLookupList]) -> (Vec<Vec<u8>>, Vec<u8>) {
+/// The snapshot block's own bulk list for a chain: its last two leaves'
+/// tags, so its leaf count is the chain's.
+fn own_list(chain: &Chain) -> BlockLookupList {
+    let count = chain.leaves.len();
+    BlockLookupList {
+        coin_start: count as u64 - 2,
+        coin_tags: chain.tags[count - 2..].to_vec(),
+        ..BlockLookupList::default()
+    }
+}
+
+/// A checked tail: `before` headers, the snapshot header carrying `roots`
+/// and the digest of its own block's list `own`, then one header for each
+/// later list carrying its digest. Returns the tail and the snapshot header.
+fn tail_with(roots: Roots, own: &BlockLookupList, before: usize, later: &[BlockLookupList]) -> (Vec<Vec<u8>>, Vec<u8>) {
     let mut tail: Vec<Vec<u8>> = Vec::new();
     let mut parent = [0u8; 32];
     let mut number = 1000;
@@ -345,7 +368,7 @@ fn tail_with(roots: Roots, before: usize, later: &[BlockLookupList]) -> (Vec<Vec
         number += 1;
         tail.push(next);
     }
-    let snapshot = header(parent, number, roots, [0x55; 32]);
+    let snapshot = header(parent, number, roots, own.digest().unwrap());
     parent = keccak256(&snapshot);
     tail.push(snapshot.clone());
     for list in later {
@@ -380,8 +403,9 @@ fn later_blocks(count: usize, start: u64, rng: &mut StdRng) -> Vec<BlockLookupLi
 }
 
 fn anchor_for(chain: &Chain, later: &[BlockLookupList]) -> Anchor {
-    let (tail, snapshot) = tail_with(roots(chain), 5, later);
-    check_anchor(&tail, &snapshot, later).unwrap()
+    let own = own_list(chain);
+    let (tail, snapshot) = tail_with(roots(chain), &own, 5, later);
+    check_anchor(&tail, &snapshot, &own, later).unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -599,21 +623,22 @@ fn a_server_that_hides_a_spend_is_refused() {
 fn a_stale_snapshot_header_is_refused() {
     let (wallet, _, chain, mut rng) = world(0x57a1e, 3);
     let later = later_blocks(2, chain.leaves.len() as u64, &mut rng);
-    let (tail, snapshot) = tail_with(roots(&chain), 5, &later);
-    assert!(check_anchor(&tail, &snapshot, &later).is_ok());
+    let own = own_list(&chain);
+    let (tail, snapshot) = tail_with(roots(&chain), &own, 5, &later);
+    assert!(check_anchor(&tail, &snapshot, &own, &later).is_ok());
 
     // A header below the checked tail: the tail starts after it.
     let at = tail.iter().position(|header| header == &snapshot).unwrap();
     assert_eq!(
-        check_anchor(&tail[at + 1..], &snapshot, &later).err(),
+        check_anchor(&tail[at + 1..], &snapshot, &own, &later).err(),
         Some(CheckError::SnapshotNotOnChain)
     );
 
     // A header of the same height on another branch.
     let fields = header_roots(&snapshot).unwrap();
-    let other_branch = header([0x99; 32], fields.number, roots(&chain), [0x55; 32]);
+    let other_branch = header([0x99; 32], fields.number, roots(&chain), own.digest().unwrap());
     assert_eq!(
-        check_anchor(&tail, &other_branch, &later).err(),
+        check_anchor(&tail, &other_branch, &own, &later).err(),
         Some(CheckError::SnapshotNotOnChain)
     );
 
@@ -629,7 +654,7 @@ fn a_stale_snapshot_header_is_refused() {
     assert_eq!(refusal(first_session(&wallet, &anchor, &mut server, &mut rng)), CheckError::CoinWitness);
 
     // A header that does not decode, or without the lookup fields.
-    assert_eq!(check_anchor(&tail, &[0xc0], &later).err(), Some(CheckError::SnapshotHeader));
+    assert_eq!(check_anchor(&tail, &[0xc0], &own, &later).err(), Some(CheckError::SnapshotHeader));
     let old_format = header_with(19, [0; 32], 1, roots(&chain), [0; 32]);
     assert_eq!(header_roots(&old_format), None);
     let with_mmr = header_with(24, [0; 32], 1, roots(&chain), [0x12; 32]);
@@ -640,35 +665,123 @@ fn a_stale_snapshot_header_is_refused() {
 fn a_tampered_bulk_list_is_refused() {
     let (_, _, chain, mut rng) = world(0x1157, 2);
     let later = later_blocks(3, chain.leaves.len() as u64, &mut rng);
-    let (tail, snapshot) = tail_with(roots(&chain), 5, &later);
-    assert!(check_anchor(&tail, &snapshot, &later).is_ok());
+    let own = own_list(&chain);
+    let (tail, snapshot) = tail_with(roots(&chain), &own, 5, &later);
+    assert!(check_anchor(&tail, &snapshot, &own, &later).is_ok());
 
     // A marker added to the second block's list.
     let mut added = later.clone();
     added[1].coin_markers.push([0x42; 32]);
-    assert_eq!(check_anchor(&tail, &snapshot, &added).err(), Some(CheckError::BulkList { block: 1 }));
+    assert_eq!(check_anchor(&tail, &snapshot, &own, &added).err(), Some(CheckError::BulkList { block: 1 }));
 
     // A tag left out of the first.
     let mut removed = later.clone();
     removed[0].coin_tags.pop();
-    assert_eq!(check_anchor(&tail, &snapshot, &removed).err(), Some(CheckError::BulkList { block: 0 }));
+    assert_eq!(check_anchor(&tail, &snapshot, &own, &removed).err(), Some(CheckError::BulkList { block: 0 }));
 
     // Two blocks' lists swapped.
     let mut swapped = later.clone();
     swapped.swap(1, 2);
-    assert_eq!(check_anchor(&tail, &snapshot, &swapped).err(), Some(CheckError::BulkList { block: 1 }));
+    assert_eq!(check_anchor(&tail, &snapshot, &own, &swapped).err(), Some(CheckError::BulkList { block: 1 }));
 
     // A list missing, or one too many.
     assert_eq!(
-        check_anchor(&tail, &snapshot, &later[..2]).err(),
+        check_anchor(&tail, &snapshot, &own, &later[..2]).err(),
         Some(CheckError::LaterBlocks { expected: 3, got: 2 })
     );
     let mut extra = later.clone();
     extra.push(BlockLookupList::default());
     assert_eq!(
-        check_anchor(&tail, &snapshot, &extra).err(),
+        check_anchor(&tail, &snapshot, &own, &extra).err(),
         Some(CheckError::LaterBlocks { expected: 3, got: 4 })
     );
+
+    // The snapshot block's own list changed: its leaf count, and so the coin
+    // tree it names, would move.
+    let mut shifted = own.clone();
+    shifted.coin_start += 1 << 32;
+    assert_eq!(check_anchor(&tail, &snapshot, &shifted, &later).err(), Some(CheckError::SnapshotList));
+    let mut shorter = own.clone();
+    shorter.coin_tags.pop();
+    assert_eq!(check_anchor(&tail, &snapshot, &shorter, &later).err(), Some(CheckError::SnapshotList));
+}
+
+#[test]
+fn the_snapshot_names_its_coin_tree_and_refuses_an_open_boundary() {
+    let (_, _, chain, _) = world(0x7_3ee, 1);
+    let at = |coin_start: u64, tags: usize| {
+        let own = BlockLookupList {
+            coin_start,
+            coin_tags: vec![[7; 16]; tags],
+            ..BlockLookupList::default()
+        };
+        let (tail, snapshot) = tail_with(roots(&chain), &own, 2, &[]);
+        check_anchor(&tail, &snapshot, &own, &[])
+    };
+    let anchor = at(5, 2).unwrap();
+    assert_eq!((anchor.coin_leaves(), anchor.coin_tree_index()), (7, 0));
+    assert!(anchor.holds_coin_position(6));
+    assert!(!anchor.holds_coin_position(7));
+    assert!(!anchor.holds_coin_position(6 + (1 << 32)));
+
+    // A snapshot in tree 1: tree 0's positions are not under its root.
+    let anchor = at((1 << 32) + 10, 3).unwrap();
+    assert_eq!(anchor.coin_tree_index(), 1);
+    assert!(anchor.holds_coin_position((1 << 32) + 12));
+    assert!(!anchor.holds_coin_position(12));
+
+    // A count ending exactly at the end of tree 0 leaves the tree open.
+    assert_eq!(at((1 << 32) - 2, 2).err(), Some(CheckError::TreeBoundary));
+    assert_eq!(at(0, 0).unwrap().coin_leaves(), 0);
+}
+
+#[test]
+fn a_coin_at_a_forged_tree_index_is_refused() {
+    // The server moves the current coin's hinted position from p to
+    // p + 2^32, one tree up, and serves the original note, minipage, page
+    // and marker records there. The coin witness folds only the low 32 bits,
+    // so it alone would still pass.
+    let (wallet, coins, chain, mut rng) = world(0xf0_26e, 4);
+    let anchor = anchor_for(&chain, &[]);
+    assert_eq!(anchor.coin_tree_index(), 0);
+    let current = key_lookup_tag(&wallet, 4);
+    let forged = coins[4].position + (1 << 32);
+    let mut server = FakeServer::new(&chain);
+    server.alias_trees = true;
+    for hint in server.lookup_hints.iter_mut().filter(|hint| hint.tag == current) {
+        hint.position = forged;
+    }
+
+    let requests = restore_requests(&wallet, CHAIN_ID, &mut server, &mut rng);
+    assert_eq!(
+        requests.probed,
+        ghost_client::restore_requests::Probed::Found {
+            number: 4,
+            position: forged
+        }
+    );
+    // The forged records are served: the note and the leaf open as the key's.
+    assert!(!requests.exchange(QueryKind::MarkerLeaves).unwrap().padding);
+    assert!(matches!(
+        check_session(&wallet, CHAIN_ID, &anchor, &requests),
+        Err(CheckError::CoinWitness)
+    ));
+    assert_eq!(restore_refusal(&wallet, &anchor, &mut server, &mut rng), CheckError::CoinWitness);
+
+    // A position below the snapshot's leaf count only: one past it is
+    // refused too, even in the current tree.
+    let past = chain.leaves.len() as u64;
+    assert!(!anchor.holds_coin_position(past));
+    assert!(anchor.holds_coin_position(coins[4].position));
+
+    // The same aliasing server with honest hints is accepted, in tree 0.
+    let mut honest = FakeServer::new(&chain);
+    honest.alias_trees = true;
+    let restored = restore_with_checks(&wallet, CHAIN_ID, &anchor, &mut honest, &mut rng).unwrap();
+    let Decision::Current(coin) = restored.decision else {
+        panic!("not current: {:?}", restored.decision);
+    };
+    assert_eq!((coin.coin.tree_index, u64::from(coin.coin.position)), (0, coins[4].position));
 }
 
 #[test]

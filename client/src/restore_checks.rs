@@ -11,16 +11,23 @@
 //!    a header that is not, an older one or one of another branch, is
 //!    refused as stale, whatever server sent it. Its roots are the only
 //!    roots the answers are checked against.
-//! 2. **The bulk lists** of the blocks after the snapshot, one for each tail
-//!    header above it, each match that header's `lookupDigest`. A missing or
-//!    changed list is refused.
+//! 2. **The bulk lists** of the snapshot block and of the blocks after it,
+//!    one for each tail header from the snapshot up, each match that
+//!    header's `lookupDigest`. A missing or changed list is refused. The
+//!    snapshot block's list gives the global coin leaf count at the
+//!    snapshot, and so the index of the coin tree whose root the snapshot
+//!    carries.
 //! 3. **The note** of the number found decrypts under the note key with its
 //!    leaf as associated data and recomputes that leaf from the digits
 //!    ([`crate::restore::restore_coins_at`]), and its number is the one the
 //!    probes found.
 //! 4. **The coin witness**, the leaf's minipage of 64 leaves and its page's
 //!    witness record, takes the leaf at its position to the snapshot
-//!    header's `coinTreeRoot`.
+//!    header's `coinTreeRoot`. The witness folds only the 32 low bits of the
+//!    global position, so the bits above them, the tree index, must be the
+//!    snapshot's current tree and the position below its leaf count
+//!    ([`Anchor::holds_coin_position`]); a position anywhere else, an
+//!    earlier tree's included, is refused.
 //! 5. **The marker witness**, a minipage of the coin marker-set tree and its
 //!    page's witness record, gives either the marker's own leaf (a
 //!    membership witness) or the low leaf whose value and next value bracket
@@ -165,6 +172,12 @@ pub enum CheckError {
         /// The block, 0 for the first after the snapshot.
         block: usize,
     },
+    /// The snapshot block's own bulk list does not match its `lookupDigest`,
+    /// or its leaf count is out of range.
+    SnapshotList,
+    /// The snapshot's leaf count ends exactly at the end of a coin tree, so
+    /// which tree its `coinTreeRoot` is the root of is not settled.
+    TreeBoundary,
     /// The bulk lists are not one for each tail header after the snapshot.
     LaterBlocks {
         /// The tail headers after the snapshot.
@@ -206,6 +219,8 @@ impl fmt::Display for CheckError {
         match self {
             Self::SnapshotHeader => f.write_str("the snapshot header does not decode"),
             Self::SnapshotNotOnChain => f.write_str("the snapshot header is not on the wallet's checked chain"),
+            Self::SnapshotList => f.write_str("the snapshot block's bulk list does not match its digest"),
+            Self::TreeBoundary => f.write_str("the snapshot ends exactly at the end of a coin tree"),
             Self::LaterHeader { block } => write!(f, "later header {block} does not decode"),
             Self::LaterBlocks { expected, got } => write!(f, "{got} bulk lists for {expected} later blocks"),
             Self::BulkList { block } => write!(f, "the bulk list of later block {block} does not match its digest"),
@@ -399,11 +414,14 @@ pub fn header_roots(header: &[u8]) -> Option<HeaderRoots> {
     })
 }
 
-/// A snapshot header found on the wallet's checked chain, and the checked
-/// bulk lists of every block after it up to the tip.
+/// A snapshot header found on the wallet's checked chain, the coin tree its
+/// `coinTreeRoot` is the root of, and the checked bulk lists of every block
+/// after it up to the tip.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Anchor {
     snapshot: HeaderRoots,
+    coin_leaves: u64,
+    coin_tree_index: u64,
     later: Vec<BlockLookupList>,
 }
 
@@ -411,6 +429,27 @@ impl Anchor {
     /// The snapshot header's fields.
     pub fn snapshot(&self) -> &HeaderRoots {
         &self.snapshot
+    }
+
+    /// The coin leaves appended up to and including the snapshot block, as a
+    /// global position count: its own bulk list's `coinStart` plus its coin
+    /// tags, authenticated by the snapshot header's `lookupDigest`.
+    pub fn coin_leaves(&self) -> u64 {
+        self.coin_leaves
+    }
+
+    /// The index of the coin tree whose root the snapshot's `coinTreeRoot`
+    /// is: the tree that holds its last leaf.
+    pub fn coin_tree_index(&self) -> u64 {
+        self.coin_tree_index
+    }
+
+    /// Whether `position` is a global position the snapshot's coin root can
+    /// authenticate: in its current tree and below its leaf count. The coin
+    /// witness proves only the 32 low bits of a position; this binds the
+    /// rest, the tree index.
+    pub fn holds_coin_position(&self, position: u64) -> bool {
+        position >> 32 == self.coin_tree_index && position < self.coin_leaves
     }
 
     /// The bulk lists of the blocks after the snapshot, oldest first, each
@@ -430,12 +469,20 @@ impl Anchor {
 
 /// Checks the snapshot header and the later blocks against the tail of the
 /// wallet's checked chain, oldest first (`tail`, the headers of a
-/// [`CheckedTail`]): the snapshot must be one of them, and `later` must hold
-/// one bulk list for each tail header after it, in order, each matching
-/// that header's `lookupDigest`.
+/// [`CheckedTail`]): the snapshot must be one of them, `snapshot_list` must
+/// be the snapshot block's own bulk list, matching its `lookupDigest`, and
+/// `later` must hold one bulk list for each tail header after it, in order,
+/// each matching that header's `lookupDigest`.
+///
+/// The snapshot block's list gives the global leaf count after it, and so
+/// the coin tree whose root the snapshot carries: the tree of its last leaf.
+/// A count that ends exactly at the end of a tree (a multiple of 2^32 other
+/// than 0) leaves which tree is current open, and is refused
+/// ([`CheckError::TreeBoundary`]); the next snapshot settles it.
 pub fn check_anchor<H: AsRef<[u8]>>(
     tail: &[H],
     snapshot_header: &[u8],
+    snapshot_list: &BlockLookupList,
     later: &[BlockLookupList],
 ) -> Result<Anchor, CheckError> {
     let snapshot = header_roots(snapshot_header).ok_or(CheckError::SnapshotHeader)?;
@@ -443,6 +490,19 @@ pub fn check_anchor<H: AsRef<[u8]>>(
         .iter()
         .position(|header| keccak256(header.as_ref()) == snapshot.hash)
         .ok_or(CheckError::SnapshotNotOnChain)?;
+    if !crate::lookup::check_lookup_digest(snapshot_list, &snapshot.lookup_digest) {
+        return Err(CheckError::SnapshotList);
+    }
+    let coin_leaves = u64::try_from(snapshot_list.coin_tags.len())
+        .ok()
+        .and_then(|count| snapshot_list.coin_start.checked_add(count))
+        .filter(|&count| count <= NO_POSITION)
+        .ok_or(CheckError::SnapshotList)?;
+    let coin_tree_index = match coin_leaves {
+        0 => 0,
+        count if count % (1 << 32) == 0 => return Err(CheckError::TreeBoundary),
+        count => (count - 1) >> 32,
+    };
     let after = &tail[at + 1..];
     if after.len() != later.len() {
         return Err(CheckError::LaterBlocks {
@@ -458,6 +518,8 @@ pub fn check_anchor<H: AsRef<[u8]>>(
     }
     Ok(Anchor {
         snapshot,
+        coin_leaves,
+        coin_tree_index,
         later: later.to_vec(),
     })
 }
@@ -466,9 +528,10 @@ pub fn check_anchor<H: AsRef<[u8]>>(
 pub fn check_anchor_on(
     tail: &CheckedTail,
     snapshot_header: &[u8],
+    snapshot_list: &BlockLookupList,
     later: &[BlockLookupList],
 ) -> Result<Anchor, CheckError> {
-    check_anchor(tail.headers(), snapshot_header, later)
+    check_anchor(tail.headers(), snapshot_header, snapshot_list, later)
 }
 
 // ---------------------------------------------------------------------------
@@ -779,7 +842,11 @@ fn checked_leaf(
     requests: &RestoreRequests,
     position: u64,
 ) -> Result<(Commitment, [u8; NOTE_BYTES], [[u8; 32]; COIN_TREE_DEPTH]), CheckError> {
-    if position >= NO_POSITION {
+    // The coin witness folds only the 32 low bits of the position: the tree
+    // index above them is bound here, to the snapshot's current tree, and the
+    // position to below its leaf count. A position from the hints, or any
+    // other, with other upper bits is refused, never masked.
+    if position >= NO_POSITION || !anchor.holds_coin_position(position) {
         return Err(CheckError::CoinWitness);
     }
     let note = match &real(requests, QueryKind::Note, position)?.answer {
