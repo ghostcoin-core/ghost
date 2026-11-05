@@ -8,7 +8,9 @@ use std::collections::HashMap;
 
 use ghost_client::commit::{salted_coin_marker, Amount, Commitment, Rule, Salt};
 use ghost_client::lookup::{key_lookup_tag, LookupTag, NO_POSITION, ZERO_TAG};
-use ghost_client::note::{encrypt_note, Capsule, NoteContents, NOTE_BYTES};
+use ghost_client::note::{
+    encrypt_note, encrypt_note_v2, pad_reveal_note, Capsule, NoteContents, NOTE_BYTES, REVEAL_NOTE_BYTES,
+};
 use ghost_client::restore_requests::{
     hint_bucket, plan, restore_requests, Answer, Database, Exchange, LookupHint, LookupSource, MarkerHint, Probed,
     Query, QueryKind, Request, RestoreRequests, FOLLOW_UPS, MAX_HOPS, MINIPAGE_LEAVES, PAGE_LEAVES, PROBES, QUERIES,
@@ -428,6 +430,102 @@ fn a_note_that_does_not_open_pads_the_marker_queries() {
     let restore = restore_requests(&wallet, CHAIN_ID, &mut server, &mut rng);
     assert_follows_plan(&restore, &server.seen);
     assert!(!follow_up(&restore, QueryKind::Note).padding);
+    for kind in [QueryKind::MarkerHint, QueryKind::MarkerLeaves, QueryKind::MarkerPage] {
+        assert!(follow_up(&restore, kind).padding, "{kind:?}");
+    }
+}
+
+/// Stores a coin's note again as the tree stores a version 1 reveal's
+/// remainder: a 156-byte note version 2, zero-padded to 380 bytes.
+fn store_as_reveal_remainder(server: &mut FakeServer, key: &PhantomKey, coin: &Coin, rng: &mut StdRng) {
+    let leaf = Commitment::from_bytes(server.leaves[&coin.position]);
+    let amount = Amount::new(1000 + u128::from(coin.number)).unwrap();
+    let contents = NoteContents::salted_coin(coin.number, amount, Rule::EMPTY, coin.salt);
+    let short = encrypt_note_v2(&key.note_key(), CHAIN_ID, &leaf, &contents, rng);
+    let padded = pad_reveal_note(&short);
+    assert!(padded[REVEAL_NOTE_BYTES..].iter().all(|&byte| byte == 0));
+    server.notes.insert(coin.position, padded);
+}
+
+#[test]
+fn a_reveal_remainder_note_still_fetches_its_spent_status() {
+    let mut rng = StdRng::seed_from_u64(0x5e_ed2);
+    let wallet = key(&mut rng);
+
+    // The same chain twice: the current coin's note as a note version 3,
+    // and as a version 1 reveal's padded remainder note.
+    let (mut plain, _) = server_with(&[(&wallet, 12)], &mut StdRng::seed_from_u64(0xc4a1));
+    let (mut server, coins) = server_with(&[(&wallet, 12)], &mut StdRng::seed_from_u64(0xc4a1));
+    let current = &coins[0][12];
+    store_as_reveal_remainder(&mut server, &wallet, current, &mut rng);
+    let reference = restore_requests(&wallet, CHAIN_ID, &mut plain, &mut rng);
+    let restore = restore_requests(&wallet, CHAIN_ID, &mut server, &mut rng);
+
+    // The query shape and order are unchanged.
+    assert_follows_plan(&restore, &server.seen);
+    assert_eq!(restore.shapes(), reference.shapes());
+    assert_eq!(
+        restore.probed,
+        Probed::Found {
+            number: 12,
+            position: current.position
+        }
+    );
+
+    // The marker queries are real, at the unspent marker's bucket and its
+    // low leaf, the records the version 3 note leads to.
+    let marker = marker_of(&wallet, 12, &current.salt);
+    let hint = follow_up(&restore, QueryKind::MarkerHint);
+    assert!(!hint.padding);
+    assert_eq!(hint.record, hint_bucket(&marker, MARKER_BUCKETS));
+    let low = server
+        .markers
+        .iter()
+        .filter(|hint| hint.marker < marker)
+        .max_by_key(|hint| hint.marker)
+        .unwrap();
+    for (kind, record) in [
+        (QueryKind::MarkerLeaves, low.set_position / MINIPAGE_LEAVES),
+        (QueryKind::MarkerPage, low.set_position / PAGE_LEAVES),
+    ] {
+        let exchange = follow_up(&restore, kind);
+        assert!(!exchange.padding, "{kind:?} is padding");
+        assert_eq!(exchange.record, record, "{kind:?}");
+    }
+    for kind in [QueryKind::MarkerHint, QueryKind::MarkerLeaves, QueryKind::MarkerPage] {
+        assert_eq!(follow_up(&restore, kind).record, follow_up(&reference, kind).record, "{kind:?}");
+    }
+
+    // A spent remainder leads to its own marker entry.
+    let spent = &coins[0][11];
+    store_as_reveal_remainder(&mut server, &wallet, spent, &mut rng);
+    server.lookup.retain(|hint| hint.tag != key_lookup_tag(&wallet, 12));
+    let marker = marker_of(&wallet, 11, &spent.salt);
+    let entry = *server.markers.iter().find(|hint| hint.marker == marker).unwrap();
+    server.seen.clear();
+    let restore = restore_requests(&wallet, CHAIN_ID, &mut server, &mut rng);
+    assert_follows_plan(&restore, &server.seen);
+    assert_eq!(
+        restore.probed,
+        Probed::Found {
+            number: 11,
+            position: spent.position
+        }
+    );
+    let marker_leaves = follow_up(&restore, QueryKind::MarkerLeaves);
+    assert!(!marker_leaves.padding);
+    assert_eq!(marker_leaves.record, entry.set_position / MINIPAGE_LEAVES);
+    let marker_page = follow_up(&restore, QueryKind::MarkerPage);
+    assert!(!marker_page.padding);
+    assert_eq!(marker_page.record, entry.set_position / PAGE_LEAVES);
+
+    // A remainder note with a byte after its first 156 is not one: padding.
+    let mut tampered = server.notes[&spent.position];
+    tampered[NOTE_BYTES - 1] = 1;
+    server.notes.insert(spent.position, tampered);
+    server.seen.clear();
+    let restore = restore_requests(&wallet, CHAIN_ID, &mut server, &mut rng);
+    assert_follows_plan(&restore, &server.seen);
     for kind in [QueryKind::MarkerHint, QueryKind::MarkerLeaves, QueryKind::MarkerPage] {
         assert!(follow_up(&restore, kind).padding, "{kind:?}");
     }

@@ -36,7 +36,9 @@
 //! and the notes, witnesses, snapshot header and bulk lists are checked
 //! before use elsewhere. The note of the highest number is only opened under
 //! the note key to read its salt, from which the commitment's spent marker
-//! follows; a note that does not open makes the marker queries padding.
+//! follows: as a note version 3, or, as restore reads it, as the padded
+//! note version 2 remainder of a version 1 reveal. A note that opens neither
+//! way makes the marker queries padding.
 //!
 //! # Hint buckets
 //!
@@ -59,7 +61,8 @@ use rand_core::CryptoRng;
 use crate::commit::{salted_coin_marker, Commitment, COIN_V2};
 use crate::lookup::{lookup_tag, LookupTag};
 use crate::key::PhantomKey;
-use crate::note::{decrypt_note, NOTE_BYTES};
+use crate::derive::NoteKey;
+use crate::note::{decrypt_note, decrypt_note_v2, unpad_reveal_note, NoteContents, NoteError, NOTE_BYTES};
 use crate::wipe::wipe;
 
 /// The most hops the probes cover: numbers 0 to 1,023.
@@ -441,6 +444,21 @@ fn marker_position(answer: &Answer, marker: &[u8; 32]) -> Option<u64> {
         .map(|hint| hint.set_position)
 }
 
+/// Opens a stored 380-byte note under the note key as [`crate::restore`]
+/// reads it: as a note version 3 first; if that does not authenticate and
+/// its last 224 bytes are zero, its first 156 bytes as the note version 2
+/// remainder note of a version 1 reveal. `None` when neither opens.
+fn read_note(note_key: &NoteKey, chain_id: u64, leaf: &Commitment, note: &[u8; NOTE_BYTES]) -> Option<NoteContents> {
+    match decrypt_note(note_key, chain_id, leaf, note) {
+        Ok(contents) => Some(contents),
+        Err(NoteError::Unauthentic) => {
+            let short = unpad_reveal_note(note)?;
+            decrypt_note_v2(note_key, chain_id, leaf, &short).ok()
+        }
+        Err(_) => None,
+    }
+}
+
 /// Sends the [`PROBES`] probes and returns what they found, with the
 /// answer of the probe of number 0.
 fn probe<S: LookupSource + ?Sized, R: CryptoRng + ?Sized>(
@@ -549,8 +567,7 @@ where
     // Its spent marker, from the salt its note carries.
     let mut marker = match (found, note, leaf) {
         (Some((number, _)), Some(note), Some(leaf)) => {
-            decrypt_note(&note_key, chain_id, &Commitment::from_bytes(leaf), &note)
-                .ok()
+            read_note(&note_key, chain_id, &Commitment::from_bytes(leaf), &note)
                 .filter(|contents| contents.type_tag == COIN_V2 && contents.number == number)
                 .map(|contents| {
                     *salted_coin_marker(&key_bytes.reveal_secret(), &key_bytes.blinding(number), &contents.salt)
