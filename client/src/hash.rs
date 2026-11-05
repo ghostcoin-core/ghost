@@ -35,6 +35,25 @@ pub const TAG_DATA_FINGERPRINT_V2: &str = "ghost/data-fingerprint/v2";
 pub const TAG_COIN_MARKER_V2: &str = "ghost/coin-marker/v2";
 /// Marker of a version 2 (salted) data commitment (Keccak-256).
 pub const TAG_DATA_MARKER_V2: &str = "ghost/data-marker/v2";
+/// The empty leaf `E` at every unused position of a tree (Keccak-256).
+pub const TAG_EMPTY_LEAF: &str = "ghost/empty-leaf/v1";
+/// The 16-byte lookup tag of a commitment number, its first 16 bytes
+/// (SHA3-256).
+pub const TAG_NOTE_LOOKUP: &str = "ghost/note-lookup/v1";
+/// Leaf of the coin lookup index (Keccak-256).
+pub const TAG_COIN_LOOKUP_LEAF: &str = "ghost/coin-lookup-leaf/v1";
+/// Inner node of the coin lookup index (Keccak-256).
+pub const TAG_COIN_LOOKUP_NODE: &str = "ghost/coin-lookup-node/v1";
+/// Leaf of the data lookup index (Keccak-256).
+pub const TAG_DATA_LOOKUP_LEAF: &str = "ghost/data-lookup-leaf/v1";
+/// Inner node of the data lookup index (Keccak-256).
+pub const TAG_DATA_LOOKUP_NODE: &str = "ghost/data-lookup-node/v1";
+/// Leaf of the coin spent-marker set tree (Keccak-256).
+pub const TAG_COIN_MARKER_SET_LEAF: &str = "ghost/coin-marker-set-leaf/v1";
+/// Inner node of the coin spent-marker set tree (Keccak-256).
+pub const TAG_COIN_MARKER_SET_NODE: &str = "ghost/coin-marker-set-node/v1";
+/// Block lookup digest, the header field `lookupDigest` (Keccak-256).
+pub const TAG_BLOCK_LOOKUP_DIGEST: &str = "ghost/block-lookup-digest/v1";
 
 fn tagged<H: Hasher>(mut hasher: H, tag: &str, parts: &[&[u8]]) -> [u8; 32] {
     let len = u8::try_from(tag.len()).expect("a tag is shorter than 256 bytes");
