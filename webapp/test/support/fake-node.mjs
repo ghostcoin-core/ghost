@@ -8,11 +8,13 @@
 // docs/private-transactions.md, "Receipts"): a commit's log has the coin
 // tree account as address, the topic K("ghost/commit-receipt/v1") and the
 // tree index, position, leaf, value, the 380-byte note and the commit's salt;
-// a reveal's log has K("ghost/reveal-receipt/v1") and the marker as topics
-// and the tree index, position, remainder, the 156-byte remainder note of the
-// version 1 reveal, recipient and amount out. Every note in the tree is 380
-// bytes: a reveal's remainder note is stored there zero-padded, as the node
-// stores it. The header's receiptsRoot is computed from their consensus encoding
+// a reveal is the ordinary reveal of spec 10, section 4 (type 0x50, version
+// 0x0002, 1,311,291 bytes), and its log has K("ghost/reveal-receipt/v2") and
+// the marker as topics and the tree index, position, remainder, the 380-byte
+// remainder note the reveal binds, recipient and amount out (472 bytes). A
+// version 1 reveal is refused, as a version 2 node refuses it. Every note in
+// the tree is 380 bytes: a reveal's remainder note is stored there as it is,
+// as the node stores it. The header's receiptsRoot is computed from their consensus encoding
 // (written here apart from the app's) by the module's ghost_receipts_root,
 // and eth_getBlockReceipts serves them by block hash, as geth does.
 //
@@ -41,10 +43,18 @@ import { createServer } from "node:http";
 import { concat, fromHex, quantity, toHex, word } from "../../src/bytes.mjs";
 
 const PAGE = 4096;
-// Every note in the tree (note version 3, spec 10, section 3.2), and the
-// remainder note a version 1 reveal carries.
+// Every note in the tree (note version 3, spec 10, section 3.2), the
+// remainder note of a version 2 reveal among them, and the note slot of the
+// version 1 reveal, which the stand-in no longer takes.
 export const NOTE_BYTES = 380;
 export const REVEAL_NOTE_BYTES = 156;
+// The ordinary reveal the stand-in takes (spec 10, sections 4.1 and 10.3):
+// type 0x50, version 0x0002, its envelope's length and its gas, g_priv =
+// 16 * 1,311,291 + 21,000 + 370,000.
+export const REVEAL_TYPE = 0x50;
+export const REVEAL_VERSION = Object.freeze([0x00, 0x02]);
+export const REVEAL_ENVELOPE_BYTES = 1_311_291;
+export const REVEAL_GAS = 16n * BigInt(REVEAL_ENVELOPE_BYTES) + 21_000n + 370_000n;
 const GWEI = 1_000_000_000n;
 // Spec 05, vector empty-data-tree: no data commitment is ever made here.
 const EMPTY_DATA_ROOT = "0x3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03";
@@ -199,8 +209,9 @@ function nodeFee(blocks, height) {
   let price = start < blocks.length ? blocks[start].baseFee : tip.baseFee;
   // One growth step above b_ref (FEE_STEPS = 1).
   price = price + price / 8n + price / 20000n + 1n;
-  // g_priv of spec 07, section 4: the reveal gas the node charges.
-  const base = 21_090_372n * price;
+  // g_priv of spec 10, section 10.3: the gas the node charges an ordinary
+  // version 2 reveal.
+  const base = REVEAL_GAS * price;
   return base + (base + 9n) / 10n;
 }
 
@@ -339,7 +350,7 @@ export async function startFakeNode({
   const blockReceipts = [];
   const tagTopic = (tag) => ghost.keccak256(concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag)]));
   const COMMIT_TOPIC = tagTopic("ghost/commit-receipt/v1");
-  const REVEAL_TOPIC = tagTopic("ghost/reveal-receipt/v1");
+  const REVEAL_TOPIC = tagTopic("ghost/reveal-receipt/v2");
   const coinTreeAccount = fromHex(COIN_TREE_ACCOUNT, 20);
 
   // The tree index and the position in it of the leaf at `index` of
@@ -379,9 +390,9 @@ export async function startFakeNode({
     topics: [COMMIT_TOPIC],
     data: concat([u32(treeOf(index)), u32(positionOf(index)), commitment, word(value), note, salt]),
   });
-  // A reveal's log: the marker as second topic; tree index, position,
-  // remainder, the 156-byte remainder note, recipient and amount out (248
-  // bytes).
+  // A version 2 reveal's log: the marker as second topic; tree index,
+  // position, remainder, the 380-byte remainder note, recipient and amount
+  // out (472 bytes).
   const revealLog = (index, reveal) => ({
     address: coinTreeAccount,
     topics: [REVEAL_TOPIC, reveal.marker],
@@ -612,15 +623,22 @@ export async function startFakeNode({
     const raw = fromHex(hex);
     if (raw[0] === 0x52) return accountTx(raw);
     const tip = blocks.length - 1;
-    const reveal = ghost.decodeEnvelope({ chainId, domain: blocks[0].hash, envelope: fromHex(hex) });
-    if (reveal.note.length !== REVEAL_NOTE_BYTES) throw new Error(`a reveal's remainder note is ${REVEAL_NOTE_BYTES} bytes`);
+    // Only the version 2 ordinary reveal is taken: its type, version and
+    // length are checked here, apart from the module's decoding, which then
+    // verifies its proof as statement S1 version 2.
+    if (raw[0] !== REVEAL_TYPE || raw.length !== REVEAL_ENVELOPE_BYTES) {
+      throw new Error("not a private transaction of the expected size");
+    }
+    if (raw[1] !== REVEAL_VERSION[0] || raw[2] !== REVEAL_VERSION[1]) throw new Error("unknown transaction version");
+    const reveal = ghost.decodeEnvelope({ chainId, domain: blocks[0].hash, envelope: raw });
+    if (reveal.note.length !== NOTE_BYTES) throw new Error(`a reveal's remainder note is ${NOTE_BYTES} bytes`);
     // The fee of the including block's window or of the window before it,
     // and the cover rule against the including block's base fee (a child's
     // base fee here equals its parent's).
     const fee = nodeFee(blocks, tip + 1);
     const previous = tip + 1 >= 4 ? nodeFee(blocks, tip + 1 - 4) : null;
     const matched = reveal.fee === fee || reveal.fee === previous;
-    if (!matched || blocks[tip].baseFee * 21_090_372n > reveal.fee) {
+    if (!matched || blocks[tip].baseFee * REVEAL_GAS > reveal.fee) {
       throw new Error(`fee ${reveal.fee} is not the fee in force, ${fee}`);
     }
     if (!blocks.some((b) => toHex(b.coinTreeRoot) === toHex(reveal.root))) throw new Error("root not eligible");
@@ -662,8 +680,8 @@ export async function startFakeNode({
       marker: reveal.marker,
       apply: (n) => {
         // A remainder's salt, if any, is only in its note: none is served.
-        // Its 156-byte note is stored zero-padded to 380 bytes.
-        leaves.push({ commitment: reveal.remainder, note: padRevealNote(reveal.note), salt: null, block: n });
+        // Its 380-byte note is stored as the reveal binds it.
+        leaves.push({ commitment: reveal.remainder, note: reveal.note, salt: null, block: n });
         spent.push({ marker: reveal.marker, block: n });
         position = leaves.length - 1;
         blockReceipts.push({ hash, type: 0x50, logs: [revealLog(position, reveal)] });

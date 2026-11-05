@@ -11,15 +11,18 @@ use std::sync::OnceLock;
 use ghost_client::note::{
     chacha20poly1305_open, chacha20poly1305_seal, note_associated_data, NOTE_PLAINTEXT_BYTES, NOTE_V2_PLAINTEXT_BYTES,
 };
-use ghost_client::reveal::{ChainParams, CoinReveal, Proof, ProofError, TREE_DEPTH};
+use ghost_client::reveal::{ChainParams, CoinRevealV2, Proof, ProofError, TREE_DEPTH};
 use ghost_client::tree_state::SETTLE_DEPTH;
 use ghost_client::{
-    choose_tree_state, decrypt_note, decrypt_note_v2, encrypt_note, full_reveal, pad_reveal_note, partial_reveal,
-    restore_coins, Amount, BuiltReveal, Capsule, Commitment, Content, ContentFingerprint, Current, DiscardReason,
-    HeaderRoot, KeyFormat, Marker, NoteContents, NoteError, OwnedCoin, PhantomKey, RevealError,
-    RevealTerms, Rule, Salt, TreeLeaf, TreeStateChoice, DATA_V2, NOTE_BYTES,
+    choose_tree_state, decrypt_note, decrypt_note_with_capsule, encrypt_note, full_reveal, partial_reveal,
+    restore_coins, reveal_params, Amount, BuiltReveal, Capsule, Commitment, Content, ContentFingerprint, Current,
+    DiscardReason, HeaderRoot, KeyFormat, Marker, NoteContents, NoteError, OwnedCoin, PhantomKey, RevealError,
+    RevealTerms, Rule, Salt, TreeLeaf, TreeStateChoice, DATA_V2, NOTE_BYTES, REVEAL_VERSION,
 };
-use ghost_proofs::{empty_leaf, tree_node, verify_salted_coin_reveal, Tree, PROTOCOL_VERSION_1};
+use ghost_proofs::{
+    empty_leaf, tree_node, verify_coin_reveal_v2, verify_salted_coin_reveal, CoinReveal, Tree, PROTOCOL_VERSION_1,
+    PROTOCOL_VERSION_2,
+};
 use rand::rngs::StdRng;
 use rand::{Rng, RngExt, SeedableRng};
 
@@ -34,7 +37,13 @@ const COMMITTED: u128 = 1_000_000_000;
 const PAID: u128 = 100_000_000;
 const FEE: u128 = 21_000;
 
+/// The chain constants of the ordinary reveal: version `0x0002`.
 fn params() -> ChainParams {
+    reveal_params(CHAIN_ID, [7; 32])
+}
+
+/// The same chain at version `0x0001`, the reveal no longer built.
+fn version_1_params() -> ChainParams {
     ChainParams {
         chain_id: CHAIN_ID.to_be_bytes(),
         version: PROTOCOL_VERSION_1,
@@ -107,13 +116,12 @@ impl Chain {
     }
 
     /// Includes a reveal as the node does: its marker is spent, its remainder
-    /// appended with its 156-byte note zero-padded to 380 bytes and no salt
+    /// appended with its 380-byte note as the reveal binds it and no salt
     /// beside it (a remainder's salt is only in its note).
     fn include(&mut self, built: &BuiltReveal) -> u32 {
-        let reveal: &CoinReveal = &built.reveal;
+        let reveal: &CoinRevealV2 = &built.reveal;
         self.spent.push(Marker::from_bytes(reveal.marker));
-        let note = pad_reveal_note(&reveal.remainder_note);
-        self.push(Commitment::from_bytes(reveal.remainder), note, None, built.remainder.salt)
+        self.push(Commitment::from_bytes(reveal.remainder), reveal.remainder_note, None, built.remainder.salt)
     }
 
     fn owned(&self, number: u64, wei: u128, position: u32) -> (OwnedCoin, [u8; 32]) {
@@ -148,7 +156,7 @@ fn terms(root: [u8; 32]) -> RevealTerms {
 struct Scenario {
     chain: Chain,
     /// The first partial reveal, of number 0, with its proof.
-    first: (CoinReveal, Proof),
+    first: (CoinRevealV2, Proof),
     /// Where each of the key's commitments 0 to 3 sits.
     positions: [u32; 4],
     /// The amount of each of the key's commitments 0 to 3.
@@ -216,7 +224,11 @@ fn partial_reveal_proof_verifies_with_proofs_verifier() {
     let s = scenario();
     let key = key();
     let (reveal, proof) = &s.first;
-    assert_eq!(verify_salted_coin_reveal(&params(), reveal, proof), Ok(()));
+    // The ordinary reveal of spec 10, section 4: version 0x0002, checked by
+    // the version 2 verifier.
+    assert_eq!(params().version, PROTOCOL_VERSION_2);
+    assert_eq!(REVEAL_VERSION, PROTOCOL_VERSION_2);
+    assert_eq!(verify_coin_reveal_v2(&params(), reveal, proof), Ok(()));
 
     // It spends number 0 and creates number 1 under the same key, under a
     // fresh salt.
@@ -229,23 +241,46 @@ fn partial_reveal_proof_verifies_with_proofs_verifier() {
     assert_eq!(reveal.out, amount(PAID).to_bytes());
     assert_eq!(reveal.fee, amount(FEE).to_bytes());
 
-    // Its note is the remainder's, under the same key, for the new leaf.
-    let note = decrypt_note_v2(&key.note_key(), CHAIN_ID, &remainder.commitment, &reveal.remainder_note)
-        .unwrap();
+    // Its note is the remainder's, under the same key, for the new leaf: a
+    // 380-byte note version 3 with the empty rule's capsule.
+    assert_eq!(reveal.remainder_note.len(), NOTE_BYTES);
+    assert_eq!(NOTE_BYTES, 380);
+    let (note, capsule) =
+        decrypt_note_with_capsule(&key.note_key(), CHAIN_ID, &remainder.commitment, &reveal.remainder_note).unwrap();
     assert_eq!(note.number, 1);
     assert_eq!(note.amount.wei(), s.amounts[1]);
     assert_eq!(note.salt, remainder.salt);
+    assert_eq!(note.rule, Rule::EMPTY);
+    assert!(capsule == Capsule::empty());
+    assert!(capsule.is_empty());
 
     // The verifier rejects any changed public field or other chain constants.
     let mut changed = reveal.clone();
     changed.out = amount(PAID + 1).to_bytes();
-    assert!(verify_salted_coin_reveal(&params(), &changed, proof).is_err());
-    let mut changed = reveal.clone();
-    changed.remainder_note[0] ^= 1;
-    assert!(verify_salted_coin_reveal(&params(), &changed, proof).is_err());
+    assert!(verify_coin_reveal_v2(&params(), &changed, proof).is_err());
+    for byte in [0, 155, 156, NOTE_BYTES - 1] {
+        let mut changed = reveal.clone();
+        changed.remainder_note[byte] ^= 1;
+        assert!(verify_coin_reveal_v2(&params(), &changed, proof).is_err(), "note byte {byte}");
+    }
     let mut other_chain = params();
     other_chain.chain_id = (CHAIN_ID + 1).to_be_bytes();
-    assert!(verify_salted_coin_reveal(&other_chain, reveal, proof).is_err());
+    assert!(verify_coin_reveal_v2(&other_chain, reveal, proof).is_err());
+    assert!(verify_coin_reveal_v2(&version_1_params(), reveal, proof).is_err());
+
+    // It is not a version 1 reveal: the version 1 verifier, given the same
+    // fields with the first 156 bytes of the note, does not take it.
+    let as_version_1 = CoinReveal {
+        root: reveal.root,
+        marker: reveal.marker,
+        remainder: reveal.remainder,
+        remainder_note: reveal.remainder_note[..156].try_into().unwrap(),
+        recipient: reveal.recipient,
+        out: reveal.out,
+        fee: reveal.fee,
+        rule: [0; 32],
+    };
+    assert!(verify_salted_coin_reveal(&version_1_params(), &as_version_1, proof).is_err());
 
     // What the proofs crate refuses, the builder refuses, before proving.
     let (coin, root) = s.chain.owned(3, s.amounts[3], s.positions[3]);
@@ -265,6 +300,14 @@ fn partial_reveal_proof_verifies_with_proofs_verifier() {
     let ruled = OwnedCoin { rule: Rule::from_bytes([1; 32]), ..coin };
     let refused = partial_reveal(&params(), &key, &ruled, &terms(root), amount(PAID), &mut rng, [0; 32]);
     assert_eq!(refused.err(), Some(RevealError::Proof(ProofError::RuleNotEmpty)));
+
+    // A version 1 reveal is no longer built: the builders refuse its chain
+    // constants before anything is proved.
+    let (coin, root) = s.chain.owned(3, s.amounts[3], s.positions[3]);
+    let refused = partial_reveal(&version_1_params(), &key, &coin, &terms(root), amount(PAID), &mut rng, [0; 32]);
+    assert_eq!(refused.err(), Some(RevealError::WrongVersion));
+    let refused = full_reveal(&version_1_params(), &key, &coin, &terms(root), &mut rng, [0; 32]);
+    assert_eq!(refused.err(), Some(RevealError::WrongVersion));
 }
 
 #[test]
@@ -276,17 +319,20 @@ fn full_reveal_proof_verifies() {
     let mut rng = StdRng::seed_from_u64(2);
     let zk_randomness = zk(&mut rng);
     let built = full_reveal(&params(), &key, &coin, &terms(root), &mut rng, zk_randomness).unwrap();
-    assert_eq!(verify_salted_coin_reveal(&params(), &built.reveal, &built.proof), Ok(()));
+    assert_eq!(verify_coin_reveal_v2(&params(), &built.reveal, &built.proof), Ok(()));
     assert_eq!(built.reveal.out, amount(s.amounts[3] - FEE).to_bytes());
 
-    // Still a remainder commitment, of amount zero, number 4, with its note.
+    // Still a remainder commitment, of amount zero, number 4, with its
+    // 380-byte note and the empty rule's capsule.
     let zero = key.coin_commit_with_salt(4, amount(0), Rule::EMPTY, built.remainder.salt).unwrap();
     assert_eq!(built.remainder.number, 4);
     assert_eq!(built.remainder.amount.wei(), 0);
+    assert_eq!(built.remainder.rule, Rule::EMPTY);
     assert_eq!(&built.reveal.remainder, zero.commitment.as_bytes());
-    let note = decrypt_note_v2(&key.note_key(), CHAIN_ID, &zero.commitment, &built.reveal.remainder_note)
-        .unwrap();
+    let (note, capsule) =
+        decrypt_note_with_capsule(&key.note_key(), CHAIN_ID, &zero.commitment, &built.reveal.remainder_note).unwrap();
     assert_eq!((note.number, note.amount.wei(), note.salt), (4, 0, built.remainder.salt));
+    assert!(capsule == Capsule::empty());
 
     // Restore then finds the zero remainder as the current coin.
     let position = chain.include(&built);
@@ -323,7 +369,7 @@ fn claim_to_new_key() {
         zk_randomness,
     )
     .unwrap();
-    assert_eq!(verify_salted_coin_reveal(&params(), &built.reveal, &built.proof), Ok(()));
+    assert_eq!(verify_coin_reveal_v2(&params(), &built.reveal, &built.proof), Ok(()));
 
     // The remainder is number 0 of the new key, holding everything but the fee.
     let left = s.amounts[3] - FEE;
@@ -335,10 +381,12 @@ fn claim_to_new_key() {
 
     // Its note decrypts under the new key only.
     let leaf = expected.commitment;
-    let note = decrypt_note_v2(&new_key.note_key(), CHAIN_ID, &leaf, &built.reveal.remainder_note).unwrap();
+    let (note, capsule) =
+        decrypt_note_with_capsule(&new_key.note_key(), CHAIN_ID, &leaf, &built.reveal.remainder_note).unwrap();
     assert_eq!((note.number, note.amount.wei()), (0, left));
+    assert!(capsule == Capsule::empty());
     assert_eq!(
-        decrypt_note_v2(&key.note_key(), CHAIN_ID, &leaf, &built.reveal.remainder_note).err(),
+        decrypt_note(&key.note_key(), CHAIN_ID, &leaf, &built.reveal.remainder_note).err(),
         Some(NoteError::Unauthentic)
     );
 
