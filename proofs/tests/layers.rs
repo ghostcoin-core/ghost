@@ -369,20 +369,21 @@ fn a_batch_claiming_other_children_than_it_verified_fails() {
     assert!(layers::verify_batch(&key, &BINDING, 0, &start, &changed_contents, &forged).is_err());
 }
 
-/// A batch of one real version 2 coin reveal verifies, and a changed reveal
-/// fails verification. A real reveal made on testnet2, batched under a
-/// testnet1 binding, is refused: by the honest prover, and, proven anyway,
-/// by the verifier under the testnet1 tag.
+/// A batch of one real version 2 coin reveal verifies, and a changed reveal,
+/// or the same reveal named on testnet2 under either chain's binding, fails
+/// verification. A real reveal made on testnet2, batched under a testnet1
+/// binding, is refused by the honest prover.
 ///
-/// The testnet1 reveal is proven afresh on every run. The testnet2 reveal is
-/// the same reveal proven once on testnet2 and kept in
-/// `tests/fixtures/foreign_chain_reveal_testnet2.txt`; it is verified here
-/// before use (and on its own by
-/// `foreign_chain_reveal_fixture_verifies_and_rejects_wrong_binding`), so
-/// this test proves one reveal instead of two. The batch key, which does not
-/// depend on the reveal, is built on a second thread while the reveal is
-/// proven; the two batch proofs run one after the other, as each takes most
-/// of a test sandbox's memory.
+/// The testnet1 reveal is proven afresh on every run, and its batch is the
+/// one batch this test proves: every rejection below is checked against
+/// that one proof. The testnet2 reveal is the same reveal proven once on
+/// testnet2 and kept in `tests/fixtures/foreign_chain_reveal_testnet2.txt`;
+/// it is verified here before use. That a batch of it proven regardless
+/// under the testnet1 tag is refused is checked by
+/// `foreign_chain_reveal_fixture_verifies_and_rejects_wrong_binding`, which
+/// proves that batch, so this test proves one reveal and one batch. The
+/// batch key, which does not depend on the reveal, is built on a second
+/// thread while the reveal is proven.
 #[test]
 fn a_bundle_of_one_real_reveal_verifies() {
     use ghost_proofs::*;
@@ -420,7 +421,12 @@ fn a_bundle_of_one_real_reveal_verifies() {
     assert!(layers::verify_batch(&key, &binding, 0, &start, &[changed], &batch).is_err());
     let other_chain = reveal_fixture::testnet2();
     let elsewhere = layers::RevealChild::public_values(&other_chain, &tx);
-    assert!(layers::verify_batch(&key, &binding, 0, &start, &[elsewhere], &batch).is_err());
+    assert_ne!(elsewhere, publics);
+    assert!(layers::verify_batch(&key, &binding, 0, &start, &[elsewhere.clone()], &batch).is_err());
+    let binding2 = layers::Binding::of(&other_chain);
+    assert_eq!(binding2.chain_id, *b"testnet2");
+    assert!(layers::verify_batch(&key, &binding2, 0, &start, &[elsewhere], &batch).is_err());
+    assert!(layers::verify_batch(&key, &binding2, 0, &start, &[publics.clone()], &batch).is_err());
 
     // A real reveal proven on testnet2, with its own public values, batched
     // under the testnet1 binding: the same reveal as above, its testnet2
@@ -439,12 +445,7 @@ fn a_bundle_of_one_real_reveal_verifies() {
         "the honest prover refuses a testnet2 reveal under a testnet1 binding"
     );
     progress(&format!("bundle of one reveal: testnet2 reveal refused after {:?}", t.elapsed()));
-    let tag = key.tag(&binding, 0);
-    let forged = layers::prove_batch_unchecked(&key, &child, &tag, &start, &foreign, [13; 32]).unwrap();
-    progress(&format!("bundle of one reveal: testnet2 reveal proven anyway after {:?}", t.elapsed()));
-    assert!(layers::verify_batch(&key, &binding, 0, &start, &[publics2.clone()], &forged).is_err());
-    let binding2 = layers::Binding::of(&other_chain);
-    assert!(layers::verify_batch(&key, &binding2, 0, &start, &[publics2], &forged).is_err());
+    assert!(layers::verify_batch(&key, &binding, 0, &start, &[publics2], &batch).is_err());
 }
 
 /// The kept testnet2 reveal is what its file says: a version 2 coin reveal
@@ -452,7 +453,9 @@ fn a_bundle_of_one_real_reveal_verifies() {
 /// nowhere else. Its proof is refused on testnet1, under another protocol
 /// version or genesis domain, at another shape, for a changed transaction
 /// field, and with a changed or cut proof; a changed file is refused by the
-/// reader.
+/// reader. Batched under the testnet1 binding, the reveal is refused by the
+/// honest prover, and a batch of it proven regardless under the testnet1
+/// tag is refused by the verifier under either chain's binding.
 ///
 /// Set `GHOST_REGENERATE_REVEAL_FIXTURE=1` to prove the reveal on testnet2
 /// again and rewrite the file before the checks, after a change to the
@@ -460,6 +463,7 @@ fn a_bundle_of_one_real_reveal_verifies() {
 #[test]
 fn foreign_chain_reveal_fixture_verifies_and_rejects_wrong_binding() {
     use ghost_proofs::*;
+    let _guard = one_at_a_time();
     let shape = reveal_fixture::shape();
     let testnet2 = reveal_fixture::testnet2();
     if std::env::var_os(reveal_fixture::REGENERATE).is_some() {
@@ -548,6 +552,30 @@ fn foreign_chain_reveal_fixture_verifies_and_rejects_wrong_binding() {
     assert!(reveal_fixture::decode(&format!("{text}{fee_line}\n")).is_err());
     assert!(reveal_fixture::decode(&format!("{text}stray 00\n")).is_err());
     assert!(reveal_fixture::decode(&format!("{text}proof 0\n")).is_err());
+
+    // The reveal in a batch under the testnet1 binding, with the public
+    // values it was proven under: the honest prover refuses it, and a batch
+    // proven regardless under the testnet1 tag verifies under neither
+    // chain's binding.
+    let t = std::time::Instant::now();
+    let child = layers::RevealChild::new(TEST.num_queries);
+    let key = layers::batch_key(&child, TEST, child.log_height(), 1, LEAN).unwrap();
+    let binding1 = layers::Binding::of(&testnet1);
+    let binding2 = layers::Binding::of(&testnet2);
+    assert_eq!(binding1.chain_id, *b"testnet1");
+    let start = layers::START_DIGEST;
+    let publics = layers::RevealChild::public_values(&testnet2, &tx);
+    let foreign = vec![(proof.as_bytes().to_vec(), publics.clone())];
+    assert_eq!(
+        layers::prove_batch(&key, &child, &binding1, 0, &start, &foreign, [13; 32]),
+        Err(ProofError::Rejected),
+        "the honest prover refuses a testnet2 reveal under a testnet1 binding"
+    );
+    let tag = key.tag(&binding1, 0);
+    let forged = layers::prove_batch_unchecked(&key, &child, &tag, &start, &foreign, [13; 32]).unwrap();
+    progress(&format!("fixture reveal: forged testnet1 batch made after {:?}", t.elapsed()));
+    assert!(layers::verify_batch(&key, &binding1, 0, &start, &[publics.clone()], &forged).is_err());
+    assert!(layers::verify_batch(&key, &binding2, 0, &start, &[publics], &forged).is_err());
 }
 
 mod reveal_fixture {
