@@ -64,6 +64,17 @@
 //! the total work and `delta`; [`HeaderSampler::request`] draws the points
 //! from the caller's generator; [`HeaderSampler::check_samples`] checks the
 //! server's answers. The library has no network code and no clock.
+//!
+//! [`HeaderSampler::prove_sampled`] and [`HeaderSampler::prove_every_header`]
+//! make the same checks and keep the tail as a [`ProvenChain`]: a keep-up
+//! check reads its snapshot header from it, and [`ProvenChain::compare`]
+//! tracks the checked chain from one proof to the next. Two proofs are
+//! compared only on the headers each links to its tip (the tail and the
+//! header before it): the highest height where both hold the same hash is
+//! their common ancestor, and the work above it on each side is linked,
+//! checked work, so the heavier branch is chosen without the unauthenticated
+//! work below the tails. Proofs that link no common header decide nothing
+//! ([`ChainChange::Unknown`]).
 
 use core::fmt;
 use std::collections::HashMap;
@@ -394,6 +405,13 @@ pub struct CheckedTail {
     tip_hash: [u8; 32],
     tip_height: u64,
     headers: Vec<Vec<u8>>,
+    /// The hash of each tail header, oldest first.
+    hashes: Vec<[u8; 32]>,
+    /// The work of each tail header, oldest first.
+    works: Vec<u128>,
+    /// The hash of the header before the tail, which the tail's first names
+    /// as its parent; none for a tail that starts at genesis.
+    parent_hash: Option<[u8; 32]>,
 }
 
 impl CheckedTail {
@@ -473,6 +491,189 @@ pub struct CheckedChain {
     /// The headers before the tail that were checked: the samples, or every
     /// one of them.
     pub checked_before_tail: u64,
+}
+
+/// A header proof checked to its tip, by samples or in full, with its linked
+/// tail kept: the headers a keep-up check reads its snapshot header from
+/// ([`crate::restore::check_keep_up`]), and the hashes and work that track
+/// the checked chain across a reorganisation ([`ProvenChain::compare`]).
+///
+/// Only [`HeaderSampler::prove_sampled`] and
+/// [`HeaderSampler::prove_every_header`] make one, so every header it holds
+/// passed the check of the tail: its path, its difficulty, its key block,
+/// its seal, and its link by parent hash to the header before it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProvenChain {
+    tail: CheckedTail,
+    chain: CheckedChain,
+}
+
+/// How a later header proof stands to an earlier one, read from the headers
+/// the two proofs link to their tips (the tail, and the header before it).
+/// The hash of a header commits to all its ancestors, so the highest height
+/// at which both proofs hold the same hash is their common ancestor, and the
+/// work above it on each side is the work of linked, checked headers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChainChange {
+    /// Both proofs end at the same tip.
+    Same,
+    /// The later proof's chain runs through the earlier tip: nothing the
+    /// earlier proof showed was disconnected.
+    Extended {
+        /// The earlier tip's height.
+        from_height: u64,
+    },
+    /// The later proof ends at a header the earlier one links below its own
+    /// tip: it is behind, on the same branch, and changes nothing.
+    Behind {
+        /// The later tip's height.
+        tip_height: u64,
+    },
+    /// The later proof is on another branch with more work above the common
+    /// ancestor: the earlier tip and the headers above the ancestor are
+    /// disconnected.
+    Reorganised(Reorganisation),
+    /// The later proof is on another branch without more work above the
+    /// common ancestor: the earlier chain stays the best (the first seen wins
+    /// a tie, spec 06, section 4.5).
+    Lighter(Reorganisation),
+    /// The two proofs link no common header: the fork is below both linked
+    /// tails, or the later tail starts above the earlier tip. Nothing is
+    /// decided from them; the wallet restores again.
+    Unknown,
+}
+
+/// The two branches above a common ancestor of two header proofs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reorganisation {
+    /// The height of the last header both branches share.
+    pub ancestor_height: u64,
+    /// Its hash.
+    pub ancestor_hash: [u8; 32],
+    /// The earlier branch's headers above the ancestor, oldest first.
+    pub disconnected: Vec<[u8; 32]>,
+    /// The later branch's headers above the ancestor, oldest first.
+    pub connected: Vec<[u8; 32]>,
+    /// The work of the earlier branch above the ancestor.
+    pub disconnected_work: u128,
+    /// The work of the later branch above the ancestor.
+    pub connected_work: u128,
+}
+
+impl ProvenChain {
+    fn new(tail: CheckedTail, chain: CheckedChain) -> Self {
+        Self { tail, chain }
+    }
+
+    /// The chain as the check returned it.
+    pub fn chain(&self) -> CheckedChain {
+        self.chain
+    }
+
+    /// The checked tail.
+    pub fn tail(&self) -> &CheckedTail {
+        &self.tail
+    }
+
+    pub fn tip_hash(&self) -> [u8; 32] {
+        self.tail.tip_hash
+    }
+
+    pub fn tip_height(&self) -> u64 {
+        self.tail.tip_height
+    }
+
+    /// The height of the tail's first header.
+    pub fn first_height(&self) -> u64 {
+        self.tail.leaf_count - self.tail.headers.len() as u64
+    }
+
+    /// The lowest height whose hash the proof links to its tip: the header
+    /// before the tail when it was sent, else the tail's first (genesis).
+    pub fn linked_from(&self) -> u64 {
+        self.first_height() - u64::from(self.tail.parent_hash.is_some())
+    }
+
+    /// The tail header at `height`, if the tail holds it.
+    pub fn header_at(&self, height: u64) -> Option<&[u8]> {
+        let index = usize::try_from(height.checked_sub(self.first_height())?).ok()?;
+        self.tail.headers.get(index).map(Vec::as_slice)
+    }
+
+    /// The hash the proof links at `height`: a tail header's, or the header
+    /// before the tail's.
+    pub fn hash_at(&self, height: u64) -> Option<[u8; 32]> {
+        let first = self.first_height();
+        if height < first {
+            return self.tail.parent_hash.filter(|_| height + 1 == first);
+        }
+        self.tail.hashes.get(usize::try_from(height - first).ok()?).copied()
+    }
+
+    /// The work of the tail header at `height`.
+    pub fn work_at(&self, height: u64) -> Option<u128> {
+        let index = usize::try_from(height.checked_sub(self.first_height())?).ok()?;
+        self.tail.works.get(index).copied()
+    }
+
+    /// The work of the linked headers above `height` up to the tip, for a
+    /// height from [`linked_from`](Self::linked_from) to the tip.
+    pub fn work_above(&self, height: u64) -> Option<u128> {
+        if height < self.linked_from() || height > self.tip_height() {
+            return None;
+        }
+        let skip = usize::try_from((height + 1).saturating_sub(self.first_height())).ok()?;
+        self.tail.works.iter().skip(skip).try_fold(0u128, |sum, work| sum.checked_add(*work))
+    }
+
+    /// The height of `hash` among the headers the proof links, if any.
+    pub fn height_of(&self, hash: &[u8; 32]) -> Option<u64> {
+        (self.linked_from()..=self.tip_height()).find(|&height| self.hash_at(height).as_ref() == Some(hash))
+    }
+
+    /// The hashes the proof links from `from` to `to`, both included.
+    fn hashes(&self, from: u64, to: u64) -> Vec<[u8; 32]> {
+        (from..=to).filter_map(|height| self.hash_at(height)).collect()
+    }
+
+    /// How `later`, a proof checked after this one, stands to it; see
+    /// [`ChainChange`].
+    pub fn compare(&self, later: &ProvenChain) -> ChainChange {
+        if later.tip_hash() == self.tip_hash() {
+            return ChainChange::Same;
+        }
+        let low = self.linked_from().max(later.linked_from());
+        let high = self.tip_height().min(later.tip_height());
+        let ancestor = (low..=high)
+            .rev()
+            .find(|&height| self.hash_at(height).is_some() && self.hash_at(height) == later.hash_at(height));
+        let Some(ancestor) = ancestor else {
+            return ChainChange::Unknown;
+        };
+        if ancestor == self.tip_height() {
+            return ChainChange::Extended { from_height: ancestor };
+        }
+        if ancestor == later.tip_height() {
+            return ChainChange::Behind { tip_height: ancestor };
+        }
+        let (Some(disconnected_work), Some(connected_work)) = (self.work_above(ancestor), later.work_above(ancestor))
+        else {
+            return ChainChange::Unknown;
+        };
+        let branches = Reorganisation {
+            ancestor_height: ancestor,
+            ancestor_hash: self.hash_at(ancestor).expect("found above"),
+            disconnected: self.hashes(ancestor + 1, self.tip_height()),
+            connected: later.hashes(ancestor + 1, later.tip_height()),
+            disconnected_work,
+            connected_work,
+        };
+        if connected_work > disconnected_work {
+            ChainChange::Reorganised(branches)
+        } else {
+            ChainChange::Lighter(branches)
+        }
+    }
 }
 
 /// Why one header of the proof is refused.
@@ -751,6 +952,7 @@ impl HeaderSampler {
             None => SampleError::TailParent { fault: Fault::Seal(e) },
         })?;
         let tip = seen.last().expect("the tail is not empty");
+        let linked = &seen[offset..];
         Ok(CheckedTail {
             root: *root,
             leaf_count,
@@ -759,6 +961,9 @@ impl HeaderSampler {
             tip_hash: tip.fields.hash,
             tip_height: tip.fields.number,
             headers: headers[offset..].iter().map(|header| header.to_vec()).collect(),
+            hashes: linked.iter().map(|header| header.fields.hash).collect(),
+            works: linked.iter().map(|header| header.work).collect(),
+            parent_hash: (offset == 1).then(|| seen[0].fields.hash),
         })
     }
 
@@ -822,6 +1027,30 @@ impl HeaderSampler {
             claimed_prefix_work: tail.tail_start_work,
             checked_before_tail: samples.len() as u64,
         })
+    }
+
+    /// [`check_samples`](Self::check_samples), keeping the tail: the proof a
+    /// keep-up check and the reorganisation tracking read. It credits what
+    /// `check_samples` credits and nothing more.
+    pub fn prove_sampled(
+        &mut self,
+        tail: CheckedTail,
+        points: &[u128],
+        samples: &[ProvenSample],
+    ) -> Result<ProvenChain, SampleError> {
+        let chain = self.check_samples(&tail, points, samples)?;
+        Ok(ProvenChain::new(tail, chain))
+    }
+
+    /// [`check_every_header`](Self::check_every_header), keeping the tail.
+    pub fn prove_every_header(
+        &mut self,
+        tail: CheckedTail,
+        below_tail: &[Vec<u8>],
+        now: u64,
+    ) -> Result<ProvenChain, SampleError> {
+        let chain = self.check_every_header(&tail, below_tail, now)?;
+        Ok(ProvenChain::new(tail, chain))
     }
 
     /// The full check, kept as an option: every header from genesis below the

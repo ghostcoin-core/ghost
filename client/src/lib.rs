@@ -45,7 +45,11 @@
 //!   rule's capsule), proved by the proofs crate (section 8; spec 02,
 //!   section 4).
 //! - [`restore`]: finding the key's current coin from the digits and the
-//!   chain's leaves, notes and spent markers (section 8).
+//!   chain's leaves, notes and spent markers (section 8); the keep-up check
+//!   that re-derives a found coin's spent status from a later header proof
+//!   without a restore; and the coin lookup index, coin marker-set tree and
+//!   coin tree rebuilt along the checked chain across reorganisations, so a
+//!   spend only on a disconnected block shows unspent again.
 //! - [`restore_requests`]: the requests of a restore by private lookup, the
 //!   same 31 queries in the same order for every key (22 padded probes of
 //!   the lookup hints, then the fetches for the highest number found),
@@ -69,6 +73,9 @@
 //!   the sample count from an attacker ratio and an assurance target, and a
 //!   full check of every header as an option. A sampled check credits only
 //!   the linked tail's work; the work below it is returned unauthenticated.
+//!   A checked proof keeps its linked tail, so a later proof is compared
+//!   with it: extended, behind, or on another branch with the common
+//!   ancestor and the linked work above it on each side.
 //!
 //! # Secrets
 //!
@@ -138,9 +145,9 @@ pub use header_chain::{
     required_difficulty, Added, ChainError, ChainParams, HeaderChain, PinnedStart, StartError, U256,
 };
 pub use header_sample::{
-    bits_per_sample, draw_point, mmr_root, sample_count, verify_mmr_path, CheckedChain, CheckedTail, Fault,
-    HeaderCheck, HeaderSampler, LeafPosition, MmrNode, MmrPath, PathError, ProvenHeader, ProvenSample, Request,
-    SampleError, SampleSettings, MMR_NODE_BYTES, TAIL_HEADERS,
+    bits_per_sample, draw_point, mmr_root, sample_count, verify_mmr_path, ChainChange, CheckedChain, CheckedTail,
+    Fault, HeaderCheck, HeaderSampler, LeafPosition, MmrNode, MmrPath, PathError, ProvenChain, ProvenHeader,
+    ProvenSample, Reorganisation, Request, SampleError, SampleSettings, MMR_NODE_BYTES, TAIL_HEADERS,
 };
 pub use key::{check_groups, FormattedKey, KeyError, KeyFormat, PhantomKey};
 pub use lookup::{
@@ -157,8 +164,10 @@ pub use receipts::{
     AppendedLeaf, CheckedBlock, CoinRecord, ReceiptError, REVEAL_V2_LOG_BYTES,
 };
 pub use restore::{
-    restore_coins, restore_coins_at, Current, DiscardReason, DiscardedNote, FoundCoin, RestoreError, Restored, TreeLeaf,
-    MAX_TREE_LEAVES,
+    check_keep_up, keep_up_holds, restore_coins, restore_coins_at, CanonicalBlock, CanonicalError, CanonicalTrees,
+    Current, DiscardReason, DiscardedNote, Followed, FoundCoin, HeaderRoots, KeepUp, KeepUpAnswer, KeepUpError,
+    KeepUpStatus, MarkerStatus, ReadHeaderRoots, RestoreError, Restored, SpentAt, TreeLeaf, TreeRoot, MAX_TREE_LEAVES,
+    REORG_WINDOW,
 };
 pub use reveal::{
     claim_to_new_key, full_reveal, partial_reveal, prove_reveal, reveal_params, BuiltReveal, OwnedCoin,
