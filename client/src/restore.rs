@@ -45,12 +45,18 @@
 //! every block after it up to the tip, each matched to its header's
 //! `lookupDigest`. A wrong or missing item is refused, never guessed.
 //!
+//! A result holds only at the tip it was checked to ([`keep_up_holds`]):
+//! any later tip, even one that extends it, may carry the coin's spend in a
+//! block the check never read, so the wallet checks again against the later
+//! proof before it reports the coin spendable.
+//!
 //! # Reorganisations
 //!
 //! [`CanonicalTrees`] follows the checked chain from one header proof to the
 //! next and keeps the coin lookup index, the coin marker-set tree and the
 //! coin tree rebuilt along it, every root compared with its header's. When a
-//! later proof is on a heavier branch ([`ChainChange::Reorganised`]), the
+//! later proof is on a heavier branch
+//! ([`crate::header_sample::ChainChange::Reorganised`]), the
 //! blocks above the common ancestor are disconnected, the trees are rebuilt
 //! from the last state below them and the new branch's blocks are connected
 //! (spec 05, section 7). A spend only on a disconnected block is then absent
@@ -76,7 +82,7 @@ use ghost_proofs::{empty_leaf, tree_node, Tree};
 
 use crate::commit::{Amount, Commitment, Marker, Rule, Salt, COIN_V2};
 use crate::derive::NoteKey;
-use crate::header_sample::{ChainChange, ProvenChain, TAIL_HEADERS};
+use crate::header_sample::{ProvenChain, TAIL_HEADERS};
 use crate::key::PhantomKey;
 use crate::lookup::{
     verify_marker_absence, verify_marker_membership, BlockLookupList, CoinMarkerSet, CoinMarkerWitness, InsertError,
@@ -1131,16 +1137,20 @@ impl CanonicalTrees {
     }
 }
 
-/// Whether a [`KeepUp`] checked against `checked` still holds on `later`, a
-/// proof checked after it: only when `later` keeps every block the check
-/// read ([`ChainChange::Same`], [`ChainChange::Extended`], or
-/// [`ChainChange::Behind`] on the same branch). A reorganisation, a lighter
-/// branch or proofs that link no common header call for a new check.
-pub fn keep_up_holds(checked: &ProvenChain, later: &ProvenChain) -> bool {
-    matches!(
-        checked.compare(later),
-        ChainChange::Same | ChainChange::Extended { .. } | ChainChange::Behind { .. }
-    )
+/// Whether `checked`, a keep-up result, is the coin's current status at the
+/// tip of `later`, a proof checked after it: only when `later` ends at the
+/// very tip the status was checked to
+/// ([`crate::header_sample::ChainChange::Same`]).
+///
+/// Chain ancestry alone never carries a status forward. A chain that
+/// extends the checked tip ([`crate::header_sample::ChainChange::Extended`])
+/// can spend the coin in
+/// a block the check never read, so an unspent result there is stale; a
+/// proof behind it, a reorganisation, a lighter branch or proofs that link
+/// no common header are no better. In every such case the wallet calls
+/// [`check_keep_up`] against `later` before it reports the coin spendable.
+pub fn keep_up_holds(checked: &KeepUp, later: &ProvenChain) -> bool {
+    later.tip_hash() == checked.tip_hash && later.tip_height() == checked.tip_height
 }
 
 #[cfg(test)]

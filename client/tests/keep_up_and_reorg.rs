@@ -811,15 +811,46 @@ fn chain_change_tracks_the_checked_chain_across_a_reorganisation() {
     assert_eq!(w.b_long_proof.linked_from(), 6);
     assert_eq!(w.prefix_proof.compare(&w.b_long_proof), ChainChange::Unknown);
     assert_eq!(w.b_proof.compare(&w.b_long_proof), ChainChange::Extended { from_height: 8 });
+}
 
-    // A status checked on A holds on a later proof through A's tip, and on
-    // no other branch.
-    assert!(keep_up_holds(&w.prefix_proof, &w.a_proof));
-    assert!(keep_up_holds(&w.a_proof, &w.prefix_proof));
-    assert!(keep_up_holds(&w.b_proof, &w.b_long_proof));
-    assert!(!keep_up_holds(&w.a_proof, &w.b_proof));
-    assert!(!keep_up_holds(&w.b_proof, &w.d_proof));
-    assert!(!keep_up_holds(&w.prefix_proof, &w.b_long_proof));
+#[test]
+fn a_keep_up_result_holds_only_at_the_tip_it_was_checked_to() {
+    let w = world();
+    let check = |proof: &ProvenChain, branch: &Branch, snapshot: u64| {
+        check_keep_up(&w.marker, proof, &branch.answer(snapshot, &w.marker), &read_roots).unwrap()
+    };
+
+    // Unspent at the prefix's tip.
+    let at_prefix = check(&w.prefix_proof, &w.prefix, FORK);
+    assert_eq!(at_prefix.status, KeepUpStatus::Unspent);
+    assert!(keep_up_holds(&at_prefix, &w.prefix_proof));
+
+    // A extends that tip and spends the coin in block 5. The unspent result
+    // does not carry over to A, though A runs through the prefix's tip.
+    assert_eq!(w.prefix_proof.compare(&w.a_proof), ChainChange::Extended { from_height: FORK });
+    assert!(!keep_up_holds(&at_prefix, &w.a_proof));
+    // Checked again against A, the coin is spent.
+    let on_a = check(&w.a_proof, &w.a, FORK);
+    assert_eq!(on_a.status, KeepUpStatus::Spent(SpentAt::LaterBlock { height: 5 }));
+    assert!(keep_up_holds(&on_a, &w.a_proof));
+
+    // No other tip keeps a result either: behind it, extending it, another
+    // branch or proofs that share nothing linked.
+    assert!(!keep_up_holds(&on_a, &w.prefix_proof));
+    assert!(!keep_up_holds(&on_a, &w.b_proof));
+    let on_b = check(&w.b_proof, &w.b, 8);
+    assert_eq!(on_b.status, KeepUpStatus::Unspent);
+    assert!(keep_up_holds(&on_b, &w.b_proof));
+    assert!(!keep_up_holds(&on_b, &w.b_long_proof));
+    assert!(!keep_up_holds(&on_b, &w.d_proof));
+    assert!(!keep_up_holds(&at_prefix, &w.b_long_proof));
+
+    // A result is bound to its tip, not to its height: B's tip at height 8
+    // does not hold for D's, at the same height.
+    assert_eq!(w.b_proof.tip_height(), w.d_proof.tip_height());
+    let forged = KeepUp { tip_hash: w.d_proof.tip_hash(), ..on_b };
+    assert!(keep_up_holds(&forged, &w.d_proof));
+    assert!(!keep_up_holds(&forged, &w.b_proof));
 }
 
 #[test]
