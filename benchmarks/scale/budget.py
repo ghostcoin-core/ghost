@@ -11,12 +11,15 @@ import math
 from fractions import Fraction
 
 INPUTS = {
-    # The target: 10 million private reveals and 10 million public
-    # transactions a day, about 3,500 of each per 30 s block.
-    "private_per_day": 10_000_000,
-    "public_per_day": 10_000_000,
-    "private_per_block": 3_500,
-    "public_per_block": 3_500,
+    # The target: 1 million transactions a day in total (the founder's decision
+    # of 2026-11-08; the old target was 10 million of each kind). The private
+    # path is sized for the worst case of all of them being private reveals, and
+    # the public path for the same total, so any mix fits. The two are
+    # alternatives for the same transactions, not a sum. About 350 per 30 s block.
+    "private_per_day": 1_000_000,
+    "public_per_day": 1_000_000,
+    "private_per_block": 350,
+    "public_per_block": 350,
     "block_seconds": 30,
     "seconds_per_day": 86_400,
     "days_per_year": 365,
@@ -32,7 +35,7 @@ INPUTS = {
     # Wallet restore: a 32-byte leaf (spec 05, section 8) and its 380-byte note
     # (spec 10, section 3.2).
     "leaf_and_note_bytes": 412,
-    "new_leaves_per_day": 10_000_000,
+    "new_leaves_per_day": 1_000_000,
     # One spent marker (spec 05, "Who keeps what").
     "marker_bytes": 32,
     "tree_leaves": 2 ** 32,
