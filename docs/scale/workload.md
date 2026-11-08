@@ -17,28 +17,30 @@ Hash constructions. The repository has two Keccak constructions, and neither is 
 
 ## Workload
 
-The target is fixed: 10 million private reveals and 10 million public transactions a day, at the same time (modeled: a model input, the founder's target). It is never weakened because a measurement is hard.
+The target is 1 million transactions a day in total (modeled: a model input, the founder's decision of 2026-11-08; Ethereum does about 2 million a day and Bitcoin about 500,000). It replaces the earlier target of 10 million of each kind, which the founder called an optimistic reach. Capacity can be raised later by a network upgrade (see Raising capacity later); the target is not weakened because a measurement is hard.
+
+The 1 million is a total, not a pair of streams. The private path is sized for the worst case of all of them being private reveals, and the public path for the same 1 million total, so any mix between the two fits. The two rows below are alternatives for the same transactions and are not added together.
 
 | Input | Value | Label |
 |---|---|---|
-| Private reveals a day | 10,000,000 | modeled: the founder's target, a model input |
-| Public transactions a day | 10,000,000 | modeled: the founder's target, a model input |
+| Private reveals a day | 1,000,000 | modeled: the founder's total, taken as the worst case where every transaction is a private reveal; a model input |
+| Public transactions a day | 1,000,000 | modeled: the founder's total, taken as the worst case where every transaction is public; a model input |
 | Block time | 30 s on average | modeled: the chain's target block time, an average and not a proving window |
 | Blocks a day | 2,880 | modeled: 86,400 / 30 |
-| Private reveals per block | about 3,500 | modeled: 10,000,000 / 2,880 = 3,472.2, taken as 3,500 |
-| Public transactions per block | about 3,500 | modeled: 10,000,000 / 2,880 = 3,472.2, taken as 3,500 |
+| Private reveals per block | about 350 | modeled: 1,000,000 / 2,880 = 347.2, taken as 350 |
+| Public transactions per block | about 350 | modeled: 1,000,000 / 2,880 = 347.2, taken as 350 |
 
-Both streams run in the same blocks. Every budget below takes a block with 3,500 private reveals and 3,500 public transactions together (modeled).
+Per block, the private reveals and the public transactions together never exceed about 350 (modeled). Every budget below takes the worst case of each stream alone, and the byte budget also adds the two, which is a bound no real mix reaches (modeled).
 
 ### Public mix
 
 The founder states the public mix. Nothing in the repository sets it yet, so each share is a proposal (not yet established), stated as a model input:
 
-| Kind | Proposed share | Per block at the modeled 3,500 | Label |
+| Kind | Proposed share | Per block at the modeled 350 | Label |
 |---|---|---|---|
-| Plain transfers between accounts | 70% | 2,450 | not yet established: proposal for the founder; per-block count modeled from the share |
-| Commits (Vanish), which add a commitment to the tree | 20% | 700 | not yet established: proposal for the founder; per-block count modeled from the share |
-| Contract calls | 10% | 350 | not yet established: proposal for the founder; per-block count modeled from the share |
+| Plain transfers between accounts | 70% | 245 | not yet established: proposal for the founder; per-block count modeled from the share |
+| Commits (Vanish), which add a commitment to the tree | 20% | 70 | not yet established: proposal for the founder; per-block count modeled from the share |
+| Contract calls | 10% | 35 | not yet established: proposal for the founder; per-block count modeled from the share |
 
 Every kind is signed by an account. The signature budget below takes every public transaction as ML-DSA-44, the smaller of the two schemes of spec 09, section 8 (modeled: the cheapest case; SLH-DSA-SHAKE-128s carries 7,890 bytes, modeled in spec 09). Contract call bodies and their gas are not yet established: they depend on which contracts launch, which the founder would state.
 
@@ -91,7 +93,7 @@ Each ceiling is a model input with a proposed value. A proposal nothing in the r
 
 | Resource | Proposed ceiling | Label and what would set it |
 |---|---|---|
-| Machines | 40 proving machines | not yet established: proposal; the merge budget below uses it as an input |
+| Machines | 40 proving machines | not yet established: proposal; the merge budget below uses it as an input. A rough first estimate is 9 to 18 machines of 32 cores for the whole network at 1 million a day, depending on the private share; the 40 is kept as headroom until the new aggregation shape is chosen (not yet established) |
 | CPU per machine | 32 cores | not yet established: proposal for the founder |
 | Memory per machine | 128 GiB | not yet established: proposal for the founder |
 | Bandwidth | 1 Gbit/s sustained | not yet established: proposal for the founder; at least the modeled private proof bytes per block divided by the block time |
@@ -104,7 +106,7 @@ Each ceiling is a model input with a proposed value. A proposal nothing in the r
 |---|---|---|
 | Maximum transaction-to-inclusion delay, private | 5 minutes (10 blocks) at the 99th percentile under the target load | not yet established: proposal for the founder; measured by the throughput simulation of a later piece |
 | Maximum transaction-to-inclusion delay, public | 2 minutes (4 blocks) at the 99th percentile | not yet established: proposal for the founder |
-| Sustainable backlog | one hour of target load (about 417,000 private and 417,000 public) held without loss | not yet established: proposal; the count is modeled as 10,000,000 / 24 |
+| Sustainable backlog | one hour of target load (about 41,700 private and 41,700 public, each the worst case alone) held without loss | not yet established: proposal; the count is modeled as 1,000,000 / 24 = 41,666.7 |
 | Recovery after overload | back to the normal delay within one hour after a burst of twice the target for one hour | not yet established: proposal for the founder |
 | Burst spare capacity | 50% above the target, sustained for an hour | not yet established: proposal for the founder |
 
@@ -112,13 +114,31 @@ Merge budget for one block (modeled, benchmarks/scale/budget.py, from the 0.3 s 
 
 | Figure | Value | Label |
 |---|---|---|
-| Two-to-one merges to fold 3,500 proofs into one | 3,499 | modeled: n - 1 |
-| Machine time | 1,049.7 machine-seconds | modeled: 3,499 x 0.3 s |
-| Least wall time on 40 machines, all proofs at once | 26.2425 s | modeled: 1,049.7 / 40, a lower bound no schedule beats |
-| Depth of a balanced merge tree | 12 levels, 3.6 s | modeled: ceil(log2 3,500) x 0.3 s |
-| Wall time merging level by level on 40 machines | 28.2 s | modeled: 94 rounds of 0.3 s |
+| Two-to-one merges to fold 350 proofs into one | 349 | modeled: n - 1 |
+| Machine time | 104.7 machine-seconds | modeled: 349 x 0.3 s |
+| Least wall time on 40 machines, all proofs at once | 2.6175 s | modeled: 104.7 / 40, a lower bound no schedule beats |
+| Depth of a balanced merge tree | 9 levels, 2.7 s | modeled: ceil(log2 350) x 0.3 s |
+| Wall time merging level by level on 40 machines | 4.8 s | modeled: 16 rounds of 0.3 s |
 
-A 30 s block time is an average, not a proving window. Sustained throughput and transaction-to-inclusion delay are measured separately, with bursts, failures and backlog, in a later piece (rule 4 of designs.md); the 28.2 s above is modeled and leaves less than 2 s of a 30 s block for everything else (modeled).
+A 30 s block time is an average, not a proving window. Sustained throughput and transaction-to-inclusion delay are measured separately, with bursts, failures and backlog, in a later piece (rule 4 of designs.md); the 4.8 s above is modeled and leaves most of a 30 s block for everything else (modeled).
+
+### Ceilings judged again at 1 million a day
+
+Against the figures on this page (modeled, each from benchmarks/scale/budget.py):
+
+| Ceiling | At 1 million a day | Label |
+|---|---|---|
+| Block gas limit of 30,000,000 | not met under today's rule: 350 reveals cost 7,381,630,200 gas, 246.05434 times the limit; only 1 reveal fits | modeled; gas for aggregated proofs is for the aggregation design to set |
+| Message cap of 10,485,760 bytes | met: public signatures plus private non-proof bytes come to 1,428,350 bytes, under the cap by 9,057,410 | modeled: a bound that adds both worst cases |
+| Merge time on 40 machines | met: 4.8 s level by level, against a 30 s block | modeled from the unestablished 0.3 s merge |
+| Tree capacity | met: one tree of 2^32 leaves lasts 4,294.967296 days, about 11.8 years | modeled |
+| Restore volume | 150,380,000,000 bytes (about 150 GB) a year of leaves and notes; the restore, phone and storage ceilings stay as proposed | modeled; judged against the phone ceilings by the restore pieces |
+
+The proof bytes per block (458,752,000, about 459 MB) are still far over the message cap, so private proofs must still be aggregated before they reach a block; this is unchanged by the lower target (modeled).
+
+## Raising capacity later
+
+The 1 million target is not a limit of the design. A later network upgrade that adds a larger aggregation bundle shape raises capacity without removing the old one: the new shape carries its own verifier key under a new statement or protocol version, and both shapes are accepted during the change, so bundles built for the old shape stay valid until the founder retires it. The constants that change are the reveals per bundle and bundles per root of the shape, the per-block counts above, and the verifier keys pinned for the bundle and root proofs; the reveal statement itself does not change. The shape for 1 million a day, with each layer's prover memory, machine count, cost and delay, and the same figures at 10,000 and 100,000 a day, are not yet established here: they are the next slice of this work, and the production keys wait on that shape.
 
 ## Storage and sync
 
@@ -126,21 +146,21 @@ Modeled from benchmarks/scale/budget.py at the target, with today's encodings:
 
 | Figure | Value | Label |
 |---|---|---|
-| Private proof bytes per block | 4,587,520,000 (about 4.59 GB) | modeled: 3,500 x 1,310,720 |
-| Private proof bytes per day | 13,107,200,000,000 (about 13.1 TB) | modeled: 10,000,000 x 1,310,720 |
-| Private envelopes per day, today's encoding | 13,110,670,000,000 | modeled: 10,000,000 x 1,311,067 |
-| Private non-proof bytes per block | 1,214,500 | modeled: 3,500 x 347 |
-| Public scheme, key and signature bytes per block | 13,069,000 | modeled: 3,500 x 3,734 |
-| Both together, before bodies, aggregate proofs or headers | 14,283,500 | modeled: 13,069,000 + 1,214,500 |
-| Over the 10,485,760-byte message cap by | 3,797,740 | modeled |
-| Gas per block under today's rule | 73,816,302,000 | modeled: 3,500 x 21,090,372 |
-| Multiple of the 30,000,000 gas limit | 2,460.5434 | modeled |
-| Leaves and notes a wallet downloads per day | 4,120,000,000 (4.12 GB) | modeled: 10,000,000 x 412 |
-| Per year | 1,503,800,000,000 (1,504 GB) | modeled: x 365, before receipts, markers and public commits |
-| Spent markers kept per year | 116,800,000,000 (116.8 GB) | modeled: 10,000,000 x 32 bytes x 365, kept forever (spec 05, "Who keeps what") |
-| Days until a coin tree fills at 10,000,000 new leaves a day | 429.5 | modeled: 2^32 / 10,000,000 |
+| Private proof bytes per block | 458,752,000 (about 459 MB) | modeled: 350 x 1,310,720 |
+| Private proof bytes per day | 1,310,720,000,000 (about 1.31 TB) | modeled: 1,000,000 x 1,310,720 |
+| Private envelopes per day, today's encoding | 1,311,067,000,000 | modeled: 1,000,000 x 1,311,067 |
+| Private non-proof bytes per block | 121,450 | modeled: 350 x 347 |
+| Public scheme, key and signature bytes per block | 1,306,900 | modeled: 350 x 3,734 |
+| Both together, before bodies, aggregate proofs or headers | 1,428,350 | modeled: 1,306,900 + 121,450 |
+| Under the 10,485,760-byte message cap by | 9,057,410 | modeled |
+| Gas per block under today's rule | 7,381,630,200 | modeled: 350 x 21,090,372 |
+| Multiple of the 30,000,000 gas limit | 246.05434 | modeled |
+| Leaves and notes a wallet downloads per day | 412,000,000 (412 MB) | modeled: 1,000,000 x 412 |
+| Per year | 150,380,000,000 (150.4 GB) | modeled: x 365, before receipts, markers and public commits |
+| Spent markers kept per year | 11,680,000,000 (11.7 GB) | modeled: 1,000,000 x 32 bytes x 365, kept forever (spec 05, "Who keeps what") |
+| Days until a coin tree fills at 1,000,000 new leaves a day | 4,294.967296 | modeled: 2^32 / 1,000,000 |
 
-Raising the gas limit alone cannot reach the target: the public signatures alone are over the message cap (modeled above).
+Raising the gas limit alone still cannot carry the private proofs: they are about 459 MB a block against the message cap (modeled above), so the private path needs aggregation. The public signatures now fit under the cap.
 
 | Input | Proposed value | Label and what would set it |
 |---|---|---|
@@ -154,6 +174,6 @@ Raising the gas limit alone cannot reach the target: the public signatures alone
 |---|---|---|
 | Aggregation cost per private reveal | at most 0.1 US cents | not yet established: proposal for the founder; set by the machine-seconds per reveal from a recursion benchmark times a named cloud price |
 | Node cost per transaction | at most 0.01 US cents | not yet established: proposal; the ordinary full node's monthly cost divided by its monthly transactions |
-| Machine-seconds per private reveal for merging | 0.29991 s | modeled: 1,049.7 / 3,500, from the unestablished 0.3 s merge |
+| Machine-seconds per private reveal for merging | 0.299143 s | modeled: 104.7 / 350, from the unestablished 0.3 s merge |
 | Spare capacity priced in | 50% above the target | not yet established: the burst input of Latency and backlog |
 | Who pays the aggregator | no field today | not yet established: a requirement of the private bundle design in designs.md |
