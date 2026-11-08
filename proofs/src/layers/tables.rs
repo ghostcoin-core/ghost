@@ -36,7 +36,7 @@ use p3_matrix::dense::RowMajorMatrix;
 
 use super::circuit::{BITS, Circuit, SWAP};
 use super::poseidon2::{self, PERM_COLS, WIDTH};
-use super::{EF, F, coeffs};
+use super::{EF, F, coeffs, stream};
 use crate::ProofError;
 use crate::mldsa::tables::MlTable;
 use crate::scale::{ScaleConfig, layer_config, tagged_challenger};
@@ -627,28 +627,48 @@ pub(crate) fn degree_bits(airs: &[TableAir]) -> Vec<usize> {
     airs.iter().map(|a| a.height().trailing_zeros() as usize + 1).collect()
 }
 
-/// A circuit's verifier key and the prover's copy of its preprocessed data.
+/// A circuit's verifier key and the prover's copy of its preprocessed data:
+/// the preprocessed columns' coefficients ([`stream::Preprocessed`]), not
+/// their extension.
 pub(crate) struct CircuitKey {
     pub(crate) airs: Vec<TableAir>,
-    pub(crate) prover_data: ProverData<ScaleConfig>,
+    pub(crate) prepared: stream::Preprocessed,
 }
 
 impl CircuitKey {
     pub(crate) fn common(&self) -> &CommonData<ScaleConfig> {
-        &self.prover_data.common
+        &self.prepared.common
+    }
+
+    /// Keep only what verifies and what a parent circuit reads: the tables'
+    /// shapes, the lookups and the preprocessed commitment. Proving with the
+    /// key is refused after this.
+    pub(crate) fn release(&mut self) {
+        self.airs = self.airs.iter().map(|a| TableAir::shape(a.table, a.num_publics, a.lanes, a.height)).collect();
+        self.prepared.release();
     }
 }
 
 /// Commit to a circuit's preprocessed columns. The salts of that commitment
 /// come from a fixed seed, so anyone rebuilds the same key from the circuit.
 pub(crate) fn setup(airs: Vec<TableAir>, fri: &FriShape) -> Result<CircuitKey, ProofError> {
+    setup_within(airs, fri, stream::BLOCK_BYTES)
+}
+
+/// [`setup`] extending a block of at most `block_bytes` at a time.
+pub(crate) fn setup_within(airs: Vec<TableAir>, fri: &FriShape, block_bytes: usize) -> Result<CircuitKey, ProofError> {
     if airs.iter().any(|a| a.preprocessed.is_none()) {
         return Err(ProofError::Proving);
     }
+    let prepared = stream::setup(&airs, fri, block_bytes)?;
+    Ok(CircuitKey { airs, prepared })
+}
+
+/// The library's own key generation for these tables, which keeps the
+/// extension of the preprocessed columns: what [`setup`] must agree with.
+pub(crate) fn library_setup(airs: &[TableAir], fri: &FriShape) -> Result<ProverData<ScaleConfig>, ProofError> {
     let config = layer_config([0; 32], fri, tagged_challenger(&[]))?;
-    let prover_data =
-        ProverData::from_airs_and_degrees(&config, &airs, &degree_bits(&airs)).map_err(|_| ProofError::Proving)?;
-    Ok(CircuitKey { airs, prover_data })
+    ProverData::from_airs_and_degrees(&config, airs, &degree_bits(airs)).map_err(|_| ProofError::Proving)
 }
 
 /// The lookups the library derives for tables of these shapes: the same as
@@ -673,7 +693,9 @@ pub(crate) fn lookups_for(airs: &[TableAir], fri: &FriShape) -> Result<Vec<Looku
     Ok(data.common.lookups)
 }
 
-/// Prove a circuit's tables under a transcript seeded with `tag`.
+/// Prove a circuit's tables under a transcript seeded with `tag`, with the
+/// streamed prover ([`stream::prove`]): the library's proof, byte for byte,
+/// no table ever held over its extended domain whole.
 pub(crate) fn prove(
     key: &CircuitKey,
     circuit: &Circuit,
@@ -681,12 +703,39 @@ pub(crate) fn prove(
     tag: &[F],
     zk_seed: [u8; 32],
 ) -> Result<BatchProof<ScaleConfig>, ProofError> {
-    let config = layer_config(zk_seed, fri, tagged_challenger(tag))?;
+    prove_within(key, circuit, fri, tag, zk_seed, stream::BLOCK_BYTES)
+}
+
+/// [`prove`] extending a block of at most `block_bytes` at a time.
+pub(crate) fn prove_within(
+    key: &CircuitKey,
+    circuit: &Circuit,
+    fri: &FriShape,
+    tag: &[F],
+    zk_seed: [u8; 32],
+    block_bytes: usize,
+) -> Result<BatchProof<ScaleConfig>, ProofError> {
     let traces = table_traces(circuit, &key.airs);
     let publics = table_publics(circuit, &key.airs);
+    stream::prove(&key.airs, &key.prepared, traces, &publics, fri, tag, zk_seed, block_bytes)
+}
+
+/// The library's own prover (`prove_batch`) on these tables, with the
+/// library's key: what [`prove`] must agree with byte for byte.
+pub(crate) fn library_prove(
+    airs: &[TableAir],
+    prover_data: &ProverData<ScaleConfig>,
+    circuit: &Circuit,
+    fri: &FriShape,
+    tag: &[F],
+    zk_seed: [u8; 32],
+) -> Result<BatchProof<ScaleConfig>, ProofError> {
+    let config = layer_config(zk_seed, fri, tagged_challenger(tag))?;
+    let traces = table_traces(circuit, airs);
+    let publics = table_publics(circuit, airs);
     let trace_refs: Vec<&RowMajorMatrix<F>> = traces.iter().collect();
-    let instances = StarkInstance::new_multiple(&key.airs, &trace_refs, &publics);
-    prove_batch(&config, &instances, &key.prover_data).map_err(|_| ProofError::Proving)
+    let instances = StarkInstance::new_multiple(airs, &trace_refs, &publics);
+    prove_batch(&config, &instances, prover_data).map_err(|_| ProofError::Proving)
 }
 
 /// Verify a proof of a circuit's tables against its key, the public values

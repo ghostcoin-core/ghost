@@ -141,6 +141,16 @@ impl LayerKey {
         digest_u32(&self.child_key)
     }
 
+    /// Drop what only this layer's own prover uses: each table's
+    /// preprocessed columns and their coefficients. The key still verifies
+    /// proofs of its layer and still keys and proves the layer above it, which
+    /// reads only its tables' shapes, lookups and commitment, so a root is
+    /// proven without the batch prover's data beside it; it proves nothing
+    /// itself any more.
+    pub fn release_prover_data(&mut self) {
+        self.circuit.release();
+    }
+
     /// The height of each of the layer's five tables (wires, arithmetic,
     /// permutation, bits, packing).
     pub fn table_heights(&self) -> Vec<usize> {
@@ -436,12 +446,15 @@ pub(crate) fn finish(
     if c.failure().is_some() && !unchecked {
         return Err(ProofError::Rejected);
     }
-    let airs = tables::table_airs_within(c, &key.shape.fri(), key.max_log)?;
-    let same =airs.len() == key.circuit.airs.len()
-        && airs
-            .iter()
-            .zip(&key.circuit.airs)
-            .all(|(a, b)| a.height() == b.height() && a.lanes() == b.lanes());
+    // The circuit's own tables, dropped before proving: the key holds them.
+    let same = {
+        let airs = tables::table_airs_within(c, &key.shape.fri(), key.max_log)?;
+        airs.len() == key.circuit.airs.len()
+            && airs
+                .iter()
+                .zip(&key.circuit.airs)
+                .all(|(a, b)| a.height() == b.height() && a.lanes() == b.lanes())
+    };
     if !same {
         return Err(ProofError::Proving);
     }
@@ -676,12 +689,168 @@ pub(crate) fn smallest_proof_limit(
     best.ok_or(ProofError::Proving)
 }
 
-/// A model of the bytes a layer's prover holds at its peak: the circuit (a
-/// 32-byte value a wire, a 16-byte arithmetic row, a permutation row's 24
-/// inputs, outputs and values) and every committed matrix (main with its
-/// hiding columns, preprocessed, permutation trace, quotient chunks,
-/// randomization) over its extended domain, four bytes a cell, with a
-/// Merkle tree of two digests a row beside it.
+/// What a layer's streamed prover ([`super::stream`]) holds, in bytes, by
+/// part, modeled from its tables: the circuit, the key, the coefficients of
+/// every committed matrix, and the peak of each proving phase above them.
+/// The child key a root or shrink is proven with counts nothing: its prover
+/// data is released first ([`LayerKey::release_prover_data`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProverMemory {
+    /// The circuit: a 32-byte value a wire, a 16-byte arithmetic row, a
+    /// permutation row's 24 inputs, outputs and values, a bits row, a
+    /// packing row.
+    pub circuit: usize,
+    /// The key: each table's preprocessed columns over its rows, and their
+    /// coefficients over the zero-knowledge doubled domain.
+    pub key: usize,
+    /// The coefficients of the main, permutation, quotient and randomization
+    /// matrices over the doubled domain (hiding columns included), held from
+    /// their commitment to the last opening, and the one block of any
+    /// commitment small enough to keep it ([`super::stream::KEEP_BYTES`]).
+    pub committed: usize,
+    /// The main traces, the permutation traces and the largest table's
+    /// randomized copy while they are built, above the coefficients held then.
+    pub traces_phase: usize,
+    /// The largest table's quotient: its evaluations on one coset of the
+    /// trace's size, its values over the quotient domain and the masked
+    /// chunks, above the coefficients held then.
+    pub quotient_phase: usize,
+    /// The batched openings, one extension value a row of each height, and
+    /// the folding layers of the opening argument with their salts and
+    /// Merkle trees.
+    pub opening_phase: usize,
+    /// The largest block of extended rows evaluated at once, with its salts,
+    /// its Merkle subtree and one matrix's rows unsalted beside them: what a
+    /// commitment or an opening recomputes.
+    pub block: usize,
+    /// The peak: the circuit, the key, the largest block, and the largest
+    /// phase with what it holds.
+    pub peak: usize,
+}
+
+/// [`ProverMemory`] of a layer with these tables, lookups and constraints at
+/// `shape`, its circuit filling `entries` (wires, arithmetic rows,
+/// permutation rows, bits rows, packing rows). Nothing is ever held over an
+/// extended domain whole: each commitment, the batched openings and the
+/// query openings evaluate the extension one block at a time
+/// ([`super::stream::block_count`]).
+pub(crate) fn prover_memory(
+    airs: &[TableAir],
+    lookups: &[p3_lookup::Lookups<F>],
+    cons: &[TableConstraints],
+    shape: LayerShape,
+    entries: [usize; 5],
+) -> ProverMemory {
+    use super::stream;
+    const FE: usize = 4;
+    const EFB: usize = 32;
+    let r = crate::scale::SCALE_RANDOM_CODEWORDS;
+    let circuit =
+        entries[0] * 32 + entries[1] * 16 + entries[2] * (24 * 4 * 3 + 32) + entries[3] * 132 + entries[4] * 36;
+
+    struct T {
+        h: usize,
+        log_lde: usize,
+        w: usize,
+        pw: usize,
+        aux: usize,
+        chunks: usize,
+    }
+    let tabs: Vec<T> = airs
+        .iter()
+        .zip(lookups)
+        .zip(cons)
+        .map(|((air, l), c)| T {
+            h: air.height(),
+            log_lde: air.height().trailing_zeros() as usize + 1 + shape.log_blowup,
+            w: BaseAir::<F>::width(air),
+            pw: BaseAir::<F>::preprocessed_width(air),
+            aux: if l.is_empty() { 0 } else { (l.len() + 1) * 8 },
+            chunks: 1usize << (c.log_chunks + 1),
+        })
+        .collect();
+    // The matrices of each commitment: log extended height, width.
+    let prep: Vec<(usize, usize)> = tabs.iter().filter(|t| t.pw > 0).map(|t| (t.log_lde, t.pw)).collect();
+    let main: Vec<(usize, usize)> = tabs.iter().map(|t| (t.log_lde, t.w + r)).collect();
+    let aux: Vec<(usize, usize)> = tabs.iter().filter(|t| t.aux > 0).map(|t| (t.log_lde, t.aux + r)).collect();
+    let quotient: Vec<(usize, usize)> =
+        tabs.iter().flat_map(|t| (0..t.chunks).map(move |_| (t.log_lde, 8 + r))).collect();
+    let random: Vec<(usize, usize)> = tabs.iter().map(|t| (t.log_lde, r + 8)).collect();
+    // Coefficients over the doubled domain: 2^(log_lde - log_blowup) rows.
+    let coeffs = |mats: &[(usize, usize)]| -> usize {
+        mats.iter().map(|&(l, w)| (1usize << (l - shape.log_blowup)) * w * FE).sum()
+    };
+    // A commitment small enough to keep its one block keeps it to the end.
+    let held = |mats: &[(usize, usize)]| {
+        coeffs(mats) + if mats.is_empty() { 0 } else { stream::kept_bytes(mats, stream::BLOCK_BYTES) }
+    };
+    let key = tabs.iter().map(|t| t.h * t.pw * FE).sum::<usize>() + held(&prep);
+    let (c_main, c_aux, c_quot, c_rand) = (held(&main), held(&aux), held(&quotient), held(&random));
+    let committed = c_main + c_aux + c_quot + c_rand;
+
+    // The main traces until the permutation traces are built, and the
+    // largest table's transient copies then.
+    let traces = tabs.iter().map(|t| t.h * t.w * FE).sum::<usize>();
+    let build = tabs
+        .iter()
+        .map(|t| {
+            let m = 2 * t.h;
+            let main_copy = m * (t.w + r) * FE;
+            let aux_copy = t.h * t.aux * FE + m * (t.aux + r) * FE + t.h * t.pw * FE;
+            main_copy.max(aux_copy)
+        })
+        .max()
+        .unwrap_or(0);
+    let traces_phase = traces + c_main + c_aux + build;
+
+    // The quotient, one table at a time: evaluations on one coset of the
+    // trace's size, its values over the quotient domain (one extension value
+    // a point, split into chunks, masked with hiding columns), and the masks
+    // of the chunk being extended and of the last chunk.
+    let quotient_transient = tabs
+        .iter()
+        .map(|t| {
+            let q = t.chunks * t.h;
+            t.h * (t.w + t.pw + t.aux) * FE + q * (EFB + EFB + 2 * (8 + r) * FE) + 2 * t.h * (8 + r) * FE
+        })
+        .max()
+        .unwrap_or(0);
+    let quotient_phase = c_main + c_aux + c_quot + quotient_transient;
+
+    // The batched openings, one extension value a row for each height, then
+    // the folding layers: each row of two extension values, its salt and its
+    // two digests, halving round by round.
+    let mut heights: Vec<usize> = tabs.iter().map(|t| t.log_lde).collect();
+    heights.sort_unstable();
+    heights.dedup();
+    let reduced: usize = heights.iter().map(|&l| (1usize << l) * EFB).sum();
+    let log_max = heights.last().copied().unwrap_or(0);
+    let fold_row = 2 * EFB + crate::scale::SCALE_SALT_ELEMS * FE + 2 * 4 * DIGEST;
+    let layers: usize =
+        (1..=log_max.saturating_sub(shape.log_blowup)).map(|k| (1usize << (log_max - k)) * fold_row).sum();
+    let opening_phase = committed + reduced + layers;
+
+    let block = [&prep, &main, &aux, &quotient, &random]
+        .iter()
+        .filter(|mats| !mats.is_empty())
+        .map(|mats| stream::block_peak(mats, stream::block_count(mats, stream::BLOCK_BYTES)))
+        .max()
+        .unwrap_or(0);
+    let peak = circuit + key + block + traces_phase.max(quotient_phase).max(opening_phase);
+    ProverMemory {
+        circuit,
+        key,
+        committed,
+        traces_phase,
+        quotient_phase,
+        opening_phase,
+        block,
+        peak,
+    }
+}
+
+/// The peak of [`prover_memory`]: the bytes a layer's streamed prover holds
+/// at its peak, modeled.
 pub(crate) fn prover_bytes_model(
     airs: &[TableAir],
     lookups: &[p3_lookup::Lookups<F>],
@@ -689,29 +858,7 @@ pub(crate) fn prover_bytes_model(
     shape: LayerShape,
     entries: [usize; 5],
 ) -> usize {
-    let hiding = crate::scale::SCALE_RANDOM_CODEWORDS;
-    let circuit =
-        entries[0] * 32 + entries[1] * 16 + entries[2] * (24 * 4 * 3 + 32) + entries[3] * 132 + entries[4] * 36;
-    let committed: usize = airs
-        .iter()
-        .zip(lookups)
-        .zip(cons)
-        .map(|((air, l), c)| {
-            let rows = air.height() << (1 + shape.log_blowup);
-            let aux = if l.is_empty() { 0 } else { (l.len() + 1) * 8 };
-            let chunks = 1usize << (c.log_chunks + 1);
-            let cols = BaseAir::<F>::width(air)
-                + hiding
-                + BaseAir::<F>::preprocessed_width(air)
-                + aux
-                + hiding
-                + chunks * (8 + hiding)
-                + 8
-                + hiding;
-            rows * (cols * 4 + 5 * 2 * 4 * DIGEST)
-        })
-        .sum();
-    circuit + committed
+    prover_memory(airs, lookups, cons, shape, entries).peak
 }
 
 /// [`proof_bytes_bound`] for a key's own proofs.

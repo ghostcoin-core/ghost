@@ -22,6 +22,7 @@ pub(crate) mod keys;
 pub(crate) mod pcs;
 pub(crate) mod poseidon2;
 pub(crate) mod security;
+pub(crate) mod stream;
 pub(crate) mod symbolic;
 pub(crate) mod tables;
 pub(crate) mod verifier;
@@ -436,11 +437,20 @@ pub struct PlannedLayer {
     pub lanes: Vec<usize>,
     pub heights: Vec<usize>,
     pub entries: [usize; 5],
-    /// Bytes the prover holds at its peak, modeled: the circuit's wires and
-    /// rows, and every committed matrix extended by the zero-knowledge
-    /// doubling and the blowup, with its Merkle tree.
+    /// Bytes the streamed prover holds at its peak, modeled
+    /// ([`ProverMemory::peak`]).
     pub modeled_prover_bytes: usize,
+    /// The model by part: the circuit, the key, the coefficients of the
+    /// committed matrices, each phase, and the largest block of extended
+    /// rows evaluated at once.
+    pub memory: ProverMemory,
 }
+
+/// The memory ceiling of an aggregator machine in the stage 2 design: 128
+/// GiB. Every layer of the real pipeline plans its prover within it.
+pub const PROVER_CEILING_BYTES: u64 = 128 << 30;
+
+pub use keys::ProverMemory;
 
 /// The batch, root and shrink of a real pipeline, planned without proving:
 /// each layer's tables as its circuit fills them, and an upper bound on the
@@ -454,11 +464,13 @@ pub struct PipelinePlan {
 }
 
 pub(crate) fn planned(spec: &verifier::LayerSpec, cons: &[verifier::TableConstraints], entries: [usize; 5]) -> PlannedLayer {
+    let memory = keys::prover_memory(&spec.airs, &spec.lookups, cons, spec.shape, entries);
     PlannedLayer {
         lanes: spec.airs.iter().map(tables::TableAir::lanes).collect(),
         heights: spec.airs.iter().map(tables::TableAir::height).collect(),
         entries,
-        modeled_prover_bytes: keys::prover_bytes_model(&spec.airs, &spec.lookups, cons, spec.shape, entries),
+        modeled_prover_bytes: memory.peak,
+        memory,
     }
 }
 
@@ -717,7 +729,33 @@ pub fn table_roundtrip_check() -> Result<Vec<usize>, alloc::string::String> {
     use alloc::format;
     use p3_field::PrimeCharacteristicRing;
 
-    use crate::stark::FriShape;
+    let (c, publics, tag, fri) = small_circuit()?;
+    let mut lanes = Vec::new();
+    // One lane a row, then everything within the smallest height.
+    for max_log in [tables::max_log_height(&fri), tables::min_height(&fri).trailing_zeros() as usize] {
+        let airs = tables::table_airs_within(&c, &fri, max_log).map_err(|e| format!("tables: {e}"))?;
+        lanes = airs.iter().map(tables::TableAir::lanes).collect();
+        let key = tables::setup(airs, &fri).map_err(|e| format!("setup: {e}"))?;
+        let proof = tables::prove(&key, &c, &fri, &tag, [3; 32]).map_err(|e| format!("prove: {e}"))?;
+        tables::verify(&key.airs, key.common(), &proof, &publics, &fri, &tag)
+            .map_err(|e| format!("verify with lanes {lanes:?}: {e}"))?;
+        let wrong = [publics[0] + F::ONE];
+        if tables::verify(&key.airs, key.common(), &proof, &wrong, &fri, &tag).is_ok() {
+            return Err(format!("a changed public value verifies with lanes {lanes:?}"));
+        }
+        if tables::verify(&key.airs, key.common(), &proof, &publics, &fri, &tag[..1]).is_ok() {
+            return Err(format!("a changed tag verifies with lanes {lanes:?}"));
+        }
+    }
+    Ok(lanes)
+}
+
+/// The small circuit of [`table_roundtrip_check`], with its public value,
+/// a tag and a FRI shape of two queries at blowup 2^3.
+fn small_circuit() -> Result<(circuit::Circuit, [F; 1], [F; 2], FriShape), alloc::string::String> {
+    use alloc::format;
+    use p3_field::PrimeCharacteristicRing;
+
     let fri = FriShape {
         log_blowup: 3,
         num_queries: 2,
@@ -751,24 +789,77 @@ pub fn table_roundtrip_check() -> Result<Vec<usize>, alloc::string::String> {
     }
     let publics = [c.base_value(public)];
     let tag = [F::from_u8(7), F::from_u8(9)];
-    let mut lanes = Vec::new();
-    // One lane a row, then everything within the smallest height.
+    Ok((c, publics, tag, fri))
+}
+
+/// The streamed prover against the library's: the small circuit of
+/// [`table_roundtrip_check`], its tables in one lane a row and packed into
+/// lanes, keyed and proven by the library (`ProverData::from_airs_and_degrees`
+/// and `prove_batch`, every extension held whole) and by the streamed key
+/// and prover with blocks of at most `budget` bytes for each budget given.
+/// The keys must agree (lookups and preprocessed commitment), the proofs
+/// must be the same bytes, and the streamed proof must verify, and fail
+/// with a changed public value. Returns, for each budget, the blocks the
+/// main commitment was cut into.
+#[doc(hidden)]
+pub fn streamed_prover_check(budgets: &[usize]) -> Result<Vec<usize>, alloc::string::String> {
+    use alloc::format;
+    use p3_field::PrimeCharacteristicRing;
+
+    let (c, publics, tag, fri) = small_circuit()?;
+    let mut blocks = Vec::new();
     for max_log in [tables::max_log_height(&fri), tables::min_height(&fri).trailing_zeros() as usize] {
         let airs = tables::table_airs_within(&c, &fri, max_log).map_err(|e| format!("tables: {e}"))?;
-        lanes = airs.iter().map(tables::TableAir::lanes).collect();
-        let key = tables::setup(airs, &fri).map_err(|e| format!("setup: {e}"))?;
-        let proof = tables::prove(&key, &c, &fri, &tag, [3; 32]).map_err(|e| format!("prove: {e}"))?;
-        tables::verify(&key.airs, key.common(), &proof, &publics, &fri, &tag)
-            .map_err(|e| format!("verify with lanes {lanes:?}: {e}"))?;
-        let wrong = [publics[0] + F::ONE];
-        if tables::verify(&key.airs, key.common(), &proof, &wrong, &fri, &tag).is_ok() {
-            return Err(format!("a changed public value verifies with lanes {lanes:?}"));
-        }
-        if tables::verify(&key.airs, key.common(), &proof, &publics, &fri, &tag[..1]).is_ok() {
-            return Err(format!("a changed tag verifies with lanes {lanes:?}"));
+        let library_key = tables::library_setup(&airs, &fri).map_err(|e| format!("library setup: {e}"))?;
+        let library = tables::library_prove(&airs, &library_key, &c, &fri, &tag, [5; 32])
+            .map_err(|e| format!("library prove: {e}"))?;
+        let library_bytes = postcard::to_allocvec(&library).map_err(|_| "library proof encodes")?;
+        let library_root = library_key.common.preprocessed.as_ref().map(|p| p.commitment.roots().to_vec());
+        let mains: Vec<(usize, usize)> = airs
+            .iter()
+            .map(|a| {
+                let log_lde = a.height().trailing_zeros() as usize + 1 + fri.log_blowup;
+                (log_lde, BaseAir::<F>::width(a) + crate::scale::SCALE_RANDOM_CODEWORDS)
+            })
+            .collect();
+        for &budget in budgets {
+            blocks.push(stream::block_count(&mains, budget));
+            let key = tables::setup_within(airs.clone(), &fri, budget).map_err(|e| format!("setup: {e}"))?;
+            let root = key.common().preprocessed.as_ref().map(|p| p.commitment.roots().to_vec());
+            if root != library_root {
+                return Err(format!("the preprocessed commitment differs at {budget} bytes a block"));
+            }
+            if format!("{:?}", key.common().lookups) != format!("{:?}", library_key.common.lookups) {
+                return Err(format!("the lookups differ at {budget} bytes a block"));
+            }
+            let proof = tables::prove_within(&key, &c, &fri, &tag, [5; 32], budget)
+                .map_err(|e| format!("prove at {budget} bytes a block: {e}"))?;
+            let bytes = postcard::to_allocvec(&proof).map_err(|_| "proof encodes")?;
+            if bytes != library_bytes {
+                let at = bytes.iter().zip(&library_bytes).position(|(a, b)| a != b).unwrap_or(bytes.len());
+                return Err(format!(
+                    "the proof at {budget} bytes a block differs from the library's at byte {at} of {} ({} bytes)",
+                    library_bytes.len(),
+                    bytes.len()
+                ));
+            }
+            tables::verify(&key.airs, key.common(), &proof, &publics, &fri, &tag)
+                .map_err(|e| format!("verify at {budget} bytes a block: {e}"))?;
+            if tables::verify(&key.airs, key.common(), &proof, &[publics[0] + F::ONE], &fri, &tag).is_ok() {
+                return Err(format!("a changed public value verifies at {budget} bytes a block"));
+            }
+            // With its prover data released the key still verifies, and
+            // refuses to prove.
+            let mut key = key;
+            key.release();
+            tables::verify(&key.airs, key.common(), &proof, &publics, &fri, &tag)
+                .map_err(|e| format!("verify with a released key: {e}"))?;
+            if tables::prove_within(&key, &c, &fri, &tag, [5; 32], budget).is_ok() {
+                return Err("a released key proves".into());
+            }
         }
     }
-    Ok(lanes)
+    Ok(blocks)
 }
 
 /// The width-24 Poseidon2 permutation as the layers' permutation table
