@@ -38,8 +38,9 @@
 //!   size"): ML-DSA-44 verifications proven in chunks and folded by the
 //!   batch, root and shrink layers, in [`mldsa`].
 //!
-//! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`] and
-//! [`verify_coin_reveal_v2`], with its header in `include/ghost_proofs.h`.
+//! The module [`ffi`] is a C interface to [`verify_salted_coin_reveal`],
+//! [`verify_coin_reveal_v2`] and the verifiers of a bundle's root proof and
+//! the public root proof, with its header in `include/ghost_proofs.h`.
 //!
 //! The S3 prover is compiled only under the `unsettled-points-test` feature,
 //! for tests. The public [`verify_hold`] verifies whether or not the feature

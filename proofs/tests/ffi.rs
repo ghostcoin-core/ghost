@@ -131,7 +131,7 @@ fn the_header_agrees_with_the_crate() {
             Some((words.next()?, words.next()?.parse().ok()?))
         })
         .collect();
-    let expected: [(&str, i64); 9] = [
+    let expected: [(&str, i64); 16] = [
         ("GHOST_PROOFS_ACCEPTED", GHOST_PROOFS_ACCEPTED.into()),
         ("GHOST_PROOFS_REJECTED", GHOST_PROOFS_REJECTED.into()),
         ("GHOST_PROOFS_MALFORMED_INPUT", GHOST_PROOFS_MALFORMED_INPUT.into()),
@@ -141,8 +141,19 @@ fn the_header_agrees_with_the_crate() {
         ("GHOST_PROOFS_COIN_REVEAL_BYTES", COIN_REVEAL_BYTES as i64),
         ("GHOST_PROOFS_COIN_REVEAL_V2_BYTES", COIN_REVEAL_V2_BYTES as i64),
         ("GHOST_PROOFS_PROOF_MAX_BYTES", PROOF_MAX_BYTES as i64),
+        ("GHOST_PROOFS_ROOT_KEY_BUNDLE", ROOT_KEY_BUNDLE.into()),
+        ("GHOST_PROOFS_ROOT_KEY_PUBLIC", ROOT_KEY_PUBLIC.into()),
+        ("GHOST_PROOFS_ROOT_KEY_BYTES", ROOT_KEY_BYTES as i64),
+        ("GHOST_PROOFS_ROOT_BINDING_BYTES", ROOT_BINDING_BYTES as i64),
+        ("GHOST_PROOFS_REVEAL_PUBLIC_BYTES", REVEAL_PUBLIC_BYTES as i64),
+        ("GHOST_PROOFS_PUBLIC_TX_BYTES", PUBLIC_TX_BYTES as i64),
+        ("GHOST_PROOFS_PROOF_FIELD_BYTES", PROOF_FIELD_BYTES as i64),
     ];
     assert_eq!(defines, BTreeMap::from(expected));
+    assert_eq!((ROOT_KEY_BYTES, ROOT_BINDING_BYTES, REVEAL_PUBLIC_BYTES, PUBLIC_TX_BYTES), (124, 11, 639, 84));
+    assert_eq!(PROOF_FIELD_BYTES, 1_310_720);
+    assert!(HEADER.contains("int32_t ghost_verify_bundle_root(const uint8_t *key, size_t key_len,"));
+    assert!(HEADER.contains("int32_t ghost_verify_public_root(const uint8_t *key, size_t key_len,"));
     assert_eq!((CHAIN_PARAMS_BYTES, COIN_REVEAL_BYTES, PROOF_MAX_BYTES), (42, 368, 2_097_152));
     assert_eq!(COIN_REVEAL_V2_BYTES, 32 + 32 + 32 + 380 + 20 + 32 + 32);
     assert_eq!(COIN_REVEAL_V2_BYTES, 560);
