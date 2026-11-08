@@ -14,10 +14,12 @@
 //! the same 32 reveals, chained from where the one before ended), the root
 //! key and proof, the shrink key and proof. Each stage prints its seconds and
 //! the process's peak memory (VmHWM) against the 128 GiB machine ceiling,
-//! labelled measured. A stage whose modeled prover memory exceeds the
-//! machine's memory is not run: it prints not yet established, with the
-//! modeled figure, and so does every stage after it. The layers themselves
-//! read no clock or file; only this test does.
+//! labelled measured. Each planned layer prints its streamed prover's
+//! modeled peak memory by part against the same ceiling. A stage whose
+//! modeled prover memory exceeds the machine's memory is not run: it prints
+//! not yet established, with the modeled figure, and so does every stage
+//! after it. The layers themselves read no clock or file; only this test
+//! does.
 
 use std::time::Instant;
 
@@ -198,12 +200,22 @@ fn layers_benchmark() {
     .expect("the real pipeline plans");
     measured("planning the real pipeline", t, None);
     for (name, layer) in [("batch", &plan.batch), ("root", &plan.root), ("shrink", &plan.shrink)] {
+        let m = &layer.memory;
+        let gib = |b: usize| b as f64 / GIB;
         println!(
-            "measured: {name} circuit entries {:?}, table lanes {:?}, heights {:?}; modeled prover memory {:.1} GiB",
+            "measured: {name} circuit entries {:?}, table lanes {:?}, heights {:?}; modeled prover memory {:.1} GiB \
+             at its peak, {} the {CEILING_GIB} GiB ceiling (streamed prover: circuit {:.1}, key {:.1}, committed \
+             coefficients {:.1}, opening phase {:.1}, block {:.1} GiB)",
             layer.entries,
             layer.lanes,
             layer.heights,
-            layer.modeled_prover_bytes as f64 / GIB
+            gib(m.peak),
+            if m.peak as u64 <= layers::PROVER_CEILING_BYTES { "within" } else { "above" },
+            gib(m.circuit),
+            gib(m.key),
+            gib(m.committed),
+            gib(m.opening_phase),
+            gib(m.block),
         );
     }
     println!("measured: shrink proof size bound {} bytes", plan.shrink_bytes_bound);
@@ -222,7 +234,7 @@ fn layers_benchmark() {
         return;
     }
     let t = Instant::now();
-    let batch_key = layers::batch_key(&child, LayerShape::WIDE, child.log_height(), PER_BATCH, LayerShape::WIDE)
+    let mut batch_key = layers::batch_key(&child, LayerShape::WIDE, child.log_height(), PER_BATCH, LayerShape::WIDE)
         .expect("the batch key builds");
     measured("batch key", t, None);
     let mut batches: Vec<(Vec<u8>, Claim)> = Vec::with_capacity(BATCHES);
@@ -245,8 +257,11 @@ fn layers_benchmark() {
         println!("not yet established: the shrink, which needs the root first");
         return;
     }
+    // The root reads only the batch key's shapes and commitment, so the
+    // batch prover's data is dropped first, as the model counts it.
+    batch_key.release_prover_data();
     let t = Instant::now();
-    let root_key = layers::root_key(&batch_key, BATCHES, LayerShape::WIDE).expect("the root key builds");
+    let mut root_key = layers::root_key(&batch_key, BATCHES, LayerShape::WIDE).expect("the root key builds");
     let root = layers::prove_layer(&root_key, &batch_key, &binding, 0, &batches, [0x52; 32]).expect("the root proves");
     measured("root over 44 batches, key included", t, Some(root.len()));
     layers::verify_layer(&root_key, &binding, 0, &whole, &root).expect("the root verifies");
@@ -254,6 +269,7 @@ fn layers_benchmark() {
     if !fits("the shrink", plan.shrink.modeled_prover_bytes, machine_mem) {
         return;
     }
+    root_key.release_prover_data();
     let t = Instant::now();
     let shrink_key = layers::shrink_key(&root_key, LayerShape::SHRINK).expect("the shrink key builds");
     let shrink = layers::prove_layer(&shrink_key, &root_key, &binding, 0, &[(root, whole)], [0x53; 32])

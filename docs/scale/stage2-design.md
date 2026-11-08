@@ -161,10 +161,27 @@ Settled on 2026-11-03, before the layers are built.
 | Shrink | `prove_layer_of` (`layers::prove_layer`) | One root proof with its claim, made from public data the same way. | public witness, no hiding needed |
 | ML-DSA-44 chunk | `prove_chunk_of` (`mldsa::prove_chunk`) | Each transaction's account, public key, key identity, message (the transaction hash) and signature, and what the verification computes from them (the SHAKE states, the NTTs, `w'_approx` and the hint). The pooled transaction carries all of them to every builder and the raw-signature fallback puts them in a block; a signature and its public key are public by design. | public witness, no hiding needed <!-- no-figure --> |
 
+### Layer prover memory at the real shape
+
+Settled on 2026-11-07, after the layers were built.
+
+The cell model above counts each layer's extension once (modeled: 75.0 GiB for a batch). The built layers' tables, planned from their circuits at the real shape (docs/scale/layers-results.md), are larger: a batch of 32 reveals fills tables of up to 8,388,608 rows in 8 and 4 lanes, and the library's prover, which holds every committed matrix over its extended domain with its Merkle tree and salts until the last opening, would need about 580.5 GiB for it, 733.5 GiB for a root over 44 batches and 78.3 GiB for the shrink (all modeled). No real-shape shrink proof could then be made on a 128 GiB aggregator machine (modeled ceiling).
+
+The layers keep this design whole: three layers at the real shape, every layer's blowup and queries, the whole-bundle bound of the next section and the 1,310,720-byte proof field (modeled). Only the prover changes, in this repository's own code (proofs/src/layers/stream.rs), the pinned Plonky3 crates unchanged: each committed matrix is kept as its polynomials' coefficients over the zero-knowledge doubled domain, and its extension is evaluated one block of rows at a time, a block at most 2 GiB with its salts and its Merkle subtree (modeled), to commit, to batch the openings and to answer the queries, each block a query falls in evaluated again; the quotient is computed one chunk at a time on a coset the size of the trace. The proofs and the verifier are the library's byte for byte: proofs/tests/layers_memory.rs proves a small circuit of all five tables with the library's `prove_batch` and with the streamed prover at every block size down to single rows and requires the same bytes (measured by that test; the result does not depend on the machine).
+
+| Layer at the real shape (modeled) | Tables, rows | Holding every extension whole | Streamed prover at its peak | Ceiling (workload.md) |
+|---|---|---|---|---|
+| Batch of 32 reveals (modeled) | 8,388,608, 8,388,608, 2,097,152, 4,096 and 524,288 | 580.5 GiB, missed | 93.3 GiB, met | 128 GiB a machine (not yet established) |
+| Root over 44 batches (modeled) | 8,388,608, 8,388,608, 4,194,304, 8,192 and 524,288 | 733.5 GiB, missed | 116.3 GiB, met | 128 GiB a machine (not yet established) |
+| Shrink of the root (modeled) | 262,144, 262,144, 131,072, 256 and 16,384 | 78.3 GiB, met | 8.0 GiB, met | 128 GiB a machine (not yet established) |
+
+The streamed peak is the circuit, the key (each table's preprocessed columns and their coefficients), the largest block, and the batched openings with the folding layers of the opening argument above every committed matrix's coefficients: for the root 3.4, 20.9, 3.4 and 88.6 GiB, of which the coefficients are 62.9 GiB (modeled; layers-results.md gives every layer's parts). `the_real_shape_batch_and_root_fit_the_128_gib_ceiling` fails when a layer plans above the ceiling. A real-shape proof on an aggregator machine, its seconds and its measured peak memory, and the root's verification time against the 3,000 ms budget of spec 07, section 4, are not yet established.
+
 ### What is not yet established for aggregation
 
 - The seconds of a Poseidon2 permutation of the pinned library on an aggregator core, and of a real batch, root and shrink proof on named hardware (not yet established: the Poseidon2 proxy command of recursion.md, architecture (b), then the real layers).
 - The arithmetic cells of the verifier circuit and the out-of-domain constraint evaluation of the reveal statement (not yet established: counted from the first real layer).
+- The streamed layer prover's seconds and measured peak memory at the real shape, against its modeled 93.3, 116.3 and 8.0 GiB for the batch, root and shrink (not yet established: proofs/tests/layers_bench.rs on an aggregator machine).
 - The reveal's proving time and memory on the phone with Poseidon2 commitments, the degree-8 extension and 96 queries, against the 10 s and proposed 1 GiB ceilings (not yet established: phone-protocol.md, steps 4 to 7, rerun with the new prover).
 - The price of an aggregator machine-hour (not yet established; the 2 US dollars is the illustrative input of throughput.md).
 - Who pays an aggregator, from which field (designs.md, private bundle requirement 6; not yet established).

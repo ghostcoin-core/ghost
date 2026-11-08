@@ -957,14 +957,22 @@ fn the_real_shrink_fits_the_proof_field() {
     .unwrap();
     let _ = writeln!(std::io::stderr(), "DIAG real pipeline plan {plan:?}");
     progress("real pipeline planned");
-    for (layer, shape) in [
-        (&plan.batch, LayerShape::WIDE),
-        (&plan.root, LayerShape::WIDE),
-        (&plan.shrink, LayerShape::SHRINK),
+    for (name, layer, shape) in [
+        ("batch", &plan.batch, LayerShape::WIDE),
+        ("root", &plan.root, LayerShape::WIDE),
+        ("shrink", &plan.shrink, LayerShape::SHRINK),
     ] {
         for &h in &layer.heights {
             assert!(h.trailing_zeros() as usize <= shape.max_log_height(), "{layer:?}");
         }
+        // Each layer's planned peak memory, the streamed prover's, against
+        // the 128 GiB aggregator ceiling.
+        let gib = layer.memory.peak as f64 / (1u64 << 30) as f64;
+        let _ = writeln!(
+            std::io::stderr(),
+            "DIAG {name}: planned peak prover memory {gib:.1} GiB (modeled) of the 128 GiB ceiling"
+        );
+        assert!(layer.memory.peak as u64 <= layers::PROVER_CEILING_BYTES, "the {name} plans {gib:.1} GiB");
     }
     assert!(
         plan.shrink_bytes_bound <= layers::PROOF_FIELD_BYTES,
