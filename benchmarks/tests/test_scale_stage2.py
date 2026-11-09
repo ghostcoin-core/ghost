@@ -249,27 +249,27 @@ class Restore(unittest.TestCase):
 
     def test_node_storage_turns_with_the_ceiling(self):
         s = stage2.node_storage_per_year()
-        self.assertFalse(s["meets"])
+        self.assertTrue(s["meets"])
         roomy = stage2._with(None, node_storage_ceiling_per_year=s["total"])
         self.assertTrue(stage2.node_storage_per_year(roomy)["meets"])
         tight = stage2._with(None, node_storage_ceiling_per_year=s["total"] - 1)
         self.assertFalse(stage2.node_storage_per_year(tight)["meets"])
 
-    def test_the_380_byte_note_turns_node_storage(self):
-        # At the 156-byte note the year's growth met the proposed 2 TB; the
-        # 380-byte note of spec 10, section 3.2 adds 224 bytes a leaf and misses it.
+    def test_the_380_byte_note_in_node_storage(self):
+        # The 380-byte note of spec 10, section 3.2 adds 224 bytes a leaf over the
+        # 156-byte one; at 1 million leaves a day the year's growth meets 2 TB with either.
         self.assertEqual(stage2.INPUTS["note_bytes"], 380)
         s = stage2.node_storage_per_year()
-        self.assertEqual(s["today"], 3_650_000_000 * (32 + 380) + 3_650_000_000 * 32)
-        self.assertEqual(s["total"], 2_412_750_915_200)
+        self.assertEqual(s["today"], 365_000_000 * (32 + 380) + 365_000_000 * 32)
+        self.assertEqual(s["total"], 241_365_915_200)
         old = stage2.node_storage_per_year(stage2._with(None, note_bytes=156))
         self.assertTrue(old["meets"])
-        self.assertEqual(s["total"] - old["total"], 3_650_000_000 * 224)
+        self.assertEqual(s["total"] - old["total"], 365_000_000 * 224)
 
     def test_the_note_database_follows_the_note_length(self):
         queries, _ = stage2.restore_queries(365)
         note = next(db for name, db, _ in queries if name == "note")
-        self.assertEqual(note, 3_650_000_000 * 380)
+        self.assertEqual(note, 365_000_000 * 380)
         shorter = stage2.restore(365, stage2._with(None, note_bytes=156))
         self.assertLess(shorter["total_bytes"], stage2.restore(365)["total_bytes"])
 
@@ -308,7 +308,7 @@ class Aggregation(unittest.TestCase):
         self.assertFalse(stage2.fleet(wide)["meets_memory"])
 
     def test_bundles_cover_every_reveal(self):
-        self.assertEqual(sum(stage2.shares(3500)), 3500)
+        self.assertEqual(sum(stage2.shares(350)), 350)
         b = stage2.bundle(1400)
         self.assertEqual(b["batches"], math.ceil(1400 / stage2.INPUTS["batch_arity"]))
 
@@ -342,18 +342,141 @@ class Security(unittest.TestCase):
 
 
 class PublicSignatures(unittest.TestCase):
-    def test_the_proof_encoding_fits_and_raw_signatures_do_not(self):
+    def test_the_proof_encoding_fits_and_at_the_target_raw_signatures_do_too(self):
         self.assertTrue(stage2.block_bytes()["fits"])
-        self.assertLess(stage2.raw_fallback_capacity(), stage2.INPUTS["public_per_block"])
+        self.assertGreaterEqual(stage2.raw_fallback_capacity(), stage2.INPUTS["public_per_block"])
+        ten_times = stage2._with(None, public_per_block=10 * stage2.INPUTS["public_per_block"])
+        self.assertLess(stage2.raw_fallback_capacity(ten_times), ten_times["public_per_block"])
 
     def test_the_cap_turns_with_the_root_size(self):
         b = stage2.block_bytes()
-        many = stage2._with(None, binding_bytes=stage2.INPUTS["binding_bytes"] + b["headroom"] // 3500 + 1)
+        per = stage2.INPUTS["public_per_block"]
+        many = stage2._with(None, binding_bytes=stage2.INPUTS["binding_bytes"] + b["headroom"] // per + 1)
         self.assertFalse(stage2.block_bytes(many)["fits"])
 
     def test_the_root_fits_the_proof_field_and_a_reveal_proof_does_not(self):
         self.assertLessEqual(stage2.shrink_proof_bytes(), stage2.INPUTS["proof_field_bytes"])
         self.assertGreater(stage2.leaf_proof_bytes(), stage2.INPUTS["proof_field_bytes"])
+
+
+def table_rows(lines):
+    return [line for line in lines if line.startswith("| ") and not line.startswith("|---")]
+
+
+class StageTwoVolumes(unittest.TestCase):
+    """The aggregation shape at 1 million a day, and the same figures at 10,000 and 100,000."""
+
+    def test_the_target_is_one_million_a_day(self):
+        self.assertEqual(stage2.INPUTS["leaves_per_day"], 1_000_000)
+        self.assertEqual(stage2.INPUTS["spends_per_day"], 1_000_000)
+        self.assertEqual(stage2.INPUTS["private_per_block"], 350)
+        self.assertEqual(stage2.VOLUMES, (10_000, 100_000, 1_000_000))
+
+    def test_the_volumes_scale_the_blocks(self):
+        per_block = {v: stage2.at_volume(v)["private_per_block"] for v in stage2.VOLUMES}
+        self.assertEqual(per_block, {10_000: 4, 100_000: 35, 1_000_000: 350})
+        low = stage2.at_volume(10_000)
+        self.assertEqual(low["leaves_per_day"], 10_000)
+        self.assertEqual(low["public_per_block"], 4)
+        self.assertEqual(low["aggregator_memory_bytes"], stage2.INPUTS["aggregator_memory_bytes"])
+
+    def test_the_poseidon2_cost_is_the_measured_one(self):
+        self.assertAlmostEqual(stage2.INPUTS["poseidon2_permutation_seconds"], 897.1e-9, places=15)
+        cheap = stage2.cell_seconds(stage2._with(None, poseidon2_permutation_seconds=100e-9))
+        self.assertGreater(stage2.cell_seconds(), cheap)
+
+    def test_the_shape_is_the_one_the_model_chooses(self):
+        self.assertEqual(stage2.choose_shape(), (stage2.INPUTS["batch_arity"], stage2.INPUTS["root_capacity"]))
+        self.assertEqual((stage2.INPUTS["batch_arity"], stage2.INPUTS["root_capacity"]), (8, 29))
+
+    def test_the_choice_turns_with_its_ceilings(self):
+        # Without 8 a batch the next cheapest admissible arity is taken, its root
+        # just large enough for the burst or as large at the same cost.
+        arity, capacity = stage2.choose_shape(arities=(16, 32))
+        self.assertEqual(arity, 16)
+        self.assertGreaterEqual(arity * capacity, stage2.burst_reveals())
+        # Under 40 GiB a machine no shape holds the burst in one root.
+        self.assertIsNone(stage2.choose_shape(stage2._with(None, aggregator_memory_bytes=40 * stage2.GIB)))
+        # A dearer permutation that breaks the delay rules every shape out.
+        self.assertIsNone(stage2.choose_shape(stage2._with(None, poseidon2_permutation_seconds=10e-6)))
+
+    def test_every_layer_fits_an_aggregator_machine(self):
+        peaks = stage2.prover_peaks()
+        self.assertEqual(set(peaks), {"batch", "root", "shrink"})
+        for name, peak in peaks.items():
+            self.assertLessEqual(peak, stage2.INPUTS["aggregator_memory_bytes"], name)
+        self.assertTrue(stage2.fleet()["meets_memory"])
+        self.assertFalse(stage2.shape_fits(stage2._with(None, batch_arity=64, root_capacity=4)))
+
+    def test_the_peaks_are_the_plan_at_the_planned_shape(self):
+        planned = stage2._with(None, batch_arity=32, root_capacity=44)
+        peaks = stage2.prover_peaks(planned)
+        self.assertAlmostEqual(peaks["batch"], 93.3 * stage2.GIB)
+        self.assertAlmostEqual(peaks["root"], 116.3 * stage2.GIB)
+        self.assertAlmostEqual(peaks["shrink"], 8.0 * stage2.GIB)
+        self.assertLess(stage2.prover_peaks()["root"], peaks["root"])
+
+    def test_the_root_holds_the_largest_aggregator_at_the_burst(self):
+        burst = stage2.burst_reveals()
+        self.assertEqual(burst, 211)
+        self.assertLessEqual(burst, stage2.INPUTS["batch_arity"] * stage2.INPUTS["root_capacity"])
+        short = stage2._with(None, root_capacity=math.ceil(burst / stage2.INPUTS["batch_arity"]) - 1)
+        self.assertFalse(stage2.shape_fits(short))
+        self.assertEqual(stage2.bundle(burst)["roots"], 1)
+        self.assertEqual(stage2.bundle(burst, short)["roots"], 2)
+
+    def test_a_fixed_shape_pays_for_its_padding(self):
+        arity = stage2.INPUTS["batch_arity"]
+        one, full = stage2.bundle(1), stage2.bundle(arity)
+        self.assertAlmostEqual(one["machine_seconds"], full["machine_seconds"])
+        self.assertGreater(stage2.bundle(arity + 1)["machine_seconds"], full["machine_seconds"])
+
+    def test_the_network_machines_are_whole_machines_of_each_aggregator(self):
+        f = stage2.fleet()
+        block = stage2.INPUTS["block_seconds"]
+        own = [b["machine_seconds"] for b in f["private"]["bundles"]] + [f["public"]["machine_seconds"]]
+        self.assertEqual(f["network_machines"], sum(math.ceil(s / block) for s in own))
+        self.assertGreaterEqual(f["network_machines"], f["machines"])
+        self.assertEqual((f["network_machines"], f["network_machines_with_spare"]), (26, 37))
+        self.assertLessEqual(f["network_machines_with_spare"], stage2.INPUTS["aggregator_machines"])
+
+    def test_the_cost_a_reveal_falls_with_volume(self):
+        cents = [stage2.volume(v)["fleet"]["cents_per_reveal"] for v in stage2.VOLUMES]
+        self.assertGreater(cents[0], cents[1])
+        self.assertGreater(cents[1], cents[2])
+        self.assertFalse(stage2.volume(10_000)["fleet"]["meets_cost"])
+        self.assertFalse(stage2.volume(100_000)["fleet"]["meets_cost"])
+        self.assertTrue(stage2.volume(1_000_000)["fleet"]["meets_cost"])
+        for v in stage2.VOLUMES:
+            self.assertTrue(stage2.volume(v)["fleet"]["meets_delay"], v)
+
+    def test_a_quiet_batch_closes_after_a_block(self):
+        low = stage2.volume(10_000)["fleet"]["private"]
+        self.assertEqual(low["fill"], stage2.INPUTS["batch_close_seconds"])
+        late = stage2.at_volume(10_000, stage2._with(None, batch_close_seconds=600))
+        self.assertFalse(stage2.fleet(late)["meets_delay"])
+
+    def test_quiet_blocks(self):
+        q = stage2.quiet_block(1)
+        self.assertGreater(q["fixed"]["machine_seconds"], q["quiet"]["machine_seconds"])
+        self.assertFalse(q["fixed"]["cents_per_reveal"] <= stage2.INPUTS["cost_ceiling_cents"])
+        self.assertEqual(q["direct"]["machine_seconds"], 0.0)
+        self.assertEqual(q["direct_per_block_gas"], 1)
+        self.assertEqual(q["direct_per_block"], 4)
+        four = stage2.quiet_block(4)
+        self.assertAlmostEqual(four["fixed"]["machine_seconds"], q["fixed"]["machine_seconds"])
+        self.assertGreater(four["quiet"]["cents_per_reveal"], stage2.INPUTS["cost_ceiling_cents"])
+
+    def test_the_shape_and_volume_rows_are_on_the_page(self):
+        lines = DOC.read_text(encoding="utf-8").splitlines()
+        rows = table_rows(stage2.aggregation_table() + stage2.shape_table() + stage2.choice_table()
+                          + stage2.volume_table() + stage2.quiet_table() + stage2.security_table())
+        self.assertGreater(len(rows), 40)
+        for row in rows:
+            self.assertIn(row, lines)
+        text = DOC.read_text(encoding="utf-8")
+        self.assertIn("the input is 897.1 ns (measured)", text)
+        self.assertNotIn("the input is 400 ns", text)
 
 
 if __name__ == "__main__":
