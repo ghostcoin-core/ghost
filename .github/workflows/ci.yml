@@ -400,11 +400,47 @@ jobs:
             ~/.cargo/git/db
             proofs/target
           key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-mldsa-parallel-${{ hashFiles('proofs/*.lock') }}
-      # One slow ML-DSA chunk test per job.
+      # One slow ML-DSA chunk test per job: the batch and root of the fold.
+      # Their shrink runs in rust-proofs-mldsa-shrink, which proves the
+      # batches and root again, so neither job carries the whole fold.
       - name: Test (release) the ML-DSA chunk proofs
         env:
           RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
-        run: cargo test --release --locked --features parallel --manifest-path proofs/Cargo.toml --test mldsa_chunk -- --exact chunks_fold_into_one_public_root_proof
+        run: cargo test --release --locked --features parallel --manifest-path proofs/Cargo.toml --test mldsa_chunk -- --exact chunks_batch_and_root_fold_correctly
+
+  rust-proofs-mldsa-shrink:
+    name: rust-proofs-mldsa-shrink
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUST_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      # Its own cache key apart from rust-proofs and the layers jobs: the
+      # mldsa jobs build the same test binary, so they share this key with
+      # each other.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            proofs/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-mldsa-parallel-${{ hashFiles('proofs/*.lock') }}
+      # One slow ML-DSA chunk test per job: the shrink of the fold's root to
+      # the public root proof's size. It proves the batches and root again
+      # rather than take them from rust-proofs-mldsa-fold.
+      - name: Test (release) the ML-DSA chunk proofs
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+        run: cargo test --release --locked --features parallel --manifest-path proofs/Cargo.toml --test mldsa_chunk -- --exact chunks_shrink_folds_to_the_public_root_size
 
   rust-proofs-mldsa-rest:
     name: rust-proofs-mldsa-rest
@@ -436,7 +472,7 @@ jobs:
       - name: Test (release) the ML-DSA chunk proofs
         env:
           RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
-        run: cargo test --release --locked --features parallel --manifest-path proofs/Cargo.toml --test mldsa_chunk -- --exact --skip the_known_answer_vectors_pass_inside_the_chunk_proof --skip a_chunk_verifies_valid_signatures_and_refuses_any_change --skip reordered_added_or_dropped_transactions_fail --skip chunks_fold_into_one_public_root_proof
+        run: cargo test --release --locked --features parallel --manifest-path proofs/Cargo.toml --test mldsa_chunk -- --exact --skip the_known_answer_vectors_pass_inside_the_chunk_proof --skip a_chunk_verifies_valid_signatures_and_refuses_any_change --skip reordered_added_or_dropped_transactions_fail --skip chunks_batch_and_root_fold_correctly --skip chunks_shrink_folds_to_the_public_root_size
 
   rust-client:
     name: rust-client
