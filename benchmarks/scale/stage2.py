@@ -5,7 +5,9 @@ stage's verdict (docs/scale/stage1-verdict.md) named: wallet restore volume, the
 aggregation cost, the whole-bundle proven security bound and the size of public
 signatures in a block. This module computes every figure that page quotes, from
 the inputs below, against the ceilings of docs/scale/workload.md, which do not
-change here.
+change here, at its target of 1 million transactions a day and at 10,000 and
+100,000 a day (VOLUMES). choose_shape picks the aggregation shape the inputs
+carry; the tests check that it still picks it.
 
 A pure model, like budget.py: every figure it returns is arithmetic on INPUTS
 and on the measured (proxy) records of docs/scale/recursion-proxy.jsonl. Nothing
@@ -59,7 +61,7 @@ INPUTS = {
     "aggregator_machines": budget.INPUTS["machines"],
     "aggregator_cores": 32,
     "aggregator_memory_bytes": 128 * GIB,
-    "merge_machine_seconds_per_reveal": 0.29991,  # 1,049.7 / 3,500, workload.md
+    "merge_machine_seconds_per_reveal": 0.299143,  # 104.7 / 350, workload.md
     "cost_ceiling_cents": 0.1,
     "price_per_machine_hour": 2.0,  # illustrative, as throughput.md
     "delay_ceiling_seconds": 300,
@@ -119,7 +121,9 @@ INPUTS = {
     # Aggregation: the Poseidon2 architecture (c) with wide layers.
     "keccak_permutation_seconds": 131e-9,  # measured, reveal-parameters.md
     "keccak_rate_bytes": 136,
-    "poseidon2_permutation_seconds": 400e-9,  # an assumption, not yet established
+    # Measured: one scalar width-24 permutation of the pinned library on one
+    # core, a million permutations (layers-results.md, 868.7 to 1129.3 ns over runs).
+    "poseidon2_permutation_seconds": 897.1e-9,
     "poseidon2_rate": 15,
     "poseidon2_air_columns": 451,
     "poseidon2_digest_bytes": 36,
@@ -145,8 +149,28 @@ INPUTS = {
     "ood_cells_leaf": 3_000_000,
     "ood_cells_layer": 1_000_000,
     "layer_width": 600,
-    "batch_arity": 32,
+    # The fixed shape every key is made for (chosen by choose_shape below): a
+    # batch verifies up to batch_arity reveal proofs and a root up to
+    # root_capacity batches. A fuller layer is padded: its prover pays the
+    # whole circuit however many slots are used.
+    "batch_arity": 8,
+    "root_capacity": 29,
+    # An aggregator closes a batch that has not filled when this long has passed
+    # (one mean block time), padded under the same key.
+    "batch_close_seconds": 30,
     "aggregator_shares": (0.4, 0.35, 0.25),
+    # The streamed prover's planned peaks at the shape the layers plan today
+    # (layers-results.md: a batch of 32 reveals, a root over 44 batches, its
+    # shrink; modeled from the built circuits). Another shape's peaks are these
+    # scaled by its padded trace against that shape's.
+    "planned_batch_arity": 32,
+    "planned_root_capacity": 44,
+    "planned_batch_peak_bytes": 93.3 * GIB,
+    "planned_root_peak_bytes": 116.3 * GIB,
+    "planned_shrink_peak_bytes": 8.0 * GIB,
+    # A smaller bundle shape for quiet blocks, under keys of its own.
+    "quiet_batch_arity": 4,
+    "quiet_root_capacity": 1,
 
     # Public signatures: ML-DSA-44 verification proofs (spec 09, section 8).
     "binding_bytes": 20 + 32 + 32,  # account, key identity, transaction hash
@@ -512,38 +536,64 @@ def lde_bytes(rows, width, log_blowup, inputs=None):
     return rows * 2 * 2 ** log_blowup * width * _get(inputs, "field_bytes")
 
 
+def shape_layers(inputs=None):
+    """The three layers of the fixed shape: a batch of batch_arity reveal proofs,
+    a root over root_capacity batches and the shrink of that root, each padded
+    to its full count of children whatever a bundle fills."""
+    leaf = leaf_child(inputs)
+    batch = layer(_get(inputs, "batch_arity") * leaf["cells"], inputs)
+    batch_child = child_cost(batch["trace_log"], batch["width"], inputs=inputs)
+    root = layer(_get(inputs, "root_capacity") * batch_child["cells"], inputs)
+    root_child = child_cost(root["trace_log"], root["width"], inputs=inputs)
+    shrink = layer(root_child["cells"], inputs)
+    return {"leaf_child_cells": leaf["cells"], "batch": batch, "root": root, "shrink": shrink,
+            "batch_child_cells": batch_child["cells"], "root_child_cells": root_child["cells"]}
+
+
+def prover_peaks(inputs=None):
+    """Each layer's modeled peak prover memory at the shape, in bytes.
+
+    The streamed prover's planned peak at the shape the layers plan today
+    (planned_*), scaled by the layer's padded trace cells at this shape against
+    its cells at that one.
+    """
+    here = shape_layers(inputs)
+    planned = shape_layers(_with(inputs, batch_arity=_get(inputs, "planned_batch_arity"),
+                                 root_capacity=_get(inputs, "planned_root_capacity")))
+    return {name: _get(inputs, f"planned_{name}_peak_bytes") * here[name]["cells"] / planned[name]["cells"]
+            for name in ("batch", "root", "shrink")}
+
+
 def bundle(reveals, inputs=None, records=None):
-    """Machine-seconds, memory and walls of one bundle of reveals: batches, root, shrink."""
+    """Machine-seconds, memory and walls of one aggregator's reveals of a block
+    under the fixed-shape keys: every batch proven at its full arity, every root
+    at its full capacity, one root and one shrink for each capacity of batches."""
     cores = _get(inputs, "aggregator_cores")
     arity = _get(inputs, "batch_arity")
     s_cell = cell_seconds(inputs, records=records)
     s_shrink = cell_seconds(inputs, log_blowup=_get(inputs, "shrink_log_blowup"), records=records)
-    leaf = leaf_child(inputs)
+    shape = shape_layers(inputs)
+    full, root, shrink = shape["batch"], shape["root"], shape["shrink"]
     batches = math.ceil(reveals / arity)
-    full = layer(arity * leaf["cells"], inputs)
-    last_count = reveals - (batches - 1) * arity
-    last = layer(last_count * leaf["cells"], inputs)
-    batch_child = child_cost(full["trace_log"], full["width"], inputs=inputs)
-    root = layer(batches * batch_child["cells"], inputs)
-    root_child = child_cost(root["trace_log"], root["width"], inputs=inputs)
-    shrink = layer(root_child["cells"], inputs)
-    batch_seconds = ((batches - 1) * full["cells"] + last["cells"]) * s_cell
-    root_seconds = root["cells"] * s_cell
-    shrink_seconds = shrink["cells"] * s_shrink
+    roots = math.ceil(batches / _get(inputs, "root_capacity"))
+    batch_seconds = batches * full["cells"] * s_cell
+    root_seconds = roots * root["cells"] * s_cell
+    shrink_seconds = roots * shrink["cells"] * s_shrink
     total = batch_seconds + root_seconds + shrink_seconds
     return {
         "reveals": reveals,
         "batches": batches,
-        "leaf_child_cells": leaf["cells"],
+        "roots": roots,
+        "leaf_child_cells": shape["leaf_child_cells"],
         "batch": full,
         "root": root,
         "shrink": shrink,
-        "batch_child_cells": batch_child["cells"],
-        "root_child_cells": root_child["cells"],
+        "batch_child_cells": shape["batch_child_cells"],
+        "root_child_cells": shape["root_child_cells"],
         "machine_seconds": total / cores,
         "batch_wall": full["cells"] * s_cell / cores,
-        "root_wall": root_seconds / cores,
-        "shrink_wall": shrink_seconds / cores,
+        "root_wall": root["cells"] * s_cell / cores,
+        "shrink_wall": shrink["cells"] * s_shrink / cores,
         "batch_lde": lde_bytes(full["rows"], full["width"], _get(inputs, "log_blowup"), inputs),
         "root_lde": lde_bytes(root["rows"], root["width"], _get(inputs, "log_blowup"), inputs),
         "shrink_lde": lde_bytes(shrink["rows"], shrink["width"], _get(inputs, "shrink_log_blowup"), inputs),
@@ -555,6 +605,12 @@ def shares(total, inputs=None):
     parts = [math.floor(total * s) for s in _get(inputs, "aggregator_shares")]
     parts[0] += total - sum(parts)
     return parts
+
+
+def burst_reveals(inputs=None):
+    """The largest aggregator's reveals in a block at the burst spare above the target."""
+    per_block = math.ceil(_get(inputs, "private_per_block") * (1 + _get(inputs, "burst_spare")))
+    return shares(per_block, inputs)[0]
 
 
 def gamma2_p99(mean):
@@ -570,16 +626,19 @@ def gamma2_p99(mean):
 
 
 def private_aggregation(inputs=None, records=None):
+    """Every aggregator's bundle of a block. A batch waits to fill, or for the
+    batch_close_seconds after which it is proven padded, whichever is sooner."""
     per_block = _get(inputs, "private_per_block")
-    bundles = [bundle(n, inputs, records) for n in shares(per_block, inputs)]
+    bundles = [bundle(n, inputs, records) for n in shares(per_block, inputs) if n > 0]
     machine_seconds = sum(b["machine_seconds"] for b in bundles)
     largest = bundles[0]
-    fill = _get(inputs, "batch_arity") / (largest["reveals"] / _get(inputs, "block_seconds"))
+    fill = min(_get(inputs, "batch_arity") / (largest["reveals"] / _get(inputs, "block_seconds")),
+               _get(inputs, "batch_close_seconds"))
     fixed = fill + largest["batch_wall"] + largest["root_wall"] + largest["shrink_wall"]
     p99 = fixed + gamma2_p99(_get(inputs, "block_seconds"))
     return {"bundles": bundles, "machine_seconds": machine_seconds,
-            "per_reveal": machine_seconds / per_block, "fixed_delay": fixed, "p99_delay": p99,
-            "largest_memory": max(max(b["batch_lde"], b["root_lde"], b["shrink_lde"]) for b in bundles)}
+            "per_reveal": machine_seconds / per_block, "fill": fill, "fixed_delay": fixed, "p99_delay": p99,
+            "largest_memory": max(prover_peaks(inputs).values())}
 
 
 def public_aggregation(inputs=None, records=None):
@@ -616,11 +675,16 @@ def fleet(inputs=None, records=None):
     block = _get(inputs, "block_seconds")
     machines = math.ceil(seconds / block)
     spare = math.ceil(seconds * (1 + _get(inputs, "burst_spare")) / block)
+    # Each aggregator, and the public root's builder, runs whole machines of its own.
+    own = [b["machine_seconds"] for b in private["bundles"]] + [public["machine_seconds"]]
+    network = sum(math.ceil(s / block) for s in own)
+    network_spare = sum(math.ceil(s * (1 + _get(inputs, "burst_spare")) / block) for s in own)
     budget_seconds = _get(inputs, "aggregator_machines") * block
     price = _get(inputs, "price_per_machine_hour")
     cents = private["per_reveal"] * price / 3600 * 100
     return {"private": private, "public": public, "machine_seconds": seconds, "machines": machines,
-            "machines_with_spare": spare, "meets_machines": seconds <= budget_seconds,
+            "machines_with_spare": spare, "network_machines": network,
+            "network_machines_with_spare": network_spare, "meets_machines": seconds <= budget_seconds,
             "meets_merge_budget": private["per_reveal"] <= _get(inputs, "merge_machine_seconds_per_reveal"),
             "cents_per_reveal": cents, "meets_cost": cents <= _get(inputs, "cost_ceiling_cents"),
             "meets_delay": private["p99_delay"] <= _get(inputs, "delay_ceiling_seconds"),
@@ -640,6 +704,89 @@ def break_even_poseidon2(test, inputs=None, records=None):
         else:
             hi = mid
     return lo
+
+
+ARITIES = (4, 8, 16, 32, 64, 128)
+CAPACITIES = range(1, 65)
+
+
+def shape_fits(inputs=None, records=None):
+    """A shape is admissible when every layer's peak is within an aggregator
+    machine, the largest aggregator's burst fits one root, and the delay holds."""
+    if max(prover_peaks(inputs).values()) > _get(inputs, "aggregator_memory_bytes"):
+        return False
+    if burst_reveals(inputs) > _get(inputs, "batch_arity") * _get(inputs, "root_capacity"):
+        return False
+    return fleet(inputs, records)["meets_delay"]
+
+
+def choose_shape(inputs=None, arities=ARITIES, capacities=CAPACITIES, records=None):
+    """The admissible (reveals per batch, batches per root) with the fewest
+    machine-seconds a block at the target; of equal ones, the larger root."""
+    records = load_records() if records is None else records
+    best = None
+    for arity in arities:
+        for capacity in capacities:
+            trial = _with(inputs, batch_arity=arity, root_capacity=capacity)
+            if not shape_fits(trial, records):
+                continue
+            key = (fleet(trial, records)["machine_seconds"], -capacity)
+            if best is None or key < best[0]:
+                best = (key, (arity, capacity))
+    return None if best is None else best[1]
+
+
+VOLUMES = (10_000, 100_000, 1_000_000)
+
+
+def at_volume(per_day, inputs=None):
+    """The inputs at another daily total, the per-block counts scaled from the
+    target's and rounded up; every ceiling and the shape unchanged."""
+    target = _get(inputs, "spends_per_day")
+    per_block = -(-_get(inputs, "private_per_block") * per_day // target)
+    public = -(-_get(inputs, "public_per_block") * per_day // target)
+    return _with(inputs, leaves_per_day=per_day, spends_per_day=per_day,
+                 private_per_block=per_block, public_per_block=public)
+
+
+def volume(per_day, inputs=None, records=None):
+    """The fleet's figures at that daily total."""
+    trial = at_volume(per_day, inputs)
+    f = fleet(trial, records)
+    return {"per_day": per_day, "inputs": trial, "fleet": f, "shares": shares(_get(trial, "private_per_block"), trial)}
+
+
+def direct_reveal_bytes(inputs=None):
+    """Block bytes of one reveal on the direct path: its proof, its other parts and its lookup tag."""
+    return leaf_proof_bytes(inputs) + _get(inputs, "private_non_proof_bytes") + _get(inputs, "lookup_tag_bytes")
+
+
+def quiet_block(reveals=1, inputs=None, records=None):
+    """A near-empty block's reveals served three ways: one bundle under the
+    fixed-shape keys, one under the smaller quiet shape's keys, or the direct path."""
+    price = _get(inputs, "price_per_machine_hour")
+    wait = gamma2_p99(_get(inputs, "block_seconds"))
+    close = _get(inputs, "batch_close_seconds")
+
+    parts = reveals * (_get(inputs, "private_non_proof_bytes") + _get(inputs, "lookup_tag_bytes"))
+
+    def served(trial):
+        b = bundle(reveals, trial, records)
+        delay = close + b["batch_wall"] + b["root_wall"] + b["shrink_wall"] + wait
+        root = proof_bytes(b["shrink"]["trace_log"], b["shrink"]["width"], _get(trial, "shrink_queries"),
+                           _get(trial, "shrink_log_blowup"), trial)
+        return {"machine_seconds": b["machine_seconds"], "cents_per_reveal": b["machine_seconds"] / reveals * price / 36,
+                "p99_delay": delay, "block_bytes": parts + root, "peak": max(prover_peaks(trial).values())}
+
+    fixed = served(inputs)
+    quiet = served(_with(inputs, batch_arity=_get(inputs, "quiet_batch_arity"),
+                         root_capacity=_get(inputs, "quiet_root_capacity")))
+    direct_bytes = direct_reveal_bytes(inputs)
+    return {"reveals": reveals, "fixed": fixed, "quiet": quiet,
+            "direct": {"machine_seconds": 0.0, "cents_per_reveal": 0.0, "p99_delay": -math.log(0.01) * _get(inputs, "block_seconds"),
+                       "block_bytes": reveals * direct_bytes},
+            "direct_per_block": _get(inputs, "message_cap_bytes") // direct_bytes,
+            "direct_per_block_gas": budget.private_per_block_today()}
 
 
 # --------------------------------------------------------------------------
@@ -744,8 +891,10 @@ def proof_terms(lde_log, functions, queries, log_blowup, inputs=None):
 
 
 def bundle_security(reveals=None, inputs=None):
-    """The modeled whole-bundle bound: every proof's terms added, the digest once."""
-    reveals = _get(inputs, "private_per_block") if reveals is None else reveals
+    """The modeled whole-bundle bound: every proof's terms added, the digest once.
+    By default the largest bundle the shape admits, every slot of one root filled."""
+    if reveals is None:
+        reveals = _get(inputs, "batch_arity") * _get(inputs, "root_capacity")
     b = bundle(reveals, inputs)
     lb = _get(inputs, "log_blowup")
     leaf_lde = _get(inputs, "leaf_trace_log") + 1 + lb
@@ -844,22 +993,112 @@ def aggregation_table(inputs=None):
     tmerge = break_even_poseidon2(lambda r: r["meets_merge_budget"], inputs)
     tcost = break_even_poseidon2(lambda r: r["meets_cost"], inputs)
     tdelay = break_even_poseidon2(lambda r: r["meets_delay"], inputs)
+    arity, capacity = _get(inputs, "batch_arity"), _get(inputs, "root_capacity")
+    merge = _get(inputs, "merge_machine_seconds_per_reveal")
+    ns = _get(inputs, "poseidon2_permutation_seconds") * 1e9
     return [
         "| Figure (all modeled) | Value | Ceiling (workload.md) |",
         "|---|---|---|",
         f"| Cells to verify one reveal proof inside a layer (modeled) | {big['leaf_child_cells']:,} | none |",
         f"| Single-thread seconds a cell, Poseidon2 commitments (modeled) | {cell_seconds(inputs) * 1e9:,.1f} ns | none |",
-        f"| Batch proof of {_get(inputs, 'batch_arity')} reveals on one machine (modeled) | {big['batch_wall']:,.1f} s, extension {big['batch_lde'] / GIB:,.1f} GiB | 128 GiB a machine (not yet established) |",
-        f"| Root over the largest aggregator's {big['batches']} batches, then the shrink (modeled) | {big['root_wall']:,.1f} s and {big['shrink_wall']:,.1f} s, extensions {big['root_lde'] / GIB:,.1f} and {big['shrink_lde'] / GIB:,.1f} GiB | 128 GiB a machine (not yet established) |",
-        f"| Machine-seconds a private reveal (modeled) | {p['per_reveal']:,.4f}, {_yes(f['meets_merge_budget'])} | 0.29991, the 0.3 s merge budget (not yet established) |",
+        f"| Batch proof of {arity} reveals on one machine (modeled) | {big['batch_wall']:,.1f} s | none |",
+        f"| Root over up to {capacity} batches (the largest aggregator fills {big['batches']}), then the shrink (modeled) | {big['root_wall']:,.1f} s and {big['shrink_wall']:,.1f} s | none |",
+        f"| Machine-seconds a private reveal (modeled) | {p['per_reveal']:,.4f}, {_yes(f['meets_merge_budget'])} | {merge:g}, the 0.3 s merge budget (not yet established) |",
         f"| Machine-seconds a block, private (modeled) | {p['machine_seconds']:,.1f} | none |",
         f"| Machine-seconds a block, public signature proofs (modeled) | {q['machine_seconds']:,.1f} | none |",
         f"| Machines a block needs, and with 50 percent spare (modeled) | {f['machines']:,} and {f['machines_with_spare']:,}, {_yes(f['meets_machines'])} | 40 machines (not yet established) |",
+        f"| The network's aggregator machines: each of the {len(p['bundles'])} aggregators and the public root's builder on whole machines of its own, and with 50 percent spare (modeled) | {f['network_machines']:,} and {f['network_machines_with_spare']:,} | 40 machines (not yet established) |",
         f"| Cost a private reveal at 2 US dollars a machine-hour (modeled) | {f['cents_per_reveal']:,.4f} US cents, {_yes(f['meets_cost'])} | 0.1 US cents (not yet established) |",
         f"| p99 transaction-to-inclusion delay, largest aggregator (modeled) | {p['p99_delay']:,.1f} s ({p['fixed_delay']:,.1f} s proving and filling, the rest two block waits), {_yes(f['meets_delay'])} | 5 minutes (not yet established) |",
         f"| Reveal proofs into the largest aggregator (modeled) | {ingress_bits(inputs) / 1e9:,.2f} Gbit/s, {_yes(ingress_bits(inputs) <= 8 * _get(inputs, 'aggregator_bandwidth_bytes_per_second'))} | 1 Gbit/s sustained (not yet established) |",
-        f"| Highest Poseidon2 permutation cost that meets each ceiling (modeled) | 40 machines: {t40:,.0f} ns; with 50 percent spare: {t40s:,.0f} ns; merge budget: {tmerge:,.0f} ns; cost: {tcost:,.0f} ns; delay: {tdelay:,.0f} ns | the input is 400 ns (not yet established) |",
+        f"| Highest Poseidon2 permutation cost that meets each ceiling (modeled) | 40 machines: {_ns(t40)}; with 50 percent spare: {_ns(t40s)}; merge budget: {_ns(tmerge)}; cost: {_ns(tcost)}; delay: {_ns(tdelay)} | the input is {ns:,.1f} ns (measured) |",
     ]
+
+
+def _ns(value):
+    return "none" if value is None else f"{value:,.0f} ns"
+
+
+def shape_table(inputs=None):
+    """Each layer of the chosen shape: its trace, the cell model's extension and the streamed peak."""
+    shape = shape_layers(inputs)
+    peaks = prover_peaks(inputs)
+    ceiling = _get(inputs, "aggregator_memory_bytes")
+    arity, capacity = _get(inputs, "batch_arity"), _get(inputs, "root_capacity")
+    names = {"batch": f"Batch of {arity} reveals", "root": f"Root over {capacity} batches", "shrink": "Shrink of the root"}
+    blowups = {"batch": "log_blowup", "root": "log_blowup", "shrink": "shrink_log_blowup"}
+    lines = [
+        "| Layer of the chosen shape (all modeled) | Trace rows | Extension, the cell model | Streamed prover at its peak, scaled from the plan | Ceiling (workload.md) |",
+        "|---|---|---|---|---|",
+    ]
+    for name in ("batch", "root", "shrink"):
+        layer_ = shape[name]
+        ext = lde_bytes(layer_["rows"], layer_["width"], _get(inputs, blowups[name]), inputs)
+        lines.append(f"| {names[name]} (modeled) | {layer_['rows']:,} | {ext / GIB:,.1f} GiB | {peaks[name] / GIB:,.1f} GiB, {_yes(peaks[name] <= ceiling)} "
+                     f"| 128 GiB a machine (not yet established) |")
+    return lines
+
+
+def choice_table(inputs=None, records=None):
+    """The admissible shape of fewest machine-seconds for each reveals-per-batch."""
+    records = load_records() if records is None else records
+    lines = [
+        "| Reveals per batch (all modeled) | Fewest batches per root that hold the burst | Largest peak | Machine-seconds a block | Network machines | Admissible |",
+        "|---|---|---|---|---|---|",
+    ]
+    for arity in ARITIES:
+        capacity = math.ceil(burst_reveals(inputs) / arity)
+        trial = _with(inputs, batch_arity=arity, root_capacity=capacity)
+        f = fleet(trial, records)
+        peak = max(prover_peaks(trial).values())
+        lines.append(f"| {arity} (modeled) | {capacity} | {peak / GIB:,.1f} GiB | {f['machine_seconds']:,.1f} | {f['network_machines']:,} "
+                     f"| {'yes' if shape_fits(trial, records) else 'no'} |")
+    return lines
+
+
+def volume_table(inputs=None, records=None):
+    records = load_records() if records is None else records
+    rows = [volume(v, inputs, records) for v in VOLUMES]
+    head = " | ".join(f"{v['per_day']:,} a day" for v in rows)
+    lines = [f"| Figure at the chosen shape (all modeled) | {head} | Ceiling (workload.md) |", "|---|" + "---|" * len(rows) + "---|"]
+
+    def row(name, fn, ceiling):
+        lines.append(f"| {name} (modeled) | " + " | ".join(fn(v) for v in rows) + f" | {ceiling} |")
+
+    row("Reveals a block, and each aggregator's", lambda v: f"{_get(v['inputs'], 'private_per_block'):,}: {', '.join(str(n) for n in v['shares'])}", "none")
+    row("Batches the largest aggregator proves, padded to its arity", lambda v: f"{v['fleet']['private']['bundles'][0]['batches']:,}", "none")
+    row("Machine-seconds a block, private and public", lambda v: f"{v['fleet']['private']['machine_seconds']:,.1f} and {v['fleet']['public']['machine_seconds']:,.1f}", "none")
+    row("The network's aggregator machines, and with 50 percent spare", lambda v: f"{v['fleet']['network_machines']:,} and {v['fleet']['network_machines_with_spare']:,}", "40 machines (not yet established)")
+    row("Machine-seconds a private reveal", lambda v: f"{v['fleet']['private']['per_reveal']:,.4f}", "none")
+    row("Cost a private reveal at 2 US dollars a machine-hour", lambda v: f"{v['fleet']['cents_per_reveal']:,.4f} US cents, {_yes(v['fleet']['meets_cost'])}", "0.1 US cents (not yet established)")
+    row("p99 delay, largest aggregator", lambda v: f"{v['fleet']['private']['p99_delay']:,.1f} s, {_yes(v['fleet']['meets_delay'])}", "5 minutes (not yet established)")
+    return lines
+
+
+QUIET_REVEALS = (1, 4)
+
+
+def quiet_table(inputs=None, records=None):
+    """A near-empty block's reveals, all taken by one aggregator or sent direct."""
+    qa, qc = _get(inputs, "quiet_batch_arity"), _get(inputs, "quiet_root_capacity")
+    arity, capacity = _get(inputs, "batch_arity"), _get(inputs, "root_capacity")
+    lines = [
+        "| A quiet block (all modeled) | Reveals | Machine-seconds | Cost a reveal | p99 delay | Block bytes |",
+        "|---|---|---|---|---|---|",
+    ]
+    for n in QUIET_REVEALS:
+        q = quiet_block(n, inputs, records)
+        paths = [(f"One bundle under the fixed-shape keys, {arity} a batch and {capacity} batches a root, padded", q["fixed"]),
+                 (f"One bundle under a smaller shape's keys, {qa} a batch and {qc} batch a root", q["quiet"])]
+        if n <= min(q["direct_per_block"], q["direct_per_block_gas"]):
+            paths.append(("Direct path, each reveal proof verified natively", q["direct"]))
+        for name, r in paths:
+            lines.append(f"| {name} (modeled) | {n} | {r['machine_seconds']:,.1f} | {r['cents_per_reveal']:,.4f} US cents, "
+                         f"{_yes(r['cents_per_reveal'] <= _get(inputs, 'cost_ceiling_cents'))} | {r['p99_delay']:,.1f} s | {r['block_bytes']:,} |")
+    q = quiet_block(1, inputs, records)
+    lines.append(f"| Direct-path reveals a block holds: under the 10,485,760-byte cap alone, and under today's gas rule (modeled) | "
+                 f"| | | | {q['direct_per_block']:,} and {q['direct_per_block_gas']:,} |")
+    return lines
 
 
 def public_table(inputs=None):
@@ -884,8 +1123,9 @@ def public_table(inputs=None):
 
 def security_table(inputs=None):
     s = bundle_security(inputs=inputs)
+    largest = _get(inputs, "batch_arity") * _get(inputs, "root_capacity")
     lines = [
-        "| Proof (all modeled) | Proofs in a bundle of 3,500 | Classical bits each | Quantum bits each |",
+        f"| Proof (all modeled) | Proofs in a bundle of {largest:,} | Classical bits each | Quantum bits each |",
         "|---|---|---|---|",
     ]
     for name, count, c, q in s["rows"]:
@@ -914,7 +1154,9 @@ def header_table(inputs=None):
 def report(inputs=None):
     return "\n".join(
         restore_table(inputs) + [""] + header_table(inputs) + [""] + storage_table(inputs) + [""]
-        + aggregation_table(inputs) + [""] + security_table(inputs) + [""] + public_table(inputs)
+        + aggregation_table(inputs) + [""] + shape_table(inputs) + [""] + choice_table(inputs) + [""]
+        + volume_table(inputs) + [""] + quiet_table(inputs) + [""]
+        + security_table(inputs) + [""] + public_table(inputs)
     )
 
 
