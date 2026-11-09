@@ -287,12 +287,20 @@ fn verification_cost_is_counted_from_the_tables() {
     progress(&format!("verification cost: {cost:?}"));
 }
 
-/// The chunk proofs fold through a batch, a root and a shrink into one public
-/// root proof of at most 859,736 bytes, each layer's prover within the
-/// acceptance run's memory.
-#[test]
-fn chunks_fold_into_one_public_root_proof() {
-    let _guard = one_at_a_time();
+/// The batch and root of the fold over [`hash_chunks`]: one batch a chunk,
+/// the root over both batches, each proof verified against its claim.
+struct Folded {
+    chunks: Vec<(Vec<u8>, Claim)>,
+    whole: Claim,
+    batch_key: layers::LayerKey,
+    batches: Vec<(Vec<u8>, Claim)>,
+    root_key: layers::LayerKey,
+    root: Vec<u8>,
+}
+
+/// Prove the batches and the root of the fold. Both fold tests below prove
+/// them, so each can run in its own CI job within the 10-minute limit.
+fn fold_batches_and_root() -> Folded {
     let chunk = hash_key();
     let chunks = hash_chunks().clone();
     let txs = hash_vectors();
@@ -323,13 +331,6 @@ fn chunks_fold_into_one_public_root_proof() {
         progress(&format!("batch {i} proven: {} bytes in {:.2} s", batch.len(), t.elapsed().as_secs_f64()));
         let part = values(&txs[SLOTS * i..SLOTS * (i + 1)]);
         layers::verify_batch(&batch_key, &BINDING, i as u32, &claim.start, &part, &batch).unwrap();
-        // Reordered, dropped or added transactions under the batch.
-        let swapped = vec![part[1].clone(), part[0].clone()];
-        assert!(layers::verify_batch(&batch_key, &BINDING, i as u32, &claim.start, &swapped, &batch).is_err());
-        assert!(layers::verify_batch(&batch_key, &BINDING, i as u32, &claim.start, &part[..1], &batch).is_err());
-        let mut added = part.clone();
-        added.push(part[0].clone());
-        assert!(layers::verify_batch(&batch_key, &BINDING, i as u32, &claim.start, &added, &batch).is_err());
         batches.push((batch, *claim));
     }
 
@@ -340,14 +341,75 @@ fn chunks_fold_into_one_public_root_proof() {
         root_key.table_heights(),
         root_key.table_lanes()
     ));
-    // Batches out of order are refused by the root's prover.
-    let reversed = vec![batches[1].clone(), batches[0].clone()];
-    assert!(layers::prove_layer(&root_key, &batch_key, &BINDING, 0, &reversed, [22; 32]).is_err());
     reset_peak();
     let t = std::time::Instant::now();
     let root = layers::prove_layer(&root_key, &batch_key, &BINDING, 0, &batches, [23; 32]).unwrap();
     progress(&format!("root proven: {} bytes in {:.2} s", root.len(), t.elapsed().as_secs_f64()));
     layers::verify_layer(&root_key, &BINDING, 0, &whole, &root).unwrap();
+    Folded {
+        chunks,
+        whole,
+        batch_key,
+        batches,
+        root_key,
+        root,
+    }
+}
+
+/// The chunk proofs fold through a batch each and a root over both batches,
+/// each layer's prover within the acceptance run's memory; reordered,
+/// dropped or added transactions under a batch, and batches out of order
+/// under the root, are refused.
+#[test]
+fn chunks_batch_and_root_fold_correctly() {
+    let _guard = one_at_a_time();
+    let txs = hash_vectors();
+    let Folded {
+        chunks,
+        whole,
+        batch_key,
+        batches,
+        root_key,
+        root,
+    } = fold_batches_and_root();
+    for (i, ((batch, claim), (_, chunk_claim))) in batches.iter().zip(&chunks).enumerate() {
+        assert_eq!(claim, chunk_claim);
+        // fold_batches_and_root verified the batch against its own part.
+        let part = values(&txs[SLOTS * i..SLOTS * (i + 1)]);
+        // Reordered, dropped or added transactions under the batch.
+        let swapped = vec![part[1].clone(), part[0].clone()];
+        assert!(layers::verify_batch(&batch_key, &BINDING, i as u32, &claim.start, &swapped, batch).is_err());
+        assert!(layers::verify_batch(&batch_key, &BINDING, i as u32, &claim.start, &part[..1], batch).is_err());
+        let mut added = part.clone();
+        added.push(part[0].clone());
+        assert!(layers::verify_batch(&batch_key, &BINDING, i as u32, &claim.start, &added, batch).is_err());
+    }
+    // Batches out of order are refused by the root's prover.
+    let reversed = vec![batches[1].clone(), batches[0].clone()];
+    assert!(layers::prove_layer(&root_key, &batch_key, &BINDING, 0, &reversed, [22; 32]).is_err());
+    // The root claims both chunks (verified in fold_batches_and_root), not
+    // the first alone.
+    assert_eq!(whole, Claim::joined(&[chunks[0].1, chunks[1].1]).unwrap());
+    let short = Claim::joined(&[chunks[0].1]).unwrap();
+    assert!(layers::verify_layer(&root_key, &BINDING, 0, &short, &root).is_err());
+}
+
+/// The root of the fold shrinks into one public root proof of at most
+/// 859,736 bytes, the shrink's prover within the acceptance run's memory. It
+/// proves the batches and root again (fold_batches_and_root) rather than
+/// take them from chunks_batch_and_root_fold_correctly, so the two run in
+/// separate CI jobs.
+#[test]
+fn chunks_shrink_folds_to_the_public_root_size() {
+    let _guard = one_at_a_time();
+    let Folded {
+        chunks,
+        whole,
+        batch_key,
+        batches,
+        root_key,
+        root,
+    } = fold_batches_and_root();
     // Nothing below needs the batches or the batch key's prover data.
     drop(batches);
     drop(batch_key);
