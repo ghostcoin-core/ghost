@@ -49,6 +49,8 @@ export const WARN_SLOT_TOO_SMALL =
   "This coin is not larger than the cost of a cancel at this base fee: a words-only spend of it puts less in Guard's slot than a cancel costs, so the stop card could not stop it.";
 export const WARN_COST_UNKNOWN = "The cost of a cancel is unknown at a base fee of zero, so this coin's size against it cannot be checked.";
 export const USER_REJECTED = 4001;
+// The status line once a request is refused at its first check.
+export const REFUSED_STATUS = "This request was refused. Nothing was signed.";
 const METHOD_NOT_FOUND = -32601;
 const INVALID_PARAMS = -32602;
 const INTERNAL_ERROR = -32603;
@@ -1024,12 +1026,14 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
     });
   }
 
-  // One request, checked first: a refusal never reaches a screen.
+  // One request, checked first: a refusal never reaches a screen, but the
+  // status line says it was refused instead of still waiting.
   async function handle(message, origin) {
     let request;
     try {
       request = checkRequest(message, guard);
     } catch (err) {
+      ui.status(REFUSED_STATUS);
       const id = message && Number.isSafeInteger(message.id) ? message.id : null;
       return { id, error: { code: err.code ?? INVALID_PARAMS, message: err.message } };
     }
