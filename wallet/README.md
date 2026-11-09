@@ -69,11 +69,17 @@ another against the same four requests.
   the wallet's origin (`https://ghost-wallet-nine.vercel.app`) and the
   window it opened. Anything else is ignored.
 - **Strict refusal, before any screen.** An unknown method, a chain id not
-  in `CHAIN_IDS` (the test network, 7777001), a missing, extra or malformed
+  in `CHAIN_IDS` (the public test network the hosted web app runs on,
+  6777972, and the internal network, 7777001), a missing, extra or malformed
   field (params on `ghost_getAccount` or `ghost_newReceiveAddress`
   included), a `to` or `from` that is not 20 bytes (no contract creation),
   a `from` this wallet never issued, or a priority fee above the fee cap is
-  refused with an error naming the field.
+  refused with an error naming the field. The window's status line then
+  reads "This request was refused. Nothing was signed." instead of still
+  waiting for the app. A Guard commit goes only to the chain's coin commit
+  entry in `COMMIT_ENTRIES`, the same address on both networks
+  (`0x67686f7374000000000000000000000000000005`, ghost-node
+  `params/ghost/privaccounts.go`).
 - **The key is never stored in the clear.** Create takes 32 bytes from
   `crypto.getRandomValues` and makes them the wallet's 24 words with the
   module's `ghost_wallet_new`. The words are encrypted with AES-256-GCM
@@ -111,11 +117,12 @@ browser; keep the 24 words first.
 | `index.html` | The page: its CSP and referrer policy, the module preloads, the one script tag, and the screens (start, words, backup check, restore, protect, approve). |
 | `style.css` | The page's few styles. |
 | `headers.json` | The headers the host serves for every file: the page's CSP plus `frame-ancestors 'none'`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`. |
-| `src/config.mjs` | The two settings: the web app origins and the chain ids. |
+| `src/config.mjs` | The settings: the web app origins, the chain ids, and Guard's commit entries and policies by chain. |
 | `src/wallet.mjs` | The wallet's logic: the request checks, the vault (AES-GCM, PBKDF2, HKDF, passkey PRF, IndexedDB), the issued-address count, the backup check, the approval and the signing. No DOM. |
 | `src/main.mjs` | The page's script: loads the module and gives `wallet.mjs` its screens and the browser's objects. |
 | `build.mjs` | Writes the release (below). |
 | `test/wallet.test.mjs` | The logic on the built module with stand-ins for IndexedDB, the screens, passkeys and the opener. |
+| `test/public-chain.test.mjs` | The public test network (6777972): every per-chain table covers it, a Vanish, a rescue and a receive address there, the refused-request status line, and the web app's pop-up connector signing on its public chain id. |
 | `test/build.test.mjs` | Two builds compared, RELEASE.json, the CSP, the SRI hashes and the absence of network code. |
 | `test/fakes.mjs` | The tests' stand-ins. |
 
