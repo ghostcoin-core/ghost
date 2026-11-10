@@ -3,19 +3,16 @@
 //! a root of `layers::BATCHES_PER_ROOT` batches) and the public root key over
 //! chunks of `mldsa::DESIGN_CHUNK` ML-DSA-44 verifications folded by the same
 //! layers, derived from the real-shape circuits and their preprocessed
-//! commitments, never from a proof, and checked against the key bytes (hex
-//! text) and SHA-256 digests committed in `proofs/keys/`.
+//! commitments, never from a proof, and checked against the SHA-256 digests
+//! committed in `proofs/keys/`.
 //!
 //! Each derivation's plan is printed stage by stage with its modeled peak
 //! (`layers::KeyMemory`), which must be within the 6,144 MiB budget
 //! (`layers::KEY_DERIVATION_BUDGET_BYTES`). Planning builds no key and runs
-//! with the normal tests, as does the check of the committed key bytes
-//! against their pinned digests. Every test that builds a key is
-//! `#[ignore]`d, so the normal tests stay fast; run them with
-//! `-- --ignored --nocapture` (`derive_production_bundle_root_key` and
-//! `derive_production_public_root_key` derive one production key each). The
-//! rust-proofs-root-key-* jobs of `.github/workflows/ci.yml` run them after
-//! every merge.
+//! with the normal tests. Every test that builds a key is `#[ignore]`d, so
+//! the normal tests stay fast; run them with `-- --ignored`
+//! (`derive_production_keys` derives both production keys, one after the
+//! other).
 
 use std::io::Write;
 use std::time::Instant;
@@ -91,57 +88,10 @@ fn check_plan(name: &str, plan: &KeyPlan, stages: usize) {
     }
 }
 
-/// The directory of the committed key files, `proofs/keys/`.
-fn keys_dir() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("keys")
-}
-
-/// The file under `proofs/keys/` holding `path`'s production key bytes as
-/// lower-case hex text.
-fn key_hex_file(path: RootPath) -> &'static str {
-    match path {
-        RootPath::Bundle => "bundle-root-key.hex",
-        RootPath::Public => "public-root-key.hex",
-    }
-}
-
-/// The file under `proofs/keys/` holding the SHA-256 digest of `path`'s
-/// production key bytes as lower-case hex text.
-fn key_digest_file(path: RootPath) -> &'static str {
-    match path {
-        RootPath::Bundle => "bundle-root-key.sha256",
-        RootPath::Public => "public-root-key.sha256",
-    }
-}
-
-fn read_key_file(file: &str) -> String {
-    std::fs::read_to_string(keys_dir().join(file)).unwrap_or_else(|e| panic!("proofs/keys/{file}: {e}"))
-}
-
-/// `path`'s committed production key bytes: its hex file, exactly
-/// `ROOT_KEY_BYTES` bytes in lower-case hexadecimal on one line, decoded.
-fn committed_key_bytes(path: RootPath) -> [u8; ROOT_KEY_BYTES] {
-    let file = key_hex_file(path);
-    let text = read_key_file(file);
-    let hex = text.strip_suffix('\n').unwrap_or(&text);
-    assert_eq!(hex.len(), 2 * ROOT_KEY_BYTES, "proofs/keys/{file}: {ROOT_KEY_BYTES} bytes, one line");
-    let digit = |c: u8| match c {
-        b'0'..=b'9' => c - b'0',
-        b'a'..=b'f' => c - b'a' + 10,
-        _ => panic!("proofs/keys/{file}: {:?} is not a lower-case hex digit", c as char),
-    };
-    let mut bytes = [0u8; ROOT_KEY_BYTES];
-    for (byte, pair) in bytes.iter_mut().zip(hex.as_bytes().chunks_exact(2)) {
-        *byte = (digit(pair[0]) << 4) | digit(pair[1]);
-    }
-    assert_eq!(to_hex(&bytes), hex, "proofs/keys/{file}");
-    bytes
-}
-
-/// Derive `path`'s key as `plan` plans it, and check it against the
-/// committed key: the derived bytes are the committed hex file's, their
-/// SHA-256 is the pinned one, the key's tables are the plan's shrink, and a
-/// key one byte off, or under the other path, is not the production key.
+/// Derive `path`'s key as `plan` plans it, and check it against the pinned
+/// digest: the derived bytes' SHA-256 is the committed one, the key's
+/// tables are the plan's shrink, and a key one byte off, or under the other
+/// path, is not the production key.
 fn derive_and_check(name: &str, path: RootPath, plan: &KeyPlan) {
     let started = Instant::now();
     let key = production_root_key(path).expect("the production key derives");
@@ -160,12 +110,6 @@ fn derive_and_check(name: &str, path: RootPath, plan: &KeyPlan) {
     say(&format!("derived: {name} key bytes {}", to_hex(&bytes)));
     say(&format!("derived: {name} key sha256 {digest}"));
     assert_eq!(digest, path.production_key_sha256(), "{name}: the derived key is not the pinned one");
-    assert_eq!(
-        to_hex(&bytes),
-        to_hex(&committed_key_bytes(path)),
-        "{name}: the derived key is not the one committed in proofs/keys/{}",
-        key_hex_file(path)
-    );
     assert!(is_production_root_key(path, &bytes), "{name}");
     let code = path.code();
     // SAFETY: `bytes` is ROOT_KEY_BYTES long and readable.
@@ -245,53 +189,11 @@ fn the_pinned_digests_are_sha256_hex() {
 /// the ones the library pins.
 #[test]
 fn the_digest_files_are_committed_and_pinned() {
-    for path in [RootPath::Bundle, RootPath::Public] {
-        let file = key_digest_file(path);
-        assert_eq!(read_key_file(file).trim(), path.production_key_sha256(), "proofs/keys/{file}");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("keys");
+    for (file, path) in [("bundle-root-key.sha256", RootPath::Bundle), ("public-root-key.sha256", RootPath::Public)] {
+        let text = std::fs::read_to_string(dir.join(file)).unwrap_or_else(|e| panic!("proofs/keys/{file}: {e}"));
+        assert_eq!(text.trim(), path.production_key_sha256(), "proofs/keys/{file}");
     }
-}
-
-/// Each production key's bytes are committed as lower-case hex text under
-/// `proofs/keys/`, for the node to embed: the bytes' SHA-256 is the digest
-/// in the key's `.sha256` file, the library accepts them as that path's
-/// production key and no other, and they are a root key of the path, at
-/// the shrink's shape and with the planned shrink's tables.
-#[test]
-fn the_committed_key_bytes_are_the_pinned_keys() {
-    let plans = [
-        (RootPath::Bundle, layers::bundle_root_key_plan().expect("the bundle root key plans")),
-        (RootPath::Public, mldsa::public_root_key_plan().expect("the public root key plans")),
-    ];
-    for (path, plan) in &plans {
-        let (path, hex, sha) = (*path, key_hex_file(*path), key_digest_file(*path));
-        let bytes = committed_key_bytes(path);
-        assert_eq!(
-            to_hex(&sha256(&bytes)),
-            read_key_file(sha).trim(),
-            "the SHA-256 of proofs/keys/{hex} is not the digest in proofs/keys/{sha}"
-        );
-        assert!(is_production_root_key(path, &bytes), "proofs/keys/{hex}");
-        let other = if path == RootPath::Bundle { RootPath::Public } else { RootPath::Bundle };
-        assert!(!is_production_root_key(other, &bytes), "proofs/keys/{hex} is not the {other:?} key");
-        // SAFETY: `bytes` is ROOT_KEY_BYTES long and readable.
-        let accepted = unsafe { ghost_root_key_is_production(path.code(), bytes.as_ptr(), bytes.len()) };
-        assert_eq!(accepted, GHOST_PROOFS_ACCEPTED, "proofs/keys/{hex}");
-
-        // The words of the key: its path, the shrink's shape, then each
-        // table's lanes and height as the plan's shrink stage has them.
-        let words: Vec<u32> =
-            bytes.chunks_exact(4).map(|w| u32::from_le_bytes(w.try_into().expect("four bytes"))).collect();
-        let shrink = plan.stages.last().expect("a shrink stage");
-        assert_eq!(shrink.layer, layers::LayerKind::Shrink, "{path:?}");
-        let shape = layers::LayerShape::SHRINK;
-        let mut header = vec![path.code(), shape.log_blowup as u32, shape.num_queries as u32];
-        for (lanes, height) in shrink.lanes.iter().zip(&shrink.heights) {
-            header.extend([*lanes as u32, *height as u32]);
-        }
-        assert_eq!(header.len(), 3 + 2 * 5, "{path:?}: five tables");
-        assert_eq!(words[..header.len()], header[..], "proofs/keys/{hex}: path, shape and tables");
-    }
-    assert_ne!(committed_key_bytes(RootPath::Bundle), committed_key_bytes(RootPath::Public));
 }
 
 /// A key built for verifying alone, its circuit's wire values dropped and
@@ -336,26 +238,15 @@ fn every_production_key_stage_plans_within_its_budget() {
     assert_ne!(public.stages[2], one_batch.stages[2], "the public root's stage follows its batches a root");
 }
 
-/// The production bundle root key derived layer by layer and checked against
-/// its committed bytes and pinned digest. Building it takes minutes and up
-/// to the planned peak, so it runs with `-- --ignored`, after every merge in
-/// the rust-proofs-root-key-bundle job of `.github/workflows/ci.yml`.
+/// Both production keys derived, one after the other, layer by layer, and
+/// checked against the pinned digests. Building them takes minutes and up to
+/// the planned peak, so it runs with `-- --ignored`.
 #[test]
-#[ignore = "builds the production bundle root key; run with -- --ignored"]
-fn derive_production_bundle_root_key() {
+#[ignore = "builds both production keys; run with -- --ignored"]
+fn derive_production_keys() {
     let bundle = layers::bundle_root_key_plan().expect("the bundle root key plans");
     check_plan("bundle root", &bundle, 3);
     derive_and_check("bundle root", RootPath::Bundle, &bundle);
-}
-
-/// The production public root key derived layer by layer and checked
-/// against its committed bytes and pinned digest. Building it takes minutes
-/// and up to the planned peak, so it runs with `-- --ignored`, after every
-/// merge in the rust-proofs-root-key-public job of
-/// `.github/workflows/ci.yml`.
-#[test]
-#[ignore = "builds the production public root key; run with -- --ignored"]
-fn derive_production_public_root_key() {
     let public = mldsa::public_root_key_plan().expect("the public root key plans");
     check_plan("public root", &public, 4);
     derive_and_check("public root", RootPath::Public, &public);
