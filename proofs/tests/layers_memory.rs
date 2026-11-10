@@ -1,10 +1,12 @@
 //! The memory the streamed layer prover plans at the real shape of the stage
-//! 2 design: a batch of 32 version 2 coin reveals at blowup 2^3 with 96
-//! queries, a root over 44 such batches at the same shape, and a shrink of
-//! that root at blowup 2^5 with 56 queries. Each layer's modeled peak
-//! (`layers::ProverMemory`) is printed by part and must be within the 128 GiB
-//! aggregator ceiling. Nothing is proven: the circuits are built for one, two
-//! and three slots and their tables planned, as `plan_pipeline` does.
+//! 2 design, the shape it chose for 1 million transactions a day
+//! (`layers::REVEALS_PER_BATCH` and `layers::BATCHES_PER_ROOT`): a batch of 8
+//! version 2 coin reveals at blowup 2^3 with 96 queries, a root over 29 such
+//! batches at the same shape, and a shrink of that root at blowup 2^5 with 56
+//! queries. Each layer's modeled peak (`layers::ProverMemory`) is printed by
+//! part and must be within the 128 GiB aggregator ceiling. Nothing is proven:
+//! the circuits are built for one, two and three slots and their tables
+//! planned, as `plan_pipeline` does.
 
 use std::io::Write;
 
@@ -50,14 +52,17 @@ fn the_streamed_prover_is_the_librarys() {
 
 #[test]
 fn the_real_shape_batch_and_root_fit_the_128_gib_ceiling() {
+    // The shape the design chose; a change to it is a new set of keys and a
+    // network upgrade (stage2-design.md, "Upgrade path"), not an edit here.
+    assert_eq!((layers::REVEALS_PER_BATCH, layers::BATCHES_PER_ROOT), (8, 29));
     the_streamed_prover_is_the_librarys();
     let child = layers::RevealChild::new(LayerShape::WIDE.num_queries);
     let plan = layers::plan_pipeline(
         &child,
         LayerShape::WIDE,
         child.log_height(),
-        32,
-        44,
+        layers::REVEALS_PER_BATCH,
+        layers::BATCHES_PER_ROOT,
         LayerShape::WIDE,
         LayerShape::SHRINK,
     )
@@ -65,6 +70,22 @@ fn the_real_shape_batch_and_root_fit_the_128_gib_ceiling() {
     for (name, layer) in [("batch", &plan.batch), ("root", &plan.root), ("shrink", &plan.shrink)] {
         report(name, layer);
     }
+    // The plan is of the chosen shape: the batch fills a reveal's
+    // verification in each of its slots and the root one batch's in each of
+    // its slots, so the batch's entries grow with the reveals and the root's
+    // with the batches (a plan of one slot fewer is smaller).
+    let fewer = layers::plan_pipeline(
+        &child,
+        LayerShape::WIDE,
+        child.log_height(),
+        layers::REVEALS_PER_BATCH - 1,
+        layers::BATCHES_PER_ROOT - 1,
+        LayerShape::WIDE,
+        LayerShape::SHRINK,
+    )
+    .expect("a smaller pipeline plans");
+    assert!(fewer.batch.entries[0] < plan.batch.entries[0], "{:?} {:?}", fewer.batch.entries, plan.batch.entries);
+    assert!(fewer.root.entries[0] < plan.root.entries[0], "{:?} {:?}", fewer.root.entries, plan.root.entries);
     for (name, layer) in [("batch", &plan.batch), ("root", &plan.root), ("shrink", &plan.shrink)] {
         assert_eq!(layer.modeled_prover_bytes, layer.memory.peak, "{name}");
         assert!(
@@ -73,4 +94,9 @@ fn the_real_shape_batch_and_root_fit_the_128_gib_ceiling() {
             layer.memory.peak as f64 / GIB
         );
     }
+    assert!(
+        plan.shrink_bytes_bound <= layers::PROOF_FIELD_BYTES,
+        "the shrink proof may take {} bytes",
+        plan.shrink_bytes_bound
+    );
 }

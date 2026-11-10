@@ -450,6 +450,17 @@ pub struct PlannedLayer {
 /// GiB. Every layer of the real pipeline plans its prover within it.
 pub const PROVER_CEILING_BYTES: u64 = 128 << 30;
 
+/// The bundle shape the stage 2 design chose for 1 million transactions a
+/// day (docs/scale/stage2-design.md, "The shape for 1 million a day"): the
+/// child slots of a batch key, the reveal proofs (or public signature
+/// chunks) one batch proof verifies. A batch with fewer is proven padded.
+pub const REVEALS_PER_BATCH: usize = 8;
+
+/// The batch slots of a root key in the chosen shape: the batch proofs one
+/// root proof verifies, an aggregator's whole share of a block with the 50
+/// percent burst spare. A root with fewer is proven padded.
+pub const BATCHES_PER_ROOT: usize = 29;
+
 pub use keys::ProverMemory;
 
 /// The batch, root and shrink of a real pipeline, planned without proving:
