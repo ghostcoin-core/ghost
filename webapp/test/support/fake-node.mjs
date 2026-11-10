@@ -873,19 +873,27 @@ export async function startFakeNode({
     req.on("data", (c) => chunks.push(c));
     req.on("end", () => {
       const body = Buffer.concat(chunks).toString("utf8");
-      let id = null;
+      const answer = (call) => {
+        let id = null;
+        try {
+          id = call.id;
+          requests.push({ method: call.method, params: call.params, body });
+          if (!Object.hasOwn(methods, call.method)) {
+            return { jsonrpc: "2.0", id, error: { code: -32601, message: "method not found" } };
+          }
+          return { jsonrpc: "2.0", id, result: methods[call.method](call.params || []) };
+        } catch (err) {
+          return { jsonrpc: "2.0", id, error: { code: err.code ?? SERVER_ERROR, message: String(err.message || err) } };
+        }
+      };
       let reply;
       try {
-        const call = JSON.parse(body);
-        id = call.id;
-        requests.push({ method: call.method, params: call.params, body });
-        if (!Object.hasOwn(methods, call.method)) {
-          reply = { jsonrpc: "2.0", id, error: { code: -32601, message: "method not found" } };
-        } else {
-          reply = { jsonrpc: "2.0", id, result: methods[call.method](call.params || []) };
-        }
+        // A JSON-RPC batch (an array of calls) is answered as geth does: an
+        // array of replies.
+        const parsed = JSON.parse(body);
+        reply = Array.isArray(parsed) ? parsed.map(answer) : answer(parsed);
       } catch (err) {
-        reply = { jsonrpc: "2.0", id, error: { code: err.code ?? SERVER_ERROR, message: String(err.message || err) } };
+        reply = { jsonrpc: "2.0", id: null, error: { code: SERVER_ERROR, message: String(err.message || err) } };
       }
       res.writeHead(200, { "content-type": "application/json" });
       // geth ends each reply with a newline.

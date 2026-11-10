@@ -9,9 +9,10 @@
 // once from a build-26-853ca88786fe node synced from the network's seeds.
 //
 // The recorded headers are fed through the module's header chain at the
-// entry's params, and through the flow itself with this build's table and a
-// stand-in endpoint that serves the fixture: the start is the pinned
-// genesis, every hash recomputes, every difficulty and RandomX seal checks,
+// entry's params, and through the flow itself with this build's entry
+// started from genesis (the recorded blocks lie below the build's pin) and a
+// stand-in endpoint that serves the fixture: the start is genesis, every
+// hash recomputes, every difficulty and RandomX seal checks,
 // and the page adopts the chain to its tip. A header altered after the fact
 // is refused.
 
@@ -36,6 +37,9 @@ const GENESIS_TIMESTAMP = 1_793_124_000;
 // (2^12).
 const GHOST_NODE_PARAMS = { blockTime: 30, halfLife: 3600, startDifficulty: 16384, minDifficulty: 4096, futureDrift: 30 };
 
+// This build's entry with its chain started at genesis, as the recorded
+// blocks need.
+const FROM_GENESIS = Object.freeze({ [String(CHAIN_ID)]: Object.freeze({ ...networkOf(NETWORKS, CHAIN_ID), pin: null }) });
 const BLOCKS = JSON.parse(readFileSync(new URL("./fixtures/public-testnet-headers.json", import.meta.url), "utf8"));
 const TIP = BLOCKS.length - 1;
 // A clock a minute past the recorded tip.
@@ -48,7 +52,7 @@ test("this build lists the public test network: chain id, genesis and the chain 
   assert.deepEqual({ ...entry.params }, GHOST_NODE_PARAMS);
   assert.equal(entry.genesisTimestamp, GENESIS_TIMESTAMP);
   assert.equal(entry.genesisHash, GENESIS_HASH);
-  assert.equal(entry.pin, null, "the chain is checked from genesis");
+  assert.ok(entry.pin && entry.pin.height > BLOCKS.length, "the chain is checked from a pin above the recorded blocks");
   assert.ok(Object.isFrozen(NETWORKS));
 });
 
@@ -117,7 +121,7 @@ function flowOn(blocks) {
     async clear() {},
   };
   const prover = nodeProver();
-  const flow = createFlow({ prover, fetch: fixtureEndpoint(blocks), headerStore, clock: () => NOW, sleep: async () => {} });
+  const flow = createFlow({ prover, fetch: fixtureEndpoint(blocks), networks: FROM_GENESIS, headerStore, clock: () => NOW, sleep: async () => {} });
   return { flow, prover, saves };
 }
 

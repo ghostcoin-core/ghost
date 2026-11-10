@@ -11,6 +11,21 @@
 
 import { concat, fromHex, quantity } from "./bytes.mjs";
 
+// The public test network's pinned start, made by scripts/make-pin.mjs
+// against a public node (see NETWORKS).
+const PIN_6777972 = {
+  hash: "0x7f93c093f256db86e01013df0505a162bec1bbc9d292ae109582d0add1ef03a7",
+  height: 39936,
+  totalWork: "540486799",
+  keyBlocks: [
+    [0, "0xdfe4271fd12d302e15c68e381ade8076207f70d3778eebd69604566fb6979436"],
+    [8192, "0xfbd8fdcd94d3d6131f4b893ff5300deb1f11d6d836d6dce000ece32ce9ad4bb1"],
+    [16384, "0x3c2ffe5ca39538c5db901f2a229d3dd207588f6c970eec0c391b2f39a82415f4"],
+    [24576, "0xc2710815c9bfcde3559c9a0346c257acf72c66f5aac1ad741b4cff507c286f70"],
+    [32768, "0x5e8e3de174986a39047db78e9babd3a76c20988a53d1edfab66980cd230fbd7c"],
+  ],
+};
+
 // The networks of this build, keyed by chain identifier (a decimal string).
 // An entry holds:
 //
@@ -29,25 +44,85 @@ import { concat, fromHex, quantity } from "./bytes.mjs";
 // rests on. With a pin, that includes its `totalWork`: it is taken as given,
 // never checked, and every header after the pin adds its difficulty to it,
 // so a wrong value moves which of two competing chains the page calls the
-// heavier. Headers below the pin are not authenticated. Each release ships
-// its own pin, a host step taken from the launch network; the headers the
-// page saved in its own storage are kept per chain and start, so a new pin
-// starts them afresh. The table lists the public test network, the one the
-// one-line installer joins; the launch network, and a pinned start, are
-// still to come. createFlow takes another table (the tests add their own
-// network).
+// heavier. Headers below the pin are not authenticated. The pin here is
+// made by scripts/make-pin.mjs, which walks the node's headers from genesis
+// to the pin (each hash, parent link and difficulty) and checks the other
+// public nodes agree; each deploy also serves a fresh one as pin.json next to
+// the page (loadNetworks), so a new visitor seal-checks only the headers since
+// that deploy. The headers the page saved in its own storage are kept per
+// chain and start, so a new pin starts them afresh. The table lists the
+// public test network, the one the one-line installer joins; the launch
+// network is still to come. createFlow takes another table (the tests add
+// their own network).
 export const NETWORKS = Object.freeze({
   // The public test network (ghost-node params/ghost/testnet.go): chain id
   // 6777972, the 30-second launch preset with its own start and minimum
-  // difficulty. Its chain is short, so the page checks every header from
-  // genesis.
+  // difficulty. Its pin is the fallback when the deploy's pin.json is missing
+  // or older (scripts/make-pin.mjs makes both).
   "6777972": Object.freeze({
     params: Object.freeze({ blockTime: 30, halfLife: 3600, startDifficulty: 16384, minDifficulty: 4096, futureDrift: 30 }),
     genesisTimestamp: 1793124000,
     genesisHash: "0xdfe4271fd12d302e15c68e381ade8076207f70d3778eebd69604566fb6979436",
-    pin: null,
+    pin: Object.freeze(PIN_6777972),
   }),
 });
+
+// A RandomX key block is at 0 or a multiple of this (client/src/seal.rs,
+// EPOCH_BLOCKS). A pin names every key block below it.
+export const EPOCH_BLOCKS = 8192;
+
+const HASH = /^0x[0-9a-f]{64}$/;
+
+// `served` (the deploy's pin.json, `{ chainId, hash, height, totalWork,
+// keyBlocks }`) checked for shape: a network of `networks`, a 32-byte hash,
+// a height above the pin `networks` already holds for it, a positive decimal
+// total work and every key block below the height, in order. Returns the
+// table with that pin in place, or `networks` unchanged when `served` is
+// missing, malformed, for another network or not newer. Nothing here is
+// trusted beyond the page's own origin, which serves the page's code too:
+// the start header is still fetched and kept only if its hash is this one.
+export function withServedPin(networks, served) {
+  try {
+    if (!served || typeof served !== "object") return networks;
+    const id = String(served.chainId);
+    const entry = networkOf(networks, id);
+    if (!entry) return networks;
+    const hash = String(served.hash).toLowerCase();
+    const { height, keyBlocks } = served;
+    if (!HASH.test(hash) || !Number.isSafeInteger(height) || height <= 0) return networks;
+    if (entry.pin && height <= entry.pin.height) return networks;
+    if (typeof served.totalWork !== "string" || !/^[1-9][0-9]*$/.test(served.totalWork)) return networks;
+    if (!Array.isArray(keyBlocks) || keyBlocks.length !== Math.ceil(height / EPOCH_BLOCKS)) return networks;
+    const keys = [];
+    for (const [i, pair] of keyBlocks.entries()) {
+      if (!Array.isArray(pair) || pair.length !== 2 || pair[0] !== i * EPOCH_BLOCKS) return networks;
+      const keyHash = String(pair[1]).toLowerCase();
+      if (!HASH.test(keyHash)) return networks;
+      keys.push(Object.freeze([pair[0], keyHash]));
+    }
+    if (keys[0][1] !== entry.genesisHash.toLowerCase()) return networks;
+    const pin = Object.freeze({ hash, height, totalWork: served.totalWork, keyBlocks: Object.freeze(keys) });
+    return Object.freeze({ ...networks, [id]: Object.freeze({ ...entry, pin }) });
+  } catch {
+    return networks;
+  }
+}
+
+// The deploy's pin, served as pin.json beside the page.
+export const SERVED_PIN_URL = new URL("../pin.json", import.meta.url);
+
+// This build's networks with the deploy's pin in place when the page's own
+// origin serves a newer one (withServedPin), else `networks` as they are.
+// Never throws: a missing, slow or malformed pin.json leaves the built-in pin.
+export async function loadNetworks({ fetch = globalThis.fetch, url = SERVED_PIN_URL, networks = NETWORKS, timeoutMs = 5000 } = {}) {
+  try {
+    const response = await fetch(url, { cache: "no-cache", signal: AbortSignal.timeout(timeoutMs) });
+    if (!response.ok) return networks;
+    return withServedPin(networks, await response.json());
+  } catch {
+    return networks;
+  }
+}
 
 // The entry of `chainId` in `networks`, or null.
 export function networkOf(networks, chainId) {

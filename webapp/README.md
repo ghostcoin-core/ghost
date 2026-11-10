@@ -60,9 +60,13 @@ The design, the node methods it calls and its limits are in
   IndexedDB (public header fields only, never a key), so a later visit
   re-links them to the start, checks everything but their seals again, and
   checks seals only for the new headers; with no storage, or a saved header
-  that does not re-link, it checks every header again. This build pins no
-  network yet (`webapp/src/header.mjs`), so it shows none on any network
-  until one is added.
+  that does not re-link, it checks every header again. The start is a
+  pinned header of the public test network (`webapp/src/header.mjs`), made
+  by `webapp/scripts/make-pin.mjs` from a node's headers; each deploy, and a
+  scheduled one every two hours, also serves a fresh pin as `pin.json`
+  beside the page, which the page takes when it is newer, so a new visitor
+  seal-checks only a few hundred headers. Check a pin against a node with
+  `node webapp/scripts/make-pin.mjs --check [pin.json]`.
 
 ## Build it yourself
 

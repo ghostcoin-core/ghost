@@ -18,7 +18,8 @@
 #        it is cross-origin isolated and falls back to the single-thread
 #        module otherwise;
 #   4. copies the page, its modules and both WebAssembly modules into dist
-#      and writes dist/SHA256SUMS.
+#      (with GHOST_PIN_FILE set, that pin too, as pin.json) and writes
+#      dist/SHA256SUMS.
 #
 # Anyone can run it on the same commit and compare SHA256SUMS with a
 # published one; webapp/README.md explains how.
@@ -149,6 +150,14 @@ cp "$module" "$dist/ghost_webapp_wasm.wasm"
 cp "$threads_module" "$dist/ghost_webapp_wasm_threads.wasm"
 # The self-hosted Instrument Sans and IBM Plex Mono fonts and their licence.
 cp -R "$here/fonts" "$dist/fonts"
+# The deploy's pin (scripts/make-pin.mjs), when GHOST_PIN_FILE names one:
+# served as pin.json beside the page, which starts its header chain there
+# when it is newer than the pin in src/header.mjs. It is the one file of
+# dist taken from the network rather than the commit; anyone can check it
+# against a node with `node webapp/scripts/make-pin.mjs --check pin.json`.
+if [ -n "${GHOST_PIN_FILE:-}" ]; then
+  cp "$GHOST_PIN_FILE" "$dist/pin.json"
+fi
 
 (
   cd "$dist"
