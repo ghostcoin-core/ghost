@@ -544,16 +544,28 @@ does not check their seals again. The app adopts a header only through it:
   genesis timestamp, the genesis hash and the start: genesis for a network
   with no pin, or a pinned header (its hash, height, total work and the key
   blocks below it). The page fetches the start header from the endpoint and
-  keeps it only if its hash is the pinned one. Each release is meant to ship
-  a pinned checkpoint this way; its value is taken from the launch network by
-  whoever cuts the release (a host step), and the pin's total work is an
+  keeps it only if its hash is the pinned one. The pin's total work is an
   assumption, not a check (see "The pinned start is the one assumption
-  left"). **The table is empty today**:
-  no launch network or pinned start exists yet, so on any network this build
-  shows no confirmations and says, in plain words, that it has no pinned
-  start for the network. `createFlow` takes another table; the stand-in tests
-  and the real-node test add their own entry (the real-node test reads the
-  genesis hash from the node it started).
+  left"). The table holds the public test network, 6777972, with a pinned
+  header made by `webapp/scripts/make-pin.mjs`: it walks a node's headers
+  from genesis to the pin (each re-encoded header must hash to the hash the
+  node returned, follow the one before it and carry a difficulty, summed
+  into the total work and matched against the node's own totalDifficulty),
+  takes every key block below the pin, and requires every other public node
+  that holds the pin's height to agree. It does not check seals; the pin
+  rests on the nodes it is taken from. `--check` checks a pin against the
+  nodes instead. The deploy (`.github/workflows/deploy-webapp.yml`) takes a
+  fresh pin 32 blocks below a public node's tip on every run, and runs every
+  two hours on a schedule for that alone; `build.sh` serves it as
+  `pin.json` beside the page (`GHOST_PIN_FILE`), the one file of the build
+  taken from the network rather than the commit. The page reads `pin.json`
+  from its own origin, the origin that serves its code, and starts from it
+  when it is well formed and newer than the build's pin
+  (`withServedPin`); otherwise it starts from the build's. A network with
+  no entry shows no confirmations and the page says, in plain words, that it
+  has no pinned start for the network. `createFlow` takes another table; the
+  stand-in tests and the real-node test add their own entry (the real-node
+  test reads the genesis hash from the node it started).
 - **Every header after it.** The endpoint's headers are read from its tip
   down to the first one the chain holds, then added from there up, with the
   page's clock in Unix seconds. A header is adopted only if keccak256 of its
@@ -623,7 +635,12 @@ year-one header volume of [phone-results.md](scale/phone-results.md) (611.8
 MB of headers a year from genesis, modeled, not measured here) and the
 [stage 1 verdict](scale/stage1-verdict.md)'s finding on headers for a clean
 device stand. Only a pin above genesis shortens that first visit, by trust in
-the pin, not by a check.
+the pin, not by a check: with the deploy's two-hourly pin, a first visit
+checks at most a few hundred seals (about 330 ms each in a browser, so
+under 3 minutes for 500). When more than 500 headers are still to check (a
+stale pin), the sync reads and checks them in batches of 32 and its
+progress says how many (`reading headers: N`, then `checking headers: N of
+M`); a Vanish card waiting on its block shows that count in fixed words.
 
 Querying more than one endpoint and refusing on conflict is not built
 (front-desk decision, 2026-10-20): agreement between endpoints would be extra

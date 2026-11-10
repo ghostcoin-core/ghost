@@ -2,10 +2,16 @@ name: Deploy web app
 
 # Builds the web app with webapp/build.sh and deploys webapp/dist to Vercel
 # as a prebuilt static site. It runs after a merge to main (or by hand),
-# never on a proposed change, so a failed deploy cannot block a merge.
+# never on a proposed change, so a failed deploy cannot block a merge. It
+# also runs every two hours to serve a fresh pin of the public test network
+# (pin.json, webapp/scripts/make-pin.mjs): the chain grows about 240 blocks
+# in two hours, so a new visitor's page seal-checks a few hundred headers at
+# most instead of every header since the pin in src/header.mjs.
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "23 */2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -39,8 +45,13 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
           rustup default "$RUST_TOOLCHAIN"
           rustc --version
+      # The pin 32 blocks below a public test node's tip, walked from genesis
+      # and agreed by the other public node. Fails the run rather than
+      # deploying a stale pin.
+      - name: Take the pin of the public test network
+        run: node webapp/scripts/make-pin.mjs --out "$RUNNER_TEMP/pin.json" && cat "$RUNNER_TEMP/pin.json"
       - name: Build the web app
-        run: webapp/build.sh
+        run: GHOST_PIN_FILE="$RUNNER_TEMP/pin.json" webapp/build.sh
       # The Build Output API layout: the files build.sh made, unchanged, as
       # the static site, and webapp/vercel/config.json for the headers.
       - name: Lay out the prebuilt site
@@ -58,7 +69,8 @@ jobs:
       # reach this point after a newer one has already deployed. Deploy only
       # the commit that is main's head now; any other run skips the deploy and
       # the live-site check and stays green. A run started by hand on main is
-      # current while main has not moved past it; a manual run that waited
+      # current while main has not moved past it, and so is a scheduled run (it
+      # runs on the head of main); a manual run that waited
       # behind a newer merge skips like any other. The repository is public,
       # so ls-remote needs no credentials; if it fails, the job fails instead
       # of deploying.

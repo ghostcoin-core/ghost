@@ -18,6 +18,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { createFlow } from "../src/flow.mjs";
+import { NETWORKS } from "../src/header.mjs";
 import { WORKER_TIMEOUT, WORKER_TIMEOUT_MS, createProver, isWorkerTimeout } from "../src/prover.mjs";
 
 const CHAIN_ID = 6_777_972;
@@ -106,6 +107,10 @@ test("progress is not an answer, an answer in time stops the timer, and a late a
   timers[2].fn();
 });
 
+// This build's entry for the public test network started at genesis: the
+// recorded blocks lie below the build's pin.
+const FROM_GENESIS = Object.freeze({ [String(CHAIN_ID)]: Object.freeze({ ...NETWORKS[String(CHAIN_ID)], pin: null }) });
+
 // The public test network's recorded chain as a public endpoint serves it:
 // headers only, every other method refused.
 function publicEndpoint() {
@@ -129,7 +134,7 @@ function publicEndpoint() {
 test("the settle check of a Sent commit ends when the worker never answers, and the commit stays Sent", async () => {
   const { port, posted } = silentPort();
   const prover = createProver(port, { timeoutMs: 50 });
-  const flow = createFlow({ prover, fetch: publicEndpoint(), clock: () => NOW, sleep: async () => {} });
+  const flow = createFlow({ prover, fetch: publicEndpoint(), networks: FROM_GENESIS, clock: () => NOW, sleep: async () => {} });
   // A commit the node took: shown Sent, with its transaction and new leaf.
   flow.state.vanish = {
     stage: "sent",
@@ -159,7 +164,7 @@ test("the settle check of a Sent commit ends when the worker never answers, and 
 
 test("Check again is refused only when no commit was sent", async () => {
   const { port } = silentPort();
-  const flow = createFlow({ prover: createProver(port, { timeoutMs: 50 }), fetch: publicEndpoint(), sleep: async () => {} });
+  const flow = createFlow({ prover: createProver(port, { timeoutMs: 50 }), fetch: publicEndpoint(), networks: FROM_GENESIS, sleep: async () => {} });
   await assert.rejects(flow.vanishRecheck(), /no commit is shown Sent or Done/);
   flow.state.vanish = { stage: "check", amount: 1n };
   await assert.rejects(flow.vanishRecheck(), /no commit is shown Sent or Done/);
