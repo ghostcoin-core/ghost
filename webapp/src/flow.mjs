@@ -59,6 +59,7 @@ import {
   settledHeight,
 } from "./chain.mjs";
 import { HEADER_FIELDS, NETWORKS, networkOf, readHeader, rlpList, rlpString } from "./header.mjs";
+import { isWorkerTimeout } from "./prover.mjs";
 import { blockOfPosition, checkRecord, createBlockSets, findRecord } from "./receipts-at.mjs";
 import { DEFAULT_ENDPOINT, PUBLIC_ENDPOINTS, SERVER_ERROR, answersChain, createRpc, validateEndpoint } from "./rpc.mjs";
 import { WalletRejected, WalletSignFailed, isWalletRejection } from "./wallet-connect.mjs";
@@ -1109,6 +1110,8 @@ export function createFlow({
       try {
         started = await prover.request("chainStart", { params: network.params, start });
       } catch (err) {
+        // A worker that did not answer says nothing of the chain.
+        if (isWorkerTimeout(err)) throw err;
         throw powFailed(err.message);
       }
       if (toHex(started.startHash) !== startHash) throw notTheHash(height);
@@ -1420,6 +1423,7 @@ export function createFlow({
       try {
         await prover.request("receiptsAdd", { blocks: fetched });
       } catch (err) {
+        if (isWorkerTimeout(err)) throw err;
         throw receiptsRefused(err.message);
       }
       part.forEach((block, j) => {
@@ -1503,6 +1507,7 @@ export function createFlow({
           markers: spent,
         });
       } catch (err) {
+        if (isWorkerTimeout(err)) throw err;
         throw receiptsRefused(err.message);
       }
       return { commitsByAmount: commitAmounts(hc, blocks), spent, blocks };
@@ -1872,16 +1877,21 @@ export function createFlow({
       }
       return was;
     }
+    const receipt = await receiptOf(record.txHash).catch(() => null);
+    let held = null;
+    if (receipt && receipt.blockHash && receipt.blockNumber <= top) {
+      const header = await headerAt(receipt.blockNumber);
+      if (toHex(header.hash) === toHex(receipt.blockHash)) held = { block: receipt.blockNumber, blockHash: header.hash };
+    }
+    // A Sent step is Done only in a block of the chain: with none named yet
+    // it stays Sent, to be checked again.
+    if (was === "sent" && !held) return was;
     record.stage = "done";
     record.dropped = null;
     if (!ownSent.includes(record)) ownSent.push(record);
-    const receipt = await receiptOf(record.txHash).catch(() => null);
-    if (receipt && receipt.blockHash && receipt.blockNumber <= top) {
-      const header = await headerAt(receipt.blockNumber);
-      if (toHex(header.hash) === toHex(receipt.blockHash)) {
-        record.block = receipt.blockNumber;
-        record.blockHash = header.hash;
-      }
+    if (held) {
+      record.block = held.block;
+      record.blockHash = held.blockHash;
     }
     return was;
   }
@@ -2570,11 +2580,15 @@ export function createFlow({
     },
 
     // Vanish: whether the commit shown Done is still in the chain; it shows
-    // dropped, with the reason, when a reorganisation took it out.
+    // dropped, with the reason, when a reorganisation took it out. A commit
+    // still shown Sent (its wait for a block gave up, or a step of it did
+    // not answer in time) is asked about again: Done once the chain holds
+    // its coin in a block of the chain, Sent otherwise.
     vanishRecheck() {
       return run("checking the commit", async () => {
-        if (!state.vanish || (state.vanish.stage !== "done" && state.vanish.stage !== "dropped")) {
-          throw new Error("no commit is shown Done");
+        const v = state.vanish;
+        if (!v || !["sent", "done", "dropped"].includes(v.stage) || (v.stage === "sent" && !v.commitment)) {
+          throw new Error("no commit is shown Sent or Done");
         }
         await recheckDone(state.vanish, "commit");
         return state.vanish;

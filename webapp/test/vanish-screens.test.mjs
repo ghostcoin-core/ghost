@@ -135,7 +135,10 @@ const POSITIONS = [2, 9, 17];
 // vanishCheck sends only when the three words match, as the real one does.
 // With `refuse`, the network refuses the commit after the check passes: that
 // raw text, or that error as the flow throws it.
-function startPage({ refuse = null } = {}) {
+// With `stuck`, the node takes the commit (shown Sent) and the wait for its
+// block then gives up as a worker request that got no answer in time does;
+// Check again (vanishRecheck) finds it Done once `stuck.inChain` is set.
+function startPage({ refuse = null, stuck = null } = {}) {
   const elements = new Map();
   const document = {
     getElementById(id) {
@@ -153,7 +156,7 @@ function startPage({ refuse = null } = {}) {
     addEventListener() {},
   };
   const window = new Element("window");
-  const log = { sent: 0, cancels: 0, checks: [], screenWhileChecking: [] };
+  const log = { sent: 0, cancels: 0, checks: [], screenWhileChecking: [], waitingText: [] };
   const $ = (id) => document.getElementById(id);
   const visible = () => ["form", "key", "check", "waiting", "done", "after"].filter((s) => !$(`vanish-${s}`).hidden);
 
@@ -208,12 +211,37 @@ function startPage({ refuse = null } = {}) {
           emit();
           throw err;
         }
+        if (stuck) {
+          log.sent++;
+          v.key = null;
+          v.stage = "sent";
+          v.txHash = "0x03a988bc9aef12bddfe8b3608df3b531e5a5e2473b2cf9bc24b3054ad595628b";
+          for (const stage of ["waiting for a block", "checking the block", "reading the coin tree"]) {
+            state.progress = { stage, since: 0 };
+            emit();
+            log.waitingText.push($("vanish-waiting-text").textContent);
+          }
+          state.progress = null;
+          const err = new Error("the worker did not answer in time (prefixRoots, 120 s)");
+          state.error = err.message;
+          emit();
+          throw err;
+        }
         log.sent++;
         v.key = null;
         v.stage = "done";
         v.block = 7;
         emit();
         return { ok: true };
+      },
+      async vanishRecheck() {
+        log.rechecks = (log.rechecks ?? 0) + 1;
+        if (stuck && stuck.inChain) {
+          state.vanish.stage = "done";
+          state.vanish.block = 37897;
+        }
+        emit();
+        return state.vanish;
       },
       vanishCancel() {
         log.cancels++;
@@ -421,6 +449,47 @@ test("leaving the Vanish tab, or the page, drops the key and sends nothing", asy
   assert.equal(other.log.cancels, 1);
   assert.equal(other.$("vanish-words").children.length, 0);
   assert.equal(other.log.sent, 0);
+});
+
+test("a wait that gives up after the commit was sent says the coin may be in the chain, and Check again turns it Done", async () => {
+  const MAYBE = "Your coin may already be in the chain. Check again in a few minutes.";
+  const stuck = { inChain: false };
+  const page = startPage({ stuck });
+  await toCheck(page);
+  await submitCheck(page, right);
+  assert.equal(page.log.sent, 1);
+
+  // While Sent, the line tells waiting for a block from checking it.
+  assert.match(page.log.waitingText[0], /^Sent\. Waiting for a block/);
+  assert.deepEqual(page.log.waitingText.slice(1), [
+    "Sent. Checking the block that holds it…",
+    "Sent. Checking the block that holds it…",
+  ]);
+
+  // The bound was hit: one fixed plain line, and a way to check again.
+  assert.deepEqual(page.visible(), ["after"]);
+  assert.equal(page.$("vanish-error").textContent, MAYBE);
+  assert.equal(page.$("error").textContent, "");
+  for (const id of tags.keys()) assert.ok(!page.$(id).textContent.includes("did not answer"), id);
+  assert.equal(page.$("vanish-recheck").hidden, false);
+  assert.equal(page.$("vanish-recheck").textContent, "Check again");
+
+  // Not in a block of the chain yet: still Sent, the same line.
+  page.$("vanish-recheck").fire("click");
+  await settle();
+  await settle();
+  assert.equal(page.log.rechecks, 1);
+  assert.deepEqual(page.visible(), ["after"]);
+  assert.equal(page.$("vanish-error").textContent, MAYBE);
+
+  // Once the chain holds it, Check again shows Done.
+  stuck.inChain = true;
+  page.$("vanish-recheck").fire("click");
+  await settle();
+  await settle();
+  assert.equal(page.log.rechecks, 2);
+  assert.deepEqual(page.visible(), ["done"]);
+  assert.equal(page.$("vanish-error").textContent, "");
 });
 
 test("an error is one fixed plain line in the card, never the exception's text", async () => {

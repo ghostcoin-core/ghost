@@ -57,6 +57,10 @@ let errorOwner = null;
 
 const WRONG_WORDS = "Those words don't match your key. Check what you saved and try again.";
 const REJECTED = "You rejected it in your wallet. Nothing was sent.";
+// The card's line when a sent commit's wait for its block, or a step of it,
+// gave up before the commit could be shown Done: the commit may be in the
+// chain all the same, and Check again asks once more.
+const MAYBE_IN_CHAIN = "Your coin may already be in the chain. Check again in a few minutes.";
 
 // Whether a Vanish failed because the user turned the commit down in the
 // wallet: the flow's WalletRejected, or the wallet's own code 4001.
@@ -101,7 +105,7 @@ function vanishErrorText(err, step) {
   if (step === "send" && v && v.stage === "dropped") {
     return "The chain dropped the commit. The key you saved still holds the coin if it comes back.";
   }
-  if (step === "send" && v && v.stage === "sent") return "The commit was sent, but no checked block holds it yet.";
+  if ((step === "send" || step === "recheck") && v && v.stage === "sent") return MAYBE_IN_CHAIN;
   const fixed = {
     start: "The key could not be made. Try again.",
     send: "The network refused the commit. Try again.",
@@ -597,7 +601,7 @@ function renderWords(key) {
 // The Vanish card: the amount box, then Save your Phantom Key, Check your
 // key, the waiting bar while the commit is sent (asking for the wallet's
 // approval first), and Done.
-function renderVanish(v, approving) {
+function renderVanish(v, approving, progress = null) {
   const holding = Boolean(v && v.key && (v.stage === "shown" || v.stage === "check"));
   renderWords(holding ? v.key : null);
   const screen = vanishSending
@@ -630,6 +634,11 @@ function renderVanish(v, approving) {
         : approving
           ? "Approve the Vanish in your wallet"
           : "Sending your commit…";
+  // Once a block holds the commit and the page checks that block (the
+  // header chain, the coin trees), the line says so.
+  if (screen === "waiting" && v && v.stage === "sent" && progress && !/^waiting for (a )?block/.test(progress.stage)) {
+    $("vanish-waiting-text").textContent = "Sent. Checking the block that holds it…";
+  }
 
   const wrong = screen === "check" && v.wrong.length > 0;
   $("vanish-error").textContent = vanishError || (wrong ? WRONG_WORDS : "");
@@ -657,7 +666,7 @@ function render(state) {
   renderWallet(state.wallet);
 
   const v = state.vanish;
-  renderVanish(v, Boolean(state.progress && state.progress.stage === WALLET_APPROVAL));
+  renderVanish(v, Boolean(state.progress && state.progress.stage === WALLET_APPROVAL), state.progress);
   const vanishStatus = {
     sent: () => `Sent: a commit of ${formatGhost(v.amount)} GHOST, transaction ${v.txHash}. ${IN_A_BLOCK}`,
     done: () =>
@@ -666,7 +675,8 @@ function render(state) {
       `Commit dropped: ${v.dropped}. Start Vanish again. The key you saved still holds the coin if the commit comes back.`,
   };
   $("vanish-status").textContent = v && vanishStatus[v.stage] ? vanishStatus[v.stage]() : "";
-  $("vanish-recheck").hidden = !v || (v.stage !== "done" && v.stage !== "dropped");
+  $("vanish-recheck").hidden = !v || (v.stage !== "done" && v.stage !== "dropped" && v.stage !== "sent");
+  $("vanish-recheck").textContent = v && v.stage === "sent" ? "Check again" : "Check the commit is still in the chain";
 
   renderSummon(state);
   const s = state.summon;
@@ -885,7 +895,14 @@ $("vanish-check").addEventListener(
     }
   }),
 );
-$("vanish-recheck").addEventListener("click", vanishAct("recheck", () => flow.vanishRecheck()));
+// A commit still Sent after the check is said again with the card's line.
+$("vanish-recheck").addEventListener(
+  "click",
+  vanishAct("recheck", async () => {
+    const v = await flow.vanishRecheck();
+    if (v && v.stage === "sent") throw new Error("the commit is still shown Sent");
+  }),
+);
 for (const id of ["vanish-done-button", "vanish-after-done"]) {
   $(id).addEventListener("click", () => {
     forgetVanish();
