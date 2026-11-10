@@ -187,8 +187,7 @@ test("the module's chain refuses an unmined seal above a pinned start stamped ah
 // --- The app against the stand-in ---
 
 test("this build lists only the public test network, and a network with no entry shows no confirmations", async () => {
-  assert.deepEqual(Object.keys(NETWORKS), ["6777972"], "the public test network only: no launch network or pinned start exists yet");
-  assert.equal(NETWORKS["6777972"].pin, null);
+  assert.deepEqual(Object.keys(NETWORKS), ["6777972"], "the public test network only: no launch network exists yet");
   const { node, flow, done } = await setUp({ networks: () => NETWORKS });
   try {
     const key = await flow.vanishStart("1");

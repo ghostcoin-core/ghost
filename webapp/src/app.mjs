@@ -34,10 +34,13 @@ let typed = false;
 
 // The headers this page checked are kept in its own IndexedDB (public
 // header fields only), so a later visit checks only the seals above them.
+// The header chain starts from the newest pin: the one the deploy serves as
+// pin.json beside the page when it is newer than this build's (loadNetworks).
 const flow = createFlow({
   prover: browserProver(),
   endpoint: DEFAULT_ENDPOINT,
   commitEntry: DEFAULT_COMMIT_ENTRY,
+  servedPin: true,
   headerStore: createHeaderStore(),
   onChange: render,
 });
@@ -598,6 +601,19 @@ function renderWords(key) {
   );
 }
 
+// The Vanish card's line while the page checks the block that holds a sent
+// commit. Far behind its pin, the page says how many headers it has read or
+// checked, in fixed words, from the flow's stages (flow.mjs, headersStage
+// and readingStage).
+function sentCheckingLine(stage) {
+  const count = (n) => Number(n).toLocaleString("en-US");
+  const checking = /^checking headers: (\d+) of (\d+)$/.exec(stage);
+  if (checking) return `Sent. Checking block headers: ${count(checking[1])} of ${count(checking[2])}…`;
+  const reading = /^reading headers: (\d+)$/.exec(stage);
+  if (reading) return `Sent. Reading block headers: ${count(reading[1])} so far…`;
+  return "Sent. Checking the block that holds it…";
+}
+
 // The Vanish card: the amount box, then Save your Phantom Key, Check your
 // key, the waiting bar while the commit is sent (asking for the wallet's
 // approval first), and Done.
@@ -637,7 +653,7 @@ function renderVanish(v, approving, progress = null) {
   // Once a block holds the commit and the page checks that block (the
   // header chain, the coin trees), the line says so.
   if (screen === "waiting" && v && v.stage === "sent" && progress && !/^waiting for (a )?block/.test(progress.stage)) {
-    $("vanish-waiting-text").textContent = "Sent. Checking the block that holds it…";
+    $("vanish-waiting-text").textContent = sentCheckingLine(progress.stage);
   }
 
   const wrong = screen === "check" && v.wrong.length > 0;

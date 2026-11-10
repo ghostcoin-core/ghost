@@ -58,7 +58,7 @@ import {
   parseGhost,
   settledHeight,
 } from "./chain.mjs";
-import { HEADER_FIELDS, NETWORKS, networkOf, readHeader, rlpList, rlpString } from "./header.mjs";
+import { HEADER_FIELDS, NETWORKS, loadNetworks, networkOf, readHeader, rlpList, rlpString } from "./header.mjs";
 import { isWorkerTimeout } from "./prover.mjs";
 import { blockOfPosition, checkRecord, createBlockSets, findRecord } from "./receipts-at.mjs";
 import { DEFAULT_ENDPOINT, PUBLIC_ENDPOINTS, SERVER_ERROR, answersChain, createRpc, validateEndpoint } from "./rpc.mjs";
@@ -181,6 +181,16 @@ const REREADS = 3;
 
 // Headers the worker's chain is given in one request at most.
 const CHAIN_BATCH = 256;
+// More headers than this to seal-check (about 330 ms each in a browser) and
+// the page is far behind its pin: they are then given to the worker in
+// batches of FAR_BATCH, and the progress names how many are checked
+// (headersStage), so a wait of minutes says what it is doing.
+export const SEAL_CHECK_BOUND = 500;
+const FAR_BATCH = 32;
+// The progress stages of a far-behind sync, fixed words with the counts.
+export const headersStage = (checked, total) => `checking headers: ${checked} of ${total}`;
+export const readingStage = (read) => `reading headers: ${read}`;
+
 // Times a header dated ahead of the page's clock is offered again, and the
 // longest wait before each, in seconds.
 const AHEAD_WAITS = 3;
@@ -977,8 +987,14 @@ export function createFlow({
   endpoint = DEFAULT_ENDPOINT,
   commitEntry = DEFAULT_COMMIT_ENTRY,
   maxCommitFee = MAX_COMMIT_FEE,
-  // The networks whose header chain the app can check (header.mjs).
+  // The networks whose header chain the app can check (header.mjs), or a
+  // promise of them.
   networks = NETWORKS,
+  // True on the page: the networks are then `networks` with the deploy's
+  // pin.json in place when it is newer (header.mjs, loadNetworks).
+  servedPin = false,
+  // More headers than this to seal-check and the sync reports its progress.
+  sealCheckBound = SEAL_CHECK_BOUND,
   // The page's clock in Unix seconds, against which a header's timestamp
   // may run at most the network's future drift ahead.
   clock = () => Math.floor(Date.now() / 1000),
@@ -995,6 +1011,7 @@ export function createFlow({
   treeLeaves = 2 ** treeDepth,
   onChange = () => {},
 } = {}) {
+  if (servedPin) networks = loadNetworks({ fetch, networks });
   checkDepth(treeDepth);
   if (!(treeLeaves >= 1 && treeLeaves <= 2 ** treeDepth)) throw new Error(`a tree of ${treeDepth} levels cannot hold ${treeLeaves} leaves`);
   let rpc = createRpc(endpoint, { fetch });
@@ -1093,7 +1110,7 @@ export function createFlow({
       headerChain.endpoint = rpc.url;
       return headerChain;
     }
-    const network = networkOf(networks, chainId);
+    const network = networkOf(await networks, chainId);
     if (!network) throw new ChainRefused(noPinMessage(chainId));
     const { pin } = network;
     const height = pin ? pin.height : 0;
@@ -1272,10 +1289,14 @@ export function createFlow({
         throw new Error(`block ${n + 1} does not follow block ${n}`);
       }
       pending.unshift(fetched);
+      if (pending.length > sealCheckBound && pending.length % FAR_BATCH === 0) progress(readingStage(pending.length));
     }
+    // Far behind: smaller batches, each preceded by how many are checked.
+    const far = pending.length > sealCheckBound;
     let waits = 0;
     for (let i = 0; i < pending.length; ) {
-      const part = pending.slice(i, i + CHAIN_BATCH);
+      if (far) progress(headersStage(i, pending.length));
+      const part = pending.slice(i, i + (far ? FAR_BATCH : CHAIN_BATCH));
       const added = await prover.request("chainAdd", {
         now: clock(),
         headers: part.map(({ header, rlp }) => ({ hash: header.hash, rlp })),
@@ -2182,7 +2203,7 @@ export function createFlow({
     if (!connector || !state.wallet) throw new Error("connect a wallet first");
     const signer = connector;
     const from = state.wallet.address;
-    const network = networkOf(networks, chainId);
+    const network = networkOf(await networks, chainId);
     if (!network) throw new ChainRefused(noPinMessage(chainId));
     const genesis = fromHex(network.genesisHash, 32);
     const nonce = quantity(await rpc.call("eth_getTransactionCount", [from, "pending"]));

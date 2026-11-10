@@ -91,12 +91,14 @@ test("the config injects nothing and rewrites no path", () => {
   }
 });
 
-test("the workflow runs after a merge to main or by hand, never on a proposed change", () => {
+test("the workflow runs after a merge to main, every two hours or by hand, never on a proposed change", () => {
   const on = workflow.slice(workflow.indexOf("\non:"), workflow.indexOf("\npermissions:"));
   assert.match(on, /\n {2}push:\n {4}branches: \[main\]\n/);
   assert.match(on, /\n {2}workflow_dispatch:/);
+  // The schedule keeps the served pin fresh (make-pin.mjs): every two hours.
+  assert.match(on, /\n {2}schedule:\n {4}- cron: "\d+ \*\/2 \* \* \*"\n/);
   const triggers = [...on.matchAll(/^ {2}(\w+):/gm)].map((m) => m[1]);
-  assert.deepEqual(triggers, ["push", "workflow_dispatch"]);
+  assert.deepEqual(triggers, ["push", "schedule", "workflow_dispatch"]);
   assert.ok(!workflow.includes("pull_" + "request"));
   assert.match(workflow, /runs-on: ubuntu-/);
   assert.doesNotMatch(workflow, /self-hosted/);
@@ -114,7 +116,11 @@ test("the workflow builds with build.sh's toolchain and lays out the prebuilt si
   const toolchain = buildScript.match(/^toolchain="([^"]+)"/m)[1];
   assert.match(workflow, new RegExp(`RUST_TOOLCHAIN: ${toolchain.replaceAll(".", "\\.")}\\n`));
   assert.match(workflow, /rustup toolchain install "\$RUST_TOOLCHAIN"/);
-  assert.match(workflow, /run: webapp\/build\.sh\n/);
+  // A fresh pin of the public test network, built into dist as pin.json.
+  assert.match(workflow, /run: node webapp\/scripts\/make-pin\.mjs --out "\$RUNNER_TEMP\/pin\.json"/);
+  assert.match(workflow, /run: GHOST_PIN_FILE="\$RUNNER_TEMP\/pin\.json" webapp\/build\.sh\n/);
+  const names = steps().map((x) => x.name);
+  assert.ok(names.indexOf("Take the pin of the public test network") < names.indexOf("Build the web app"), names.join(", "));
   assert.match(workflow, /cp -R webapp\/dist\/\. \.vercel\/output\/static\//);
   assert.match(workflow, /cp webapp\/vercel\/config\.json \.vercel\/output\/config\.json/);
 });
@@ -198,10 +204,10 @@ function runHeadCheck({ event, ref, sha, head }) {
   }
 }
 
-test("the head check deploys only main's current head, for pushes and manual runs", () => {
+test("the head check deploys only main's current head, for pushes, scheduled and manual runs", () => {
   const a = "a".repeat(40);
   const b = "b".repeat(40);
-  for (const event of ["push", "workflow_dispatch"]) {
+  for (const event of ["push", "schedule", "workflow_dispatch"]) {
     const current = runHeadCheck({ event, ref: "refs/heads/main", sha: a, head: a });
     assert.equal(current.status, 0, event);
     assert.equal(current.output, "current=true\n", event);
