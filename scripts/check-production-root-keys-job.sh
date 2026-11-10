@@ -9,6 +9,8 @@
 #     a pull request: `if: github.event_name == 'push'`;
 #   - run on the GitHub-hosted ubuntu-24.04 image with timeout-minutes of at
 #     most 10;
+#   - build with AVX2 (RUSTFLAGS: -C target-feature=+avx2): built scalar, the
+#     build and a derivation together run past the 10 minutes;
 #   - run `cargo test --release --locked --manifest-path proofs/Cargo.toml
 #     --test production_root_keys -- --ignored --nocapture --exact` followed
 #     only by test names and `--skip NAME`;
@@ -139,6 +141,10 @@ check_workflow() {
       echo "check-production-root-keys-job: job $id has no timeout-minutes of at most 10" >&2
       failed=1
     fi
+    if ! grep -Eq '^      RUSTFLAGS: -C target-feature=\+avx2[[:space:]]*$' <<<"$block"; then
+      echo "check-production-root-keys-job: job $id does not build with AVX2 (RUSTFLAGS: -C target-feature=+avx2); without it the derivation runs past its limit" >&2
+      failed=1
+    fi
     if ! grep -Eq '^[[:space:]]*(- )?run: cargo test --release --locked( --features [a-z,-]+)? --manifest-path proofs/Cargo\.toml --test production_root_keys -- --ignored --nocapture --exact( |$)' <<<"$line"; then
       echo "check-production-root-keys-job: job $id does not run: cargo test --release --locked --manifest-path proofs/Cargo.toml --test production_root_keys -- --ignored --nocapture --exact" >&2
       failed=1
@@ -242,6 +248,7 @@ must_refuse "runs the tests without --ignored" 's/-- --ignored --nocapture/-- --
 must_refuse "runs the root key jobs on pull requests" "/^    if: github\\.event_name == 'push'/d"
 must_refuse "runs the root key jobs on another image" 's/^(    runs-on: )ubuntu-24\.04/\1ubuntu-22.04/'
 must_refuse "lets a job run 30 minutes" 's/^(    timeout-minutes: )10/\130/'
+must_refuse "builds the root key jobs without AVX2" '/^      RUSTFLAGS: -C target-feature=\+avx2/d'
 must_refuse "never derives the public root key" '/--exact derive_production_public_root_key/d'
 must_refuse "skips the bundle root key" 's/--exact --skip derive_production_public_root_key/--exact --skip derive_production_public_root_key --skip derive_production_bundle_root_key/'
 must_refuse "derives both keys in one job" 's/ --skip derive_production_public_root_key//'

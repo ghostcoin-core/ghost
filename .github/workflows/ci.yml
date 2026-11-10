@@ -498,6 +498,11 @@ jobs:
     timeout-minutes: 10
     env:
       RUST_TOOLCHAIN: 1.99.1
+      # AVX2 packing, as in rust-proofs-mldsa-fold: without it Plonky3 hashes
+      # and transforms the key's columns scalar, and the build and derivation
+      # together run past the 10 minutes. Every hosted x86 runner has AVX2.
+      # The flag changes only how fast the same key is derived.
+      RUSTFLAGS: -C target-feature=+avx2
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -507,8 +512,10 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup default "$RUST_TOOLCHAIN"
           rustc --version
-      # Its own cache key: the two root key jobs build the same test binary,
-      # so they share this key with each other.
+      # The AVX2 cache key of rust-proofs-mldsa-fold and
+      # rust-proofs-mldsa-shrink: the same features, flags and lock file, so
+      # the dependencies come built and only the crate and this test binary
+      # are compiled. The two root key jobs share it with each other.
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
@@ -516,7 +523,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             proofs/target
-          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-root-keys-parallel-${{ hashFiles('proofs/*.lock') }}
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-mldsa-parallel-avx2-${{ hashFiles('proofs/*.lock') }}
       # The parallel feature spreads Plonky3's transforms and hashing over
       # every core. They are exact field arithmetic, so it changes only how
       # fast the same key is derived.
@@ -532,6 +539,8 @@ jobs:
     timeout-minutes: 10
     env:
       RUST_TOOLCHAIN: 1.99.1
+      # AVX2 packing, as in rust-proofs-root-key-bundle.
+      RUSTFLAGS: -C target-feature=+avx2
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -541,7 +550,8 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup default "$RUST_TOOLCHAIN"
           rustc --version
-      # The cache key it shares with rust-proofs-root-key-bundle.
+      # The AVX2 cache key it shares with rust-proofs-root-key-bundle and
+      # the AVX2 mldsa jobs.
       - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: |
@@ -549,7 +559,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             proofs/target
-          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-root-keys-parallel-${{ hashFiles('proofs/*.lock') }}
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-proofs-mldsa-parallel-avx2-${{ hashFiles('proofs/*.lock') }}
       - name: Derive the public root key (release, ignored test)
         env:
           RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
