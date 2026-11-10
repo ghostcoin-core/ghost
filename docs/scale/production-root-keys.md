@@ -6,7 +6,7 @@ A release node verifies a block's bundle root proof and its public root proof ag
 
 - <!-- no-figure --> **Derivation.** `layers::production_bundle_root_key` and `mldsa::production_public_root_key` build each stage's key for verifying alone from its blank circuit: the circuit's wire values are dropped before its preprocessed columns are written, the circuit once they are, each table's columns become their coefficients in place, and the commitment is made one block of their extension at a time, nothing of a block kept once it is hashed. The key below is dropped once the next is made, and the shrink key is returned. `ffi::production_root_key_bytes` writes the node's bytes from it, and the C call `ghost_production_root_key` (proofs/include/ghost_proofs.h) does the same for the node. The derivation is deterministic: the preprocessed commitment uses the all-zero salt seed of the library's key generation.
 - <!-- no-figure --> **Pin.** Each key's SHA-256 digest is committed as lower-case hex text in proofs/keys/bundle-root-key.sha256 and proofs/keys/public-root-key.sha256. `ffi::is_production_root_key` and the C call `ghost_root_key_is_production` accept a key only when its digest is the pinned one.
-- <!-- no-figure --> **Test.** proofs/tests/production_root_keys.rs prints each derivation's plan stage by stage, refuses any stage planned above the derivation budget `layers::KEY_DERIVATION_BUDGET_BYTES` (the 6,144 MiB of the sandboxed check) before anything is built, then derives the key and checks its digest against the committed one.
+- <!-- no-figure --> **Test.** proofs/tests/production_root_keys.rs plans each derivation stage by stage, prints its figures and refuses any stage planned above the derivation budget `layers::KEY_DERIVATION_BUDGET_BYTES` (the 6,144 MiB of the sandboxed check), and checks the digest files under proofs/keys/ are the pinned ones; these tests build no key and run with the other tests. The tests that build a key are ignored by default so the normal tests stay fast: `derive_production_keys` derives both keys, one after the other, and checks each digest against the committed one. Run them with `-- --ignored`.
 
 ## Shapes
 
@@ -31,9 +31,9 @@ Both derivations fit the 6.00 GiB budget (modeled): the bundle root key peaks at
 
 ## Digests
 
-Both keys were derived to the end by the acceptance test, one after the other in one process, under the 6,144 MiB cap of the sandboxed check (measured on one machine, two runs):
+Both keys were derived to the end by the derivation test (now run with `-- --ignored`), one after the other in one process, under the 6,144 MiB cap of the sandboxed check (measured on one machine, two runs):
 
 - <!-- no-figure --> **Bundle root key.** Derived in 172 to 176 s; the process's peak resident memory was 5.35 to 5.36 GiB, reached at the root stage (measured). SHA-256 `5a230c8f019c3f9b707ebea174149cef74488bd17aee21214ef77c0b689ddec0`, pinned in proofs/keys/bundle-root-key.sha256.
 - <!-- no-figure --> **Public root key.** Derived in 215 to 217 s; the process's peak resident memory was 5.57 to 5.61 GiB, reached at the root stage (measured). SHA-256 `d00492b05e4513aed78b20a4291d2696bc8e112792490c3f423f398f2a5a93f5`, pinned in proofs/keys/public-root-key.sha256.
 
-The measured peaks are above the modeled ones by up to 0.61 GiB: the model counts the key's data, not the allocator's slack or the threads' working buffers. Both stay under the cap. A change to a layer's circuit, its shape or the commitment changes the derived key, and the test then fails until the new digest is pinned.
+The measured peaks are above the modeled ones by up to 0.61 GiB: the model counts the key's data, not the allocator's slack or the threads' working buffers. Both stay under the cap. A change to a layer's circuit, its shape or the commitment changes the derived key, and the derivation test then fails until the new digest is pinned.

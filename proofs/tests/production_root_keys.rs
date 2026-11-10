@@ -8,11 +8,13 @@
 //!
 //! Each derivation's plan is printed stage by stage with its modeled peak
 //! (`layers::KeyMemory`), which must be within the 6,144 MiB budget
-//! (`layers::KEY_DERIVATION_BUDGET_BYTES`) before anything is built. The
-//! derivations hold a lock, so only one runs at a time.
+//! (`layers::KEY_DERIVATION_BUDGET_BYTES`). Planning builds no key and runs
+//! with the normal tests. Every test that builds a key is `#[ignore]`d, so
+//! the normal tests stay fast; run them with `-- --ignored`
+//! (`derive_production_keys` derives both production keys, one after the
+//! other).
 
 use std::io::Write;
-use std::sync::Mutex;
 use std::time::Instant;
 
 use ghost_proofs::ffi::{
@@ -24,9 +26,6 @@ use ghost_proofs::layers::{self, KeyPlan};
 use ghost_proofs::mldsa;
 
 const GIB: f64 = (1u64 << 30) as f64;
-
-/// One heavy build at a time.
-static HEAVY: Mutex<()> = Mutex::new(());
 
 fn say(line: &str) {
     let _ = writeln!(std::io::stderr(), "{line}");
@@ -186,10 +185,23 @@ fn the_pinned_digests_are_sha256_hex() {
     assert_ne!(RootPath::Bundle.production_key_sha256(), RootPath::Public.production_key_sha256());
 }
 
+/// The digests are committed as hex text under `proofs/keys/`, and they are
+/// the ones the library pins.
+#[test]
+fn the_digest_files_are_committed_and_pinned() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("keys");
+    for (file, path) in [("bundle-root-key.sha256", RootPath::Bundle), ("public-root-key.sha256", RootPath::Public)] {
+        let text = std::fs::read_to_string(dir.join(file)).unwrap_or_else(|e| panic!("proofs/keys/{file}: {e}"));
+        assert_eq!(text.trim(), path.production_key_sha256(), "proofs/keys/{file}");
+    }
+}
+
 /// A key built for verifying alone, its circuit's wire values dropped and
 /// its columns committed in place a block at a time, has the library's
-/// preprocessed commitment and lookups, in one block and in many.
+/// preprocessed commitment and lookups, in one block and in many. It builds
+/// keys, so it runs with `-- --ignored`.
 #[test]
+#[ignore = "builds keys; run with -- --ignored"]
 fn the_verifier_key_commits_as_the_library_does() {
     let blocks = layers::verifier_key_check(&[usize::MAX, 1 << 14, 1]).expect("the verifier's key is the library's");
     // One block, then several, then as many as the smallest matrix has rows,
@@ -208,18 +220,34 @@ fn the_public_root_takes_the_layers_shape() {
     assert_eq!(mldsa::DESIGN_BATCHES_PER_ROOT, layers::BATCHES_PER_ROOT);
 }
 
+/// Every stage of both production keys is planned within the derivation
+/// budget, without building anything: the bundle root's batch, root and
+/// shrink, and the public root's chunk, batch, root and shrink at
+/// `mldsa::DESIGN_CHUNKS_PER_BATCH` chunks a batch and
+/// `mldsa::DESIGN_BATCHES_PER_ROOT` batches a root.
 #[test]
-fn the_production_bundle_root_key_is_the_pinned_one() {
-    let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
-    let plan = layers::bundle_root_key_plan().expect("the bundle root key plans");
-    check_plan("bundle root", &plan, 3);
-    derive_and_check("bundle root", RootPath::Bundle, &plan);
+fn every_production_key_stage_plans_within_its_budget() {
+    let bundle = layers::bundle_root_key_plan().expect("the bundle root key plans");
+    check_plan("bundle root", &bundle, 3);
+    let public = mldsa::public_root_key_plan().expect("the public root key plans");
+    check_plan("public root", &public, 4);
+    let at_design = mldsa::public_root_key_plan_of(mldsa::DESIGN_CHUNKS_PER_BATCH, mldsa::DESIGN_BATCHES_PER_ROOT)
+        .expect("the public root plans at the design's shape");
+    assert_eq!(public, at_design, "the public root key is planned at the design's batch and root");
+    let one_batch = mldsa::public_root_key_plan_of(mldsa::DESIGN_CHUNKS_PER_BATCH, 1).expect("a one-batch root plans");
+    assert_ne!(public.stages[2], one_batch.stages[2], "the public root's stage follows its batches a root");
 }
 
+/// Both production keys derived, one after the other, layer by layer, and
+/// checked against the pinned digests. Building them takes minutes and up to
+/// the planned peak, so it runs with `-- --ignored`.
 #[test]
-fn the_production_public_root_key_is_the_pinned_one() {
-    let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
-    let plan = mldsa::public_root_key_plan().expect("the public root key plans");
-    check_plan("public root", &plan, 4);
-    derive_and_check("public root", RootPath::Public, &plan);
+#[ignore = "builds both production keys; run with -- --ignored"]
+fn derive_production_keys() {
+    let bundle = layers::bundle_root_key_plan().expect("the bundle root key plans");
+    check_plan("bundle root", &bundle, 3);
+    derive_and_check("bundle root", RootPath::Bundle, &bundle);
+    let public = mldsa::public_root_key_plan().expect("the public root key plans");
+    check_plan("public root", &public, 4);
+    derive_and_check("public root", RootPath::Public, &public);
 }
