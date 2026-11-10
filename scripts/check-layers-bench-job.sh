@@ -89,7 +89,9 @@ check_workflow() {
 
   # layers_bench runs in no job but its own, rust-proofs-layers-rest above all.
   while IFS= read -r id; do
-    [ -n "$id" ] && [ "$id" != "$bench_job" ] || continue
+    if [ -z "$id" ] || [ "$id" = "$bench_job" ]; then
+      continue
+    fi
     block="$(job_block "$wf" "$id")"
     if [ -n "$(runs_bench "$block")" ]; then
       echo "check-layers-bench-job: job $id runs --test layers_bench; it runs only in $bench_job" >&2
