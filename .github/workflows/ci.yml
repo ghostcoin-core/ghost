@@ -485,22 +485,24 @@ jobs:
   # The production root keys (proofs/tests/production_root_keys.rs), derived
   # again after every merge to main and checked against the bytes and digests
   # committed in proofs/keys/. Deriving a key takes minutes, so these run
-  # only on a push to main, never on a pull request, one key a job so each
-  # fits the 10-minute limit: rust-proofs-root-key-bundle runs every ignored
-  # test of the file but the public root's derivation, which runs in
-  # rust-proofs-root-key-public. A change that alters a key without
-  # committing its new bytes and digest turns main red here.
+  # only on a push to main, never on a pull request, one key a job:
+  # rust-proofs-root-key-bundle runs every ignored test of the file but the
+  # public root's derivation, which runs in rust-proofs-root-key-public. A
+  # release build and one derivation do not fit 10 minutes on a hosted
+  # 4-core runner, so these post-merge jobs get 30; the 10-minute target is
+  # for pull request checks. A change that alters a key without committing
+  # its new bytes and digest turns main red here.
   # scripts/check-production-root-keys-job.sh checks these jobs.
   rust-proofs-root-key-bundle:
     name: rust-proofs-root-key-bundle
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     env:
       RUST_TOOLCHAIN: 1.99.1
       # AVX2 packing, as in rust-proofs-mldsa-fold: without it Plonky3 hashes
       # and transforms the key's columns scalar, and the build and derivation
-      # together run past the 10 minutes. Every hosted x86 runner has AVX2.
+      # together run far longer. Every hosted x86 runner has AVX2.
       # The flag changes only how fast the same key is derived.
       RUSTFLAGS: -C target-feature=+avx2
     steps:
@@ -536,7 +538,7 @@ jobs:
     name: rust-proofs-root-key-public
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     env:
       RUST_TOOLCHAIN: 1.99.1
       # AVX2 packing, as in rust-proofs-root-key-bundle.

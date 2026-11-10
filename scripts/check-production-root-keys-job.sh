@@ -7,10 +7,12 @@
 # Every job that runs that test file must:
 #   - run only on a push (to main, the workflow's only push branch), never on
 #     a pull request: `if: github.event_name == 'push'`;
-#   - run on the GitHub-hosted ubuntu-24.04 image with timeout-minutes of at
-#     most 10;
+#   - run on the GitHub-hosted ubuntu-24.04 image with timeout-minutes: 30
+#     (a release build and one derivation do not fit 10 minutes on a hosted
+#     4-core runner; the 10-minute target is for pull request checks, and
+#     these jobs run only after merge);
 #   - build with AVX2 (RUSTFLAGS: -C target-feature=+avx2): built scalar, the
-#     build and a derivation together run past the 10 minutes;
+#     build and a derivation together run far longer;
 #   - run `cargo test --release --locked --manifest-path proofs/Cargo.toml
 #     --test production_root_keys -- --ignored --nocapture --exact` followed
 #     only by test names and `--skip NAME`;
@@ -137,8 +139,8 @@ check_workflow() {
       failed=1
     fi
     timeout="$(sed -n -E 's/^    timeout-minutes: ([0-9]+)[[:space:]]*$/\1/p' <<<"$block")"
-    if [ -z "$timeout" ] || [ "$timeout" -gt 10 ]; then
-      echo "check-production-root-keys-job: job $id has no timeout-minutes of at most 10" >&2
+    if [ "$timeout" != 30 ]; then
+      echo "check-production-root-keys-job: job $id does not have timeout-minutes: 30" >&2
       failed=1
     fi
     if ! grep -Eq '^      RUSTFLAGS: -C target-feature=\+avx2[[:space:]]*$' <<<"$block"; then
@@ -246,8 +248,13 @@ must_refuse() {
 
 must_refuse "runs the tests without --ignored" 's/-- --ignored --nocapture/-- --nocapture/'
 must_refuse "runs the root key jobs on pull requests" "/^    if: github\\.event_name == 'push'/d"
+must_refuse "runs the public root key job on pull requests" "/^  rust-proofs-root-key-public:/,/^  [A-Za-z]/s/^(    if: github\\.event_name == )'push'/\\1'pull_request'/"
+must_refuse "runs the bundle root key job on pull requests" "/^  rust-proofs-root-key-bundle:/,/^  [A-Za-z]/{/^    if: github\\.event_name == 'push'/d}"
 must_refuse "runs the root key jobs on another image" 's/^(    runs-on: )ubuntu-24\.04/\1ubuntu-22.04/'
-must_refuse "lets a job run 30 minutes" 's/^(    timeout-minutes: )10/\130/'
+must_refuse "gives the root key jobs 10 minutes" 's/^(    timeout-minutes: )30/\110/'
+must_refuse "gives the public root key job 10 minutes" '/^  rust-proofs-root-key-public:/,/^  [A-Za-z]/s/^(    timeout-minutes: )30/\110/'
+must_refuse "gives the bundle root key job 60 minutes" '/^  rust-proofs-root-key-bundle:/,/^  [A-Za-z]/s/^(    timeout-minutes: )30/\160/'
+must_refuse "gives the bundle root key job no timeout" '/^  rust-proofs-root-key-bundle:/,/^  [A-Za-z]/{/^    timeout-minutes:/d}'
 must_refuse "builds the root key jobs without AVX2" '/^      RUSTFLAGS: -C target-feature=\+avx2/d'
 must_refuse "never derives the public root key" '/--exact derive_production_public_root_key/d'
 must_refuse "skips the bundle root key" 's/--exact --skip derive_production_public_root_key/--exact --skip derive_production_public_root_key --skip derive_production_bundle_root_key/'
