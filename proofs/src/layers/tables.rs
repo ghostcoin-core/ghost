@@ -664,6 +664,39 @@ pub(crate) fn setup_within(airs: Vec<TableAir>, fri: &FriShape, block_bytes: usi
     Ok(CircuitKey { airs, prepared })
 }
 
+/// [`setup`]'s key, released ([`CircuitKey::release`]) as it is made: the
+/// tables' preprocessed columns are taken from `airs` and committed in
+/// place, a block of at most [`stream::key_block_budget`] at a time, and the
+/// key keeps only the tables' shapes, the lookups and the commitment, which
+/// is [`setup`]'s. A key that verifies (or keys the layer above) and proves
+/// nothing.
+pub(crate) fn verifier_setup(airs: Vec<TableAir>, fri: &FriShape) -> Result<CircuitKey, ProofError> {
+    verifier_setup_with(airs, fri, None)
+}
+
+/// [`verifier_setup`] extending a block of at most `block_bytes` at a time.
+pub(crate) fn verifier_setup_within(
+    airs: Vec<TableAir>,
+    fri: &FriShape,
+    block_bytes: usize,
+) -> Result<CircuitKey, ProofError> {
+    verifier_setup_with(airs, fri, Some(block_bytes))
+}
+
+fn verifier_setup_with(airs: Vec<TableAir>, fri: &FriShape, block_bytes: Option<usize>) -> Result<CircuitKey, ProofError> {
+    if airs.iter().any(|a| a.preprocessed.is_none()) {
+        return Err(ProofError::Proving);
+    }
+    let mut shapes = Vec::with_capacity(airs.len());
+    let mut columns = Vec::with_capacity(airs.len());
+    for a in airs {
+        shapes.push(TableAir::shape(a.table, a.num_publics, a.lanes, a.height));
+        columns.push(a.preprocessed.map(|p| Arc::try_unwrap(p).unwrap_or_else(|p| (*p).clone())));
+    }
+    let prepared = stream::verifier_setup(&shapes, columns, fri, block_bytes)?;
+    Ok(CircuitKey { airs: shapes, prepared })
+}
+
 /// The library's own key generation for these tables, which keeps the
 /// extension of the preprocessed columns: what [`setup`] must agree with.
 pub(crate) fn library_setup(airs: &[TableAir], fri: &FriShape) -> Result<ProverData<ScaleConfig>, ProofError> {

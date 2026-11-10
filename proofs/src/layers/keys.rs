@@ -236,8 +236,45 @@ pub(crate) fn check_config(shape: LayerShape) -> Result<(), ProofError> {
     Ok(())
 }
 
+/// What a key is built for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyUse {
+    /// Proving and verifying: the key keeps its tables' preprocessed columns
+    /// and their coefficients ([`tables::setup`]).
+    Prove,
+    /// Verifying, and keying the layer above, alone: the key is released as
+    /// it is made ([`tables::verifier_setup`]), with the same commitment.
+    Verify,
+}
+
+/// The key of the blank circuit `c` at `shape`, its tables no taller than
+/// `2^max_log` (with the ML-DSA tables after the five when `ml`), built for
+/// `key_use`. The circuit's wire values are dropped before its columns are
+/// written, and the circuit once they are ([`KeyMemory`]).
+pub(crate) fn circuit_key(
+    mut c: Circuit,
+    shape: LayerShape,
+    max_log: usize,
+    ml: bool,
+    key_use: KeyUse,
+) -> Result<CircuitKey, ProofError> {
+    let fri = shape.fri();
+    c.drop_values();
+    let airs = if ml {
+        tables::table_airs_with_ml(&c, &fri, max_log)?
+    } else {
+        tables::table_airs_within(&c, &fri, max_log)?
+    };
+    drop(c);
+    match key_use {
+        KeyUse::Prove => tables::setup(airs, &fri),
+        KeyUse::Verify => tables::verifier_setup(airs, &fri),
+    }
+}
+
 /// The key of a batch of `capacity` children of `air`, each proven at
-/// `child` over `2^child_log_height` rows, the batch proven at `shape`.
+/// `child` over `2^child_log_height` rows, the batch proven at `shape`,
+/// built for `key_use`.
 pub(crate) fn batch_key_of<A>(
     air: &A,
     binding_slots: &[usize; BINDING_ELEMS],
@@ -245,6 +282,7 @@ pub(crate) fn batch_key_of<A>(
     child_log_height: usize,
     capacity: usize,
     shape: LayerShape,
+    key_use: KeyUse,
 ) -> Result<LayerKey, ProofError>
 where
     A: BaseAir<F> + Air<SymbolicAirBuilder<F>>,
@@ -259,8 +297,7 @@ where
     let zeros = [F::ZERO; LAYER_PUBLICS];
     batch_circuit(&mut c, air, &ushape, binding_slots, &child_key, capacity, &zeros, None);
     let max_log = tables::max_log_height(&shape.fri());
-    let airs = tables::table_airs_within(&c, &shape.fri(), max_log)?;
-    let circuit = tables::setup(airs, &shape.fri())?;
+    let circuit = circuit_key(c, shape, max_log, false, key_use)?;
     Ok(LayerKey {
         kind: LayerKind::Batch,
         shape,
@@ -338,13 +375,15 @@ where
 
 /// The key of a layer of `kind` (a root over batches, or a shrink over one
 /// root) with `capacity` children of `child`'s key, proven at `shape`, its
-/// tables no taller than `2^max_log` (the field's limit, or less).
+/// tables no taller than `2^max_log` (the field's limit, or less), built for
+/// `key_use`.
 pub(crate) fn layer_key_of(
     child: &LayerKey,
     kind: LayerKind,
     capacity: usize,
     shape: LayerShape,
     max_log: usize,
+    key_use: KeyUse,
 ) -> Result<LayerKey, ProofError> {
     let fits = match kind {
         LayerKind::Root => child.kind == LayerKind::Batch && capacity > 0,
@@ -363,8 +402,7 @@ pub(crate) fn layer_key_of(
     let mut c = Circuit::new();
     layer_circuit(&mut c, &spec, &cons, capacity, &[F::ZERO; LAYER_PUBLICS], None);
     let max_log = max_log.min(tables::max_log_height(&shape.fri()));
-    let airs = tables::table_airs_within(&c, &shape.fri(), max_log)?;
-    let circuit = tables::setup(airs, &shape.fri())?;
+    let circuit = circuit_key(c, shape, max_log, false, key_use)?;
     Ok(LayerKey {
         kind,
         shape,
@@ -745,8 +783,7 @@ pub(crate) fn prover_memory(
     const FE: usize = 4;
     const EFB: usize = 32;
     let r = crate::scale::SCALE_RANDOM_CODEWORDS;
-    let circuit =
-        entries[0] * 32 + entries[1] * 16 + entries[2] * (24 * 4 * 3 + 32) + entries[3] * 132 + entries[4] * 36;
+    let circuit = circuit_bytes(entries);
 
     struct T {
         h: usize,
@@ -847,6 +884,104 @@ pub(crate) fn prover_memory(
         block,
         peak,
     }
+}
+
+/// The bytes of a circuit filling `entries` (wires, arithmetic rows,
+/// permutation rows, bits rows, packing rows), modeled as
+/// [`ProverMemory::circuit`] counts them.
+pub(crate) fn circuit_bytes(entries: [usize; 5]) -> usize {
+    entries[0] * 32 + entries[1] * 16 + entries[2] * (24 * 4 * 3 + 32) + entries[3] * 132 + entries[4] * 36
+}
+
+/// The bytes of a blank circuit's rows filling `entries` (wires, arithmetic
+/// rows, permutation rows, bits rows, packing rows), each row as the circuit
+/// holds it, without the wires' values.
+pub(crate) fn circuit_rows_bytes(entries: [usize; 5]) -> usize {
+    use super::circuit::{ArithRow, BitsRow, PackRow, PermRow};
+    use core::mem::size_of;
+    entries[1] * size_of::<ArithRow>()
+        + entries[2] * size_of::<PermRow>()
+        + entries[3] * size_of::<BitsRow>()
+        + entries[4] * size_of::<PackRow>()
+}
+
+/// What building a layer's key for verifying holds ([`KeyUse::Verify`]),
+/// in bytes, by part, modeled from its tables. Nothing is proven: the blank
+/// circuit is built, its wire values are dropped, its preprocessed columns
+/// are written from its rows and the circuit is dropped; then each table's
+/// columns become their coefficients in place, and the commitment is made
+/// one block of their extension at a time ([`super::stream::KEY_BLOCK_BYTES`]),
+/// nothing of a block kept once it is hashed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyMemory {
+    /// The blank circuit as it is built: its rows and one extension value a
+    /// wire (for a chunk, its ML-DSA rows at one main-trace row an entry
+    /// beside them).
+    pub circuit: usize,
+    /// The blank circuit's rows alone, its wire values dropped: what is held
+    /// while the columns are written.
+    pub rows: usize,
+    /// Each table's preprocessed columns over its rows, and then, in their
+    /// place, their coefficients.
+    pub columns: usize,
+    /// The largest block of the extension evaluated at once, its rows
+    /// before and after they are salted, and its Merkle subtree
+    /// ([`super::stream::key_block_peak`]).
+    pub block: usize,
+    /// The largest of the circuit, its rows with the columns, and the
+    /// columns with a block.
+    pub peak: usize,
+}
+
+/// [`KeyMemory`] of a key with these tables at `shape`, its blank circuit
+/// filling `entries`, with `extra` bytes of rows beside them (a chunk's
+/// ML-DSA rows).
+pub(crate) fn key_memory(airs: &[TableAir], shape: LayerShape, entries: [usize; 5], extra: usize) -> KeyMemory {
+    use super::stream;
+    const FE: usize = 4;
+    let prep: Vec<(usize, usize)> = airs
+        .iter()
+        .map(|a| (a.height(), BaseAir::<F>::preprocessed_width(a)))
+        .filter(|&(_, w)| w > 0)
+        .collect();
+    let columns = prep.iter().map(|&(h, w)| h * w * FE).sum::<usize>();
+    let mats: Vec<(usize, usize)> =
+        prep.iter().map(|&(h, w)| (h.trailing_zeros() as usize + 1 + shape.log_blowup, w)).collect();
+    let block = if mats.is_empty() {
+        0
+    } else {
+        let budget = stream::key_block_budget(&mats, columns);
+        stream::key_block_peak(&mats, stream::block_count(&mats, budget))
+    };
+    let rows = circuit_rows_bytes(entries) + extra;
+    let circuit = rows + entries[0] * core::mem::size_of::<super::EF>();
+    KeyMemory {
+        circuit,
+        rows,
+        columns,
+        block,
+        peak: circuit.max(rows + columns).max(columns + block),
+    }
+}
+
+/// A layer known by its tables alone, any number of them, as
+/// [`shape_spec_within`] knows one: the lookups the library derives for them
+/// and no commitment.
+pub(crate) fn airs_spec(kind: LayerKind, shape: LayerShape, airs: Vec<TableAir>) -> Result<LayerSpec, ProofError> {
+    let lookups = tables::lookups_for(&airs, &shape.fri())?;
+    let zero = [F::ZERO; DIGEST];
+    let sizes: Vec<(usize, usize)> = airs.iter().map(|a| (a.lanes(), a.height())).collect();
+    let num_publics = airs.first().map_or(LAYER_PUBLICS, |a| a.num_publics());
+    let key_digest = native_hash(&key_words(kind, shape, num_publics, &sizes, &zero, &zero));
+    Ok(LayerSpec {
+        kind,
+        shape,
+        airs,
+        lookups,
+        commitment: zero,
+        child_key: zero,
+        key_digest,
+    })
 }
 
 /// The peak of [`prover_memory`]: the bytes a layer's streamed prover holds

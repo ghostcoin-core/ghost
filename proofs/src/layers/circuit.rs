@@ -91,6 +91,8 @@ pub(crate) struct Circuit {
     /// The rows of the ML-DSA tables, empty in a layer's circuit.
     pub(crate) ml: crate::mldsa::tables::MlRows,
     failure: Option<String>,
+    /// The wires whose values [`Self::drop_values`] dropped.
+    dropped: usize,
 }
 
 fn key(c: EF) -> [u32; 8] {
@@ -111,6 +113,7 @@ impl Circuit {
             packs: Vec::new(),
             ml: crate::mldsa::tables::MlRows::default(),
             failure: None,
+            dropped: 0,
         };
         // Wires 0 and 1 are the constants zero and one.
         c.constant(EF::ZERO);
@@ -137,7 +140,16 @@ impl Circuit {
     }
 
     pub(crate) fn num_wires(&self) -> usize {
-        self.values.len()
+        self.values.len().max(self.dropped)
+    }
+
+    /// Drop every wire's value, keeping the rows, the constants, the public
+    /// wires and the wire count: all a key's preprocessed columns are written
+    /// from. A blank circuit's values are most of it, and nothing reads them
+    /// once it is keyed; no wire may be added or read afterwards.
+    pub(crate) fn drop_values(&mut self) {
+        self.dropped = self.num_wires();
+        self.values = Vec::new();
     }
 
     pub(crate) fn value(&self, w: Wire) -> EF {
