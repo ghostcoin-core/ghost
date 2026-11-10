@@ -14,10 +14,12 @@
 //! measured. A chunk whose modeled prover memory exceeds the machine's is not
 //! proven: it prints not yet established with the modeled figure.
 //!
-//! Seconds per block of 3,500 transactions is 110 chunks times the measured
-//! seconds per chunk plus the fold seconds of the recursion benchmark
-//! (proofs/tests/layers_bench.rs) on the same machine, a sum of measured
-//! figures; it is printed only when every part was measured.
+//! Seconds per block of 350 public transactions (the design's 1 million a
+//! day) is 11 chunks times the measured seconds per chunk plus the fold
+//! seconds of the recursion benchmark (proofs/tests/layers_bench.rs) on the
+//! same machine, a sum of measured figures; it is printed only when every
+//! part was measured. The 11 chunks fill batches of the chosen shape's
+//! `layers::REVEALS_PER_BATCH` slots, the last one padded.
 
 use std::time::Instant;
 
@@ -25,9 +27,11 @@ use ghost_proofs::layers::{self, LayerShape};
 use ghost_proofs::mldsa::{self, SignedTx};
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
-/// Transactions a block holds, and chunks of 32 they fill.
-const BLOCK_TXS: usize = 3_500;
+/// Public transactions a block holds at 1 million a day, the chunks of 32
+/// they fill, and the batches of the chosen shape those chunks fill.
+const BLOCK_TXS: usize = 350;
 const BLOCK_CHUNKS: usize = BLOCK_TXS.div_ceil(mldsa::DESIGN_CHUNK);
+const BLOCK_BATCHES: usize = BLOCK_CHUNKS.div_ceil(layers::REVEALS_PER_BATCH);
 
 const VECTORS: &str = include_str!("data/ml_dsa_44_vectors.txt");
 
@@ -149,7 +153,9 @@ fn chunk_benchmark() {
     mldsa::verify_chunk(&key, &binding, 0, &layers::START_DIGEST, &values, &proof).unwrap();
     println!(
         "{BLOCK_CHUNKS} chunks of a block: {:.1} s (a product of the measured seconds per chunk); seconds per block \
-         adds the fold of the recursion benchmark, not yet established on this machine (layers-results.md)",
-        BLOCK_CHUNKS as f64 * secs
+         adds the fold of the recursion benchmark over {BLOCK_BATCHES} batches of {} slots, not yet established on \
+         this machine (layers-results.md)",
+        BLOCK_CHUNKS as f64 * secs,
+        layers::REVEALS_PER_BATCH
     );
 }

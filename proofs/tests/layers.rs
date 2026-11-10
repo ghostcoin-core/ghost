@@ -934,12 +934,13 @@ fn a_root_and_a_shrink_prove_an_aggregators_batches() {
     assert!(shrink.len() <= layers::PROOF_FIELD_BYTES);
 }
 
-/// The real pipeline, planned without proving: a batch of 32 version 2 coin
-/// reveals at 96 queries, a root over 44 such batches, both at blowup 2^3
-/// with 96 queries, and a shrink at blowup 2^5 with 56 queries. Every table
-/// fits the field's two-adic limit at its blowup, and the shrink proof's
-/// size bound, computed from the shrink's own tables (built over the root's
-/// real heights and widths), is within the 1,310,720-byte proof field.
+/// The real pipeline at the design's chosen shape, planned without proving:
+/// a batch of `layers::REVEALS_PER_BATCH` (8) version 2 coin reveals at 96
+/// queries, a root over `layers::BATCHES_PER_ROOT` (29) batches, both at
+/// blowup 2^3 with 96 queries, and a shrink at blowup 2^5 with 56 queries.
+/// Every table fits the field's two-adic limit at its blowup, and the shrink
+/// proof's size bound, computed from the shrink's own tables (built over the
+/// root's real heights and widths), is within the 1,310,720-byte proof field.
 #[test]
 fn the_real_shrink_fits_the_proof_field() {
     use std::io::Write;
@@ -949,8 +950,8 @@ fn the_real_shrink_fits_the_proof_field() {
         &child,
         LayerShape::WIDE,
         child.log_height(),
-        32,
-        44,
+        layers::REVEALS_PER_BATCH,
+        layers::BATCHES_PER_ROOT,
         LayerShape::WIDE,
         LayerShape::SHRINK,
     )
