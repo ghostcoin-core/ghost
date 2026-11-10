@@ -849,6 +849,13 @@ main {
   color: var(--accent);
 }
 
+/* Show wallet: the one secondary button, under the status line while the
+   wallet waits on an approval. */
+button.secondary {
+  display: block;
+  margin: 0.5rem auto 0;
+}
+
 #error,
 .chain-status {
   color: var(--danger);
