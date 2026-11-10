@@ -169,14 +169,22 @@ fn blank_circuit(slots: usize, message_len: usize) -> Circuit {
 /// The key of a chunk of `slots` verifications of messages of
 /// `message_len` bytes, proven at `shape`.
 pub fn chunk_key(slots: usize, message_len: usize, shape: LayerShape) -> Result<ChunkKey, ProofError> {
+    chunk_key_for(slots, message_len, shape, keys::KeyUse::Prove)
+}
+
+/// [`chunk_key`] built for `key_use`.
+fn chunk_key_for(
+    slots: usize,
+    message_len: usize,
+    shape: LayerShape,
+    key_use: keys::KeyUse,
+) -> Result<ChunkKey, ProofError> {
     if slots == 0 {
         return Err(ProofError::Proving);
     }
     keys::check_config(shape)?;
-    let c = blank_circuit(slots, message_len);
     let max_log = shape.max_log_height();
-    let airs = crate::layers::tables::table_airs_with_ml(&c, &shape.fri(), max_log)?;
-    let circuit = crate::layers::tables::setup(airs, &shape.fri())?;
+    let circuit = keys::circuit_key(blank_circuit(slots, message_len), shape, max_log, true, key_use)?;
     Ok(ChunkKey {
         key: LayerKey {
             kind: LayerKind::Chunk,
@@ -296,7 +304,17 @@ pub fn verify_chunk(
 /// key's [`ChunkKey::layer_key`] as the child), verify it with
 /// [`crate::layers::verify_batch`] over every transaction's public values.
 pub fn chunk_batch_key(chunk: &ChunkKey, capacity: usize, shape: LayerShape) -> Result<LayerKey, ProofError> {
-    keys::layer_key_of(&chunk.key, LayerKind::Batch, capacity, shape, shape.max_log_height())
+    chunk_batch_key_for(chunk, capacity, shape, keys::KeyUse::Prove)
+}
+
+/// [`chunk_batch_key`] built for `key_use`.
+fn chunk_batch_key_for(
+    chunk: &ChunkKey,
+    capacity: usize,
+    shape: LayerShape,
+    key_use: keys::KeyUse,
+) -> Result<LayerKey, ProofError> {
+    keys::layer_key_of(&chunk.key, LayerKind::Batch, capacity, shape, shape.max_log_height(), key_use)
 }
 
 /// The entries a batch circuit over `capacity` chunk proofs of `chunk`'s key
@@ -307,6 +325,119 @@ pub fn batch_entries(chunk: &ChunkKey, capacity: usize) -> [usize; 5] {
     let spec = chunk.key.spec();
     let cons = crate::layers::verifier::table_constraints(&spec);
     keys::layer_rows(&spec, &cons, capacity)
+}
+
+/// Chunk proofs a production batch of the public root verifies: the stage 2
+/// design folds the chunks by the private bundles' layers, whose batches
+/// take the same slots ([`crate::layers::REVEALS_PER_BATCH`]).
+pub const DESIGN_CHUNKS_PER_BATCH: usize = crate::layers::REVEALS_PER_BATCH;
+/// Batches a production public root verifies: the private bundles' root
+/// ([`crate::layers::BATCHES_PER_ROOT`]).
+pub const DESIGN_BATCHES_PER_ROOT: usize = crate::layers::BATCHES_PER_ROOT;
+
+/// The entries of a blank chunk of `slots` verifications: the five layer
+/// tables' and the ten ML-DSA tables'.
+fn chunk_entries(slots: usize, message_len: usize) -> ([usize; 5], Vec<usize>) {
+    let c = blank_circuit(slots, message_len);
+    let ml = tables::ML_TABLES.iter().map(|&t| c.ml.entries(t)).collect();
+    (crate::layers::tables::table_rows(&c), ml)
+}
+
+/// The tables of a chunk of `slots` verifications at `shape` as
+/// [`chunk_key`] lays them out, from its entries counted for one, two and
+/// three slots (every slot past the first adds the same rows), with its blank
+/// circuit's entries in the five layer tables and the bytes of its ML-DSA
+/// rows beside them (modeled: one main-trace row an entry).
+fn chunk_spec(
+    slots: usize,
+    message_len: usize,
+    shape: LayerShape,
+) -> Result<(crate::layers::verifier::LayerSpec, [usize; 5], usize), ProofError> {
+    use crate::layers::tables::{self as lt, TABLES, Table, TableAir};
+    let base = keys::extrapolate(|n| chunk_entries(n, message_len).0, slots);
+    let ml: Vec<usize> = if slots <= 3 {
+        chunk_entries(slots, message_len).1
+    } else {
+        let (r1, r2, r3) =
+            (chunk_entries(1, message_len).1, chunk_entries(2, message_len).1, chunk_entries(3, message_len).1);
+        (0..r1.len())
+            .map(|t| r1[t] + (slots - 1) * (r2[t] - r1[t]).max(r3[t] - r2[t]))
+            .collect()
+    };
+    let fri = shape.fri();
+    let max_log = shape.max_log_height();
+    let mut airs: Vec<TableAir> = TABLES
+        .into_iter()
+        .zip(lt::plan(base, &fri, max_log)?)
+        .map(|(t, (lanes, height))| TableAir::shape(t, LAYER_PUBLICS, lanes, height))
+        .collect();
+    for (&t, &n) in tables::ML_TABLES.iter().zip(&ml) {
+        let height = n.next_power_of_two().max(lt::min_height(&fri));
+        if height.trailing_zeros() as usize > max_log {
+            return Err(ProofError::Proving);
+        }
+        airs.push(TableAir::shape(Table::Ml(t), LAYER_PUBLICS, 1, height));
+    }
+    let ml_bytes = tables::ML_TABLES.iter().zip(&ml).map(|(&t, &n)| n * tables::main_width(t) * 4).sum::<usize>();
+    Ok((keys::airs_spec(LayerKind::Chunk, shape, airs)?, base, ml_bytes))
+}
+
+/// The entries (wires, arithmetic rows, permutation rows, bits rows, packing
+/// rows) a batch circuit over `capacity` chunk proofs of the design's chunk
+/// (a chunk of [`DESIGN_CHUNK`] verifications of [`TX_HASH_BYTES`]-byte
+/// messages at [`LayerShape::WIDE`]) fills, planned from the chunk's tables
+/// without building its key: what decides whether the batch's tables fit.
+pub fn design_batch_entries(capacity: usize) -> Result<[usize; 5], ProofError> {
+    let (chunk, _, _) = chunk_spec(DESIGN_CHUNK, TX_HASH_BYTES, LayerShape::WIDE)?;
+    let cons = crate::layers::verifier::table_constraints(&chunk);
+    Ok(keys::extrapolate(|n| keys::layer_rows(&chunk, &cons, n), capacity))
+}
+
+/// The plan of [`production_public_root_key`]: a chunk of [`DESIGN_CHUNK`]
+/// ML-DSA-44 verifications of [`TX_HASH_BYTES`]-byte messages, a batch of
+/// [`DESIGN_CHUNKS_PER_BATCH`] chunks and a root of
+/// [`DESIGN_BATCHES_PER_ROOT`] batches, all at [`LayerShape::WIDE`], and the
+/// root's shrink at [`LayerShape::SHRINK`].
+pub fn public_root_key_plan() -> Result<crate::layers::KeyPlan, ProofError> {
+    public_root_key_plan_of(DESIGN_CHUNKS_PER_BATCH, DESIGN_BATCHES_PER_ROOT)
+}
+
+/// [`public_root_key_plan`] with `chunks_per_batch` chunks a batch and
+/// `batches_per_root` batches a root, the chunk and the shapes unchanged.
+pub fn public_root_key_plan_of(
+    chunks_per_batch: usize,
+    batches_per_root: usize,
+) -> Result<crate::layers::KeyPlan, ProofError> {
+    use crate::layers::verifier::table_constraints;
+    let wide = LayerShape::WIDE;
+    let (chunk, chunk_entries, chunk_ml_bytes) = chunk_spec(DESIGN_CHUNK, TX_HASH_BYTES, wide)?;
+    let chunk_cons = table_constraints(&chunk);
+    let batch_entries = keys::extrapolate(|n| keys::layer_rows(&chunk, &chunk_cons, n), chunks_per_batch);
+    let batch = keys::shape_spec(LayerKind::Batch, wide, batch_entries, LAYER_PUBLICS)?;
+    let batch_cons = table_constraints(&batch);
+    let [root, shrink] =
+        crate::layers::root_and_shrink_specs(&batch, &batch_cons, batches_per_root, wide, LayerShape::SHRINK)?;
+    let chunk_stage = crate::layers::KeyStage::of(&chunk, chunk_entries, chunk_ml_bytes);
+    Ok(crate::layers::KeyPlan::of(alloc::vec![chunk_stage], &[(batch, batch_cons, batch_entries), root, shrink]))
+}
+
+/// The production public root key: the shrink key of the stage 2 design's
+/// real block shape, derived from the circuits alone, deterministically, as
+/// [`public_root_key_plan`] plans it. Each key is built for verifying alone
+/// (`keys::KeyUse::Verify`), with the commitment the prover's key has, and
+/// the key below it is dropped once it is made. Nothing is proven. A shape
+/// whose tables do not lay out is refused by its plan before anything is
+/// built.
+pub fn production_public_root_key() -> Result<LayerKey, ProofError> {
+    public_root_key_plan()?;
+    let wide = LayerShape::WIDE;
+    let verify = keys::KeyUse::Verify;
+    let chunk = chunk_key_for(DESIGN_CHUNK, TX_HASH_BYTES, wide, verify)?;
+    let batch = chunk_batch_key_for(&chunk, DESIGN_CHUNKS_PER_BATCH, wide, verify)?;
+    drop(chunk);
+    let root = crate::layers::root_key_for(&batch, DESIGN_BATCHES_PER_ROOT, wide, verify)?;
+    drop(batch);
+    crate::layers::shrink_key_for(&root, LayerShape::SHRINK, verify)
 }
 
 /// What one verification costs in the chunk circuit, counted from the built

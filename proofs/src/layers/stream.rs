@@ -83,6 +83,28 @@ const D: usize = 8;
 /// blocks.
 pub(crate) const BLOCK_BYTES: usize = 1 << 31;
 
+/// The fewest bytes one block may take ([`BLOCK_BYTES`]) when a key is
+/// built for verifying alone ([`verifier_setup`]): a key's columns are its
+/// largest part, so its blocks are kept smaller.
+pub(crate) const KEY_BLOCK_BYTES: usize = 1 << 29;
+
+/// What a key's commitment ([`commit_root`]) may hold, its coefficients and
+/// one block, before its blocks are kept to [`KEY_BLOCK_BYTES`].
+pub(crate) const KEY_COMMIT_BYTES: usize = 19 << 28;
+
+/// The block budget of a key's commitment of matrices `(log extended
+/// height, width)` whose coefficients take `coeffs` bytes: the largest
+/// power of two from [`KEY_BLOCK_BYTES`] to [`BLOCK_BYTES`] whose block
+/// ([`key_block_peak`]) keeps the commitment within [`KEY_COMMIT_BYTES`].
+/// Fewer blocks read the coefficients fewer times.
+pub(crate) fn key_block_budget(mats: &[(usize, usize)], coeffs: usize) -> usize {
+    let mut budget = KEY_BLOCK_BYTES;
+    while budget < BLOCK_BYTES && coeffs + key_block_peak(mats, block_count(mats, 2 * budget)) <= KEY_COMMIT_BYTES {
+        budget *= 2;
+    }
+    budget
+}
+
 /// A commitment whose extension fits one block of at most this many bytes
 /// keeps that block and its Merkle tree from the commitment to the last
 /// opening instead of evaluating it again: a small layer proves as fast as
@@ -313,6 +335,11 @@ fn salts(stream: &mut SaltStream, rows: usize) -> Vec<F> {
 pub(crate) struct Poly {
     coeffs: RowMajorMatrix<F>,
     log_lde: usize,
+    /// Whether `coeffs` are those of `Q`, of degree below their height
+    /// `h`, and the matrix's polynomials are `Q(x) (1 + x^h) / 2`: the
+    /// interpolants of `Q`'s values on the subgroup of size `h` with a zero
+    /// row after each ([`zero_interleaved`]), kept at half the size.
+    half: bool,
 }
 
 impl Poly {
@@ -323,15 +350,47 @@ impl Poly {
     /// The first `cols` columns' coefficients reduced modulo `x^size -
     /// t`: their values on a coset of size `size` whose points' `size`-th
     /// power is `t`.
-    fn fold(&self, size: usize, t: F, cols: usize) -> RowMajorMatrix<F> {
+    fn fold(&self, size: usize, t: F, cols: core::ops::Range<usize>) -> RowMajorMatrix<F> {
+        if !self.half {
+            return self.fold_coeffs(size, t, cols);
+        }
+        let h = self.coeffs.height();
+        if size >= 2 * h {
+            // `Q (1 + x^h) / 2` has degree below `2h`: its coefficients are
+            // `Q`'s halved, twice over.
+            let w = self.coeffs.width();
+            let n = cols.len();
+            let mut out = F::zero_vec(size * n);
+            for k in 0..h {
+                for (j, &c) in self.coeffs.values[k * w + cols.start..k * w + cols.end].iter().enumerate() {
+                    let v = c.halve();
+                    out[k * n + j] = v;
+                    out[(h + k) * n + j] = v;
+                }
+            }
+            return RowMajorMatrix::new(out, n);
+        }
+        // `size` divides `h`, so `x^h = t^(h / size)` modulo `x^size - t`.
+        let mut out = self.fold_coeffs(size, t, cols);
+        let factor = (F::ONE + t.exp_u64((h / size) as u64)).halve();
+        for v in &mut out.values {
+            *v *= factor;
+        }
+        out
+    }
+
+    /// [`Self::fold`] of the coefficients as they are kept.
+    fn fold_coeffs(&self, size: usize, t: F, cols: core::ops::Range<usize>) -> RowMajorMatrix<F> {
         let w = self.coeffs.width();
         let d = self.coeffs.height();
+        let (first, cols) = (cols.start, cols.len());
         let mut out = F::zero_vec(size * cols);
         let mut factor = F::ONE;
         let mut start = 0;
         while start < d {
             for k in 0..size.min(d - start) {
-                let src = &self.coeffs.values[(start + k) * w..(start + k) * w + cols];
+                let at = (start + k) * w + first;
+                let src = &self.coeffs.values[at..at + cols];
                 let dst = &mut out[k * cols..(k + 1) * cols];
                 if start == 0 {
                     dst.copy_from_slice(src);
@@ -350,6 +409,15 @@ impl Poly {
     /// The first `cols` columns on the coset `shift <w>` of size
     /// `2^log_size`, in bit-reversed order.
     fn on_coset_bitrev(&self, dft: &Dft, shift: F, log_size: usize, cols: usize) -> RowMajorMatrix<F> {
+        let folded = self.fold(1 << log_size, shift.exp_power_of_2(log_size), 0..cols);
+        dft.coset_dft_batch(folded, shift).bit_reverse_rows()
+    }
+
+    /// Columns `cols` of rows `[b L, (b + 1) L)` of the bit-reversed
+    /// extension ([`Self::block`]).
+    fn block_columns(&self, dft: &Dft, blocks: usize, b: usize, cols: core::ops::Range<usize>) -> RowMajorMatrix<F> {
+        let log_size = self.log_lde - log2(blocks);
+        let shift = self.block_shift(blocks, b);
         let folded = self.fold(1 << log_size, shift.exp_power_of_2(log_size), cols);
         dft.coset_dft_batch(folded, shift).bit_reverse_rows()
     }
@@ -395,6 +463,15 @@ impl Poly {
                 *p *= z;
             }
         }
+        if self.half {
+            let h = self.coeffs.height() as u64;
+            for (a, &z) in acc.iter_mut().zip(points) {
+                let factor = (EF::ONE + z.exp_u64(h)).halve();
+                for v in a {
+                    *v *= factor;
+                }
+            }
+        }
         acc
     }
 }
@@ -404,6 +481,21 @@ fn coefficients(dft: &Dft, evals: RowMajorMatrix<F>, log_lde: usize) -> Poly {
     Poly {
         coeffs: dft.idft_batch(evals),
         log_lde,
+        half: false,
+    }
+}
+
+/// The coefficients of `values` (`h` rows) with a zero row after each, as
+/// the library's key generation pads preprocessed columns, from `values`'
+/// own coefficients over the subgroup of size `h`, computed in place: if `Q`
+/// takes `values` on that subgroup, `Q(x) (1 + x^h) / 2` takes them on the
+/// even points of the subgroup of size `2h` (where `x^h = 1`) and zero on
+/// the odd ones (where `x^h = -1`), and has degree below `2h`.
+fn zero_interleaved(dft: &Dft, values: RowMajorMatrix<F>, log_lde: usize) -> Poly {
+    Poly {
+        coeffs: dft.idft_batch(values),
+        log_lde,
+        half: true,
     }
 }
 
@@ -533,8 +625,121 @@ fn commit(dft: &Dft, polys: Vec<Poly>, cursor: &mut SaltCursor, budget: usize) -
     let mats: Vec<(usize, usize)> = polys.iter().map(|p| (p.log_lde, p.width())).collect();
     let blocks = block_count(&mats, budget);
     let keep = kept_bytes(&mats, budget) > 0;
-    // The library draws every matrix's salts in turn, row by row: note the
-    // word each block's salts start at.
+    let mut c = unhashed(polys, blocks, cursor);
+    let mmcs = plain_mmcs();
+    let mut roots = Vec::with_capacity(blocks);
+    for b in 0..blocks {
+        let (cap, tree) = mmcs.commit(c.salted_block(dft, b));
+        roots.push(cap.roots()[0]);
+        if keep {
+            c.kept = Some(tree);
+        }
+    }
+    let (root, upper) = upper_levels(roots);
+    c.upper = upper;
+    (root, c)
+}
+
+/// Threads a key's commitment ([`commit_root`]) is made on, at most.
+pub(crate) const KEY_THREADS: usize = 16;
+
+/// The fewest columns of a matrix one thread evaluates together, so that
+/// the threads reading one row of coefficients read whole cache lines.
+const KEY_SLICE_COLUMNS: usize = 16;
+
+/// The most bytes evaluating one block of a key's commitment holds
+/// ([`commit_root`]): the block ([`block_bytes`]), and every matrix's rows
+/// of it before they are salted.
+pub(crate) fn key_block_peak(mats: &[(usize, usize)], blocks: usize) -> usize {
+    block_bytes(mats, blocks) + mats.iter().map(|&(l, w)| ((1usize << l) / blocks) * w * 4).sum::<usize>()
+}
+
+/// `f` of every item in `0..items`, in order, worked on `threads` threads.
+fn parallel_map<T: Send>(items: usize, threads: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let (f, next) = (&f, &next);
+    let mut out: Vec<(usize, T)> = std::thread::scope(|s| {
+        let workers: Vec<_> = (0..threads.clamp(1, items.max(1)))
+            .map(|_| {
+                s.spawn(move || {
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        if i >= items {
+                            return mine;
+                        }
+                        mine.push((i, f(i)));
+                    }
+                })
+            })
+            .collect();
+        workers.into_iter().flat_map(|w| w.join().expect("a worker finishes")).collect()
+    });
+    out.sort_unstable_by_key(|(i, _)| *i);
+    out.into_iter().map(|(_, v)| v).collect()
+}
+
+/// [`commit`]'s commitment alone, `polys` dropped once it is made, on up to
+/// [`KEY_THREADS`] threads. Each block of at most `budget` bytes is
+/// evaluated a slice of a matrix's columns a thread, then cut into parts
+/// (aligned subtrees of its Merkle tree, so the tree is the same), each part
+/// salted and hashed on a thread; the block is dropped once its parts'
+/// roots are known.
+fn commit_root(polys: Vec<Poly>, cursor: &mut SaltCursor, budget: usize) -> Com {
+    let mats: Vec<(usize, usize)> = polys.iter().map(|p| (p.log_lde, p.width())).collect();
+    let blocks = block_count(&mats, budget);
+    let most = mats.iter().map(|m| 1usize << m.0).min().unwrap_or(1);
+    let mut parts = 1;
+    while parts < KEY_THREADS && blocks * parts * 2 <= most {
+        parts *= 2;
+    }
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(KEY_THREADS);
+    let c = unhashed(polys, blocks * parts, cursor);
+    // Every matrix's columns, in slices of at least KEY_SLICE_COLUMNS.
+    let slices: Vec<(usize, core::ops::Range<usize>)> = mats
+        .iter()
+        .enumerate()
+        .flat_map(|(j, &(_, w))| {
+            let n = (w / KEY_SLICE_COLUMNS).clamp(1, KEY_THREADS);
+            (0..n).map(move |s| (j, s * w / n..(s + 1) * w / n))
+        })
+        .collect();
+    let mmcs = plain_mmcs();
+    let mut roots = Vec::with_capacity(blocks * parts);
+    for b in 0..blocks {
+        let evals = parallel_map(slices.len(), threads, |i| {
+            let (j, cols) = &slices[i];
+            c.polys[*j].block_columns(&Dft::default(), blocks, b, cols.clone())
+        });
+        roots.extend(parallel_map(parts, threads, |p| {
+            let salted: Vec<RowMajorMatrix<F>> = (0..mats.len())
+                .map(|j| {
+                    let mine: Vec<&RowMajorMatrix<F>> =
+                        slices.iter().zip(&evals).filter(|((m, _), _)| *m == j).map(|(_, e)| e).collect();
+                    let rows = ((1usize << mats[j].0) / blocks) / parts;
+                    let mut stream = SaltStream::new(&c.seed, c.salt_words[j][b * parts + p]);
+                    let salt = salts(&mut stream, rows);
+                    let mut out = Vec::with_capacity(rows * (mats[j].1 + SALT));
+                    for r in p * rows..(p + 1) * rows {
+                        for e in &mine {
+                            out.extend_from_slice(&e.values[r * e.width()..(r + 1) * e.width()]);
+                        }
+                        out.extend_from_slice(&salt[(r - p * rows) * SALT..(r - p * rows + 1) * SALT]);
+                    }
+                    RowMajorMatrix::new(out, mats[j].1 + SALT)
+                })
+                .collect();
+            mmcs.commit(salted).0.roots()[0]
+        }));
+    }
+    upper_levels(roots).0
+}
+
+/// `polys` cut into `blocks` blocks, with the word of the salt stream each
+/// block's salts start at, nothing hashed yet. The library draws every
+/// matrix's salts in turn, row by row.
+fn unhashed(polys: Vec<Poly>, blocks: usize, cursor: &mut SaltCursor) -> Committed {
     let mut stream = SaltStream::new(&cursor.seed, cursor.word);
     let salt_words: Vec<Vec<u64>> = polys
         .iter()
@@ -552,23 +757,19 @@ fn commit(dft: &Dft, polys: Vec<Poly>, cursor: &mut SaltCursor, budget: usize) -
         })
         .collect();
     cursor.word = stream.position();
-    let mut c = Committed {
+    Committed {
         polys,
         blocks,
         seed: cursor.seed,
         salt_words,
         upper: Vec::new(),
         kept: None,
-    };
-    let mmcs = plain_mmcs();
-    let mut roots = Vec::with_capacity(blocks);
-    for b in 0..blocks {
-        let (cap, tree) = mmcs.commit(c.salted_block(dft, b));
-        roots.push(cap.roots()[0]);
-        if keep {
-            c.kept = Some(tree);
-        }
     }
+}
+
+/// The Merkle tree above the block roots, level by level (the root last),
+/// and the commitment to its root.
+fn upper_levels(roots: Vec<Digest>) -> (Com, Vec<Vec<Digest>>) {
     let perm = crate::scale::scale_permutation();
     let compress = Compress::new(perm);
     let mut upper = vec![roots];
@@ -584,8 +785,7 @@ fn commit(dft: &Dft, polys: Vec<Poly>, cursor: &mut SaltCursor, budget: usize) -
         upper.push(next);
     }
     let root = upper.last().map_or([F::ZERO; DIGEST_ELEMS], |l| l[0]);
-    c.upper = upper;
-    (MerkleCap::new(vec![root]), c)
+    (MerkleCap::new(vec![root]), upper)
 }
 
 /// Evaluations over the doubled domain, hiding as `HidingFriPcs::commit`
@@ -881,6 +1081,68 @@ pub(crate) fn setup(airs: &[TableAir], fri: &FriShape, budget: usize) -> Result<
         ),
         committed: Some(committed),
         released: false,
+    })
+}
+
+/// [`setup`]'s commitment and lookups alone, released: the key a verifier
+/// (or a layer above) needs, from `columns`, each table's preprocessed
+/// columns, taken by value. Each table's columns become their own
+/// coefficients in place ([`zero_interleaved`]), so the columns are never
+/// held beside their coefficients, and the commitment is made a block of at
+/// most `budget` bytes at a time (by default [`key_block_budget`]) and
+/// nothing of it kept ([`commit_root`]). The commitment is [`setup`]'s, bit
+/// for bit.
+pub(crate) fn verifier_setup(
+    airs: &[TableAir],
+    columns: Vec<Option<RowMajorMatrix<F>>>,
+    fri: &FriShape,
+    budget: Option<usize>,
+) -> Result<Preprocessed, ProofError> {
+    if columns.len() != airs.len() {
+        return Err(ProofError::Proving);
+    }
+    let lookups = airs.iter().map(lookups_of).collect::<Result<Vec<_>, _>>()?;
+    let dft = Dft::default();
+    let mut instances = Vec::with_capacity(airs.len());
+    let mut matrix_to_instance = Vec::new();
+    let mut polys = Vec::new();
+    for (i, (air, prep)) in airs.iter().zip(columns).enumerate() {
+        let Some(prep) = prep.filter(|p| p.width() > 0) else {
+            instances.push(None);
+            continue;
+        };
+        if prep.height() != air.height() {
+            return Err(ProofError::Proving);
+        }
+        let log_ext = log2(air.height()) + 1;
+        instances.push(Some(PreprocessedInstanceMeta {
+            matrix_index: polys.len(),
+            width: prep.width(),
+            degree_bits: log_ext,
+        }));
+        matrix_to_instance.push(i);
+        polys.push(zero_interleaved(&dft, prep, log_ext + fri.log_blowup));
+    }
+    drop(dft);
+    let preprocessed = if polys.is_empty() {
+        None
+    } else {
+        let budget = budget.unwrap_or_else(|| {
+            let mats: Vec<(usize, usize)> = polys.iter().map(|p| (p.log_lde, p.width())).collect();
+            let coeffs = polys.iter().map(|p| p.coeffs.values.len() * 4).sum();
+            key_block_budget(&mats, coeffs)
+        });
+        let mut cursor = Randomness::of([0; 32]).salts;
+        Some(GlobalPreprocessed {
+            commitment: commit_root(polys, &mut cursor, budget),
+            instances,
+            matrix_to_instance,
+        })
+    };
+    Ok(Preprocessed {
+        common: CommonData::new(preprocessed, lookups),
+        committed: None,
+        released: true,
     })
 }
 
@@ -1283,6 +1545,7 @@ fn masked_chunk(
     Poly {
         coeffs: RowMajorMatrix::new(c, w),
         log_lde,
+        half: false,
     }
 }
 

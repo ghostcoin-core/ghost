@@ -280,7 +280,8 @@ pub fn batch_key<A: ChildAir>(
     capacity: usize,
     shape: LayerShape,
 ) -> Result<LayerKey, ProofError> {
-    keys::batch_key_of(&AirOf(air), &air.binding_slots().positions(), child, child_log_height, capacity, shape)
+    let slots = air.binding_slots().positions();
+    keys::batch_key_of(&AirOf(air), &slots, child, child_log_height, capacity, shape, keys::KeyUse::Prove)
 }
 
 /// Prove a batch of child proofs (each with its public values, in order),
@@ -344,7 +345,17 @@ pub fn verify_batch(
 /// The key of a root over up to `capacity` batch proofs of `batch`'s key,
 /// proven at `shape`.
 pub fn root_key(batch: &LayerKey, capacity: usize, shape: LayerShape) -> Result<LayerKey, ProofError> {
-    keys::layer_key_of(batch, LayerKind::Root, capacity, shape, shape.max_log_height())
+    root_key_for(batch, capacity, shape, keys::KeyUse::Prove)
+}
+
+/// [`root_key`] built for `key_use`.
+pub(crate) fn root_key_for(
+    batch: &LayerKey,
+    capacity: usize,
+    shape: LayerShape,
+    key_use: keys::KeyUse,
+) -> Result<LayerKey, ProofError> {
+    keys::layer_key_of(batch, LayerKind::Root, capacity, shape, shape.max_log_height(), key_use)
 }
 
 /// [`root_key`] with its tables no taller than `2^max_log_height`, packed
@@ -356,7 +367,7 @@ pub fn root_key_within(
     shape: LayerShape,
     max_log_height: usize,
 ) -> Result<LayerKey, ProofError> {
-    keys::layer_key_of(batch, LayerKind::Root, capacity, shape, max_log_height)
+    keys::layer_key_of(batch, LayerKind::Root, capacity, shape, max_log_height, keys::KeyUse::Prove)
 }
 
 /// The key of a shrink of one root proof of `root`'s key, proven at `shape`
@@ -364,6 +375,11 @@ pub fn root_key_within(
 /// packed into the lanes that make its proof bound smallest
 /// ([`keys::smallest_proof_limit`]).
 pub fn shrink_key(root: &LayerKey, shape: LayerShape) -> Result<LayerKey, ProofError> {
+    shrink_key_for(root, shape, keys::KeyUse::Prove)
+}
+
+/// [`shrink_key`] built for `key_use`.
+pub(crate) fn shrink_key_for(root: &LayerKey, shape: LayerShape, key_use: keys::KeyUse) -> Result<LayerKey, ProofError> {
     if root.kind != LayerKind::Root {
         return Err(ProofError::Proving);
     }
@@ -371,7 +387,7 @@ pub fn shrink_key(root: &LayerKey, shape: LayerShape) -> Result<LayerKey, ProofE
     let cons = verifier::table_constraints(&spec);
     let rows = keys::layer_rows(&spec, &cons, 1);
     let (max_log, _) = keys::smallest_proof_limit(LayerKind::Shrink, shape, rows, bundle::LAYER_PUBLICS)?;
-    keys::layer_key_of(root, LayerKind::Shrink, 1, shape, max_log)
+    keys::layer_key_of(root, LayerKind::Shrink, 1, shape, max_log, key_use)
 }
 
 /// Prove a root (over batch proofs) or a shrink (over one root proof) at
@@ -548,23 +564,126 @@ fn pipeline_specs<A: ChildAir>(
     let batch_entries = keys::extrapolate(|n| keys::batch_rows(&air, &slots, child, child_log_height, n), per_batch);
     let batch = keys::shape_spec(LayerKind::Batch, layer, batch_entries, np)?;
     let batch_cons = verifier::table_constraints(&batch);
-    let root_entries = keys::extrapolate(|n| keys::layer_rows(&batch, &batch_cons, n), batches);
+    let [root, shrink] = root_and_shrink_specs(&batch, &batch_cons, batches, layer, shrink)?;
+    let shrink_bytes_bound = keys::proof_bytes_bound(&shrink.0.airs, &shrink.0.lookups, &shrink.1, shrink.0.shape);
+    Ok(PipelineSpecs {
+        layers: [(batch, batch_cons, batch_entries), root, shrink],
+        shrink_bytes_bound,
+    })
+}
+
+/// A layer planned from its entries: its tables, constraints and entries.
+pub(crate) type SpecOf = (verifier::LayerSpec, Vec<verifier::TableConstraints>, [usize; 5]);
+
+/// The root over `batches` batches of `batch` at `layer`, and its shrink at
+/// `shrink`, planned as [`plan_pipeline`] plans them.
+pub(crate) fn root_and_shrink_specs(
+    batch: &verifier::LayerSpec,
+    batch_cons: &[verifier::TableConstraints],
+    batches: usize,
+    layer: LayerShape,
+    shrink: LayerShape,
+) -> Result<[SpecOf; 2], ProofError> {
+    let np = bundle::LAYER_PUBLICS;
+    let root_entries = keys::extrapolate(|n| keys::layer_rows(batch, batch_cons, n), batches);
     let root = keys::shape_spec(LayerKind::Root, layer, root_entries, np)?;
     let root_cons = verifier::table_constraints(&root);
     let shrink_entries = keys::layer_rows(&root, &root_cons, 1);
     let (max_log, _) = keys::smallest_proof_limit(LayerKind::Shrink, shrink, shrink_entries, np)?;
     let shrink_spec = keys::shape_spec_within(LayerKind::Shrink, shrink, shrink_entries, np, max_log)?;
     let shrink_cons = verifier::table_constraints(&shrink_spec);
-    let shrink_bytes_bound =
-        keys::proof_bytes_bound(&shrink_spec.airs, &shrink_spec.lookups, &shrink_cons, shrink);
-    Ok(PipelineSpecs {
-        layers: [
-            (batch, batch_cons, batch_entries),
-            (root, root_cons, root_entries),
-            (shrink_spec, shrink_cons, shrink_entries),
-        ],
-        shrink_bytes_bound,
-    })
+    Ok([(root, root_cons, root_entries), (shrink_spec, shrink_cons, shrink_entries)])
+}
+
+pub use keys::KeyMemory;
+
+/// The memory a production key derivation must fit: the 6,144 MiB of the
+/// sandboxed check that derives it. Every stage of [`bundle_root_key_plan`]
+/// and of [`crate::mldsa::public_root_key_plan`] must plan its key within
+/// it before anything is built.
+pub const KEY_DERIVATION_BUDGET_BYTES: u64 = 6144 << 20;
+
+/// One stage of building a production root key: the layer, its tables'
+/// lanes and heights, and what building its key holds (modeled).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyStage {
+    pub layer: LayerKind,
+    pub lanes: Vec<usize>,
+    pub heights: Vec<usize>,
+    pub memory: KeyMemory,
+}
+
+impl KeyStage {
+    /// The stage of `spec`, its blank circuit filling `entries` with `extra`
+    /// bytes of rows beside them ([`keys::key_memory`]).
+    pub(crate) fn of(spec: &verifier::LayerSpec, entries: [usize; 5], extra: usize) -> Self {
+        Self {
+            layer: spec.kind,
+            lanes: spec.airs.iter().map(tables::TableAir::lanes).collect(),
+            heights: spec.airs.iter().map(tables::TableAir::height).collect(),
+            memory: keys::key_memory(&spec.airs, spec.shape, entries, extra),
+        }
+    }
+}
+
+/// The stages of a production root key, in the order they are built, each
+/// from its tables as the key will plan them, without building any key.
+/// Each key is built for verifying alone, released as it is made, so the
+/// derivation's peak is the largest stage's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyPlan {
+    pub stages: Vec<KeyStage>,
+}
+
+impl KeyPlan {
+    /// The derivation's modeled peak: its largest stage's.
+    pub fn peak(&self) -> usize {
+        self.stages.iter().map(|s| s.memory.peak).max().unwrap_or(0)
+    }
+
+    /// The batch, root and shrink stages of `specs`, after `first`.
+    pub(crate) fn of(first: Vec<KeyStage>, specs: &[SpecOf]) -> Self {
+        let mut stages = first;
+        stages.extend(specs.iter().map(|(spec, _, entries)| KeyStage::of(spec, *entries, 0)));
+        Self { stages }
+    }
+}
+
+/// The plan of [`production_bundle_root_key`]: a batch of
+/// [`REVEALS_PER_BATCH`] version 2 coin reveals at [`LayerShape::WIDE`], a
+/// root of [`BATCHES_PER_ROOT`] batches at [`LayerShape::WIDE`], its shrink
+/// at [`LayerShape::SHRINK`].
+pub fn bundle_root_key_plan() -> Result<KeyPlan, ProofError> {
+    let child = RevealChild::new(LayerShape::WIDE.num_queries);
+    let specs = pipeline_specs(
+        &child,
+        LayerShape::WIDE,
+        child.log_height(),
+        REVEALS_PER_BATCH,
+        BATCHES_PER_ROOT,
+        LayerShape::WIDE,
+        LayerShape::SHRINK,
+    )?;
+    Ok(KeyPlan::of(Vec::new(), &specs.layers))
+}
+
+/// The production bundle root key: the shrink key of spec 07's real shape,
+/// derived from the circuits alone, deterministically, as
+/// [`bundle_root_key_plan`] plans it. Each key is built for verifying alone
+/// ([`keys::KeyUse::Verify`]), with the commitment the prover's key has,
+/// and the key below it is dropped once it is made: the shrink key verifies,
+/// and proves nothing. Nothing is proven. `crate::ffi::root_key_to_bytes`
+/// writes the node's bytes from it.
+pub fn production_bundle_root_key() -> Result<LayerKey, ProofError> {
+    let wide = LayerShape::WIDE;
+    let verify = keys::KeyUse::Verify;
+    let child = RevealChild::new(wide.num_queries);
+    let slots = child.binding_slots().positions();
+    let batch =
+        keys::batch_key_of(&AirOf(&child), &slots, wide, child.log_height(), REVEALS_PER_BATCH, wide, verify)?;
+    let root = root_key_for(&batch, BATCHES_PER_ROOT, wide, verify)?;
+    drop(batch);
+    shrink_key_for(&root, LayerShape::SHRINK, verify)
 }
 
 pub use security::{FIELD_MARGIN_BITS, PipelineEstimate, ProofEstimate, UNCAPPED_COLLISION_BITS, reveal_estimate};
@@ -867,6 +986,67 @@ pub fn streamed_prover_check(budgets: &[usize]) -> Result<Vec<usize>, alloc::str
                 .map_err(|e| format!("verify with a released key: {e}"))?;
             if tables::prove_within(&key, &c, &fri, &tag, [5; 32], budget).is_ok() {
                 return Err("a released key proves".into());
+            }
+        }
+    }
+    Ok(blocks)
+}
+
+/// The key built for verifying alone ([`keys::KeyUse::Verify`]) against the
+/// library's and the prover's: the small circuit of
+/// [`table_roundtrip_check`], its tables in one lane a row and packed into
+/// lanes, its columns written once with its wire values and once after they
+/// are dropped, keyed by the library, by [`tables::setup`] and by
+/// [`tables::verifier_setup_within`] with blocks of at most `budget` bytes
+/// for each budget given. The columns must be the same, the commitments and
+/// lookups the same, and the verifier's key released. Returns, for each
+/// budget, the blocks the preprocessed commitment was cut into.
+#[doc(hidden)]
+pub fn verifier_key_check(budgets: &[usize]) -> Result<Vec<usize>, alloc::string::String> {
+    use alloc::format;
+
+    let (c, _, _, fri) = small_circuit()?;
+    let (mut blank, ..) = small_circuit()?;
+    blank.drop_values();
+    let mut blocks = Vec::new();
+    for max_log in [tables::max_log_height(&fri), tables::min_height(&fri).trailing_zeros() as usize] {
+        let airs = tables::table_airs_within(&c, &fri, max_log).map_err(|e| format!("tables: {e}"))?;
+        let dropped = tables::table_airs_within(&blank, &fri, max_log).map_err(|e| format!("tables: {e}"))?;
+        let columns = |a: &[tables::TableAir]| -> Vec<Option<Vec<F>>> {
+            a.iter().map(|t| BaseAir::<F>::preprocessed_trace(t).map(|m| m.values)).collect()
+        };
+        if columns(&airs) != columns(&dropped) {
+            return Err("the columns differ once the wire values are dropped".into());
+        }
+        let library = tables::library_setup(&airs, &fri).map_err(|e| format!("library setup: {e}"))?;
+        let library_root = library.common.preprocessed.as_ref().map(|p| p.commitment.roots().to_vec());
+        let prover = tables::setup(airs.clone(), &fri).map_err(|e| format!("setup: {e}"))?;
+        let prover_root = prover.common().preprocessed.as_ref().map(|p| p.commitment.roots().to_vec());
+        if library_root.is_none() || prover_root != library_root {
+            return Err("the prover's preprocessed commitment is not the library's".into());
+        }
+        let mats: Vec<(usize, usize)> = airs
+            .iter()
+            .map(|a| (a.height().trailing_zeros() as usize + 1 + fri.log_blowup, BaseAir::<F>::preprocessed_width(a)))
+            .filter(|&(_, w)| w > 0)
+            .collect();
+        for &budget in budgets {
+            blocks.push(stream::block_count(&mats, budget));
+            let key =
+                tables::verifier_setup_within(dropped.clone(), &fri, budget).map_err(|e| format!("verifier setup: {e}"))?;
+            let root = key.common().preprocessed.as_ref().map(|p| p.commitment.roots().to_vec());
+            if root != library_root {
+                return Err(format!("the verifier's preprocessed commitment differs at {budget} bytes a block"));
+            }
+            if format!("{:?}", key.common().lookups) != format!("{:?}", library.common.lookups) {
+                return Err(format!("the verifier's lookups differ at {budget} bytes a block"));
+            }
+            if key.airs.iter().any(|a| BaseAir::<F>::preprocessed_trace(a).is_some()) {
+                return Err("the verifier's key keeps its columns".into());
+            }
+            let shapes = |a: &[tables::TableAir]| -> Vec<(usize, usize)> { a.iter().map(|t| (t.lanes(), t.height())).collect() };
+            if shapes(&key.airs) != shapes(&airs) {
+                return Err("the verifier's key has other tables".into());
             }
         }
     }
