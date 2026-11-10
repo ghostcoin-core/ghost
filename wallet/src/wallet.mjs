@@ -51,6 +51,8 @@ export const WARN_COST_UNKNOWN = "The cost of a cancel is unknown at a base fee 
 export const USER_REJECTED = 4001;
 // The status line once a request is refused at its first check.
 export const REFUSED_STATUS = "This request was refused. Nothing was signed.";
+// The window's and tab's title while a request waits for the user.
+export const ASKING_TITLE = "Ghost app is asking: approve below";
 const METHOD_NOT_FOUND = -32601;
 const INVALID_PARAMS = -32602;
 const INTERNAL_ERROR = -32603;
@@ -484,7 +486,9 @@ async function vaultKey(subtle, record, secret) {
 }
 
 // The wallet behind the page. `ghost`: the loaded module (wasm.mjs);
-// `store`: vaultStore; `ui`: the screens (main.mjs); `subtle`: WebCrypto;
+// `store`: vaultStore; `ui`: the screens (main.mjs), whose optional
+// `attention(title)` focuses the window and sets its title for a request
+// (null: the request is answered, the title goes back); `subtle`: WebCrypto;
 // `credentials`: navigator.credentials, or null without passkeys; `random(n)`:
 // n bytes from crypto.getRandomValues; `origins`: the web app origins;
 // `opener`: the window that opened the pop-up. `guard`: the trusted Guard
@@ -1037,6 +1041,10 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
       const id = message && Number.isSafeInteger(message.id) ? message.id : null;
       return { id, error: { code: err.code ?? INVALID_PARAMS, message: err.message } };
     }
+    // The window comes to the front and its title says it is waiting, so
+    // the approval is not missed behind the app; the title goes back once
+    // the request is answered.
+    ui.attention?.(ASKING_TITLE);
     try {
       const result = await answer(request, origin);
       ui.status("Done. Keep this window open for the app's next request, or close it.");
@@ -1044,6 +1052,8 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
     } catch (err) {
       ui.status(err.code === USER_REJECTED ? "Rejected. Nothing was signed." : "Something failed. Nothing was signed.");
       return { id: request.id, error: { code: err.code ?? INTERNAL_ERROR, message: String(err.message) } };
+    } finally {
+      ui.attention?.(null);
     }
   }
 

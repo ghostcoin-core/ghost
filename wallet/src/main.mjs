@@ -69,7 +69,19 @@ const GUARD_KEY_TITLES = {
 
 const RULE_NAMES = { guard: "Guard coin", empty: "plain coin", other: "coin with another rule" };
 
+const PAGE_TITLE = document.title;
+
 const ui = {
+  // A request: the window comes to the front, and its window and tab title
+  // say the app is asking; null puts the page's title back.
+  attention(title) {
+    if (title === null) {
+      document.title = PAGE_TITLE;
+      return;
+    }
+    document.title = title;
+    window.focus();
+  },
   status(text) {
     $("status").textContent = text;
     show("status");

@@ -160,6 +160,9 @@ export function scriptedUi(script = {}) {
     ui.errors.push(text);
   };
   ui.status = (text) => ui.statuses.push(text);
+  // `titles` lists each attention call: a request's title, then null once answered.
+  ui.titles = [];
+  ui.attention = (title) => ui.titles.push(title);
   return ui;
 }
 
