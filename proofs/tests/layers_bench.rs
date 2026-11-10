@@ -25,6 +25,9 @@
 
 use std::time::Instant;
 
+use ghost_proofs::ffi::{
+    GHOST_PROOFS_ACCEPTED, ROOT_KEY_BYTES, RootPath, root_inputs_to_bytes, root_key_to_bytes, verify_bundle_root_bytes,
+};
 use ghost_proofs::layers::{self, Claim, LayerShape};
 use ghost_proofs::*;
 use p3_baby_bear::{BabyBear, default_babybear_poseidon2_24};
@@ -117,6 +120,32 @@ fn path() -> [[u8; 32]; TREE_DEPTH] {
 /// Reveal `i`: a plain salted coin of 1,000,000 revealed for 600,000 with a
 /// fee of `21 + i`.
 fn reveal(params: &ChainParams, i: u8) -> (CoinRevealV2, Proof) {
+    let (o, remainder, request, zk) = reveal_inputs(i);
+    prove_coin_reveal_v2_scale(params, &o, &InputRule::plain(), &remainder, &EMPTY_RULE, &request, zk)
+        .expect("an honest reveal proves")
+}
+
+/// [`reveal`] at the small test shape: two queries and a nine element digest.
+fn reveal_small(params: &ChainParams, i: u8) -> (CoinRevealV2, Proof) {
+    let (o, remainder, request, zk) = reveal_inputs(i);
+    let shape = ScaleShape {
+        num_queries: SMALL_QUERIES,
+        digest_elems: 9,
+    };
+    prove_coin_reveal_v2_scale_shaped(
+        params,
+        &o,
+        &InputRule::plain(),
+        &remainder,
+        &EMPTY_RULE,
+        &request,
+        zk,
+        shape,
+    )
+    .expect("an honest reveal proves")
+}
+
+fn reveal_inputs(i: u8) -> (SaltedCoinOpening, SaltedCoinRemainder, CoinRevealV2Request, [u8; 32]) {
     let o = SaltedCoinOpening {
         s: [1; 32],
         r: [2; 32],
@@ -144,8 +173,7 @@ fn reveal(params: &ChainParams, i: u8) -> (CoinRevealV2, Proof) {
     };
     let mut zk = [0x6c; 32];
     zk[0] = i;
-    prove_coin_reveal_v2_scale(params, &o, &InputRule::plain(), &remainder, &EMPTY_RULE, &request, zk)
-        .expect("an honest reveal proves")
+    (o, remainder, request, zk)
 }
 
 /// Whether a stage of `modeled` prover bytes fits the machine; prints the
@@ -172,6 +200,154 @@ fn measured(stage: &str, t: Instant, bytes: Option<usize>) {
         t.elapsed().as_secs_f64(),
         peak_gib()
     );
+}
+
+/// Times the shrink's verification this many times.
+const VERIFY_RUNS: usize = 20;
+/// Queries of the small test shape.
+const SMALL_QUERIES: usize = 2;
+/// The files `GHOST_ROOT_PROOF_OUT` receives.
+const PROOF_FILE: &str = "shrink_proof.bin";
+const KEY_FILE: &str = "root_key.bin";
+const INPUTS_FILE: &str = "root_inputs.bin";
+
+/// The median and the worst of the times.
+fn median_and_worst(mut times: Vec<f64>) -> (f64, f64) {
+    times.sort_by(f64::total_cmp);
+    let n = times.len();
+    let median = if n % 2 == 1 { times[n / 2] } else { (times[n / 2 - 1] + times[n / 2]) / 2.0 };
+    (median, times[n - 1])
+}
+
+/// Verifies the shrink `VERIFY_RUNS` times and prints the median and worst
+/// time in milliseconds, with the machine line.
+fn time_verification(key: &layers::LayerKey, binding: &layers::Binding, claim: &Claim, shrink: &[u8]) -> (f64, f64) {
+    let times: Vec<f64> = (0..VERIFY_RUNS)
+        .map(|_| {
+            let t = Instant::now();
+            layers::verify_layer(key, binding, 0, claim, shrink).expect("the shrink verifies");
+            t.elapsed().as_secs_f64() * 1000.0
+        })
+        .collect();
+    let (median, worst) = median_and_worst(times);
+    println!(
+        "measured: shrink verification over {VERIFY_RUNS} runs: median {median:.1} ms, worst {worst:.1} ms \
+         (machine: {})",
+        machine()
+    );
+    (median, worst)
+}
+
+/// The directory named by `GHOST_ROOT_PROOF_OUT`, if any.
+fn out_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("GHOST_ROOT_PROOF_OUT").filter(|d| !d.is_empty()).map(std::path::PathBuf::from)
+}
+
+/// Writes the shrink proof (in its zero-padded proof field), the verifier key
+/// bytes and the root inputs bytes into `dir`, for the node's own verifier.
+fn write_root_proof(
+    dir: &std::path::Path,
+    key: &layers::LayerKey,
+    binding: &layers::Binding,
+    items: &[Vec<u8>],
+    shrink: &[u8],
+) {
+    std::fs::create_dir_all(dir).expect("the output directory is made");
+    let key_bytes = root_key_to_bytes(key, RootPath::Bundle).expect("the shrink key has root key bytes");
+    let inputs = root_inputs_to_bytes(binding, items);
+    assert!(shrink.len() <= PROOF_FIELD_BYTES);
+    let mut field = shrink.to_vec();
+    field.resize(PROOF_FIELD_BYTES, 0);
+    std::fs::write(dir.join(PROOF_FILE), &field).expect("the proof is written");
+    std::fs::write(dir.join(KEY_FILE), key_bytes).expect("the key is written");
+    std::fs::write(dir.join(INPUTS_FILE), &inputs).expect("the inputs are written");
+    println!(
+        "measured: wrote {PROOF_FILE} ({} bytes), {KEY_FILE} ({} bytes), {INPUTS_FILE} ({} bytes) to {}",
+        field.len(),
+        key_bytes.len(),
+        inputs.len(),
+        dir.display()
+    );
+}
+
+/// What follows a proven shrink: the timed verifications, then the files when
+/// `out` names a directory.
+fn finish_shrink(
+    key: &layers::LayerKey,
+    binding: &layers::Binding,
+    claim: &Claim,
+    items: &[Vec<u8>],
+    shrink: &[u8],
+    out: Option<&std::path::Path>,
+) -> (f64, f64) {
+    let timing = time_verification(key, binding, claim, shrink);
+    if let Some(dir) = out {
+        write_root_proof(dir, key, binding, items, shrink);
+    }
+    timing
+}
+
+/// The same timing and writing at the small test shape: one reveal through a
+/// batch, a root and a shrink, with the files reloaded and verified through
+/// the node's interface.
+#[test]
+fn layers_benchmark_small() {
+    let small = LayerShape {
+        log_blowup: 3,
+        num_queries: SMALL_QUERIES,
+    };
+    let lean = LayerShape {
+        log_blowup: 2,
+        num_queries: 1,
+    };
+    let params = ChainParams {
+        chain_id: *b"testnet1",
+        version: PROTOCOL_VERSION_2,
+        domain: [0x47; 32],
+    };
+    let binding = layers::Binding::of(&params);
+    let child = layers::RevealChild::new(SMALL_QUERIES);
+    let (tx, proof) = reveal_small(&params, 0);
+    let publics = layers::RevealChild::public_values(&params, &tx);
+    let item = coin_reveal_v2_public_values(&params, &tx);
+    let claim = Claim::of(&layers::START_DIGEST, std::slice::from_ref(&publics));
+
+    let mut batch_key = layers::batch_key(&child, small, child.log_height(), 1, lean).expect("the batch key builds");
+    let children = vec![(proof.as_bytes().to_vec(), publics)];
+    let batch = layers::prove_batch(&batch_key, &child, &binding, 0, &layers::START_DIGEST, &children, [31; 32])
+        .expect("the batch proves");
+    batch_key.release_prover_data();
+    let mut root_key = layers::root_key(&batch_key, 1, lean).expect("the root key builds");
+    let root = layers::prove_layer(&root_key, &batch_key, &binding, 0, &[(batch, claim)], [32; 32])
+        .expect("the root proves");
+    root_key.release_prover_data();
+    let shrink_key = layers::shrink_key(&root_key, lean).expect("the shrink key builds");
+    let shrink = layers::prove_layer(&shrink_key, &root_key, &binding, 0, &[(root, claim)], [33; 32])
+        .expect("the shrink proves");
+
+    let dir = std::env::temp_dir().join(format!("layers_bench_small_{}", std::process::id()));
+    let started = Instant::now();
+    let items = vec![item];
+    let (median, worst) = finish_shrink(&shrink_key, &binding, &claim, &items, &shrink, Some(&dir));
+    assert!(median > 0.0 && worst >= median);
+    assert!(started.elapsed().as_secs() < 30, "the timing and writing take well under a minute");
+
+    let proof_file = std::fs::read(dir.join(PROOF_FILE)).expect("the proof file reloads");
+    let key_file = std::fs::read(dir.join(KEY_FILE)).expect("the key file reloads");
+    let inputs_file = std::fs::read(dir.join(INPUTS_FILE)).expect("the inputs file reloads");
+    assert_eq!(proof_file.len(), PROOF_FIELD_BYTES);
+    assert_eq!(&proof_file[..shrink.len()], &shrink[..]);
+    assert_eq!(key_file.len(), ROOT_KEY_BYTES);
+    assert_eq!(inputs_file, root_inputs_to_bytes(&binding, &items));
+    assert_eq!(verify_bundle_root_bytes(&key_file, &inputs_file, &proof_file), GHOST_PROOFS_ACCEPTED);
+
+    let mut damaged = proof_file.clone();
+    damaged[shrink.len() / 2] ^= 1;
+    assert_ne!(verify_bundle_root_bytes(&key_file, &inputs_file, &damaged), GHOST_PROOFS_ACCEPTED);
+    let mut other = inputs_file.clone();
+    *other.last_mut().unwrap() ^= 1;
+    assert_ne!(verify_bundle_root_bytes(&key_file, &other, &proof_file), GHOST_PROOFS_ACCEPTED);
+    std::fs::remove_dir_all(&dir).expect("the test directory is removed");
 }
 
 #[test]
@@ -279,4 +455,8 @@ fn layers_benchmark() {
     measured("shrink, key included", t, Some(shrink.len()));
     layers::verify_layer(&shrink_key, &binding, 0, &whole, &shrink).expect("the shrink verifies");
     assert!(shrink.len() <= layers::PROOF_FIELD_BYTES);
+    // The root's inputs as the node builds them: every batch's reveals in order.
+    let batch_items: Vec<Vec<u8>> = reveals.iter().map(|(tx, _)| coin_reveal_v2_public_values(&params, tx)).collect();
+    let items: Vec<Vec<u8>> = (0..BATCHES).flat_map(|_| batch_items.iter().cloned()).collect();
+    finish_shrink(&shrink_key, &binding, &whole, &items, &shrink, out_dir().as_deref());
 }
