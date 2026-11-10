@@ -1000,6 +1000,9 @@ export function createFlow({
   let rpc = createRpc(endpoint, { fetch });
   // The connected wallet's connector, never in `state`.
   let connector = null;
+  // The connector whose window waits on the user's approval (connect, or a
+  // Vanish's commit), while one does; `state.walletAsking` says so.
+  let asking = null;
   // The page's header chain, held in the worker: the network it is of, the
   // endpoint it was last read from, its start height, every header the
   // worker adopted, by hash, and the hashes of the blocks whose receipts the
@@ -1026,6 +1029,9 @@ export function createFlow({
     chainRefused: null,
     // The connected wallet: null, or { id, name, address, balance }.
     wallet: null,
+    // True while the wallet waits on the user's approval: the page shows its
+    // Show wallet button then.
+    walletAsking: false,
     // The addresses this page sent a Vanish commit from in this session,
     // lower case: a Summon paid to one of them puts the same address on both
     // sides. Kept in memory only.
@@ -2114,7 +2120,15 @@ export function createFlow({
     if (!c || typeof c.connect !== "function" || typeof c.signTransaction !== "function") {
       throw new Error("not a wallet connector");
     }
-    const answer = await c.connect();
+    asking = c;
+    state.walletAsking = true;
+    emit();
+    let answer;
+    try {
+      answer = await c.connect();
+    } finally {
+      stopAsking(c);
+    }
     const address = String((answer && answer.address) || "");
     if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("the wallet answered without an account address");
     const previous = connector;
@@ -2124,6 +2138,13 @@ export function createFlow({
     if (previous && previous !== c) forget(previous);
     await readBalance();
     return state.wallet;
+  }
+
+  // The wallet `c` no longer waits on the user; the next emit says so.
+  function stopAsking(c) {
+    if (asking !== c) return;
+    asking = null;
+    state.walletAsking = false;
   }
 
   // Lets a connector go; a wallet that fails to let go is gone all the same.
@@ -2185,6 +2206,8 @@ export function createFlow({
     if (balance < value + gasLimit * maxFee) {
       throw new Error(`the wallet holds ${formatGhost(balance)} GHOST, less than the amount and the most the gas can cost`);
     }
+    asking = signer;
+    state.walletAsking = true;
     progress(WALLET_APPROVAL);
     let signed;
     try {
@@ -2204,6 +2227,8 @@ export function createFlow({
       // nothing is sent.
       if (isWalletRejection(err)) throw new WalletRejected("the transaction");
       throw new WalletSignFailed(err);
+    } finally {
+      stopAsking(signer);
     }
     if (connector !== signer || !state.wallet || state.wallet.address !== from) {
       throw new Error("the wallet was disconnected before the transaction was sent; nothing was sent");
@@ -2447,6 +2472,15 @@ export function createFlow({
     // place of any connected before. Returns its account's address.
     walletConnect(c) {
       return run("connecting the wallet", async () => (await connectWallet(c)).address);
+    },
+
+    // Brings the waiting wallet's window to the front (the connector's
+    // optional show(), as popup-wallet.mjs has), from the user's click.
+    // True when a wallet waits and could show itself.
+    walletShow() {
+      const c = asking;
+      if (!c || typeof c.show !== "function") return false;
+      return Boolean(c.show());
     },
 
     walletRefresh() {

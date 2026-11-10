@@ -20,6 +20,7 @@ const GHOST = 10n ** 18n;
 const REJECTED = "You rejected it in your wallet. Nothing was sent.";
 const SIGN_FAILED = "Your wallet could not sign the Vanish. Nothing was sent.";
 const RAW = "synthetic wallet failure text";
+const APPROVE_LINE = "Approve the Vanish in the Ghost wallet window. Can't see it? Show wallet.";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const source = readFileSync(new URL("../src/app.mjs", import.meta.url), "utf8");
@@ -341,11 +342,13 @@ test("on the page: the waiting screen asks for the wallet's approval; approved, 
     await page.flow.walletConnect(wallet.connector);
     await vanishToWallet(page, wallet);
     assert.deepEqual(page.visible(), ["waiting"]);
-    assert.equal(page.$("vanish-waiting-text").textContent, "Approve the Vanish in your wallet");
+    assert.equal(page.$("vanish-waiting-text").textContent, APPROVE_LINE);
+    assert.equal(page.$("show-wallet").hidden, false, "Show wallet shows while the wallet asks");
     assert.equal(sends(node).length, 0, "nothing is sent before the approval");
 
     wallet.approve();
     await until("Done", () => page.visible().join() === "done");
+    assert.equal(page.$("show-wallet").hidden, true, "Show wallet goes once the wallet answered");
     assert.equal(sends(node).length, 1);
     assert.equal(sends(node)[0].params[0], toHex(wallet.signed[0].envelope));
     assert.equal(wallet.asks, 1);
@@ -363,7 +366,7 @@ test("on the page: rejected in the wallet, nothing is sent, the key is dropped a
     await page.flow.walletConnect(wallet.connector);
     await vanishToWallet(page, wallet, "1.5");
     const key = page.flow.state.vanish.key;
-    assert.equal(page.$("vanish-waiting-text").textContent, "Approve the Vanish in your wallet");
+    assert.equal(page.$("vanish-waiting-text").textContent, APPROVE_LINE);
 
     wallet.refuse(rejection());
     await until("the amount screen", () => page.visible().join() === "form");

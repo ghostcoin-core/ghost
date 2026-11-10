@@ -5,7 +5,8 @@
 // from the window it opened, and posts its requests to that origin only.
 // The wallet shows each request in its own window and answers once the
 // user approves it there; closing the window turns the request down
-// (code 4001). Each request first focuses the wallet's window.
+// (code 4001). Each request first focuses the wallet's window, and the
+// page's Show wallet button focuses it again (show()).
 
 import { fromHex } from "./bytes.mjs";
 import { USER_REJECTED, WalletRejected, snapTransaction } from "./wallet-connect.mjs";
@@ -56,9 +57,8 @@ export function popupConnector({ win = globalThis, origin = POPUP_WALLET_ORIGIN,
     pending.clear();
   }
 
-  function open() {
-    if (popup && !popup.closed) return;
-    if (popup) lost();
+  // Opens a wallet window and watches it until it is closed.
+  function openWindow() {
     const w = win.open(`${origin}/`, "_blank", "popup,width=420,height=720");
     if (!w || w.closed) throw new PopupBlocked();
     popup = w;
@@ -71,19 +71,35 @@ export function popupConnector({ win = globalThis, origin = POPUP_WALLET_ORIGIN,
     }, pollMs);
   }
 
+  function open() {
+    if (popup && !popup.closed) return;
+    if (popup) lost();
+    openWindow();
+  }
+
+  // Posts request `id` to the current window once it said it is listening,
+  // unless it was answered or the window changed meanwhile.
+  function post(id) {
+    const target = popup;
+    ready.then(() => {
+      const asked = pending.get(id);
+      if (!asked || popup !== target) return;
+      // Brings the wallet's window to the front, so the approval it shows
+      // is not hidden behind the page.
+      if (typeof target.focus === "function") target.focus();
+      target.postMessage(asked.message, origin);
+    });
+  }
+
   // Posts one request once the wallet said it is listening, and waits for
   // its answer. A refusal keeps the wallet's code.
   async function ask(what, method, params) {
     open();
-    const target = popup;
     const id = nextId++;
-    const answer = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+    const message = params === undefined ? { id, method } : { id, method, params };
+    const answer = new Promise((resolve, reject) => pending.set(id, { resolve, reject, message }));
+    post(id);
     try {
-      await Promise.race([ready, answer]);
-      // Brings the wallet's window to the front, so the approval it shows
-      // is not hidden behind the page.
-      if (typeof target.focus === "function") target.focus();
-      target.postMessage(params === undefined ? { id, method } : { id, method, params }, origin);
       return await answer;
     } catch (err) {
       if (err && err.code === USER_REJECTED) throw new WalletRejected(what);
@@ -132,6 +148,29 @@ export function popupConnector({ win = globalThis, origin = POPUP_WALLET_ORIGIN,
         throw new Error("the wallet answered without a receive address");
       }
       return { address: answer.address.toLowerCase() };
+    },
+
+    // Brings the wallet's window to the front while a request waits on it;
+    // call it from a click, as browsers focus or open a window only then.
+    // A window the user closed before the page noticed is opened again and
+    // every waiting request is asked again there. False when nothing waits.
+    show() {
+      if (pending.size === 0) return false;
+      if (popup && !popup.closed) {
+        if (typeof popup.focus === "function") popup.focus();
+        return true;
+      }
+      win.clearInterval(timer);
+      win.removeEventListener("message", onMessage);
+      popup = null;
+      try {
+        openWindow();
+      } catch (err) {
+        lost();
+        throw err;
+      }
+      for (const id of pending.keys()) post(id);
+      return true;
     },
 
     // Forgets the account and closes the wallet's window; the wallet keeps

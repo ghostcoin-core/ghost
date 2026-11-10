@@ -632,7 +632,7 @@ function renderVanish(v, approving, progress = null) {
       : v && v.stage === "sent"
         ? "Sent. Waiting for a block to hold it…"
         : approving
-          ? "Approve the Vanish in your wallet"
+          ? "Approve the Vanish in the Ghost wallet window. Can't see it? Show wallet."
           : "Sending your commit…";
   // Once a block holds the commit and the page checks that block (the
   // header chain, the coin trees), the line says so.
@@ -713,6 +713,8 @@ function render(state) {
             ? `${state.busy}…`
             : "";
   $("error").textContent = cardOwns ? "" : state.error || "";
+  // While the wallet waits on an approval (connect, or a Vanish's commit).
+  $("show-wallet").hidden = !state.walletAsking;
   for (const button of document.querySelectorAll("main button, #wallet-panel button, #network-panel button")) {
     if (!button.dataset.keepEnabled) button.toggleAttribute("aria-busy", Boolean(state.busy));
   }
@@ -800,6 +802,19 @@ $("wallet-option-popup").addEventListener(
   "click",
   walletAct("connect", () => flow.walletConnect(popupConnector())),
 );
+// Show wallet: focuses the wallet's window, or opens it again and asks again
+// when it was closed. Called inside the click, the user gesture browsers
+// need to focus or open a window. A blocked window says so in the panel.
+$("show-wallet").addEventListener("click", (event) => {
+  if (event) event.preventDefault();
+  try {
+    flow.walletShow();
+  } catch (err) {
+    errorOwner = "wallet";
+    walletError = walletErrorText(err, "show");
+    render(flow.state);
+  }
+});
 $("wallet-refresh").addEventListener(
   "click",
   walletAct("refresh", () => flow.walletRefresh()),
