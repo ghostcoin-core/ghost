@@ -5,7 +5,7 @@
 // from the window it opened, and posts its requests to that origin only.
 // The wallet shows each request in its own window and answers once the
 // user approves it there; closing the window turns the request down
-// (code 4001).
+// (code 4001). Each request first focuses the wallet's window.
 
 import { fromHex } from "./bytes.mjs";
 import { USER_REJECTED, WalletRejected, snapTransaction } from "./wallet-connect.mjs";
@@ -80,6 +80,9 @@ export function popupConnector({ win = globalThis, origin = POPUP_WALLET_ORIGIN,
     const answer = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
     try {
       await Promise.race([ready, answer]);
+      // Brings the wallet's window to the front, so the approval it shows
+      // is not hidden behind the page.
+      if (typeof target.focus === "function") target.focus();
       target.postMessage(params === undefined ? { id, method } : { id, method, params }, origin);
       return await answer;
     } catch (err) {

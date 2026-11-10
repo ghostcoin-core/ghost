@@ -40,7 +40,9 @@ function fakePage({ ui = scriptedUi(), block = false } = {}) {
   const page = {
     opened: [],
     posts: [],
+    focuses: [],
     popup: null,
+    ui,
     spy,
     open(url, target, features) {
       page.opened.push({ url, target, features });
@@ -49,6 +51,10 @@ function fakePage({ ui = scriptedUi(), block = false } = {}) {
         closed: false,
         close() {
           popup.closed = true;
+        },
+        // Logs how many requests were posted when the window was focused.
+        focus() {
+          page.focuses.push(page.posts.length);
         },
         postMessage(data, targetOrigin) {
           page.posts.push({ data: structuredClone(data), targetOrigin });
@@ -118,6 +124,8 @@ test("connect and sign through the pop-up: the account and a signature the modul
     ],
   );
   assert.equal(page.posts[1].data.params.chainId, "0x76aae9");
+  assert.deepEqual(page.focuses, [0, 1], "the wallet's window is focused before each request");
+  assert.deepEqual(page.ui.titles, ["Ghost app is asking: approve below", null, "Ghost app is asking: approve below", null]);
 
   c.disconnect();
   assert.equal(page.popup.closed, true, "disconnect closes the wallet window");
