@@ -41,3 +41,13 @@ threads = ["dep:rayon", "ghost-proofs/parallel"]
 [profile.release]
 opt-level = 3
 codegen-units = 1
+
+# Integer overflow traps, rather than wraps, in the client library and this
+# crate: they read lengths and positions that a node supplies, and `usize` is
+# 32 bits here. The proofs crate keeps the default for prover speed; its
+# arithmetic does not read node-supplied lengths.
+[profile.release.package.ghost-client]
+overflow-checks = true
+
+[profile.release.package.ghost-webapp-wasm]
+overflow-checks = true

@@ -149,6 +149,19 @@ fn prefix(bytes: &[u8], at: usize) -> Result<(bool, usize, usize), HeaderError> 
     Ok((list, 1 + size, len))
 }
 
+/// The payload start and the end of an item whose prefix of `header` bytes
+/// sits at `at` and whose payload is `len` bytes, when it ends by `end`.
+///
+/// A prefix can claim a payload of up to `0xFFFF_FFFF` bytes. Where `usize`
+/// is 32 bits (the browser build), adding that to a position would wrap to a
+/// small number, pass the bound and move the reader backwards, so both sums
+/// are checked.
+fn item_span(at: usize, header: usize, len: usize, end: usize) -> Option<(usize, usize)> {
+    let start = at.checked_add(header)?;
+    let next = start.checked_add(len).filter(|&next| next <= end)?;
+    Some((start, next))
+}
+
 fn decode(bytes: &[u8]) -> Result<Decoded, HeaderError> {
     let (list, header, len) = prefix(bytes, 0)?;
     if !list {
@@ -160,13 +173,10 @@ fn decode(bytes: &[u8]) -> Result<Decoded, HeaderError> {
     let mut nested = false;
     while at < end {
         let (is_list, item_header, item_len) = prefix(bytes, at)?;
-        let start = at + item_header;
-        if start + item_len > end {
-            return Err(HeaderError::NonCanonicalRlp);
-        }
+        let (start, next) = item_span(at, item_header, item_len, end).ok_or(HeaderError::NonCanonicalRlp)?;
         nested |= is_list;
         items.push((start, item_len));
-        at = start + item_len;
+        at = next;
     }
     if end != bytes.len() {
         return Err(HeaderError::TrailingBytes);
@@ -360,4 +370,43 @@ pub fn verify_seal(header: &[u8], difficulty: &[u8], key: &SealKey) -> Result<()
 /// Whether a header's seal is valid; see [`verify_seal`].
 pub fn check_seal(header: &[u8], difficulty: &[u8], key: &SealKey) -> bool {
     verify_seal(header, difficulty, key).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A header whose first item claims a payload of `0xFFFF_FFFB` bytes.
+    /// The item sits at 2 behind a 5-byte prefix; on a 32-bit target
+    /// `2 + 5 + 0xFFFF_FFFB` wraps to 2, so an unchecked reader would land
+    /// back on the same item forever.
+    fn crafted_header() -> Vec<u8> {
+        let mut out = vec![0xf8, 0x40];
+        out.extend_from_slice(&[0xbb, 0xff, 0xff, 0xff, 0xfb]);
+        out.resize(2 + 0x40, 0);
+        out
+    }
+
+    #[test]
+    fn crafted_length_is_refused() {
+        assert_eq!(header_fields(&crafted_header()).err(), Some(HeaderError::NonCanonicalRlp));
+        assert!(matches!(seal_hash(&crafted_header()), Err(SealError::Header(HeaderError::NonCanonicalRlp))));
+    }
+
+    /// The same sums with 32-bit lengths: the claimed length plus the
+    /// position overflows `u32`, as `usize` does in the browser build.
+    #[test]
+    fn spans_that_overflow_32_bits_are_refused() {
+        let (at, header, len, end) = (2u32, 5u32, 0xFFFF_FFFBu32, 0x42u32);
+        assert_eq!((at + header).wrapping_add(len), at, "the unchecked sum wraps back to the item");
+        let at32 = |v: u32| usize::try_from(v).unwrap();
+        // Put the same values at the top of this target's `usize` so the
+        // sums overflow here too.
+        let top = usize::MAX - at32(u32::MAX);
+        assert_eq!(item_span(top + at32(at), at32(header), at32(len), usize::MAX), None);
+        assert_eq!(item_span(usize::MAX, 1, 0, usize::MAX), None);
+        assert_eq!(item_span(at32(at), at32(header), at32(len), at32(end)), None);
+        assert_eq!(item_span(2, 1, 4, 7), Some((3, 7)));
+        assert_eq!(item_span(2, 1, 5, 7), None);
+    }
 }
