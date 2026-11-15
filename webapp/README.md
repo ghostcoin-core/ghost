@@ -213,6 +213,13 @@ node --test --test-timeout=1200000 webapp/test/
 node --test --test-timeout=1200000 webapp/test/words-key.test.mjs webapp/test/salted-coin.test.mjs webapp/test/words-flow.test.mjs
 ```
 
+The tests need Node 24 (older versions cancel the tests that wait on
+`AbortSignal.timeout`). `webapp/test/` loads every `*.test.mjs` in that
+folder; CI's webapp-unit jobs run the same files in parallel shares
+(`node --test --test-shard=<i>/<n> webapp/test/*.test.mjs`) against modules
+built once by its webapp-wasm job, named by `GHOST_WEBAPP_WASM` and
+`GHOST_WEBAPP_TEST_DEPTH_WASM`.
+
 The last three cover the words key (new keys, typed keys, a swapped word
 refused, an old 12- or 24-group key refused, a coin restoring from its words
 or its digit view) and the salted coin (the 430-byte commit of version

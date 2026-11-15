@@ -657,6 +657,105 @@ jobs:
           RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
         run: scripts/ci-gate.sh "rust-$CRATE"
 
+  # The web app's unit tests, webapp/test/*.test.mjs (the real-node test in
+  # webapp/test/e2e is the webapp-real-node job). webapp-wasm builds the two
+  # modules they load once: the default module and the test-depth module
+  # (feature test-tree-depth). The webapp-unit-* jobs each run a share of the
+  # test files with node --test-shard on Node 24, against those two modules,
+  # so each fits its 10-minute limit; webapp-unit passes when every share
+  # passed.
+  webapp-wasm:
+    name: webapp-wasm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUST_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$RUST_TOOLCHAIN"
+          rustc --version
+      # Its own key apart from webapp-real-node, whose build.sh builds with
+      # other flags into the same target directory.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            webapp/wasm/target
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-webapp-unit-${{ hashFiles('webapp/wasm/Cargo.lock') }}
+      - name: Build the default and test-depth modules
+        env:
+          RUSTUP_TOOLCHAIN: ${{ env.RUST_TOOLCHAIN }}
+        run: |
+          set -euo pipefail
+          manifest=webapp/wasm/Cargo.toml
+          cargo build --release --locked --target wasm32-unknown-unknown --manifest-path "$manifest"
+          cargo build --release --locked --target wasm32-unknown-unknown --manifest-path "$manifest" \
+            --features test-tree-depth --target-dir webapp/wasm/target/test-depth
+          mkdir -p "$RUNNER_TEMP/webapp-wasm"
+          cp webapp/wasm/target/wasm32-unknown-unknown/release/ghost_webapp_wasm.wasm "$RUNNER_TEMP/webapp-wasm/default.wasm"
+          cp webapp/wasm/target/test-depth/wasm32-unknown-unknown/release/ghost_webapp_wasm.wasm "$RUNNER_TEMP/webapp-wasm/test-depth.wasm"
+          sha256sum "$RUNNER_TEMP"/webapp-wasm/*.wasm
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: webapp-wasm
+          path: ${{ runner.temp }}/webapp-wasm
+          retention-days: 1
+          if-no-files-found: error
+
+  webapp-unit-shard:
+    name: webapp-unit-${{ matrix.shard }}
+    needs: webapp-wasm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    env:
+      SHARDS: 6
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: webapp-wasm
+          path: ${{ runner.temp }}/webapp-wasm
+      - name: Unit tests (share ${{ matrix.shard }})
+        env:
+          SHARD: ${{ matrix.shard }}
+          GHOST_WEBAPP_WASM: ${{ runner.temp }}/webapp-wasm/default.wasm
+          GHOST_WEBAPP_TEST_DEPTH_WASM: ${{ runner.temp }}/webapp-wasm/test-depth.wasm
+        run: |
+          set -euo pipefail
+          node --version
+          # Under the job's 10 minutes, so a hung test is named rather than cut off.
+          node --test --test-timeout=540000 --test-shard="$SHARD/$SHARDS" webapp/test/*.test.mjs
+
+  webapp-unit:
+    name: webapp-unit
+    if: always()
+    needs: webapp-unit-shard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every share passed
+        env:
+          RESULT: ${{ needs.webapp-unit-shard.result }}
+        run: |
+          echo "webapp-unit-shard: $RESULT"
+          [ "$RESULT" = "success" ]
+
   # Vanish, a partial Summon and a Claim with the real prover against a
   # release geth of ghost-node at the commit in webapp/test/e2e/NODE_COMMIT.
   # The geth binary is cached by that commit and the Go version, so the node
