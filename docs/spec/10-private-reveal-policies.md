@@ -437,7 +437,11 @@ order:
 
 1. Compute `addr = last 20 bytes of K("ghost/policy-address/v1", salt,
    keccak256(initcode))`. The address does not depend on the sender or on a
-   nonce, so the same code and salt give the same address.
+   nonce, so the same code and salt give the same address. Anyone can
+   therefore create the policy at `addr`, including someone who copies the
+   salt and init code from a pending transaction and has the creation mined
+   first. The constructor rule of step 4 makes that harmless: the code and
+   storage `addr` ends up with depend only on the init code.
 2. Fail if `addr` is a reserved address (section 6.5), or if an account exists
    at `addr` with a non-zero nonce, any code or any storage. If the account has
    only a balance (sent in advance by anyone), the factory burns it: it is set
@@ -450,6 +454,10 @@ order:
    any code runs.
 4. Run `initcode` as a frozen context (section 6.2) with `ADDRESS = addr`,
    `CALLER = POLICY_FACTORY` and `value = 0`, under the gas the caller passed.
+   The constructor follows the stricter rule of section 6.2.1: it reads
+   nothing outside its init code, so one init code and salt give the same
+   runtime code (and so the same `codehash`) and the same storage for every
+   sender, block and gas, or fail for all of them.
 5. Deposit the returned code under the base client's rules (EIP-170 size
    limit, no `0xEF` first byte), set `REG[addr].codehash` to its Keccak-256,
    and return `addr`.
@@ -496,8 +504,36 @@ spends all of its gas, as the `INVALID` opcode does.
 | `RETURN`, `REVERT`, `INVALID` | Allowed |
 | Every opcode not listed | Invalid, as in the EVM profile |
 
-The check is made when the opcode runs, not when the code is deployed, so the
-constructor and the runtime code follow one rule.
+The check is made when the opcode runs, not when the code is deployed. The
+runtime code follows this table alone. The constructor follows it and the
+stricter rule of section 6.2.1.
+
+#### 6.2.1 The constructor reads nothing outside its init code
+
+A policy's address fixes its salt and init code, not who creates it, when or
+with how much gas (section 6.1, step 1). A constructor that read its
+environment could return different code, or write different storage, for a
+front-runner than for the holder who expected the policy; the registry would
+then record a `codehash` no rule names, and a coin whose rule names
+`(addr, codehash)` could never be revealed through that policy. So in the
+constructor frame these opcodes are also **forbidden**, on top of the table
+above:
+
+| Opcodes | Why they are forbidden in the constructor |
+|---|---|
+| `ORIGIN`, `GASPRICE`, `GAS` | They differ with the transaction that sends the creation |
+| `BLOCKHASH`, `COINBASE`, `TIMESTAMP`, `NUMBER`, `DIFFICULTY`, `GASLIMIT`, `CHAINID`, `BASEFEE` | They differ with the block the creation lands in |
+| `EXTCODESIZE`, `EXTCODECOPY`, `EXTCODEHASH` | Whether another policy exists yet changes over time |
+| `CALL`, `STATICCALL` | The state of an older policy changes over time, and whether a call succeeds can depend on the gas the sender gave. The constructor calls nothing, not even an allowlisted precompile |
+
+`CALLER` is always `POLICY_FACTORY` and `CALLVALUE` always zero, so both stay
+allowed. The frame's own storage and transient storage are empty when the
+constructor starts, so `SLOAD`, `SSTORE`, `TLOAD` and `TSTORE` stay allowed.
+With no calls, the only effect of the gas is whether the constructor finishes:
+running out of gas fails the creation and leaves nothing. A constructor that
+copies fixed runtime code out of its init code, as Ghost Guard's does, is not
+affected. The runtime code of a policy may still read all of these as the
+table above allows.
 
 ### 6.3 Call targets and the allowlist
 
@@ -1226,7 +1262,8 @@ passes with the check it names removed does not count (spec 03, section 10).
   reorganisation that removes the policy drops it from the pool.
 - **RP-10. A frozen context cannot leave its sandbox.** Each forbidden opcode
   of section 6.2 halts the frame, in the constructor and at depth 3. Calls to
-  `0x05` and `0x09` from a frozen context fail.
+  `0x05` and `0x09` from a frozen context fail. Each opcode of section 6.2.1
+  halts the constructor and leaves no policy.
 - **RP-11. No balance.** Every path of section 6.4 fails; the balance of a
   policy is zero after any sequence of transactions.
 - **RP-12. Slot isolation.** Policy A cannot read, pay, recommit or close a
@@ -1277,6 +1314,11 @@ passes with the check it names removed does not count (spec 03, section 10).
   leaf.
 - **RP-30. The checker fails closed.** The statement checker returns failure
   while section 15, item 3 is open.
+- **RP-31. The address fixes the code.** One init code and salt, created from
+  two senders in two blocks with different origins, gas prices and gas,
+  register the same `codehash` and leave the same storage, or are refused for
+  both. A front-runner who creates the policy first registers the code the
+  holder expected.
 
 ## 15. Not settled: fail closed
 
@@ -1379,7 +1421,7 @@ This document is cut into these pieces. Each has a behaviour a test can show.
    accounting, receipts, the separation of the constants (sections 5, 7.1,
    7.3, 10.5). Test: RP-8, RP-9, RP-13, RP-24.
 6. **Frozen policies.** The factory, the registry, the opcode and call rules,
-   the no-balance rules. Test: RP-10, RP-11.
+   the no-balance rules. Test: RP-10, RP-11, RP-31.
 7. **Escrow natives and policy actions in the node.** Section 7.2 and
    sections 8.3 and 8.4. Test: RP-12, RP-14, RP-15, RP-18 to RP-21.
 8. **Pool admission.** Section 11 in `ghostpool` and the wire path. Test:
