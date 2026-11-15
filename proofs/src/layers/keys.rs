@@ -743,8 +743,10 @@ pub struct ProverMemory {
     pub key: usize,
     /// The coefficients of the main, permutation, quotient and randomization
     /// matrices over the doubled domain (hiding columns included), held from
-    /// their commitment to the last opening, and the one block of any
-    /// commitment small enough to keep it ([`super::stream::KEEP_BYTES`]).
+    /// their commitment to the last opening, the one block of any
+    /// commitment small enough to keep it ([`super::stream::KEEP_BYTES`]),
+    /// and each commitment's Merkle levels above its pieces
+    /// ([`super::stream::piece_bytes`]).
     pub committed: usize,
     /// The main traces, the permutation traces and the largest table's
     /// randomized copy while they are built, above the coefficients held then.
@@ -817,9 +819,15 @@ pub(crate) fn prover_memory(
     let coeffs = |mats: &[(usize, usize)]| -> usize {
         mats.iter().map(|&(l, w)| (1usize << (l - shape.log_blowup)) * w * FE).sum()
     };
-    // A commitment small enough to keep its one block keeps it to the end.
+    // A commitment small enough to keep its one block keeps it to the end,
+    // and every commitment keeps the Merkle levels above its pieces.
     let held = |mats: &[(usize, usize)]| {
-        coeffs(mats) + if mats.is_empty() { 0 } else { stream::kept_bytes(mats, stream::BLOCK_BYTES) }
+        coeffs(mats)
+            + if mats.is_empty() {
+                0
+            } else {
+                stream::kept_bytes(mats, stream::BLOCK_BYTES) + stream::piece_bytes(mats, stream::BLOCK_BYTES)
+            }
     };
     let key = tabs.iter().map(|t| t.h * t.pw * FE).sum::<usize>() + held(&prep);
     let (c_main, c_aux, c_quot, c_rand) = (held(&main), held(&aux), held(&quotient), held(&random));

@@ -149,6 +149,15 @@ INPUTS = {
     "ood_cells_leaf": 3_000_000,
     "ood_cells_layer": 1_000_000,
     "layer_width": 600,
+    # Measured: the built batch prover (proofs/src/layers) proving one batch of
+    # 8 real version 2 reveals at the real shape, its CPU seconds over all
+    # threads, on the 20-core DGX Spark of layers-results.md, whose scalar
+    # Poseidon2 permutation measured 1,032.9 ns there. Every layer's seconds a
+    # cell are the cell model's scaled by measured against modeled for this
+    # batch (prover_factor); None keeps the cell model unscaled.
+    "measured_batch_core_seconds": 5305.1,
+    "measured_batch_arity": 8,
+    "measured_batch_permutation_seconds": 1032.9e-9,
     # The fixed shape every key is made for (chosen by choose_shape below): a
     # batch verifies up to batch_arity reveal proofs and a root up to
     # root_capacity batches. A fuller layer is padded: its prover pays the
@@ -467,7 +476,28 @@ def lde_elements_per_cell(log_blowup=None, inputs=None):
 
 
 def cell_seconds(inputs=None, log_blowup=None, records=None):
-    """Single-thread seconds a trace cell when commitments hash with Poseidon2.
+    """Single-thread seconds a trace cell of the layers as built: the cell
+    model's (model_cell_seconds) scaled by the measured batch (prover_factor)."""
+    return model_cell_seconds(inputs, log_blowup, records) * prover_factor(inputs, records)
+
+
+def prover_factor(inputs=None, records=None):
+    """The measured batch's core-seconds over the cell model's for the same batch.
+
+    The batch of measured_batch_arity reveals at the cell model's trace, at the
+    permutation cost measured on the same machine; 1 when no batch is measured.
+    """
+    measured = _get(inputs, "measured_batch_core_seconds")
+    if measured is None:
+        return 1.0
+    ref = _with(inputs, batch_arity=_get(inputs, "measured_batch_arity"),
+                poseidon2_permutation_seconds=_get(inputs, "measured_batch_permutation_seconds"))
+    modeled = shape_layers(ref)["batch"]["cells"] * model_cell_seconds(ref, records=records)
+    return measured / modeled
+
+
+def model_cell_seconds(inputs=None, log_blowup=None, records=None):
+    """Single-thread seconds a trace cell when commitments hash with Poseidon2, the cell model.
 
     The proxy's measured cost a cell, less its Keccak-f[1600] leaf hashing of the
     low-degree extension at 131 ns a permutation, plus the same extension hashed
@@ -1000,7 +1030,9 @@ def aggregation_table(inputs=None):
         "| Figure (all modeled) | Value | Ceiling (workload.md) |",
         "|---|---|---|",
         f"| Cells to verify one reveal proof inside a layer (modeled) | {big['leaf_child_cells']:,} | none |",
-        f"| Single-thread seconds a cell, Poseidon2 commitments (modeled) | {cell_seconds(inputs) * 1e9:,.1f} ns | none |",
+        f"| Single-thread seconds a cell, Poseidon2 commitments, the cell model alone (modeled) | {model_cell_seconds(inputs) * 1e9:,.1f} ns | none |",
+        f"| The built batch prover's core-seconds over the cell model's, one batch of {_get(inputs, 'measured_batch_arity')} (measured against modeled) | {prover_factor(inputs):,.2f} times ({_measured(inputs)}) | none |",
+        f"| Single-thread seconds a cell of the layers as built: the cell model times that factor (modeled) | {cell_seconds(inputs) * 1e9:,.1f} ns | none |",
         f"| Batch proof of {arity} reveals on one machine (modeled) | {big['batch_wall']:,.1f} s | none |",
         f"| Root over up to {capacity} batches (the largest aggregator fills {big['batches']}), then the shrink (modeled) | {big['root_wall']:,.1f} s and {big['shrink_wall']:,.1f} s | none |",
         f"| Machine-seconds a private reveal (modeled) | {p['per_reveal']:,.4f}, {_yes(f['meets_merge_budget'])} | {merge:g}, the 0.3 s merge budget (not yet established) |",
@@ -1013,6 +1045,13 @@ def aggregation_table(inputs=None):
         f"| Reveal proofs into the largest aggregator (modeled) | {ingress_bits(inputs) / 1e9:,.2f} Gbit/s, {_yes(ingress_bits(inputs) <= 8 * _get(inputs, 'aggregator_bandwidth_bytes_per_second'))} | 1 Gbit/s sustained (not yet established) |",
         f"| Highest Poseidon2 permutation cost that meets each ceiling (modeled) | 40 machines: {_ns(t40)}; with 50 percent spare: {_ns(t40s)}; merge budget: {_ns(tmerge)}; cost: {_ns(tcost)}; delay: {_ns(tdelay)} | the input is {ns:,.1f} ns (measured) |",
     ]
+
+
+def _measured(inputs=None):
+    measured = _get(inputs, "measured_batch_core_seconds")
+    if measured is None:
+        return "no batch measured"
+    return f"{measured:,.1f} core-seconds measured against {measured / prover_factor(inputs):,.1f} modeled"
 
 
 def _ns(value):
