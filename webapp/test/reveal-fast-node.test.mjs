@@ -28,10 +28,11 @@ const RECIPIENT = "0x2222222222222222222222222222222222222222";
 // block that never comes takes the 1,800 polls of a second each.
 const BOUND_MS = 240_000;
 // The stand-in's block time. The page checks the RandomX seal of every
-// header it adopts, about a quarter of a second each here, so a node that
-// seals blocks faster than that outruns any page; this one seals 60 times
-// faster than the 30-second chain, still many blocks during each proof.
-const MINE_MS = 500;
+// header it adopts, about a quarter of a second each on a fast machine and
+// more on a CI runner, so a node that seals blocks faster than that outruns
+// any page; this one seals 30 times faster than the 30-second chain, still
+// many blocks during each proof.
+const MINE_MS = 1000;
 
 test(`a Summon reveal on a node that mines every ${MINE_MS} ms, refuses, changes its fee and drops a taken send completes, paid once`, { timeout: 600_000 }, async () => {
   const ghost = await loadModule();
