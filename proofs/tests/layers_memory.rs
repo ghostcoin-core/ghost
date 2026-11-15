@@ -39,14 +39,16 @@ fn report(name: &str, layer: &PlannedLayer) {
 /// The model holds for the prover the layers prove with: a small circuit
 /// keyed and proven by the streamed prover, its extensions cut into blocks
 /// down to a single row, gives the library's key and the library's proof
-/// byte for byte, and the unchanged verifier accepts it.
+/// byte for byte, and the unchanged verifier accepts it. Two blocks, each
+/// cut into many pieces, open their queries piece by piece.
 fn the_streamed_prover_is_the_librarys() {
-    let blocks = layers::streamed_prover_check(&[usize::MAX, 1 << 16, 1]).expect("the streamed prover agrees");
+    let blocks =
+        layers::streamed_prover_check(&[usize::MAX, 1 << 21, 1 << 16, 1]).expect("the streamed prover agrees");
     let _ = writeln!(std::io::stderr(), "measured: main commitment blocks at each budget {blocks:?}");
-    // Each table layout: one block, several, one row a block.
-    for b in blocks.chunks(3) {
+    // Each table layout: one block, a few, several, one row a block.
+    for b in blocks.chunks(4) {
         assert_eq!(b[0], 1, "{blocks:?}");
-        assert!(b[1] > 1 && b[2] > b[1], "{blocks:?}");
+        assert!(b[1] > 1 && b[2] > b[1] && b[3] > b[2], "{blocks:?}");
     }
 }
 

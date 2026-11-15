@@ -12,18 +12,25 @@
 //! extension is evaluated one block of rows at a time, three times over:
 //!
 //! - to commit: each block's rows, salted, are hashed into the block's Merkle
-//!   subtree, and only the block roots and the levels above them are kept;
+//!   subtree, and only the roots of its pieces (aligned subtrees of a few
+//!   hundred rows) and the levels above them are kept;
 //! - to batch the openings: each block's rows are folded into the batched
 //!   quotient `sum alpha^i (y_i - p_i(x)) / (z - x)` of its height;
-//! - to answer the queries: each block a query falls in is evaluated again,
-//!   its subtree rebuilt, and the query's rows, salt and path read from it.
+//! - to answer the queries: only the piece a query falls in is evaluated
+//!   again, its small subtree rebuilt, and the query's rows, salt and path
+//!   read from it and the kept levels.
 //!
-//! The rows of a bit-reversed extension that one block holds are the values
-//! on one coset of a smaller subgroup, so a block is one coset transform of
-//! the coefficients folded to the block's size. The salts of a block are
-//! read again from the salt stream at the word it started at: the stream is
-//! the ChaCha12 keystream `StdRng` draws from, so a block's salts are the
-//! library's. The quotient is computed one chunk at a time on that chunk's
+//! The rows of a bit-reversed extension that one block or piece holds are
+//! the values on one coset of a smaller subgroup, so a block is one coset
+//! transform of the coefficients folded to the block's size. The salts of a
+//! piece are read again from the salt stream at the word it started at: the
+//! stream is the ChaCha12 keystream `StdRng` draws from, so a piece's salts
+//! are the library's. Where each piece's salts start is found by counting
+//! the field's draws in the keystream in parallel chunks, and every step
+//! that touches every row (folding, transforms, salting, hashing, the
+//! batched quotient and the evaluations at the out-of-domain point) is
+//! split over threads when the `parallel` feature is on, without changing
+//! a single value. The quotient is computed one chunk at a time on that chunk's
 //! own coset, which is the size of the trace; the library's own quotient
 //! evaluation, folding, Merkle trees, transcripts and opening checks are
 //! used throughout, so every commitment, challenge and opened value is the
@@ -47,7 +54,9 @@ use p3_batch_stark::{
 use p3_commit::{ExtensionMmcs, Mmcs, OpenedValues as PcsOpenedValues, PolynomialSpace};
 use p3_dft::{Radix2DFTSmallBatch, Radix2DitParallel, TwoAdicSubgroupDft};
 use p3_field::coset::TwoAdicMultiplicativeCoset;
-use p3_field::{BasedVectorSpace, Field, PrimeCharacteristicRing, TwoAdicField, batch_multiplicative_inverse};
+use p3_field::{
+    BasedVectorSpace, Field, PrimeCharacteristicRing, PrimeField32, TwoAdicField, batch_multiplicative_inverse,
+};
 use p3_fri::{
     BatchMultiOpening, CommitPhaseMultiStep, FriFoldingStrategy, FriParameters, FriProof, PcsProverTranscript,
     PcsShape, ProverTranscript, TwoAdicFriFolding,
@@ -57,6 +66,7 @@ use p3_matrix::Matrix;
 use p3_matrix::bitrev::BitReversibleMatrix;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::util::reverse_matrix_index_bits;
+use p3_maybe_rayon::prelude::*;
 use p3_merkle_tree::{MerkleCap, MerkleTreeHidingMmcs, MerkleTreeMmcs, PrunedMerklePaths};
 use p3_symmetric::{PaddingFreeSponge, PseudoCompressionFunction, TruncatedPermutation};
 use p3_uni_stark::{OpenedValues, PreprocessedOpenedValues, StarkGenericConfig};
@@ -247,6 +257,7 @@ impl SaltStream {
     }
 
     /// The word the next draw reads.
+    #[cfg(test)]
     pub(crate) fn position(&self) -> u64 {
         self.word
     }
@@ -329,6 +340,12 @@ fn salts(stream: &mut SaltStream, rows: usize) -> Vec<F> {
 // ---------------------------------------------------------------------------
 // Matrices kept as coefficients, evaluated a block at a time.
 
+/// Coefficient rows one task of [`Poly::eval`] sums.
+const EVAL_ROWS: usize = 1 << 14;
+
+/// Output rows one task of [`Poly::fold_coeffs`] folds.
+const FOLD_ROWS: usize = 1 << 12;
+
 /// One committed matrix, as the coefficients (in `x`, row `j` the
 /// coefficients of `x^j`) of the polynomials whose evaluations on the coset
 /// `g K` (`|K| = 2^log_lde`, bit-reversed) it commits to.
@@ -379,30 +396,37 @@ impl Poly {
         out
     }
 
-    /// [`Self::fold`] of the coefficients as they are kept.
+    /// [`Self::fold`] of the coefficients as they are kept, each run of
+    /// output rows on its own thread.
     fn fold_coeffs(&self, size: usize, t: F, cols: core::ops::Range<usize>) -> RowMajorMatrix<F> {
         let w = self.coeffs.width();
         let d = self.coeffs.height();
         let (first, cols) = (cols.start, cols.len());
         let mut out = F::zero_vec(size * cols);
-        let mut factor = F::ONE;
-        let mut start = 0;
-        while start < d {
-            for k in 0..size.min(d - start) {
-                let at = (start + k) * w + first;
-                let src = &self.coeffs.values[at..at + cols];
-                let dst = &mut out[k * cols..(k + 1) * cols];
-                if start == 0 {
-                    dst.copy_from_slice(src);
-                } else {
-                    for (o, &c) in dst.iter_mut().zip(src) {
-                        *o += factor * c;
+        if cols == 0 {
+            return RowMajorMatrix::new(out, cols);
+        }
+        // The factor of each stretch of `size` coefficient rows: `t^s`.
+        let factors: Vec<F> = t.powers().take(d.div_ceil(size)).collect();
+        let run = FOLD_ROWS.min(size);
+        out.par_chunks_mut(run * cols).enumerate().for_each(|(r, dst)| {
+            let k0 = r * run;
+            for (s, &factor) in factors.iter().enumerate() {
+                let start = s * size;
+                for k in k0..(k0 + run).min(size).min(d.saturating_sub(start)) {
+                    let at = (start + k) * w + first;
+                    let src = &self.coeffs.values[at..at + cols];
+                    let o = &mut dst[(k - k0) * cols..(k - k0 + 1) * cols];
+                    if s == 0 {
+                        o.copy_from_slice(src);
+                    } else {
+                        for (o, &c) in o.iter_mut().zip(src) {
+                            *o += factor * c;
+                        }
                     }
                 }
             }
-            factor *= t;
-            start += size;
-        }
+        });
         RowMajorMatrix::new(out, cols)
     }
 
@@ -453,14 +477,30 @@ impl Poly {
     /// Each column's polynomial at each of `points`.
     fn eval(&self, points: &[EF]) -> Vec<Vec<EF>> {
         let w = self.width();
-        let mut acc = vec![EF::zero_vec(w); points.len()];
-        let mut pows = vec![EF::ONE; points.len()];
-        for row in self.coeffs.values.chunks(w) {
-            for ((a, p), &z) in acc.iter_mut().zip(pows.iter_mut()).zip(points) {
-                for (o, &c) in a.iter_mut().zip(row) {
-                    *o += *p * c;
+        // Each run of coefficient rows summed on its own thread, from the
+        // points' powers at the run's first row; the runs' sums added.
+        let partial = |(r, rows): (usize, &[F])| -> Vec<Vec<EF>> {
+            let first = (r * EVAL_ROWS) as u64;
+            let mut acc = vec![EF::zero_vec(w); points.len()];
+            let mut pows: Vec<EF> = points.iter().map(|z| z.exp_u64(first)).collect();
+            for row in rows.chunks(w) {
+                for ((a, p), &z) in acc.iter_mut().zip(pows.iter_mut()).zip(points) {
+                    for (o, &c) in a.iter_mut().zip(row) {
+                        *o += *p * c;
+                    }
+                    *p *= z;
                 }
-                *p *= z;
+            }
+            acc
+        };
+        let sums: Vec<Vec<Vec<EF>>> =
+            self.coeffs.values.par_chunks(EVAL_ROWS * w.max(1)).enumerate().map(partial).collect();
+        let mut acc = vec![EF::zero_vec(w); points.len()];
+        for part in sums {
+            for (a, p) in acc.iter_mut().zip(part) {
+                for (o, v) in a.iter_mut().zip(p) {
+                    *o += v;
+                }
             }
         }
         if self.half {
@@ -500,15 +540,64 @@ fn zero_interleaved(dft: &Dft, values: RowMajorMatrix<F>, log_lde: usize) -> Pol
 }
 
 /// One commitment: its matrices as coefficients, the word of the salt
-/// stream each block's salts start at, and its Merkle tree from the block
+/// stream each piece's salts start at, and its Merkle tree from the piece
 /// roots up (the root last).
+///
+/// A commitment is hashed a block at a time, but kept in finer pieces: each
+/// block is cut into `pieces / blocks` aligned subtrees, and the roots of
+/// those subtrees are kept with the levels above them. A query then
+/// evaluates and hashes only the piece it falls in, not its whole block.
 pub(crate) struct Committed {
     polys: Vec<Poly>,
     blocks: usize,
+    pieces: usize,
     seed: [u8; 32],
     salt_words: Vec<Vec<u64>>,
     upper: Vec<Vec<Digest>>,
     kept: Option<PlainTree>,
+}
+
+/// The fewest rows of its tallest matrix a piece of a commitment holds
+/// ([`Committed`]), so that the levels kept above the pieces stay small.
+pub(crate) const PIECE_ROWS: usize = 1 << 8;
+
+/// The pieces a commitment of matrices `(log extended height, width)` cut
+/// into `blocks` blocks is kept in: as many as leave each piece at least
+/// [`PIECE_ROWS`] rows of the tallest matrix and a row of every matrix,
+/// and never fewer than the blocks.
+fn piece_count(mats: &[(usize, usize)], blocks: usize) -> usize {
+    let log_max = mats.iter().map(|m| m.0).max().unwrap_or(0);
+    let log_min = mats.iter().map(|m| m.0).min().unwrap_or(0);
+    let most = (1usize << log_min).min(((1usize << log_max) / PIECE_ROWS).max(1));
+    most.max(blocks)
+}
+
+/// Bytes a commitment of these matrices keeps for its pieces, from its
+/// commitment to the last opening: the Merkle levels above the pieces (two
+/// digests a piece) and the word each matrix's piece salts start at.
+pub(crate) fn piece_bytes(mats: &[(usize, usize)], budget: usize) -> usize {
+    let pieces = piece_count(mats, block_count(mats, budget));
+    pieces * (2 * 4 * DIGEST_ELEMS + 8 * mats.len())
+}
+
+/// The rows of `evals`, each followed by its salt: the salts of each run
+/// of `rows` rows read from the salt stream at `seed` from the word in
+/// `words`, the runs salted in parallel.
+fn salted(evals: &RowMajorMatrix<F>, seed: &[u8; 32], words: &[u64], rows: usize) -> RowMajorMatrix<F> {
+    let w = evals.width();
+    let stride = w + SALT;
+    let mut out = F::zero_vec(evals.height() * stride);
+    out.par_chunks_mut(rows * stride).zip(words.par_iter()).enumerate().for_each(|(k, (dst, &word))| {
+        let mut stream = SaltStream::new(seed, word);
+        for (r, row) in dst.chunks_exact_mut(stride).enumerate() {
+            let at = (k * rows + r) * w;
+            row[..w].copy_from_slice(&evals.values[at..at + w]);
+            for v in &mut row[w..] {
+                *v = stream.random();
+            }
+        }
+    });
+    RowMajorMatrix::new(out, stride)
 }
 
 impl Committed {
@@ -516,31 +605,27 @@ impl Committed {
         self.polys.iter().map(|p| p.log_lde).max().unwrap_or(0)
     }
 
-    /// Every matrix's rows in block `b`, each followed by its salt.
-    fn salted_block(&self, dft: &Dft, b: usize) -> Vec<RowMajorMatrix<F>> {
+    /// Every matrix's rows in part `b` of `parts` (blocks or pieces), each
+    /// followed by its salt.
+    fn salted_part(&self, dft: &Dft, parts: usize, b: usize) -> Vec<RowMajorMatrix<F>> {
+        let per = self.pieces / parts;
         self.polys
             .iter()
             .zip(&self.salt_words)
             .map(|(p, words)| {
-                let evals = p.block(dft, self.blocks, b);
-                let (rows, w) = (evals.height(), evals.width());
-                let mut stream = SaltStream::new(&self.seed, words[b]);
-                let salt = salts(&mut stream, rows);
-                let mut out = Vec::with_capacity(rows * (w + SALT));
-                for r in 0..rows {
-                    out.extend_from_slice(&evals.values[r * w..(r + 1) * w]);
-                    out.extend_from_slice(&salt[r * SALT..(r + 1) * SALT]);
-                }
-                RowMajorMatrix::new(out, w + SALT)
+                let evals = p.block(dft, parts, b);
+                let rows = (1usize << p.log_lde) / self.pieces;
+                salted(&evals, &self.seed, &words[b * per..(b + 1) * per], rows)
             })
             .collect()
     }
 
-    /// Block `b`'s Merkle subtree over its salted rows.
-    fn block_tree(&self, dft: &Dft, b: usize) -> Cow<'_, PlainTree> {
+    /// Piece `k`'s Merkle subtree over its salted rows (the whole kept tree
+    /// when the commitment kept its one block).
+    fn piece_tree(&self, dft: &Dft, k: usize) -> Cow<'_, PlainTree> {
         match &self.kept {
             Some(tree) => Cow::Borrowed(tree),
-            None => Cow::Owned(plain_mmcs().commit(self.salted_block(dft, b)).1),
+            None => Cow::Owned(plain_mmcs().commit(self.salted_part(dft, self.pieces, k)).1),
         }
     }
 
@@ -553,33 +638,83 @@ impl Committed {
         }
     }
 
+    /// The most bytes rebuilding one piece holds: its rows, salts and Merkle
+    /// subtree, one matrix's rows unsalted, and the factors of the folding.
+    fn piece_peak(&self) -> usize {
+        if self.kept.is_some() {
+            return 0;
+        }
+        let mats: Vec<(usize, usize)> = self.polys.iter().map(|p| (p.log_lde, p.width())).collect();
+        let factors: usize = self
+            .polys
+            .iter()
+            .map(|p| p.coeffs.height().div_ceil(((1usize << p.log_lde) / self.pieces).max(1)) * 4)
+            .sum();
+        block_peak(&mats, self.pieces) + factors
+    }
+
+    /// The rows, salts and Merkle paths of `members` (indices of the
+    /// tallest) in piece `k`, with the kept levels above the pieces.
+    fn open_piece(
+        &self,
+        dft: &Dft,
+        k: usize,
+        members: &[usize],
+        log_l: usize,
+        log_pieces: usize,
+    ) -> Vec<(usize, Vec<Vec<F>>, Vec<Digest>)> {
+        let tree = self.piece_tree(dft, k);
+        let mmcs = plain_mmcs();
+        members
+            .iter()
+            .map(|&index| {
+                let (rows, mut siblings) = mmcs.open_batch(index & ((1 << log_l) - 1), &*tree).unpack();
+                for level in 0..log_pieces {
+                    siblings.push(self.upper[level][(k >> level) ^ 1]);
+                }
+                (index, rows, siblings)
+            })
+            .collect()
+    }
+
     /// The openings of every matrix at `indices` (of the tallest), with
     /// their salts and the pruned multiproof, as the hiding Merkle scheme
-    /// of the scale configuration opens them.
+    /// of the scale configuration opens them. Each piece a query falls in
+    /// is evaluated and hashed on its own, as many pieces in parallel as
+    /// fit one block's bytes together.
     fn open(&self, dft: &Dft, indices: &[usize]) -> BatchMultiOpening<F, ValMmcs> {
         let log_max = self.log_max();
-        let log_blocks = log2(self.blocks);
-        let log_l = log_max - log_blocks;
+        // A kept tree is opened whole; otherwise each piece's subtree, and
+        // the kept levels above the pieces.
+        let log_pieces = if self.kept.is_some() { 0 } else { log2(self.pieces) };
+        let log_l = log_max - log_pieces;
         let mut sorted = indices.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-        let mmcs = plain_mmcs();
+        let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
+        for &index in &sorted {
+            let k = index >> log_l;
+            match groups.last_mut() {
+                Some((g, members)) if *g == k => members.push(index),
+                _ => groups.push((k, vec![index])),
+            }
+        }
+        // Pieces rebuilt at once, so that together they hold no more than
+        // one block of the budget ([`BLOCK_BYTES`]).
+        let at_once = (BLOCK_BYTES / self.piece_peak().max(1)).max(1);
+        let opened: Vec<Vec<(usize, Vec<Vec<F>>, Vec<Digest>)>> = groups
+            .chunks(at_once)
+            .flat_map(|wave| {
+                wave.par_iter()
+                    .map(|(k, members)| self.open_piece(dft, *k, members, log_l, log_pieces))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         let mut rows_of: BTreeMap<usize, Vec<Vec<F>>> = BTreeMap::new();
         let mut paths: BTreeMap<usize, Vec<Digest>> = BTreeMap::new();
-        let mut i = 0;
-        while i < sorted.len() {
-            let b = sorted[i] >> log_l;
-            let tree = self.block_tree(dft, b);
-            while i < sorted.len() && sorted[i] >> log_l == b {
-                let index = sorted[i];
-                let (rows, mut siblings) = mmcs.open_batch(index & ((1 << log_l) - 1), &*tree).unpack();
-                for level in 0..log_blocks {
-                    siblings.push(self.upper[level][(b >> level) ^ 1]);
-                }
-                rows_of.insert(index, rows);
-                paths.insert(index, siblings);
-                i += 1;
-            }
+        for (index, rows, siblings) in opened.into_iter().flatten() {
+            rows_of.insert(index, rows);
+            paths.insert(index, siblings);
         }
         // The boundary digests of the frontier, level by level, as
         // `open_batch_pruned` emits them: a group's missing child is the
@@ -620,17 +755,19 @@ impl Committed {
 }
 
 /// Commit to `polys`, in order, with salts from `cursor`, a block of at
-/// most `budget` bytes at a time.
+/// most `budget` bytes at a time, keeping the roots of each block's pieces.
 fn commit(dft: &Dft, polys: Vec<Poly>, cursor: &mut SaltCursor, budget: usize) -> (Com, Committed) {
     let mats: Vec<(usize, usize)> = polys.iter().map(|p| (p.log_lde, p.width())).collect();
     let blocks = block_count(&mats, budget);
+    let pieces = piece_count(&mats, blocks);
     let keep = kept_bytes(&mats, budget) > 0;
-    let mut c = unhashed(polys, blocks, cursor);
+    let mut c = unhashed(polys, blocks, pieces, cursor);
     let mmcs = plain_mmcs();
-    let mut roots = Vec::with_capacity(blocks);
+    let mut roots = Vec::with_capacity(pieces);
+    let cap = log2(pieces / blocks);
     for b in 0..blocks {
-        let (cap, tree) = mmcs.commit(c.salted_block(dft, b));
-        roots.push(cap.roots()[0]);
+        let (_, tree) = mmcs.commit(c.salted_part(dft, blocks, b));
+        roots.extend(tree.cap(cap).roots().iter().copied());
         if keep {
             c.kept = Some(tree);
         }
@@ -695,7 +832,7 @@ fn commit_root(polys: Vec<Poly>, cursor: &mut SaltCursor, budget: usize) -> Com 
         parts *= 2;
     }
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(KEY_THREADS);
-    let c = unhashed(polys, blocks * parts, cursor);
+    let c = unhashed(polys, blocks * parts, blocks * parts, cursor);
     // Every matrix's columns, in slices of at least KEY_SLICE_COLUMNS.
     let slices: Vec<(usize, core::ops::Range<usize>)> = mats
         .iter()
@@ -736,35 +873,106 @@ fn commit_root(polys: Vec<Poly>, cursor: &mut SaltCursor, budget: usize) -> Com 
     upper_levels(roots).0
 }
 
-/// `polys` cut into `blocks` blocks, with the word of the salt stream each
-/// block's salts start at, nothing hashed yet. The library draws every
-/// matrix's salts in turn, row by row.
-fn unhashed(polys: Vec<Poly>, blocks: usize, cursor: &mut SaltCursor) -> Committed {
-    let mut stream = SaltStream::new(&cursor.seed, cursor.word);
-    let salt_words: Vec<Vec<u64>> = polys
+/// `polys` cut into `blocks` blocks and `pieces` pieces, with the word of
+/// the salt stream each piece's salts start at, nothing hashed yet. The
+/// library draws every matrix's salts in turn, row by row.
+fn unhashed(polys: Vec<Poly>, blocks: usize, pieces: usize, cursor: &mut SaltCursor) -> Committed {
+    let counts: Vec<u64> = polys
         .iter()
-        .map(|p| {
-            let rows = (1usize << p.log_lde) / blocks;
-            (0..blocks)
-                .map(|_| {
-                    let at = stream.position();
-                    for _ in 0..rows * SALT {
-                        let _: F = stream.random();
-                    }
-                    at
-                })
-                .collect()
+        .flat_map(|p| {
+            let draws = (((1usize << p.log_lde) / pieces) * SALT) as u64;
+            core::iter::repeat_n(draws, pieces)
         })
         .collect();
-    cursor.word = stream.position();
+    let (starts, end) = draw_positions(&cursor.seed, cursor.word, &counts);
+    cursor.word = end;
+    let salt_words = starts.chunks(pieces).map(<[u64]>::to_vec).collect();
     Committed {
         polys,
         blocks,
+        pieces,
         seed: cursor.seed,
         salt_words,
         upper: Vec::new(),
         kept: None,
     }
+}
+
+/// Words of the salt stream one task of [`draw_positions`] reads.
+const DRAW_CHUNK_WORDS: u64 = 1 << 12;
+
+/// Whether a word of the salt stream is a draw of the field: the field
+/// samples `word >> 1` and draws again when it is not below the prime.
+fn accepted(word: u32) -> bool {
+    (word >> 1) < F::ORDER_U32
+}
+
+/// Draws of the field in words `[from, to)` of the stream at `seed`.
+fn accepted_in(seed: &[u8; 32], from: u64, to: u64) -> u64 {
+    let mut stream = SaltStream::new(seed, from);
+    (from..to).filter(|_| accepted(stream.next_word())).count() as u64
+}
+
+/// The word each run of draws starts at when runs of `counts` draws of the
+/// field are read in turn from word `start` of the stream at `seed`, and
+/// the word after the last: what drawing them one by one would find, with
+/// the stream counted in parallel chunks.
+fn draw_positions(seed: &[u8; 32], start: u64, counts: &[u64]) -> (Vec<u64>, u64) {
+    let total: u64 = counts.iter().sum();
+    // Accepted draws a chunk, until the chunks cover every draw.
+    let mut per_chunk: Vec<u64> = Vec::new();
+    let mut covered = 0u64;
+    while covered < total {
+        let need = (total - covered) + (total - covered) / 8 + 64;
+        let more = need.div_ceil(DRAW_CHUNK_WORDS);
+        let first = per_chunk.len() as u64;
+        let counted: Vec<u64> = (first..first + more)
+            .into_par_iter()
+            .map(|c| {
+                let from = start + c * DRAW_CHUNK_WORDS;
+                accepted_in(seed, from, from + DRAW_CHUNK_WORDS)
+            })
+            .collect();
+        covered += counted.iter().sum::<u64>();
+        per_chunk.extend(counted);
+    }
+    let mut before = Vec::with_capacity(per_chunk.len() + 1);
+    let mut acc = 0u64;
+    before.push(0);
+    for &n in &per_chunk {
+        acc += n;
+        before.push(acc);
+    }
+    // The word after the `target`-th draw (the start word for none).
+    let after = |target: u64| -> u64 {
+        if target == 0 {
+            return start;
+        }
+        let c = before.partition_point(|&b| b < target) - 1;
+        let mut left = target - before[c];
+        let mut word = start + c as u64 * DRAW_CHUNK_WORDS;
+        let mut stream = SaltStream::new(seed, word);
+        loop {
+            let w = stream.next_word();
+            word += 1;
+            if accepted(w) {
+                left -= 1;
+                if left == 0 {
+                    return word;
+                }
+            }
+        }
+    };
+    let mut targets = Vec::with_capacity(counts.len() + 1);
+    let mut sum = 0u64;
+    for &n in counts {
+        targets.push(sum);
+        sum += n;
+    }
+    targets.push(sum);
+    let mut words: Vec<u64> = targets.par_iter().map(|&t| after(t)).collect();
+    let end = words.pop().unwrap_or(start);
+    (words, end)
 }
 
 /// The Merkle tree above the block roots, level by level (the root last),
@@ -806,6 +1014,9 @@ struct Round<'a> {
     points: Vec<Vec<EF>>,
 }
 
+/// Rows of a block one task of the batched openings folds in.
+const REDUCE_ROWS: usize = 1 << 12;
+
 fn alpha_powers(alpha: EF, n: usize) -> Vec<EF> {
     alpha.powers().take(n).collect()
 }
@@ -837,39 +1048,88 @@ fn open_pcs(
     let pows = alpha_powers(alpha, widest);
     let mut reduced: BTreeMap<usize, Vec<EF>> = BTreeMap::new();
     let mut num_reduced = [0usize; 33];
-    for (round, opened) in rounds.iter().zip(&all) {
-        let data = round.data;
-        for (j, (p, points)) in data.polys.iter().zip(&round.points).enumerate() {
-            let lh = p.log_lde;
-            let w = p.width();
-            let weighted: Vec<(EF, EF)> = points
+    // Each matrix's point, offset and weighted opened value at each of its
+    // points, in the library's order of the offsets.
+    let weights: Vec<Vec<Vec<(EF, EF, EF)>>> = rounds
+        .iter()
+        .zip(&all)
+        .map(|(round, opened)| {
+            round
+                .data
+                .polys
                 .iter()
-                .zip(&opened[j])
-                .map(|(_, values)| {
-                    let offset = alpha.exp_u64(num_reduced[lh] as u64);
-                    num_reduced[lh] += w;
-                    let y: EF = values.iter().zip(&pows).map(|(&v, &a)| v * a).sum();
-                    (offset, offset * y)
+                .zip(&round.points)
+                .enumerate()
+                .map(|(j, (p, points))| {
+                    let lh = p.log_lde;
+                    reduced.entry(lh).or_insert_with(|| EF::zero_vec(1 << lh));
+                    points
+                        .iter()
+                        .zip(&opened[j])
+                        .map(|(&z, values)| {
+                            let offset = alpha.exp_u64(num_reduced[lh] as u64);
+                            num_reduced[lh] += p.width();
+                            let y: EF = values.iter().zip(&pows).map(|(&v, &a)| v * a).sum();
+                            (z, offset, offset * y)
+                        })
+                        .collect()
                 })
-                .collect();
-            let ro = reduced.entry(lh).or_insert_with(|| EF::zero_vec(1 << lh));
-            let rows = (1usize << lh) / data.blocks;
-            for b in 0..data.blocks {
-                let block = data.block_rows(dft, j, b);
-                let stride = block.width();
-                let xs = p.block_points(data.blocks, b);
-                let compressed: Vec<EF> = block
-                    .values
-                    .chunks(stride)
-                    .map(|row| row[..w].iter().zip(&pows).map(|(&v, &a)| a * v).sum())
-                    .collect();
-                for (&z, &(offset, weighted_y)) in points.iter().zip(&weighted) {
-                    let denoms: Vec<EF> = xs.iter().map(|&x| z - x).collect();
-                    let inv = batch_multiplicative_inverse(&denoms);
-                    for (t, (&c, &d)) in compressed.iter().zip(&inv).enumerate() {
-                        ro[b * rows + t] += (weighted_y - offset * c) * d;
+                .collect()
+        })
+        .collect();
+    // A commitment's block at a time, every matrix of one height together:
+    // each row's terms `y - p(x)` at one point are added over the matrices
+    // first, then multiplied once by `1 / (z - x)`; the sums are exact, so
+    // the result is the term by term one.
+    for (round, weights) in rounds.iter().zip(&weights) {
+        let data = round.data;
+        let mut heights: Vec<usize> = data.polys.iter().map(|p| p.log_lde).collect();
+        heights.sort_unstable();
+        heights.dedup();
+        for b in 0..data.blocks {
+            let blocks: Vec<Cow<'_, RowMajorMatrix<F>>> =
+                (0..data.polys.len()).map(|j| data.block_rows(dft, j, b)).collect();
+            for &lh in &heights {
+                let mats: Vec<usize> = (0..data.polys.len()).filter(|&j| data.polys[j].log_lde == lh).collect();
+                let mut zs: Vec<EF> = Vec::new();
+                for &j in &mats {
+                    for &(z, _, _) in &weights[j] {
+                        if !zs.contains(&z) {
+                            zs.push(z);
+                        }
                     }
                 }
+                let rows = (1usize << lh) / data.blocks;
+                let xs = data.polys[mats[0]].block_points(data.blocks, b);
+                let ro = reduced.get_mut(&lh).expect("every height has its quotient");
+                ro[b * rows..(b + 1) * rows].par_chunks_mut(REDUCE_ROWS).enumerate().for_each(|(k, out)| {
+                    let first = k * REDUCE_ROWS;
+                    let n = out.len();
+                    let mut acc = vec![EF::zero_vec(n); zs.len()];
+                    for &j in &mats {
+                        let block = &blocks[j];
+                        let stride = block.width();
+                        let w = data.polys[j].width();
+                        let values = &block.values[first * stride..(first + n) * stride];
+                        let compressed: Vec<EF> = values
+                            .chunks(stride)
+                            .map(|row| row[..w].iter().zip(&pows).map(|(&v, &a)| a * v).sum())
+                            .collect();
+                        for &(z, offset, weighted_y) in &weights[j] {
+                            let zi = zs.iter().position(|&q| q == z).expect("every point is listed");
+                            for (a, &c) in acc[zi].iter_mut().zip(&compressed) {
+                                *a += weighted_y - offset * c;
+                            }
+                        }
+                    }
+                    for (z, sums) in zs.iter().zip(&acc) {
+                        let denoms: Vec<EF> = xs[first..first + n].iter().map(|&x| *z - x).collect();
+                        let inv = batch_multiplicative_inverse(&denoms);
+                        for ((o, &a), &d) in out.iter_mut().zip(sums).zip(&inv) {
+                            *o += a * d;
+                        }
+                    }
+                });
             }
         }
     }
@@ -1570,6 +1830,26 @@ mod tests {
             }
             let mut s = SaltStream::new(&seed, 77);
             assert_eq!(s.next_word(), words[77]);
+        }
+    }
+
+    /// The counted positions of runs of draws are those drawing them one
+    /// by one finds, runs within a chunk and across chunks alike.
+    #[test]
+    fn counted_draw_positions_are_the_drawn_ones() {
+        for (seed, start) in [([3u8; 32], 8u64), ([9u8; 32], 12_345)] {
+            let counts: Vec<u64> = vec![5, 1, 0, 40, 4_100, 7, 9_000, 1, 3 * DRAW_CHUNK_WORDS, 2];
+            let mut stream = SaltStream::new(&seed, start);
+            let mut expected = Vec::new();
+            for &n in &counts {
+                expected.push(stream.position());
+                for _ in 0..n {
+                    let _: F = stream.random();
+                }
+            }
+            let (words, end) = draw_positions(&seed, start, &counts);
+            assert_eq!(words, expected);
+            assert_eq!(end, stream.position());
         }
     }
 }

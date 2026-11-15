@@ -22,6 +22,10 @@ import recursion_costs  # noqa: E402
 import stage2  # noqa: E402
 
 DOC = REPO / "docs" / "scale" / "stage2-design.md"
+# The inputs with the cell model unscaled by the measured batch.
+CELL_MODEL = stage2._with(None, measured_batch_core_seconds=None)
+# The network's aggregator machines at the measured prover, and with the spare.
+NETWORK_MACHINES = (329, 493)
 
 LIMITS = (
     "## Wallet restore volume",
@@ -385,20 +389,36 @@ class StageTwoVolumes(unittest.TestCase):
         cheap = stage2.cell_seconds(stage2._with(None, poseidon2_permutation_seconds=100e-9))
         self.assertGreater(stage2.cell_seconds(), cheap)
 
-    def test_the_shape_is_the_one_the_model_chooses(self):
-        self.assertEqual(stage2.choose_shape(), (stage2.INPUTS["batch_arity"], stage2.INPUTS["root_capacity"]))
+    def test_the_shape_is_the_one_the_cell_model_chooses(self):
+        # The keys' shape was chosen by the cell model; at the measured prover
+        # no shape meets the delay ceiling, so none is admissible.
+        self.assertEqual(stage2.choose_shape(CELL_MODEL), (stage2.INPUTS["batch_arity"], stage2.INPUTS["root_capacity"]))
         self.assertEqual((stage2.INPUTS["batch_arity"], stage2.INPUTS["root_capacity"]), (8, 29))
+        self.assertIsNone(stage2.choose_shape())
+        self.assertFalse(stage2.fleet()["meets_delay"])
+
+    def test_the_prover_factor_is_the_measured_batch_over_the_model(self):
+        self.assertEqual(stage2.prover_factor(CELL_MODEL), 1.0)
+        ref = stage2._with(None, poseidon2_permutation_seconds=stage2.INPUTS["measured_batch_permutation_seconds"])
+        modeled = stage2.shape_layers(ref)["batch"]["cells"] * stage2.model_cell_seconds(ref)
+        self.assertAlmostEqual(stage2.prover_factor() * modeled, stage2.INPUTS["measured_batch_core_seconds"])
+        self.assertGreater(stage2.prover_factor(), 10)
+        self.assertAlmostEqual(stage2.cell_seconds(), stage2.model_cell_seconds() * stage2.prover_factor())
+        # The factor does not move with the permutation input: a dearer
+        # permutation still raises every cost through the cell model.
+        dear = stage2._with(None, poseidon2_permutation_seconds=2e-6)
+        self.assertAlmostEqual(stage2.prover_factor(dear), stage2.prover_factor())
 
     def test_the_choice_turns_with_its_ceilings(self):
         # Without 8 a batch the next cheapest admissible arity is taken, its root
         # just large enough for the burst or as large at the same cost.
-        arity, capacity = stage2.choose_shape(arities=(16, 32))
+        arity, capacity = stage2.choose_shape(CELL_MODEL, arities=(16, 32))
         self.assertEqual(arity, 16)
         self.assertGreaterEqual(arity * capacity, stage2.burst_reveals())
         # Under 40 GiB a machine no shape holds the burst in one root.
-        self.assertIsNone(stage2.choose_shape(stage2._with(None, aggregator_memory_bytes=40 * stage2.GIB)))
+        self.assertIsNone(stage2.choose_shape(stage2._with(CELL_MODEL, aggregator_memory_bytes=40 * stage2.GIB)))
         # A dearer permutation that breaks the delay rules every shape out.
-        self.assertIsNone(stage2.choose_shape(stage2._with(None, poseidon2_permutation_seconds=10e-6)))
+        self.assertIsNone(stage2.choose_shape(stage2._with(CELL_MODEL, poseidon2_permutation_seconds=10e-6)))
 
     def test_every_layer_fits_an_aggregator_machine(self):
         peaks = stage2.prover_peaks()
@@ -437,18 +457,24 @@ class StageTwoVolumes(unittest.TestCase):
         own = [b["machine_seconds"] for b in f["private"]["bundles"]] + [f["public"]["machine_seconds"]]
         self.assertEqual(f["network_machines"], sum(math.ceil(s / block) for s in own))
         self.assertGreaterEqual(f["network_machines"], f["machines"])
-        self.assertEqual((f["network_machines"], f["network_machines_with_spare"]), (26, 37))
-        self.assertLessEqual(f["network_machines_with_spare"], stage2.INPUTS["aggregator_machines"])
+        self.assertEqual((f["network_machines"], f["network_machines_with_spare"]), NETWORK_MACHINES)
+        self.assertGreater(f["network_machines"], stage2.INPUTS["aggregator_machines"])
+        # The cell model alone had the fleet within the 40 machines.
+        cell = stage2.fleet(CELL_MODEL)
+        self.assertEqual((cell["network_machines"], cell["network_machines_with_spare"]), (26, 37))
 
     def test_the_cost_a_reveal_falls_with_volume(self):
         cents = [stage2.volume(v)["fleet"]["cents_per_reveal"] for v in stage2.VOLUMES]
         self.assertGreater(cents[0], cents[1])
         self.assertGreater(cents[1], cents[2])
-        self.assertFalse(stage2.volume(10_000)["fleet"]["meets_cost"])
-        self.assertFalse(stage2.volume(100_000)["fleet"]["meets_cost"])
-        self.assertTrue(stage2.volume(1_000_000)["fleet"]["meets_cost"])
+        # At the measured prover every volume misses the cost and the delay
+        # ceilings; the cell model met both at 1 million a day.
         for v in stage2.VOLUMES:
-            self.assertTrue(stage2.volume(v)["fleet"]["meets_delay"], v)
+            self.assertFalse(stage2.volume(v)["fleet"]["meets_cost"], v)
+            self.assertFalse(stage2.volume(v)["fleet"]["meets_delay"], v)
+        self.assertTrue(stage2.volume(1_000_000, CELL_MODEL)["fleet"]["meets_cost"])
+        for v in stage2.VOLUMES:
+            self.assertTrue(stage2.volume(v, CELL_MODEL)["fleet"]["meets_delay"], v)
 
     def test_a_quiet_batch_closes_after_a_block(self):
         low = stage2.volume(10_000)["fleet"]["private"]
