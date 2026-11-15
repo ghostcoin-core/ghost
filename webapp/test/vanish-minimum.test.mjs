@@ -62,12 +62,15 @@ async function setUp({ prover = null } = {}) {
 
 test("the Vanish minimum is four Summon fees", async () => {
   assert.equal(MIN_VANISH_FEES, 4n);
-  // The worked number of spec 07, section 5, at b_ref 1 gwei.
-  assert.equal(minVanishFor({ baseFee: GWEI, ...HALF_FULL }), 104401981374637640n);
+  // Spec 07, section 5's rule at b_ref 1 gwei, four of spec 10's version 2
+  // ordinary fees of 26,448,599,764,588,822 wei (spec 07's own worked number
+  // is version 1's).
+  assert.equal(minVanishFor({ baseFee: GWEI, ...HALF_FULL }), 4n * 26_448_599_764_588_822n);
+  assert.equal(minVanishFor({ baseFee: GWEI, ...HALF_FULL }), 105794399058355288n);
   // The next block's base fee, not the tip's: a full tip raises it 12.5%.
   const full = minVanishFor({ baseFee: GWEI, gasUsed: 30_000_000n, gasLimit: 30_000_000n });
   assert.equal(full, minVanishFor({ baseFee: GWEI + GWEI / 8n, ...HALF_FULL }));
-  assert.ok(full > 104401981374637640n);
+  assert.ok(full > 105794399058355288n);
 
   const { node, make, ops, done } = await setUp();
   try {
@@ -234,9 +237,9 @@ test("a Vanish below the minimum is refused with one plain line", async () => {
     const page = startPage(make);
     await page.flow.walletConnect(testConnector());
     const min = 4n * node.fee(node.tip() + 1);
-    // 0.1044... GHOST, shown rounded up to 4 decimals.
-    assert.equal(min, 104401981374637640n);
-    const LINE = "Vanish at least 0.1045 GHOST: a smaller coin could not pay the Summon fee later.";
+    // 0.1057... GHOST, shown rounded up to 4 decimals.
+    assert.equal(min, 105794399058355288n);
+    const LINE = "Vanish at least 0.1058 GHOST: a smaller coin could not pay the Summon fee later.";
 
     const submit = async (amount) => {
       page.$("vanish-error").textContent = "";

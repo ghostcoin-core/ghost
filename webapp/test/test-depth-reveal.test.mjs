@@ -51,26 +51,25 @@ const field = (envelope, at, n) => envelope.slice(at, at + n);
 
 const tagged = (tag, ...parts) => keccak256(concat([Uint8Array.of(tag.length), new TextEncoder().encode(tag), ...parts]));
 
-// The stub proof of a salted coin reveal, from the envelope's own fields and
-// the chain's genesis hash: the coin reveal binding digest (spec 02, section
-// 7: chain identifier, version 0x0001, domain, statement 0x01, statement
-// version 0x01, type COIN_V2 0x0201, purpose 0x01, then root, marker,
-// remainder, recipient, out, fee, the empty rule and the remainder's note)
-// under K("ghost/test-proof/v1", ...).
+// The stub proof of a version 2 coin reveal, from the envelope's own fields
+// and the chain's genesis hash: the coin reveal binding digest of version 2
+// (spec 10, section 9: chain identifier, version 0x0002, domain, statement
+// 0x01, statement version 0x02, type COIN_V2 0x0201, purpose 0x01, then
+// root, marker, remainder, recipient, out, fee and the remainder's 380-byte
+// note) under K("ghost/test-proof/v1", ...).
 function stubOf(envelope, domain) {
   const binding = tagged(
-    "ghost/coin-reveal-binding/v1",
+    "ghost/coin-reveal-binding/v2",
     field(envelope, 3, 8),
-    Uint8Array.of(0x00, 0x01),
+    Uint8Array.of(0x00, 0x02),
     domain,
-    Uint8Array.of(0x01, 0x01, 0x02, 0x01, 0x01),
+    Uint8Array.of(0x01, 0x02, 0x02, 0x01, 0x01),
     field(envelope, 43, 32), // root
     field(envelope, 11, 32), // marker
     field(envelope, 75, 32), // remainder
     field(envelope, 107, 20), // recipient
     field(envelope, 127, 32), // out
     field(envelope, 159, 32), // fee
-    new Uint8Array(32), // rule
     envelope.slice(PROOF_AT + PROOF_FIELD_BYTES), // note
   );
   return tagged("ghost/test-proof/v1", binding);
@@ -158,13 +157,12 @@ test("on a node of 14-level trees the test-depth module reveals a coin of a full
     assert.equal(watched.proved.length, 1);
     const { envelope, txHash } = watched.proved[0];
     assert.equal(toHex(txHash), reveal.hash, "the stand-in took this envelope");
-    // The version 1 reveal keeps its 156-byte remainder note; the tree stores
-    // it zero-padded to the 380 bytes of every note.
-    assert.equal(envelope.length, PROOF_AT + PROOF_FIELD_BYTES + 156);
+    // The version 2 reveal carries the 380-byte remainder note, which the
+    // tree stores as it is.
+    assert.equal(envelope.length, PROOF_AT + PROOF_FIELD_BYTES + 380);
     const stored = node.leaves.find((l) => toHex(l.commitment) === toHex(reveal.remainder));
     assert.equal(stored.note.length, 380);
-    assert.equal(toHex(stored.note.slice(0, 156)), toHex(envelope.slice(PROOF_AT + PROOF_FIELD_BYTES)));
-    assert.ok(stored.note.slice(156).every((b) => b === 0), "zero-padded to 380 bytes");
+    assert.equal(toHex(stored.note), toHex(envelope.slice(PROOF_AT + PROOF_FIELD_BYTES)));
     assert.equal(toHex(field(envelope, 43, 32)), toHex(headerRoot));
     const proof = field(envelope, PROOF_AT, PROOF_FIELD_BYTES);
     assert.equal(proof.length, 1_310_720);
