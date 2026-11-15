@@ -1,6 +1,7 @@
-// Shared set-up of the flow tests (flow.test.mjs and
-// flow-head-moved.test.mjs): the spec fee, the stand-in node with a scripted
-// wallet and a flow on it, and helpers that read what the endpoint saw.
+// Shared set-up of the flow tests (flow.test.mjs, flow-claim.test.mjs and
+// the flow-head-moved*.test.mjs files): the spec fee, the stand-in node with
+// a scripted wallet and a flow on it, and helpers that read what the
+// endpoint saw.
 // Importing this file runs nothing.
 
 import assert from "node:assert/strict";

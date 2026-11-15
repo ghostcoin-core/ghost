@@ -662,8 +662,8 @@ jobs:
   # modules they load once: the default module and the test-depth module
   # (feature test-tree-depth). The webapp-unit-* jobs each run a share of the
   # test files with node --test-shard on Node 24, against those two modules,
-  # so each fits its 10-minute limit; webapp-unit passes when every share
-  # passed.
+  # so each fits its 10-minute limit; webapp-unit-fast-node runs the
+  # real-time fast-mining test alone; webapp-unit passes when all passed.
   webapp-wasm:
     name: webapp-wasm
     runs-on: ubuntu-24.04
@@ -717,9 +717,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
-      SHARDS: 6
+      SHARDS: 8
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -739,22 +739,55 @@ jobs:
         run: |
           set -euo pipefail
           node --version
+          # Every test file but reveal-fast-node.test.mjs, which runs in
+          # webapp-unit-fast-node.
+          files=()
+          for f in webapp/test/*.test.mjs; do
+            [ "$f" = webapp/test/reveal-fast-node.test.mjs ] || files+=("$f")
+          done
           # Under the job's 10 minutes, so a hung test is named rather than cut off.
-          node --test --test-timeout=540000 --test-shard="$SHARD/$SHARDS" webapp/test/*.test.mjs
+          node --test --test-timeout=540000 --test-shard="$SHARD/$SHARDS" "${files[@]}"
+
+  # The Summon reveal against a stand-in that mines every 500 ms, in real
+  # time: alone on its runner, as other test files proving at the same time
+  # slow its proofs past the stand-in's blocks.
+  webapp-unit-fast-node:
+    name: webapp-unit-fast-node
+    needs: webapp-wasm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: webapp-wasm
+          path: ${{ runner.temp }}/webapp-wasm
+      - name: Unit test (fast-mining node)
+        env:
+          GHOST_WEBAPP_WASM: ${{ runner.temp }}/webapp-wasm/default.wasm
+        run: |
+          node --version
+          node --test --test-timeout=540000 webapp/test/reveal-fast-node.test.mjs
 
   webapp-unit:
     name: webapp-unit
     if: always()
-    needs: webapp-unit-shard
+    needs: [webapp-unit-shard, webapp-unit-fast-node]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Every share passed
         env:
-          RESULT: ${{ needs.webapp-unit-shard.result }}
+          SHARDS_RESULT: ${{ needs.webapp-unit-shard.result }}
+          FAST_NODE_RESULT: ${{ needs.webapp-unit-fast-node.result }}
         run: |
-          echo "webapp-unit-shard: $RESULT"
-          [ "$RESULT" = "success" ]
+          echo "webapp-unit-shard: $SHARDS_RESULT; webapp-unit-fast-node: $FAST_NODE_RESULT"
+          [ "$SHARDS_RESULT" = "success" ] && [ "$FAST_NODE_RESULT" = "success" ]
 
   # Vanish, a partial Summon and a Claim with the real prover against a
   # release geth of ghost-node at the commit in webapp/test/e2e/NODE_COMMIT.
