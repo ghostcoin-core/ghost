@@ -135,7 +135,7 @@ const ui = {
     const list = coins.map((coin) => {
       const li = document.createElement("li");
       const state = coin.spent ? "spent" : "unspent";
-      li.textContent = `Number ${coin.number}: ${coin.amount} GHOST, ${RULE_NAMES[coin.rule]}, ${state}, at position ${coin.position}`;
+      li.textContent = `Number ${coin.number}: ${coin.amount} SPECTER, ${RULE_NAMES[coin.rule]}, ${state}, at position ${coin.position}`;
       if (coin.warnings.length > 0) {
         const warnings = document.createElement("ul");
         warnings.className = "warnings";
@@ -174,37 +174,37 @@ const ui = {
       $("approve-title").textContent = "Rescue: move the whole balance";
       row(list, "From", summary.from ?? "your first account (unlock to sign with it)");
       row(list, "Signed with", "the rescue key (scheme 0x0004)");
-      row(list, "Balance", `${summary.balance} GHOST`);
-      row(list, "Amount moved", `${summary.amount} GHOST`);
-      row(list, "Maximum fee", `${summary.maxFee} GHOST`);
+      row(list, "Balance", `${summary.balance} SPECTER`);
+      row(list, "Amount moved", `${summary.amount} SPECTER`);
+      row(list, "Maximum fee", `${summary.maxFee} SPECTER`);
       row(list, "Chain id", summary.chainId);
     } else if (summary.kind === "guardCommit") {
       $("approve-title").textContent = "Guard commit: a new coin under your stop card";
       row(list, "From", summary.from ?? "your first account (unlock to sign with it)");
       row(list, "Scheme", summary.scheme ?? "known once unlocked");
-      row(list, "Amount", `${summary.amount} GHOST`);
-      row(list, "Maximum fee", `${summary.maxFee} GHOST`);
+      row(list, "Amount", `${summary.amount} SPECTER`);
+      row(list, "Maximum fee", `${summary.maxFee} SPECTER`);
       row(list, "Commit entry", summary.to);
       row(list, "Guard address", summary.guardAddress);
-      row(list, "Cost of a cancel", `${summary.actionCost} GHOST`);
+      row(list, "Cost of a cancel", `${summary.actionCost} SPECTER`);
       row(list, "Chain id", summary.chainId);
       row(list, "Phantom Key", "a new one, made and shown in this wallet");
     } else if (summary.kind === "guardSpend") {
       $("approve-title").textContent = "Guard: spend normally";
-      row(list, "Coin holds", `${summary.amount} GHOST`);
-      row(list, "Amount", `${summary.out} GHOST`);
-      row(list, "Fee", `${summary.fee} GHOST`);
+      row(list, "Coin holds", `${summary.amount} SPECTER`);
+      row(list, "Amount", `${summary.out} SPECTER`);
+      row(list, "Fee", `${summary.fee} SPECTER`);
       row(list, "To", summary.recipient);
-      row(list, "Left in the key", `${summary.remainder} GHOST`);
+      row(list, "Left in the key", `${summary.remainder} SPECTER`);
       row(list, "Left under", summary.remainderRule === "guard" ? "a new Guard rule of your stop card" : "no rule: a plain coin");
       row(list, "Chain id", summary.chainId);
     } else if (summary.kind === "guardWordsOnly") {
       $("approve-title").textContent = "Guard: words-only spend";
-      row(list, "Coin holds", `${summary.amount} GHOST`);
-      row(list, "Into Guard's slot", `${summary.slot} GHOST`);
-      row(list, "Fee", `${summary.fee} GHOST`);
+      row(list, "Coin holds", `${summary.amount} SPECTER`);
+      row(list, "Into Guard's slot", `${summary.slot} SPECTER`);
+      row(list, "Fee", `${summary.fee} SPECTER`);
       row(list, "Paid after the hold (72 hours) to", summary.recipient);
-      row(list, "Cost of a cancel", `${summary.actionCost} GHOST`);
+      row(list, "Cost of a cancel", `${summary.actionCost} SPECTER`);
       row(list, "During the hold", "the coin's stop card can cancel this spend");
       row(list, "Chain id", summary.chainId);
     } else {
@@ -212,8 +212,8 @@ const ui = {
       row(list, "From", summary.from ?? "your first account (unlock to sign with it)");
       row(list, "Scheme", summary.scheme ?? "known once unlocked");
       row(list, "Rescue key", summary.rescueKey === null ? "known once unlocked" : summary.rescueKey ? "yes" : "no");
-      row(list, "Amount", `${summary.amount} GHOST`);
-      row(list, "Maximum fee", `${summary.maxFee} GHOST`);
+      row(list, "Amount", `${summary.amount} SPECTER`);
+      row(list, "Maximum fee", `${summary.maxFee} SPECTER`);
       row(list, "To", summary.to);
       row(list, "Chain id", summary.chainId);
       row(list, "Data", `${summary.dataBytes} bytes`);
@@ -252,7 +252,7 @@ function decodeBase64(text) {
 }
 
 if (!window.opener) {
-  ui.status("Open this wallet from the Ghost app.");
+  ui.status("Open this wallet from the Specter app.");
 } else {
   const wallet = createWallet({
     ghost: await loadGhost(decodeBase64(WASM)),

@@ -148,7 +148,7 @@ for m in "${modules[@]}"; do
 done
 cp "$module" "$dist/ghost_webapp_wasm.wasm"
 cp "$threads_module" "$dist/ghost_webapp_wasm_threads.wasm"
-# The self-hosted Instrument Sans and IBM Plex Mono fonts and their licence.
+# The self-hosted Red Hat Display and Red Hat Mono fonts and their licences.
 cp -R "$here/fonts" "$dist/fonts"
 # The deploy's pin (scripts/make-pin.mjs), when GHOST_PIN_FILE names one:
 # served as pin.json beside the page, which starts its header chain there

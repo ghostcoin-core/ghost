@@ -35,7 +35,7 @@ const GHOST_NODE_COMMIT_ENTRY = "0x67686f7374000000000000000000000000000005";
 const PUBLIC_GENESIS = NETWORKS[String(PUBLIC)].genesisHash;
 const DESTINATION = `0x${"5a".repeat(20)}`;
 const REFUSED = "This request was refused. Nothing was signed.";
-const WAITING = "Waiting for the Ghost app.";
+const WAITING = "Waiting for the Specter app.";
 const SIGN_CALLS = ["ghost_wallet_sign", "ghost_wallet_sign_rescue_key", "ghost_wallet_sign_rescue"];
 
 // The data of a Vanish commit as the web app builds it: version 3, then the

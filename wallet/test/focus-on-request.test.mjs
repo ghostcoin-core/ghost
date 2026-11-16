@@ -2,7 +2,7 @@
 // is not missed behind the app: the web app's connector (popup-wallet.mjs)
 // focuses the pop-up before each request it posts, and the wallet
 // (wallet.mjs, with main.mjs's screens) focuses its own window and titles
-// it "Ghost app is asking: approve below" while the request waits, the
+// it "Specter app is asking: approve below" while the request waits, the
 // title going back once answered. Runs without the built module: nothing
 // here reaches a signature.
 
@@ -99,7 +99,7 @@ function setUp(ui) {
 }
 
 test("the wallet asks for attention with its title while a request waits, and puts the title back once answered", async () => {
-  assert.equal(ASKING_TITLE, "Ghost app is asking: approve below");
+  assert.equal(ASKING_TITLE, "Specter app is asking: approve below");
   let titlesAtApproval = null;
   let release;
   const held = new Promise((r) => {
@@ -154,12 +154,12 @@ async function mainAttention(win, doc) {
 
 test("main.mjs focuses the wallet's window and titles its window and tab", async () => {
   const win = { focused: 0, focus: () => (win.focused += 1) };
-  const doc = { title: "Ghost wallet" };
+  const doc = { title: "Specter wallet" };
   const attention = await mainAttention(win, doc);
   attention(ASKING_TITLE);
   assert.equal(win.focused, 1);
-  assert.equal(doc.title, "Ghost app is asking: approve below");
+  assert.equal(doc.title, "Specter app is asking: approve below");
   attention(null);
-  assert.equal(doc.title, "Ghost wallet");
+  assert.equal(doc.title, "Specter wallet");
   assert.equal(win.focused, 1, "answering does not focus again");
 });

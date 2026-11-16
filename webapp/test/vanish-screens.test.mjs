@@ -318,13 +318,23 @@ test("Save your Phantom Key: the warning, the 24-word grid, Copy and I saved it"
     ),
     words(screen),
   );
-  assert.match(element("vanish-words"), /^<ol\b[^>]*class="word-grid"/);
+  assert.match(element("vanish-words"), /^<ol\b[^>]*class="word-grid" aria-label="Your Phantom Key's 24 words"/);
   assert.match(element("vanish-copy"), />Copy</);
   assert.match(element("vanish-saved"), /class="primary[^"]*"[^>]*>I saved it</);
+  assert.ok(words(screen).startsWith("Vanish <amount> SPECTER · step 1 of 2 Save your Phantom Key"), words(screen));
   // No digit form of the key in the card.
   assert.doesNotMatch(element("panel-vanish"), /digits/i);
+  // The words stay real text in the list, for screen readers and Copy; the
+  // bearer card shows them to the eye and is hidden from screen readers,
+  // so they are read once. The list is moved off screen, never hidden.
   const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
-  assert.match(css, /\.word-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,/);
+  const grid = /\n\.word-grid\s*\{([^}]*)\}/.exec(css);
+  assert.ok(grid, "a .word-grid rule");
+  assert.match(grid[1], /clip:\s*rect\(0 0 0 0\)/);
+  assert.match(grid[1], /position:\s*absolute/);
+  assert.doesNotMatch(grid[1], /display:\s*none|visibility:\s*hidden/);
+  assert.match(html, /<div class="stage" aria-hidden="true">/);
+  assert.doesNotMatch(css, /#vanish-words\b/);
 });
 
 test("Check your key: three typed words, Show key again and the Vanish button", () => {
@@ -334,15 +344,21 @@ test("Check your key: three typed words, Show key again and the Vanish button", 
   assert.ok(words(screen).includes("Type these three words from your saved key."));
   assert.match(element("vanish-back"), />Show key again</);
   assert.match(element("vanish-send"), /type="submit"/);
+  assert.ok(words(screen).startsWith("Vanish <amount> SPECTER · step 2 of 2 Check your key"), words(screen));
   assert.equal(words(element("vanish-send")), "Vanish <amount> SPECTER");
   assert.ok(source.includes(`"${WRONG}"`), "app.mjs has the wrong-answer sentence");
 });
 
-test("Done: the ghost icon, the amount vanished, how to use the key and Done", () => {
+test("Done: a Committed line, the amount vanished, that it is burned, how to use the key and Done", () => {
   const screen = element("vanish-done");
-  assert.match(screen, /<use href="#icon-ghost">/);
-  assert.ok(words(screen).includes("<amount> SPECTER vanished"));
-  assert.ok(words(screen).includes("Your Phantom Key now holds it. To use it, open Summon and paste your key."));
+  assert.match(screen, /<p class="ok">Committed<\/p>/);
+  assert.ok(words(screen).includes("<amount> SPECTER vanished."));
+  assert.ok(
+    words(screen).includes(
+      "Your Phantom Key now holds it. It is burned and no longer exists on the chain; to use it, open Summon and paste your key.",
+    ),
+    words(screen),
+  );
   assert.match(element("vanish-done-button"), /class="primary[^"]*"[^>]*>Done</);
   assert.match(element("vanish-waiting"), /class="bar"/);
 });
@@ -357,6 +373,9 @@ test("Vanish shows the key as a numbered grid of its 24 words, put in as text", 
   await settle();
   assert.deepEqual(page.visible(), ["key"]);
   assert.equal(page.$("vanish-key-amount").textContent, "1.5");
+  for (const id of ["vanish-keystep-amount", "vanish-checkstep-amount", "vanish-waitstep-amount"]) {
+    assert.equal(page.$(id).textContent, "1.5", `the step line ${id} names the amount`);
+  }
   const grid = page.$("vanish-words").children;
   assert.equal(grid.length, 24);
   assert.deepEqual(

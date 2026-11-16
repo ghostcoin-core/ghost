@@ -52,7 +52,7 @@ export const USER_REJECTED = 4001;
 // The status line once a request is refused at its first check.
 export const REFUSED_STATUS = "This request was refused. Nothing was signed.";
 // The window's and tab's title while a request waits for the user.
-export const ASKING_TITLE = "Ghost app is asking: approve below";
+export const ASKING_TITLE = "Specter app is asking: approve below";
 const METHOD_NOT_FOUND = -32601;
 const INVALID_PARAMS = -32602;
 const INTERNAL_ERROR = -32603;
@@ -515,8 +515,8 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
   async function createPasskey() {
     const credential = await credentials.create({
       publicKey: {
-        rp: { name: "Ghost wallet" },
-        user: { id: random(16), name: "Ghost wallet", displayName: "Ghost wallet" },
+        rp: { name: "Specter wallet" },
+        user: { id: random(16), name: "Specter wallet", displayName: "Specter wallet" },
         challenge: random(32),
         pubKeyCredParams: [
           { type: "public-key", alg: -8 },
@@ -590,7 +590,7 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
         return words;
       } catch {
         words.fill(0);
-        ui.error("These are not the 24 words of a Ghost wallet. Check each word.");
+        ui.error("These are not the 24 words of a Specter wallet. Check each word.");
       }
     }
   }
@@ -1062,7 +1062,7 @@ export function createWallet({ ghost, store, ui, subtle, credentials, random, or
     // origin: the browser delivers it only if the opener is one of them.
     announce() {
       for (const origin of origins) opener.postMessage({ ready: true }, origin);
-      ui.status("Waiting for the Ghost app.");
+      ui.status("Waiting for the Specter app.");
     },
 
     // A message: answered only from a web app origin and from the opener,
