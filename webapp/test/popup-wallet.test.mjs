@@ -125,7 +125,7 @@ test("connect and sign through the pop-up: the account and a signature the modul
   );
   assert.equal(page.posts[1].data.params.chainId, "0x76aae9");
   assert.deepEqual(page.focuses, [0, 1], "the wallet's window is focused before each request");
-  assert.deepEqual(page.ui.titles, ["Ghost app is asking: approve below", null, "Ghost app is asking: approve below", null]);
+  assert.deepEqual(page.ui.titles, ["Specter app is asking: approve below", null, "Specter app is asking: approve below", null]);
 
   c.disconnect();
   assert.equal(page.popup.closed, true, "disconnect closes the wallet window");
