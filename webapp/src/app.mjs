@@ -6,7 +6,6 @@ import { formatGhost, parseAddress, parseGhost } from "./chain.mjs";
 import { DEFAULT_COMMIT_ENTRY, MAX_COMMIT_FEE, WALLET_APPROVAL, createFlow, normalKey, wrongWords } from "./flow.mjs";
 // header.mjs, which build.sh ships, holds header-store.mjs's code.
 import { createHeaderStore } from "./header.mjs";
-import { launchNotice } from "./launch-notice.mjs";
 import { INSTALL_LINES, INSTALL_SITE, probeLocalNode, systemOf } from "./local-node.mjs";
 import { browserProver } from "./prover.mjs";
 import { popupConnector } from "./popup-wallet.mjs";
@@ -1237,9 +1236,6 @@ for (const button of document.querySelectorAll("[data-close]")) button.addEventL
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closePanels();
 });
-
-// The launch notice under the header, from the one ticker constant.
-$("launch-notice").textContent = launchNotice();
 
 // The Run a node block: the install line for the visitor's system, as fixed
 // text with one Copy button, and the install site. Copying a public line

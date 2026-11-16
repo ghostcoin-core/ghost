@@ -415,7 +415,7 @@ test("the Done screen: the ghost icon, the amount summoned, the payout address a
 
 test("the error sentences are fixed in app.mjs", () => {
   for (const line of [NOT_A_KEY, NO_AMOUNT]) assert.ok(source.includes(`"${line}"`), line);
-  assert.ok(source.includes("`This key holds ${formatGhost(s.current.amount)} GHOST.`"));
+  assert.ok(source.includes("`This key holds ${formatGhost(s.current.amount)} SPECTER.`"));
   assert.ok(source.includes("isn't a Phantom Key word"));
   assert.doesNotMatch(fn("summonErrorText"), /return [^;]*(said|err\.message)/, "never the exception's text");
 });

@@ -1,6 +1,6 @@
 // The launch notice: its text without and with a ticker, the page's line
-// as the page serves it, and the module the page loads it from. No browser
-// and no module build are needed.
+// as the page serves it, and the module that sets it on the page. No
+// browser and no module build are needed.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -8,7 +8,6 @@ import { test } from "node:test";
 import { NASDAQ_TICKER, launchNotice } from "../src/launch-notice.mjs";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-const app = readFileSync(new URL("../src/app.mjs", import.meta.url), "utf8");
 const source = readFileSync(new URL("../src/launch-notice.mjs", import.meta.url), "utf8");
 
 const PLAIN = "Specter is expected to begin trading on Nasdaq on Thursday, November 19.";
@@ -34,12 +33,26 @@ test("the ticker is one string constant, the default of launchNotice", () => {
   assert.doesNotMatch(source, /\bfetch\b|XMLHttpRequest|import\(/, "no network request");
 });
 
-test("the page serves the plain line under the header, and the app sets it from the module", () => {
+test("the page serves the plain line under the header and loads the module that sets it", () => {
   const line = /<p id="launch-notice" class="launch-notice">([^<]*)<\/p>/.exec(html);
   assert.ok(line, "index.html has the launch notice as a plain paragraph");
   assert.equal(line[1], PLAIN);
   assert.ok(html.indexOf("</header>") < line.index && line.index < html.indexOf("<main>"), "between the header and main");
   assert.doesNotMatch(line[0], /\bstyle=/);
-  assert.match(app, /import \{ launchNotice \} from "\.\/launch-notice\.mjs";/);
-  assert.match(app, /\$\("launch-notice"\)\.textContent = launchNotice\(\);/);
+  assert.match(html, /<script type="module" src="src\/launch-notice\.mjs"><\/script>/);
+  assert.match(source, /document\.getElementById\("launch-notice"\)/);
+  assert.match(source, /line\.textContent = launchNotice\(\);/);
+});
+
+test("on a page, the module puts the notice in the line, with the ticker when one is set", async () => {
+  const line = { textContent: PLAIN };
+  const saved = globalThis.document;
+  globalThis.document = { getElementById: (id) => (id === "launch-notice" ? line : null) };
+  try {
+    await import(`../src/launch-notice.mjs?page=${Date.now()}`);
+  } finally {
+    if (saved === undefined) delete globalThis.document;
+    else globalThis.document = saved;
+  }
+  assert.equal(line.textContent, launchNotice(NASDAQ_TICKER));
 });

@@ -178,13 +178,13 @@ test("the settled height is 2 below the tip, at any height", () => {
   assert.equal(settledHeight(77), 75);
 });
 
-test("GHOST amounts and addresses", () => {
+test("SPECTER amounts and addresses", () => {
   assert.equal(parseGhost("1"), 10n ** 18n);
   assert.equal(parseGhost(" 0.25 "), 25n * 10n ** 16n);
   assert.equal(parseGhost("0.000000000000000001"), 1n);
-  assert.throws(() => parseGhost("1e3"), /amount in GHOST/);
-  assert.throws(() => parseGhost("-1"), /amount in GHOST/);
-  assert.throws(() => parseGhost("0.0000000000000000001"), /amount in GHOST/);
+  assert.throws(() => parseGhost("1e3"), /amount in SPECTER/);
+  assert.throws(() => parseGhost("-1"), /amount in SPECTER/);
+  assert.throws(() => parseGhost("0.0000000000000000001"), /amount in SPECTER/);
   assert.throws(() => parseGhost("80000000000"), /largest amount/);
   assert.equal(formatGhost(1_250_000_000_000_000_000n), "1.25");
   assert.equal(formatGhost(10n ** 18n), "1");
