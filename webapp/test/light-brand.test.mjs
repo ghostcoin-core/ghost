@@ -91,7 +91,7 @@ const FOIL = ["#FF7AD9", "#B58CFF", "#7FB8FF", "#8CFFE0", "#FFF3A0", "#FF9A8C", 
 
 // The foil gradient's stop colors, in order, and its id.
 function foil(svg) {
-  const g = /<linearGradient id="([^"]+)" x1="0" y1="0\.41" x2="1" y2="0\.59">([\s\S]*?)<\/linearGradient>/.exec(svg);
+  const g = /<linearGradient id="([^"]+)" x1="-0\.33" y1="0\.35" x2="1\.33" y2="0\.65">([\s\S]*?)<\/linearGradient>/.exec(svg);
   assert.ok(g, "a foil gradient");
   return { id: g[1], stops: [...g[2].matchAll(/stop-color="([^"]+)"/g)].map((m) => m[1].toUpperCase()) };
 }
@@ -227,44 +227,44 @@ test("one light theme only: no dark variant and no color-scheme media query", ()
   assert.doesNotMatch(html, /\bdark\b/i);
 });
 
-// The logo: the Specter mark (a dark card with a foil ring) and the
+// The logo: the Specter mark (the Ring: a black square tile with a foil ring) and the
 // "specter" wordmark, as the website draws them (its logo.svg and
 // favicon.svg).
 
-test("the header shows the full Specter logo inline: the card, the foil ring and the wordmark", () => {
+test("the header shows the full Specter logo inline: the tile, the foil ring and the wordmark", () => {
   const top = /<header class="top">[\s\S]*?<\/header>/.exec(html);
   assert.ok(top, "a top bar");
-  const logo = /<svg class="brand-logo" viewBox="0 0 122\.02 22\.39" role="img" aria-label="Specter" focusable="false">([\s\S]*?)<\/svg>/.exec(top[0]);
+  const logo = /<svg class="brand-logo" viewBox="0 0 118\.02 26" role="img" aria-label="Specter" focusable="false">([\s\S]*?)<\/svg>/.exec(top[0]);
   assert.ok(logo, "the brand is the logo as inline SVG named Specter");
   const ring = foil(logo[1]);
   assert.deepEqual(ring.stops, FOIL);
   assert.equal(html.split(`id="${ring.id}"`).length, 2, "the gradient id is used once in the page");
-  assert.match(logo[1], new RegExp(`<rect x="0" y="0" width="30" height="19" rx="5" fill="${CARD_INK}"/>`));
-  assert.match(logo[1], new RegExp(`<circle cx="21" cy="9\\.5" r="5\\.25" fill="none" stroke="url\\(#${ring.id}\\)" stroke-width="1\\.6"/>`));
-  assert.match(logo[1], new RegExp(`<path fill="${CARD_INK}" d="M45\\.96 17\\.93[^"]+Z"/>`), "the wordmark");
+  assert.match(logo[1], new RegExp(`<rect x="0" y="0" width="26" height="26" rx="5\\.89" fill="${CARD_INK}"/>`));
+  assert.match(logo[1], new RegExp(`<circle cx="13" cy="13" r="6\\.6" fill="none" stroke="url\\(#${ring.id}\\)" stroke-width="2\\.44"/>`));
+  assert.match(logo[1], new RegExp(`<path fill="${CARD_INK}" d="M41\\.96 21\\.43[^"]+Z"/>`), "the wordmark");
   const brand = rule(".brand-logo", base);
-  assert.equal(brand.height, "1.4rem");
-  assert.equal(brand.width, "7.63rem", "the logo's own ratio, 122.02 by 22.39");
+  assert.equal(brand.height, "1.6rem");
+  assert.equal(brand.width, "7.26rem", "the logo's own ratio, 118.02 by 26");
   // The old pixel-ghost mark and its full-logo switches are gone.
   assert.doesNotMatch(html, /icon-brand|logo-cells|#C9BCFF/i);
   assert.doesNotMatch(css, /icon-brand|--logo-cells|--logo-body|C9BCFF/i);
 });
 
-test("the small card of the wallet list is the Specter mark: a black card with a foil ring", () => {
+test("the small mark of the wallet list is the Specter Ring: a black square tile with a foil ring", () => {
   assert.match(html, /<span class="mini-card" aria-hidden="true"><\/span>/);
   const mini = rule(".mini-card", base);
   assert.equal(mini.background, "#131316");
-  assert.equal(mini["aspect-ratio"], "1.586");
+  assert.equal(mini["aspect-ratio"], "1");
   assert.match(rule(".mini-card::after", base).background, /^linear-gradient\(100deg/);
 });
 
-test("the favicon is the Specter mark: the dark card and the foil ring, linked and built", () => {
+test("the favicon is the Specter Ring: the black tile and the foil ring, linked and built", () => {
   assert.match(favicon, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 32 32">/);
   const ring = foil(favicon);
   assert.deepEqual(ring.stops, FOIL);
-  assert.match(favicon, new RegExp(`<rect x="0" y="5\\.9" width="32" height="20\\.2" rx="4\\.6" fill="${CARD_INK}"/>`));
-  assert.match(favicon, new RegExp(`<circle cx="22\\.4" cy="16" r="6\\.2" fill="none" stroke="url\\(#${ring.id}\\)" stroke-width="2\\.8"/>`));
-  assert.equal([...favicon.matchAll(/<(rect|circle|path)\b/g)].length, 2, "the card and the ring, nothing else");
+  assert.match(favicon, new RegExp(`<rect x="0" y="0" width="32" height="32" rx="7\\.25" fill="${CARD_INK}"/>`));
+  assert.match(favicon, new RegExp(`<circle cx="16" cy="16" r="8\\.12" fill="none" stroke="url\\(#${ring.id}\\)" stroke-width="3\\.6"/>`));
+  assert.equal([...favicon.matchAll(/<(rect|circle|path)\b/g)].length, 2, "the tile and the ring, nothing else");
   assert.match(html, /<link rel="icon" href="favicon\.svg" type="image\/svg\+xml">/);
   assert.match(build, /^files=\([^)]*\bfavicon\.svg\b[^)]*\)$/m);
 });
