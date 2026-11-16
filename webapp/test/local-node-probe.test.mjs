@@ -65,7 +65,7 @@ function assertProbeRequest(call) {
 
 // --- probeLocalNode ---
 
-test("a Ghost node, whose modules hold ghost, is found with one request of exactly the envelope", async () => {
+test("a Specter node, whose modules hold ghost, is found with one request of exactly the envelope", async () => {
   const { fetch, calls } = stubFetch(() => reply({ jsonrpc: "2.0", id: 1, result: GHOST_MODULES }));
   assert.equal(await probeLocalNode(fetch, ENDPOINT), true);
   assert.equal(calls.length, 1);
@@ -354,7 +354,7 @@ test("the Network panel holds the node in use line and the Run a node block, bot
   assert.equal(html.split("Run a node").length, 2);
 });
 
-test("a stubbed Ghost node on 127.0.0.1:8545 is used as the default endpoint with no setting written", async () => {
+test("a stubbed Specter node on 127.0.0.1:8545 is used as the default endpoint with no setting written", async () => {
   const { fetch, calls } = stubFetch(() => reply({ jsonrpc: "2.0", id: 1, result: GHOST_MODULES }));
   let page;
   const said = await watchConsole(async () => {
@@ -370,7 +370,7 @@ test("a stubbed Ghost node on 127.0.0.1:8545 is used as the default endpoint wit
   assert.deepEqual(settings, [], "no setting written");
   assert.deepEqual(publicLooks, [], "no public node asked");
   assert.equal($("node-in-use").hidden, false);
-  assert.equal($("node-name").textContent, "Your Ghost node");
+  assert.equal($("node-name").textContent, "Your Specter node");
   assert.equal($("public-node-note").hidden, true);
   assert.equal($("local-node-run").hidden, true);
   assert.equal($("error").textContent, "");

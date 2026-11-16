@@ -363,7 +363,7 @@ test("the Summon tab starts with the paste box and a greyed Paste a key button",
   assert.ok(box, "an amount box");
   assert.match(box[0], /<input id="summon-amount"[^>]*placeholder="0\.00"/);
   assert.match(box[0], /<use href="#icon-ghost">/);
-  assert.match(box[0], /GHOST\s*<\/span>/);
+  assert.match(box[0], /SPECTER\s*<\/span>/);
   assert.match(area, /<p class="balance-line">\s*In this key: <span id="summon-in-key">—<\/span>\s*<button id="summon-max" class="link"[^>]*>Max</);
   // One error line under the fields.
   assert.match(tag("summon-error"), /class="error-line"/);
@@ -386,7 +386,7 @@ test("the payout field is a plain address input under the amount; the only input
 
 test("the waiting screen: Summoning, a thin bar, three steps and keep this page open", () => {
   const screen = element("summon-waiting");
-  assert.match(screen, /<h2>Summoning <span id="summon-waiting-amount"><\/span> GHOST<\/h2>/);
+  assert.match(screen, /<h2>Summoning <span id="summon-waiting-amount"><\/span> SPECTER<\/h2>/);
   assert.match(element("summon-bar"), /class="bar steps"/);
   assert.deepEqual(
     ["summon-step-proof", "summon-step-send", "summon-step-confirm"].map((id) => words(element(id))),
@@ -403,11 +403,11 @@ test("the waiting screen: Summoning, a thin bar, three steps and keep this page 
 test("the Done screen: the ghost icon, the amount summoned, the payout address and Done", () => {
   const screen = element("summon-done");
   assert.match(screen, /<use href="#icon-ghost">/);
-  assert.ok(words(screen).includes("<value> GHOST summoned"), words(screen));
+  assert.ok(words(screen).includes("<value> SPECTER summoned"), words(screen));
   assert.ok(words(screen).includes("Sent to <value>."), words(screen));
   assert.doesNotMatch(screen, /your wallet/);
   assert.match(element("summon-done-button"), /class="primary[^"]*"[^>]*>Done</);
-  assert.ok(source.includes("GHOST is still in your key. The same key still works."));
+  assert.ok(source.includes("SPECTER is still in your key. The same key still works."));
   assert.ok(source.includes('"This key is now empty."'));
   // The reveal's block can be checked again from Done.
   assert.match(element("summon-recheck"), />Check the summon is still in the chain</);
@@ -442,7 +442,7 @@ test("paste a key, summon part of it to a fresh address, see the rest, then summ
   await paste(page, `  ${KEY.split(" ").slice(0, 12).join(" ")}\n${KEY.split(" ").slice(12).join(" ")} `);
   assert.equal(page.log.opens.length, 1);
   assert.equal(page.$("summon-amount-area").hidden, false);
-  assert.equal(page.$("summon-in-key").textContent, "2 GHOST");
+  assert.equal(page.$("summon-in-key").textContent, "2 SPECTER");
   assert.equal(page.$("summon-submit").textContent, "Summon");
   assert.equal(page.$("summon-submit").disabled, false);
   assert.equal(page.$("summon-error").textContent, "");
@@ -464,7 +464,7 @@ test("paste a key, summon part of it to a fresh address, see the rest, then summ
   assert.deepEqual(page.screens(), ["done"]);
   assert.equal(page.$("summon-done-amount").textContent, "0.5");
   assert.equal(page.$("summon-done-address").textContent, "0x7c…44d");
-  assert.equal(page.$("summon-done-rest").textContent, "1.4999 GHOST is still in your key. The same key still works.");
+  assert.equal(page.$("summon-done-rest").textContent, "1.4999 SPECTER is still in your key. The same key still works.");
 
   // Done clears the key and returns to an empty Summon tab.
   page.$("summon-done-button").fire("click");
@@ -480,7 +480,7 @@ test("paste a key, summon part of it to a fresh address, see the rest, then summ
   // fresh address, and the key is then empty.
   await paste(page, KEY);
   assert.equal(page.$("summon-payout").value, FRESH_2);
-  assert.equal(page.$("summon-in-key").textContent, "1.4999 GHOST");
+  assert.equal(page.$("summon-in-key").textContent, "1.4999 SPECTER");
   page.$("summon-max").fire("click");
   assert.equal(page.$("summon-amount").value, "1.4998");
   page.$("summon-form").fire("submit");
@@ -508,7 +508,7 @@ test("with no wallet connected the main button reads Connect wallet and opens th
   assert.equal(page.log.reveals.length, 0, "nothing is sent");
 });
 
-test("Connect wallet lists the Ghost wallet only; connected, the button shows the short address", async () => {
+test("Connect wallet lists the Specter wallet only; connected, the button shows the short address", async () => {
   // Not connected: the list, with the Ghost wallet as the one choice.
   const address = `0x3a${"0".repeat(34)}091c`;
   let made = 0;
@@ -517,7 +517,7 @@ test("Connect wallet lists the Ghost wallet only; connected, the button shows th
     popup: (...args) => {
       made++;
       assert.deepEqual(args, [], "the pop-up wallet opens on its own hosted origin");
-      return { id: "ghost-popup-wallet", name: "Ghost wallet", connect: async () => ({ address }) };
+      return { id: "ghost-popup-wallet", name: "Specter wallet", connect: async () => ({ address }) };
     },
   });
   assert.equal(page.$("wallet-button-text").textContent, "Connect wallet");
@@ -529,7 +529,7 @@ test("Connect wallet lists the Ghost wallet only; connected, the button shows th
   page.$("wallet-option-popup").fire("click");
   await settle();
   assert.equal(made, 1);
-  assert.deepEqual(page.log.connects, ["Ghost wallet"]);
+  assert.deepEqual(page.log.connects, ["Specter wallet"]);
   assert.equal(page.$("wallet-button-text").textContent, "0x3a…91c");
   assert.equal(page.$("wallet-title").textContent, "Wallet");
   assert.equal(page.$("wallet-connect").hidden, true);
@@ -549,7 +549,7 @@ test("Connect wallet lists the Ghost wallet only; connected, the button shows th
   // A wallet failing for another reason: a fixed plain line, nothing connected.
   const failing = startPage({
     wallet: false,
-    popup: () => ({ name: "Ghost wallet", connect: async () => Promise.reject(new Error("the wallet refused the connection: synthetic test failure")) }),
+    popup: () => ({ name: "Specter wallet", connect: async () => Promise.reject(new Error("the wallet refused the connection: synthetic test failure")) }),
   });
   failing.$("wallet-option-popup").fire("click");
   await settle();
@@ -557,15 +557,15 @@ test("Connect wallet lists the Ghost wallet only; connected, the button shows th
   assert.equal(failing.$("wallet-button-text").textContent, "Connect wallet");
 });
 
-test("Connect wallet offers the Ghost pop-up wallet; a blocked pop-up asks to open the page in the browser", async () => {
+test("Connect wallet offers the Specter pop-up wallet; a blocked pop-up asks to open the page in the browser", async () => {
   const address = `0x5b${"0".repeat(34)}0a2e`;
   const page = startPage({
     wallet: false,
-    popup: () => ({ id: "ghost-popup-wallet", name: "Ghost wallet", connect: async () => ({ address }) }),
+    popup: () => ({ id: "ghost-popup-wallet", name: "Specter wallet", connect: async () => ({ address }) }),
   });
   page.$("wallet-option-popup").fire("click");
   await settle();
-  assert.deepEqual(page.log.connects, ["Ghost wallet"]);
+  assert.deepEqual(page.log.connects, ["Specter wallet"]);
   assert.equal(page.$("wallet-button-text").textContent, "0x5b…a2e");
   assert.equal(page.$("wallet-address").textContent, address);
   assert.equal(page.$("wallet-error").textContent, "");
@@ -574,7 +574,7 @@ test("Connect wallet offers the Ghost pop-up wallet; a blocked pop-up asks to op
   const blocked = startPage({
     wallet: false,
     popup: () => ({
-      name: "Ghost wallet",
+      name: "Specter wallet",
       connect: async () => Promise.reject(Object.assign(new Error("the browser blocked the wallet window"), { name: "PopupBlocked" })),
     }),
   });
@@ -586,7 +586,7 @@ test("Connect wallet offers the Ghost pop-up wallet; a blocked pop-up asks to op
   // Closed or turned down in the pop-up.
   const rejecting = startPage({
     wallet: false,
-    popup: () => ({ name: "Ghost wallet", connect: async () => Promise.reject(new Error("the connection was rejected in your wallet; nothing was sent")) }),
+    popup: () => ({ name: "Specter wallet", connect: async () => Promise.reject(new Error("the connection was rejected in your wallet; nothing was sent")) }),
   });
   rejecting.$("wallet-option-popup").fire("click");
   await settle();
@@ -641,11 +641,11 @@ test("an amount that does not parse or is more than the key holds is flagged, no
     assert.equal(page.$("summon-error").textContent, NO_AMOUNT, JSON.stringify(amount));
   }
   await summon(page, "3");
-  assert.equal(page.$("summon-error").textContent, "This key holds 2 GHOST.");
+  assert.equal(page.$("summon-error").textContent, "This key holds 2 SPECTER.");
   await summon(page, "2");
   assert.equal(
     page.$("summon-error").textContent,
-    "This key holds 2 GHOST. After the network fee, at most 1.9999 GHOST can be summoned.",
+    "This key holds 2 SPECTER. After the network fee, at most 1.9999 SPECTER can be summoned.",
   );
   assert.equal(page.log.reveals.length, 0, "nothing is sent");
   assert.deepEqual(page.screens(), ["form"]);

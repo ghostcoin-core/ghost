@@ -290,7 +290,7 @@ test("Summon opens the confirm screen naming the amount and the payout address, 
   const page = startPage();
   await pressSummon(page, "0.5");
   assert.deepEqual(page.screens(), ["confirm"]);
-  assert.equal(page.$("summon-confirm-text").textContent, "Summon 0.5 GHOST to 0x7c…44d");
+  assert.equal(page.$("summon-confirm-text").textContent, "Summon 0.5 SPECTER to 0x7c…44d");
   assert.equal(page.$("summon-confirm").title, FRESH, "the full address as the title");
   assert.equal(page.$("summon-confirm-address").textContent, FRESH);
   assert.equal(page.$("summon-confirm-warning").textContent, "", "a fresh address: no warning");
@@ -301,7 +301,7 @@ test("Summon opens the confirm screen naming the amount and the payout address, 
   // The amount as typed.
   const typed = startPage();
   await pressSummon(typed, "1.50");
-  assert.equal(typed.$("summon-confirm-text").textContent, "Summon 1.50 GHOST to 0x7c…44d");
+  assert.equal(typed.$("summon-confirm-text").textContent, "Summon 1.50 SPECTER to 0x7c…44d");
   assert.equal(typed.log.reveals.length, 0);
 });
 
@@ -309,7 +309,7 @@ test("a wallet with no fresh address: the confirm screen names the wallet's own 
   const page = startPage({ fresh: null });
   await pressSummon(page, "0.5");
   assert.deepEqual(page.screens(), ["confirm"]);
-  assert.equal(page.$("summon-confirm-text").textContent, "Summon 0.5 GHOST to 0x3a…91c");
+  assert.equal(page.$("summon-confirm-text").textContent, "Summon 0.5 SPECTER to 0x3a…91c");
   assert.match(page.$("summon-confirm-warning").textContent, /^This is your connected wallet's address, the one a Vanish is sent from\./);
   // The warning is advice: Confirm Summon still sends, to that address.
   page.$("summon-confirm-button").fire("click");

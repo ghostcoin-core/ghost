@@ -100,7 +100,7 @@ test("connect and sign through the pop-up: the account and a signature the modul
   const page = fakePage();
   const c = connector(page);
   assert.equal(c.id, POPUP_WALLET.id);
-  assert.equal(c.name, "Ghost wallet");
+  assert.equal(c.name, "Specter wallet");
   const { address } = await c.connect();
   assert.match(address, /^0x[0-9a-f]{40}$/);
   assert.deepEqual(page.opened, [{ url: `${WALLET}/`, target: "_blank", features: "popup,width=420,height=720" }]);

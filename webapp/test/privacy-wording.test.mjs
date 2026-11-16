@@ -76,5 +76,5 @@ test("Done is still shown when the block holds the reveal", () => {
     ...unclaimed,
     lastReveal: { stage: "done", out: 3n, recipient: "0xabc", block: 41 },
   });
-  assert.match(text, /Done: revealed 3 GHOST to 0xabc in block 41\./);
+  assert.match(text, /Done: revealed 3 SPECTER to 0xabc in block 41\./);
 });

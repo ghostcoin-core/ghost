@@ -20,7 +20,7 @@ const GHOST = 10n ** 18n;
 const REJECTED = "You rejected it in your wallet. Nothing was sent.";
 const SIGN_FAILED = "Your wallet could not sign the Vanish. Nothing was sent.";
 const RAW = "synthetic wallet failure text";
-const APPROVE_LINE = "Approve the Vanish in the Ghost wallet window. Can't see it? Show wallet.";
+const APPROVE_LINE = "Approve the Vanish in the Specter wallet window. Can't see it? Show wallet.";
 
 const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const source = readFileSync(new URL("../src/app.mjs", import.meta.url), "utf8");

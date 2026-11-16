@@ -314,7 +314,7 @@ test("Save your Phantom Key: the warning, the 24-word grid, Copy and I saved it"
   assert.match(screen, /<h2>Save your Phantom Key<\/h2>/);
   assert.ok(
     words(screen).includes(
-      "These 24 words are the only way to summon your <amount> GHOST. Anyone with them can take it. If you lose them, no one can get it back.",
+      "These 24 words are the only way to summon your <amount> SPECTER. Anyone with them can take it. If you lose them, no one can get it back.",
     ),
     words(screen),
   );
@@ -334,14 +334,14 @@ test("Check your key: three typed words, Show key again and the Vanish button", 
   assert.ok(words(screen).includes("Type these three words from your saved key."));
   assert.match(element("vanish-back"), />Show key again</);
   assert.match(element("vanish-send"), /type="submit"/);
-  assert.equal(words(element("vanish-send")), "Vanish <amount> GHOST");
+  assert.equal(words(element("vanish-send")), "Vanish <amount> SPECTER");
   assert.ok(source.includes(`"${WRONG}"`), "app.mjs has the wrong-answer sentence");
 });
 
 test("Done: the ghost icon, the amount vanished, how to use the key and Done", () => {
   const screen = element("vanish-done");
   assert.match(screen, /<use href="#icon-ghost">/);
-  assert.ok(words(screen).includes("<amount> GHOST vanished"));
+  assert.ok(words(screen).includes("<amount> SPECTER vanished"));
   assert.ok(words(screen).includes("Your Phantom Key now holds it. To use it, open Summon and paste your key."));
   assert.match(element("vanish-done-button"), /class="primary[^"]*"[^>]*>Done</);
   assert.match(element("vanish-waiting"), /class="bar"/);
@@ -506,7 +506,7 @@ test("an error is one fixed plain line in the card, never the exception's text",
   page.$("vanish-form").fire("submit");
   await settle();
   await settle();
-  assert.equal(page.$("vanish-error").textContent, "Enter an amount of GHOST, for example 1.5.");
+  assert.equal(page.$("vanish-error").textContent, "Enter an amount of SPECTER, for example 1.5.");
 
   // A refusal from the network after the check: back to the check, one
   // plain line, the node's own text nowhere on the page.

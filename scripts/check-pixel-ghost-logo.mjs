@@ -246,7 +246,7 @@ export function check() {
   }
   need(`${KIT}/social/ghost-x-profile.png`);
 
-  for (const path of [`${KIT}/favicon/favicon.svg`, "get/favicon.svg", "webapp/favicon.svg"]) {
+  for (const path of [`${KIT}/favicon/favicon.svg`, "get/favicon.svg"]) {
     if (need(path)) problems.push(...smallProblems(read(path), path));
   }
   for (const size of [16, 32]) {

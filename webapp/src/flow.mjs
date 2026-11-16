@@ -1938,7 +1938,7 @@ export function createFlow({
     const paid = (kind === "claim" ? 0n : out) + plan.fee;
     if (paid > current.amount) {
       throw new Error(
-        `the coin holds ${formatGhost(current.amount)} GHOST; with the fee of ${formatGhost(plan.fee)} GHOST at most ${formatGhost(current.amount > plan.fee ? current.amount - plan.fee : 0n)} can go out`,
+        `the coin holds ${formatGhost(current.amount)} SPECTER; with the fee of ${formatGhost(plan.fee)} SPECTER at most ${formatGhost(current.amount > plan.fee ? current.amount - plan.fee : 0n)} can go out`,
       );
     }
     if (treeDepth !== TREE_DEPTH && (await prover.request("testDepthProver")).depth !== treeDepth) {
@@ -2219,13 +2219,13 @@ export function createFlow({
     }
     if (gasLimit * maxFee > maxCommitFee) {
       throw new Error(
-        `the commit's gas could cost up to ${formatGhost(gasLimit * maxFee)} GHOST at the endpoint's fees, more than the ${formatGhost(maxCommitFee)} GHOST the app signs`,
+        `the commit's gas could cost up to ${formatGhost(gasLimit * maxFee)} SPECTER at the endpoint's fees, more than the ${formatGhost(maxCommitFee)} SPECTER the app signs`,
       );
     }
     const balance = await readBalance();
     if (balance === null || connector !== signer) throw new Error("connect a wallet first");
     if (balance < value + gasLimit * maxFee) {
-      throw new Error(`the wallet holds ${formatGhost(balance)} GHOST, less than the amount and the most the gas can cost`);
+      throw new Error(`the wallet holds ${formatGhost(balance)} SPECTER, less than the amount and the most the gas can cost`);
     }
     asking = signer;
     state.walletAsking = true;
