@@ -1,8 +1,9 @@
 // The launch notice under the header: one fixed line, no network request.
 // The Nasdaq ticker is set here, in this one constant, once it is known;
-// while it is empty the line leaves the ticker out. index.html loads this
-// module on its own and serves the line without a ticker until it runs.
-export const NASDAQ_TICKER = "";
+// while it is empty the line leaves the ticker out. index.html serves the
+// same line (test/launch-notice.test.mjs keeps the two equal) and loads
+// this module on its own.
+export const NASDAQ_TICKER = "SPCT";
 
 // The notice's text, with `ticker` when one is given.
 export function launchNotice(ticker = NASDAQ_TICKER) {

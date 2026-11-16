@@ -33,10 +33,18 @@ test("the ticker is one string constant, the default of launchNotice", () => {
   assert.doesNotMatch(source, /\bfetch\b|XMLHttpRequest|import\(/, "no network request");
 });
 
-test("the page serves the plain line under the header and loads the module that sets it", () => {
+test("the ticker is SPCT", () => {
+  assert.equal(NASDAQ_TICKER, "SPCT");
+  assert.equal(
+    launchNotice(),
+    "Specter is expected to begin trading on Nasdaq under the ticker SPCT on Thursday, November 19.",
+  );
+});
+
+test("the page serves the module's line under the header and loads the module that sets it", () => {
   const line = /<p id="launch-notice" class="launch-notice">([^<]*)<\/p>/.exec(html);
   assert.ok(line, "index.html has the launch notice as a plain paragraph");
-  assert.equal(line[1], PLAIN);
+  assert.equal(line[1], launchNotice(NASDAQ_TICKER), "the served line matches the ticker constant");
   assert.ok(html.indexOf("</header>") < line.index && line.index < html.indexOf("<main>"), "between the header and main");
   assert.doesNotMatch(line[0], /\bstyle=/);
   assert.match(html, /<script type="module" src="src\/launch-notice\.mjs"><\/script>/);
@@ -45,7 +53,7 @@ test("the page serves the plain line under the header and loads the module that 
 });
 
 test("on a page, the module puts the notice in the line, with the ticker when one is set", async () => {
-  const line = { textContent: PLAIN };
+  const line = { textContent: "" };
   const saved = globalThis.document;
   globalThis.document = { getElementById: (id) => (id === "launch-notice" ? line : null) };
   try {
