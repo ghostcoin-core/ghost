@@ -41,7 +41,7 @@ const normalKey = (text) => String(text).trim().split(/\s+/).join(" ");
 
 const SAME = /^This is your connected wallet's address, the one a Vanish is sent from\. .*links this Summon to its Vanish\./;
 const SENT_VANISH = /^This address sent a Vanish from this page\. .*links this Summon to its Vanish\./;
-const FEW = /^A full Summon shows 2 GHOST with the network fee, and only (\d+) (Vanish|Vanishes) the app checked are of that amount, so the amount alone can link this Summon to its Vanish\. A partial Summon, less than Max, avoids that\.$/;
+const FEW = /^A full Summon shows 2 SPECTER with the network fee, and only (\d+) (Vanish|Vanishes) the app checked are of that amount, so the amount alone can link this Summon to its Vanish\. A partial Summon, less than Max, avoids that\.$/;
 
 // --- A stand-in page: one element for each id of index.html ---
 
@@ -230,7 +230,7 @@ function startPage({ wallet = true, fresh = () => FRESH, matches = 50, vanishedF
     "http://127.0.0.1:8545",
     () => ({}),
     async () => {},
-    () => ({ id: "ghost-popup-wallet", name: "Ghost wallet", connect: async () => ({ address: WALLET }) }),
+    () => ({ id: "ghost-popup-wallet", name: "Specter wallet", connect: async () => ({ address: WALLET }) }),
     // No header store, and a look for a local node that finds none without
     // reaching the network.
     () => null,
@@ -338,7 +338,7 @@ test("a typed payout is kept, warned about when it is the wallet's or a vanishin
   type(page, "summon-payout", `0x${"0".repeat(40)}`);
   page.$("summon-form").fire("submit");
   await settle();
-  assert.equal(page.$("summon-error").textContent, "The zero address can't receive a Summon: the GHOST would be lost.");
+  assert.equal(page.$("summon-error").textContent, "The zero address can't receive a Summon: the SPECTER would be lost.");
   assert.equal(page.log.reveals.length, 0);
 
   type(page, "summon-payout", VANISHED);

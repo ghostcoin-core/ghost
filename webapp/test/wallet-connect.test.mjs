@@ -64,7 +64,7 @@ const FIELDS = {
 
 // --- The wallet module ---
 
-test("the module offers no wallet but the Ghost pop-up wallet: no MetaMask connector", () => {
+test("the module offers no wallet but the Specter pop-up wallet: no MetaMask connector", () => {
   assert.deepEqual(Object.keys(walletConnect).sort(), [
     "USER_REJECTED",
     "WalletRejected",

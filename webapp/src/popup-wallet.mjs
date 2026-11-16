@@ -13,7 +13,7 @@ import { USER_REJECTED, WalletRejected, snapTransaction } from "./wallet-connect
 
 // The wallet's origin, where it is hosted.
 export const POPUP_WALLET_ORIGIN = "https://ghost-wallet-nine.vercel.app";
-export const POPUP_WALLET = { id: "ghost-popup-wallet", name: "Ghost wallet" };
+export const POPUP_WALLET = { id: "ghost-popup-wallet", name: "Specter wallet" };
 // The JSON-RPC code the wallet answers a request it does not know with.
 export const METHOD_NOT_FOUND = -32601;
 
@@ -113,7 +113,7 @@ export function popupConnector({ win = globalThis, origin = POPUP_WALLET_ORIGIN,
     async connect() {
       const account = await ask("the connection", "ghost_getAccount");
       if (!account || typeof account.address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(account.address)) {
-        throw new Error("the wallet answered without a Ghost account address");
+        throw new Error("the wallet answered without a Specter account address");
       }
       address = account.address.toLowerCase();
       return { address };

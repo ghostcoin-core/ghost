@@ -129,7 +129,7 @@ export function settledHeight(tip) {
 export function parseGhost(text) {
   const t = String(text).trim();
   const m = /^(\d+)(?:\.(\d{1,18}))?$/.exec(t);
-  if (!m) throw new Error("enter an amount in GHOST, for example 1.5");
+  if (!m) throw new Error("enter an amount in SPECTER, for example 1.5");
   const wei = BigInt(m[1]) * ONE + BigInt((m[2] || "").padEnd(DECIMALS, "0"));
   if (wei > V_MAX) throw new Error("the amount is above the largest amount a coin can hold");
   return wei;

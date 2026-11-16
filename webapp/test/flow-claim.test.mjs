@@ -207,7 +207,7 @@ test("a commit the node takes but answers with an error is shown Sent, and one i
     node.setBaseFee(10n ** 12n);
     node.mine();
     const pricey = await flow.vanishStart("1");
-    await assert.rejects(flow.vanishCheck(answersFor(pricey, flow.vanishSaved())), /more than the 0\.01 GHOST the app signs/);
+    await assert.rejects(flow.vanishCheck(answersFor(pricey, flow.vanishSaved())), /more than the 0\.01 SPECTER the app signs/);
     assert.equal(node.accountTxs.length, 2);
     // A balance that cannot pay: nothing is signed or sent.
     node.setBaseFee(10n ** 9n);

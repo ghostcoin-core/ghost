@@ -18,7 +18,7 @@ import { startFakeNode } from "./support/fake-node.mjs";
 
 const WALLET = "https://wallet.example";
 const ADDRESS = `0x${"ab".repeat(20)}`;
-const APPROVE_LINE = "Approve the Vanish in the Ghost wallet window. Can't see it? Show wallet.";
+const APPROVE_LINE = "Approve the Vanish in the Specter wallet window. Can't see it? Show wallet.";
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 const KEY = Array.from({ length: 24 }, (_, i) => `word${String.fromCharCode(97 + i)}`).join(" ");
 
@@ -483,7 +483,7 @@ test("on the page: Show wallet shows while the wallet asks to connect, and a cli
   assert.equal(page.$("show-wallet").hidden, true, "hidden once the wallet answered");
 });
 
-test("on the page: the Vanish waiting line names the Ghost wallet window and Show wallet is under it", async () => {
+test("on the page: the Vanish waiting line names the Specter wallet window and Show wallet is under it", async () => {
   const page = startPage();
   await settle();
   page.control.toCheck();

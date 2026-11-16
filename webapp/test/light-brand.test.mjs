@@ -2,13 +2,13 @@
 // vercel/config.json as text: the light palette as CSS variables and the
 // rules that use them, WCAG AA (4.5:1) for every text color on the
 // background it sits on, one light theme with no dark variant, the
-// pixel-ghost logo's exact geometry in the page and its small cut as the favicon, and motion
-// only inside `prefers-reduced-motion: no-preference`. No browser is needed.
+// Specter logo's exact geometry in the header, its mark as the small icon
+// and the favicon, and motion only inside
+// `prefers-reduced-motion: no-preference`. No browser is needed.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { BODY_FILL, CELLS, glyphProblems, showsGlyph, smallProblems } from "../../scripts/check-pixel-ghost-logo.mjs";
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 const css = read("../style.css").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -243,38 +243,64 @@ test("one light theme only: no dark variant and no color-scheme media query", ()
   assert.doesNotMatch(html, /\bdark\b/i);
 });
 
-// The logo: the pixel ghost's geometry is the brand kit's, checked with the
-// helpers of scripts/check-pixel-ghost-logo.mjs.
+// The logo: the Specter mark (a dark card with a foil ring) and the
+// "specter" wordmark, as the website draws them (its logo.svg and
+// favicon.svg).
 
-test("the page's logo symbol is the pixel ghost: 19 outlined cells on the lavender body", () => {
+const CARD_INK = "#101013";
+const FOIL = ["#FF7AD9", "#B58CFF", "#7FB8FF", "#8CFFE0", "#FFF3A0", "#FF9A8C", "#FF7AD9"];
+
+// The foil gradient's stop colors, in order, and its id.
+function foil(svg) {
+  const g = /<linearGradient id="([^"]+)" x1="0" y1="0\.41" x2="1" y2="0\.59">([\s\S]*?)<\/linearGradient>/.exec(svg);
+  assert.ok(g, "a foil gradient");
+  return { id: g[1], stops: [...g[2].matchAll(/stop-color="([^"]+)"/g)].map((m) => m[1].toUpperCase()) };
+}
+
+test("the header shows the full Specter logo inline: the card, the foil ring and the wordmark", () => {
+  const top = /<header class="top">[\s\S]*?<\/header>/.exec(html);
+  assert.ok(top, "a top bar");
+  const logo = /<svg class="brand-logo" viewBox="0 0 122\.02 22\.39" role="img" aria-label="Specter" focusable="false">([\s\S]*?)<\/svg>/.exec(top[0]);
+  assert.ok(logo, "the brand is the logo as inline SVG named Specter");
+  const ring = foil(logo[1]);
+  assert.deepEqual(ring.stops, FOIL);
+  assert.equal(html.split(`id="${ring.id}"`).length, 2, "the gradient id is used once in the page");
+  assert.match(logo[1], new RegExp(`<rect x="0" y="0" width="30" height="19" rx="5" fill="${CARD_INK}"/>`));
+  assert.match(logo[1], new RegExp(`<circle cx="21" cy="9\\.5" r="5\\.25" fill="none" stroke="url\\(#${ring.id}\\)" stroke-width="1\\.6"/>`));
+  assert.match(logo[1], new RegExp(`<path fill="${CARD_INK}" d="M45\\.96 17\\.93[^"]+Z"/>`), "the wordmark");
+  const brand = rule(".brand-logo");
+  assert.equal(brand.height, "1.4rem");
+  assert.equal(brand.width, "7.63rem", "the logo's own ratio, 122.02 by 22.39");
+  // The old pixel-ghost mark and its full-logo switches are gone.
+  assert.doesNotMatch(html, /icon-brand|logo-cells|#C9BCFF/i);
+  assert.doesNotMatch(css, /icon-brand|--logo-cells|--logo-body|C9BCFF/i);
+});
+
+test("the small icon symbol is the Specter mark in one color, its ring a hole", () => {
   const symbol = /<symbol id="icon-ghost" viewBox="([^"]+)">([\s\S]*?)<\/symbol>/.exec(html);
   assert.ok(symbol, "#icon-ghost is a symbol with a viewBox");
-  assert.ok(showsGlyph(symbol[1].split(/\s+/).map(Number)), "the viewBox shows the body's 3-unit overflow");
-  assert.deepEqual(glyphProblems(symbol[2], "#icon-ghost"), []);
-  assert.equal([...symbol[2].matchAll(/<rect\b/g)].length, 2 * CELLS.length);
-  // The cells are grouped so small icons can hide them.
-  const cells = /<g class="logo-cells">([\s\S]*?)<\/g>/.exec(symbol[2]);
-  assert.ok(cells, "the cells sit in .logo-cells");
-  assert.equal([...cells[1].matchAll(/<rect\b/g)].length, 2 * CELLS.length);
-  assert.match(symbol[2], /<path class="logo-body" fill="#C9BCFF" fill-rule="evenodd" d="[^"]+"\/>/);
+  assert.equal(symbol[1], "0 0 32 32");
+  const paths = [...symbol[2].matchAll(/<path\b[^>]*>/g)].map((m) => m[0]);
+  assert.equal(paths.length, 1);
+  assert.doesNotMatch(symbol[2], /<(rect|circle|g)\b/);
+  assert.match(paths[0], /^<path class="logo-body" fill-rule="evenodd" d="[^"]+"\/>$/);
+  const d = /d="([^"]+)"/.exec(paths[0])[1];
+  // The card of the favicon (0, 5.9, 32 by 20.2, radius 4.6), then the
+  // ring's outer and inner edges around (22.4, 16): radius 6.2 with its
+  // 2.8 stroke, so 7.6 and 4.8.
+  assert.match(d, /^M4\.6 5\.9H27\.4A4\.6 4\.6 0 0 1 32 10\.5V21\.5A4\.6 4\.6 0 0 1 27\.4 26\.1H4\.6A4\.6 4\.6 0 0 1 0 21\.5V10\.5A4\.6 4\.6 0 0 1 4\.6 5\.9Z/);
+  assert.match(d, / M30 16A7\.6 7\.6 0 1 1 14\.8 16A7\.6 7\.6 0 1 1 30 16Z/);
+  assert.match(d, / M27\.2 16A4\.8 4\.8 0 1 1 17\.6 16A4\.8 4\.8 0 1 1 27\.2 16Z$/);
+  assert.equal(rule(".logo-body").fill, "currentColor");
 });
 
-test("the header mark shows the full logo; small icons the body alone in one color", () => {
-  assert.equal(rule(".logo-body").fill, "var(--logo-body, currentColor)");
-  assert.equal(rule(".logo-cells").display, "var(--logo-cells, none)");
-  const brand = rule(".icon-brand");
-  assert.equal(upper(brand["--logo-body"]), BODY_FILL);
-  assert.equal(brand["--logo-cells"], "inline");
-  // Only the header mark turns the cells on.
-  assert.equal(css.match(/--logo-cells:/g).length, 1);
-  assert.equal(css.match(/--logo-body:/g).length, 1);
-  assert.match(html, /<svg class="icon icon-brand"[^>]*><use href="#icon-ghost"><\/use><\/svg>/);
-});
-
-test("the favicon is the logo's small cut on a transparent background, linked and built", () => {
-  assert.match(favicon, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 16 16">/);
-  assert.doesNotMatch(favicon, /<rect\b/, "no background square and no cells");
-  assert.deepEqual(smallProblems(favicon, "favicon.svg"), []);
+test("the favicon is the Specter mark: the dark card and the foil ring, linked and built", () => {
+  assert.match(favicon, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 32 32">/);
+  const ring = foil(favicon);
+  assert.deepEqual(ring.stops, FOIL);
+  assert.match(favicon, new RegExp(`<rect x="0" y="5\\.9" width="32" height="20\\.2" rx="4\\.6" fill="${CARD_INK}"/>`));
+  assert.match(favicon, new RegExp(`<circle cx="22\\.4" cy="16" r="6\\.2" fill="none" stroke="url\\(#${ring.id}\\)" stroke-width="2\\.8"/>`));
+  assert.equal([...favicon.matchAll(/<(rect|circle|path)\b/g)].length, 2, "the card and the ring, nothing else");
   assert.match(html, /<link rel="icon" href="favicon\.svg" type="image\/svg\+xml">/);
   assert.match(build, /^files=\([^)]*\bfavicon\.svg\b[^)]*\)$/m);
 });

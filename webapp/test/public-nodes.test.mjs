@@ -521,12 +521,12 @@ async function connectWallet(page) {
   await until(() => page.$("wallet-balance").textContent !== "?" || page.$("wallet-error").textContent !== "");
 }
 
-test("(a) a Ghost node on this computer is used: Your Ghost node, and no public node is asked", async () => {
+test("(a) a Specter node on this computer is used: Your Specter node, and no public node is asked", async () => {
   const net = network({ [LOCAL]: node({ ghost: true, balance: 2n * GHOST }), [SPARK]: node(), [VM]: node() });
   const page = startPage(net.fetch);
   await until(looked(page));
   assert.equal(page.$("node-in-use").hidden, false);
-  assert.equal(page.$("node-name").textContent, "Your Ghost node");
+  assert.equal(page.$("node-name").textContent, "Your Specter node");
   assert.equal(page.$("public-node-note").hidden, true);
   assert.equal(page.$("local-node-run").hidden, true);
   assert.equal(page.flow().state.endpoint, LOCAL);
@@ -535,7 +535,7 @@ test("(a) a Ghost node on this computer is used: Your Ghost node, and no public 
   assert.equal(net.to(SPARK).length + net.to(VM).length, 0);
 });
 
-test("(b) no Ghost node on this computer: Spark is used, Public test node, and the balance shows", async () => {
+test("(b) no Specter node on this computer: Spark is used, Public test node, and the balance shows", async () => {
   const net = network({ [SPARK]: node({ balance: parseGhost("12.5") }), [VM]: node() });
   const page = startPage(net.fetch);
   await until(looked(page));

@@ -103,8 +103,8 @@ test("the Vanish panel holds the amount box, the balance line and the main butto
   const box = /<label class="amount-box">[\s\S]*?<\/label>/.exec(panel);
   assert.ok(box, "an amount box");
   assert.ok(box[0].includes(amount), "the input is inside the box");
-  assert.match(box[0], /<use href="#icon-ghost">/, "the ghost icon is inside the box");
-  assert.match(box[0], /GHOST\s*<\/span>/);
+  assert.match(box[0], /<use href="#icon-ghost">/, "the token icon is inside the box");
+  assert.match(box[0], /SPECTER\s*<\/span>/);
   assert.match(panel, /Balance: <span id="vanish-balance">—<\/span>/);
   assert.ok(panel.indexOf('id="vanish-balance"') < panel.indexOf('id="vanish-max"'));
   assert.match(element("vanish-max"), />Max</);
@@ -152,14 +152,14 @@ test("the Connect wallet button top right opens a dialog listing the quantum-saf
   assert.match(tag("wallet-panel"), /role="dialog"/);
   const panel = element("wallet-panel");
   assert.match(element("wallet-title"), />Connect a wallet</);
-  // One wallet listed, as a button in a list: the Ghost pop-up wallet.
+  // One wallet listed, as a button in a list: the Specter pop-up wallet.
   const list = element("wallet-connect");
   const options = [...list.matchAll(/<button\b[^>]*class="wallet-option"[^>]*>/g)];
   assert.deepEqual(
     options.map((m) => /id="([^"]+)"/.exec(m[0])[1]),
     ["wallet-option-popup"],
   );
-  assert.match(element("wallet-option-popup"), /<span id="wallet-option-popup-name"[^>]*>Ghost wallet<\/span>/);
+  assert.match(element("wallet-option-popup"), /<span id="wallet-option-popup-name"[^>]*>Specter wallet<\/span>/);
   assert.match(element("wallet-option-popup"), /its own window/);
   assert.doesNotMatch(html, /metamask|snap/i, "no MetaMask option is left on the page");
   assert.match(list, /<ul class="wallet-list"/);
@@ -175,7 +175,9 @@ test("the Connect wallet button top right opens a dialog listing the quantum-saf
   // The brand top left, the wallet button after it.
   const top = /<header class="top">[\s\S]*?<\/header>/.exec(html);
   assert.ok(top, "a top bar");
-  assert.ok(top[0].indexOf("Ghost</span>") < top[0].indexOf('id="wallet-button"'));
+  const brand = top[0].indexOf('<svg class="brand-logo"');
+  assert.ok(brand > 0 && brand < top[0].indexOf('id="wallet-button"'));
+  assert.match(top[0], /<svg class="brand-logo"[^>]*role="img" aria-label="Specter"/);
   assert.ok(top[0].includes('id="wallet-panel"'));
   assert.match(css, /\.wallet-option\s*\{/);
 });

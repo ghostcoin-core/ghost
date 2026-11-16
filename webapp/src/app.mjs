@@ -80,7 +80,7 @@ class VanishTooSmall extends Error {
   }
 }
 
-// `wei` rounded up to 4 decimals of GHOST, as text.
+// `wei` rounded up to 4 decimals of SPECTER, as text.
 function ghostUp(wei) {
   const unit = 10n ** 14n;
   return formatGhost(((wei + unit - 1n) / unit) * unit);
@@ -90,10 +90,10 @@ function ghostUp(wei) {
 // chosen by what failed, never the exception's own text.
 function vanishErrorText(err, step) {
   if (err instanceof VanishTooSmall) {
-    return `Vanish at least ${ghostUp(err.min)} GHOST: a smaller coin could not pay the Summon fee later.`;
+    return `Vanish at least ${ghostUp(err.min)} SPECTER: a smaller coin could not pay the Summon fee later.`;
   }
   const said = String((err && err.message) || "");
-  if (/^enter an amount|largest amount a coin can hold/.test(said)) return "Enter an amount of GHOST, for example 1.5.";
+  if (/^enter an amount|largest amount a coin can hold/.test(said)) return "Enter an amount of SPECTER, for example 1.5.";
   if (/less than the amount/.test(said)) return "Your balance is too low for this amount and the network fee.";
   if (/the app signs/.test(said)) return "The network's fee is higher than the app pays right now. Try again later.";
   if (/^connect a wallet/.test(said)) return "Connect your wallet first.";
@@ -168,7 +168,7 @@ let payoutTyped = false;
 const FEW_SAME_AMOUNT = 10;
 
 const NO_PAYOUT = "Enter the address to pay, 0x and 40 hex digits.";
-const ZERO_PAYOUT = "The zero address can't receive a Summon: the GHOST would be lost.";
+const ZERO_PAYOUT = "The zero address can't receive a Summon: the SPECTER would be lost.";
 const SAME_ADDRESS =
   "This is your connected wallet's address, the one a Vanish is sent from. The chain shows that address on both sides, which links this Summon to its Vanish. A new address from your wallet avoids that.";
 const VANISHED_ADDRESS =
@@ -183,12 +183,12 @@ const WALLET_CHANGED = "Your wallet changed before you confirmed. Nothing was se
 const SUMMON_STEPS = ["summon-step-proof", "summon-step-send", "summon-step-confirm"];
 const STEP_NAMES = ["Making your proof", "Sending to the network", "Confirming"];
 
-// "This key holds <value> GHOST.", and, when the amount fits the key but not
+// "This key holds <value> SPECTER.", and, when the amount fits the key but not
 // beside the network fee, the most that can go out.
 function holdsText(s, out) {
-  const holds = `This key holds ${formatGhost(s.current.amount)} GHOST.`;
+  const holds = `This key holds ${formatGhost(s.current.amount)} SPECTER.`;
   if (out === undefined || out > s.current.amount) return holds;
-  return `${holds} After the network fee, at most ${formatGhost(s.available)} GHOST can be summoned.`;
+  return `${holds} After the network fee, at most ${formatGhost(s.available)} SPECTER can be summoned.`;
 }
 
 // The card's error line for a Summon step that failed: a fixed sentence
@@ -291,7 +291,7 @@ function amountWarning(s, out) {
   if (out + s.fee !== s.current.amount || s.amountMatches >= FEW_SAME_AMOUNT) return "";
   const n = s.amountMatches;
   return (
-    `A full Summon shows ${formatGhost(s.current.amount)} GHOST with the network fee, and only ${n} ${n === 1 ? "Vanish" : "Vanishes"} ` +
+    `A full Summon shows ${formatGhost(s.current.amount)} SPECTER with the network fee, and only ${n} ${n === 1 ? "Vanish" : "Vanishes"} ` +
     "the app checked are of that amount, so the amount alone can link this Summon to its Vanish. A partial Summon, less than Max, avoids that."
   );
 }
@@ -337,7 +337,7 @@ function renderSummon(state) {
   $("summon-done").hidden = screen !== "done";
 
   const c = screen === "confirm" ? summonConfirm : null;
-  $("summon-confirm-text").textContent = c ? `Summon ${c.amount} GHOST to ${shortAddress(c.address)}` : "";
+  $("summon-confirm-text").textContent = c ? `Summon ${c.amount} SPECTER to ${shortAddress(c.address)}` : "";
   $("summon-confirm").title = c ? c.address : "";
   $("summon-confirm-address").textContent = c ? c.address : "";
   $("summon-confirm-warning").textContent = c ? c.warnings.join(" ") : "";
@@ -356,7 +356,7 @@ function renderSummon(state) {
   $("summon-payout-warning").textContent = onForm ? payoutWarning($("summon-payout").value, state) : "";
   const typed = onForm ? amountOf($("summon-amount").value) : null;
   $("summon-amount-warning").textContent = onForm ? [amountWarning(s, typed), remainderWarning(s, typed)].filter(Boolean).join(" ") : "";
-  $("summon-in-key").textContent = coin ? `${formatGhost(s.current.amount)} GHOST` : "—";
+  $("summon-in-key").textContent = coin ? `${formatGhost(s.current.amount)} SPECTER` : "—";
   $("summon-note").textContent = summonNote(s);
   const pending = Boolean(s && s.lastReveal && s.lastReveal.stage === "sent");
   $("summon-refresh").hidden = !pending;
@@ -382,7 +382,7 @@ function renderSummon(state) {
     !d || d.rest === null
       ? ""
       : d.rest > 0n
-        ? `${formatGhost(d.rest)} GHOST is still in your key. The same key still works.`
+        ? `${formatGhost(d.rest)} SPECTER is still in your key. The same key still works.`
         : "This key is now empty.";
   $("summon-recheck-status").textContent = d && summonRecheck ? summonRecheck : "";
 
@@ -480,14 +480,14 @@ function describeSummon(s) {
   if (s.status === "not-found") lines.push("No coin for this key yet. A commit shows once its block is in.");
   if (s.status === "claimed") lines.push("Claimed: a block of the chain holds the move or reveal of this key's coin.");
   if (s.status === "unclaimed" && s.current) {
-    lines.push(`Unclaimed: ${formatGhost(s.current.amount)} GHOST.`);
-    lines.push(`Fee now: ${formatGhost(s.fee)} GHOST; at most ${formatGhost(s.available)} GHOST can go out.`);
+    lines.push(`Unclaimed: ${formatGhost(s.current.amount)} SPECTER.`);
+    lines.push(`Fee now: ${formatGhost(s.fee)} SPECTER; at most ${formatGhost(s.available)} SPECTER can go out.`);
   }
   const r = s.lastReveal;
   if (r && r.stage === "sent") {
-    lines.push(`Sent: ${formatGhost(r.out)} GHOST to ${r.recipient}, transaction ${r.txHash}. ${IN_A_BLOCK}`);
+    lines.push(`Sent: ${formatGhost(r.out)} SPECTER to ${r.recipient}, transaction ${r.txHash}. ${IN_A_BLOCK}`);
   }
-  if (r && r.stage === "done") lines.push(`Done: revealed ${formatGhost(r.out)} GHOST to ${r.recipient} in block ${r.block}.`);
+  if (r && r.stage === "done") lines.push(`Done: revealed ${formatGhost(r.out)} SPECTER to ${r.recipient} in block ${r.block}.`);
   if (r && r.stage === "dropped") lines.push(`Reveal dropped: ${r.dropped}.`);
   lines.push(
     `Chain tip: block ${s.tip ?? "?"}. The coin tree's leaves and notes and the spent markers were checked against the block receipts of every block from the start this build pins.`,
@@ -562,7 +562,7 @@ function renderWallet(w) {
   $("wallet-button-text").textContent = connected ? shortAddress(w.address) : "Connect wallet";
   $("wallet-button").title = connected ? w.address : "";
   const known = connected && w.balance !== null;
-  $("vanish-balance").textContent = known ? `${formatGhost(w.balance)} GHOST` : "—";
+  $("vanish-balance").textContent = known ? `${formatGhost(w.balance)} SPECTER` : "—";
   $("vanish-max").disabled = !known;
   $("vanish-submit").textContent = connected ? "Vanish" : "Connect wallet";
 }
@@ -648,7 +648,7 @@ function renderVanish(v, approving, progress = null) {
       : v && v.stage === "sent"
         ? "Sent. Waiting for a block to hold it…"
         : approving
-          ? "Approve the Vanish in the Ghost wallet window. Can't see it? Show wallet."
+          ? "Approve the Vanish in the Specter wallet window. Can't see it? Show wallet."
           : "Sending your commit…";
   // Once a block holds the commit and the page checks that block (the
   // header chain, the coin trees), the line says so.
@@ -661,11 +661,11 @@ function renderVanish(v, approving, progress = null) {
 }
 
 // The Network panel's node lines, while no endpoint is typed: which node is
-// in use once the look found one ("Your Ghost node" or "Public test node"),
+// in use once the look found one ("Your Specter node" or "Public test node"),
 // the Run a node block once no Ghost node on this computer answered, neither
 // before the look ends. The endpoint box follows the node in use unless it
 // was edited.
-const NODE_NAMES = { local: "Your Ghost node", public: "Public test node" };
+const NODE_NAMES = { local: "Your Specter node", public: "Public test node" };
 let shownEndpoint = null;
 
 function renderNode(state) {
@@ -684,9 +684,9 @@ function render(state) {
   const v = state.vanish;
   renderVanish(v, Boolean(state.progress && state.progress.stage === WALLET_APPROVAL), state.progress);
   const vanishStatus = {
-    sent: () => `Sent: a commit of ${formatGhost(v.amount)} GHOST, transaction ${v.txHash}. ${IN_A_BLOCK}`,
+    sent: () => `Sent: a commit of ${formatGhost(v.amount)} SPECTER, transaction ${v.txHash}. ${IN_A_BLOCK}`,
     done: () =>
-      `Done: committed ${formatGhost(v.amount)} GHOST in block ${v.block}. Keep your key safe; the app has forgotten it. ${SEAL_TRUST}`,
+      `Done: committed ${formatGhost(v.amount)} SPECTER in block ${v.block}. Keep your key safe; the app has forgotten it. ${SEAL_TRUST}`,
     dropped: () =>
       `Commit dropped: ${v.dropped}. Start Vanish again. The key you saved still holds the coin if the commit comes back.`,
   };
@@ -701,8 +701,8 @@ function render(state) {
     renderKeyStep("claim", s.claim);
     const c = s.claim;
     const claimStatus = {
-      sent: () => `Sent: a claim of ${formatGhost(c.amount)} GHOST to the new key, transaction ${c.txHash}. ${IN_A_BLOCK}`,
-      done: () => `Done: claimed ${formatGhost(c.amount)} GHOST to the new key in block ${c.block}. ${SEAL_TRUST}`,
+      sent: () => `Sent: a claim of ${formatGhost(c.amount)} SPECTER to the new key, transaction ${c.txHash}. ${IN_A_BLOCK}`,
+      done: () => `Done: claimed ${formatGhost(c.amount)} SPECTER to the new key in block ${c.block}. ${SEAL_TRUST}`,
       dropped: () => `Claim dropped: ${c.dropped}. Press Refresh, then Claim again.`,
     };
     $("claim-status").textContent = c && claimStatus[c.stage] ? claimStatus[c.stage]() : "";

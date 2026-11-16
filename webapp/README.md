@@ -1,7 +1,7 @@
-# Ghost web app
+# Specter web app
 
-A web app for committing and revealing GHOST with the link between the two hidden on chain (amounts, timing and network address can still give it away, and one block holding a transaction is neither final settlement nor privacy; see [privacy under attack](../docs/research/privacy-under-attack.md)): connect a quantum-safe wallet, **Vanish**
-GHOST into a new Phantom Key, **Summon** any amount of a key's coin to the
+A web app for committing and revealing SPECTER with the link between the two hidden on chain (amounts, timing and network address can still give it away, and one block holding a transaction is neither final settlement nor privacy; see [privacy under attack](../docs/research/privacy-under-attack.md)): connect a quantum-safe wallet, **Vanish**
+SPECTER into a new Phantom Key, **Summon** any amount of a key's coin to the
 connected wallet, and **Claim** a received key's coin to a new key. It is plain ES
 modules with no framework and no npm dependencies, on top of the client
 library, which runs in a background worker as WebAssembly.
@@ -154,7 +154,7 @@ and open `http://localhost:8080`. The page has the **Connect wallet** button
 top right and one card with two tabs, **Vanish** (an amount box, the
 connected wallet's balance and Max, and the Vanish button) and **Summon** (a
 box to paste a key, then an amount box and the Summon button). Connect
-wallet opens the wallet list, which holds one wallet, **Ghost wallet**: it
+wallet opens the wallet list, which holds one wallet, **Specter wallet**: it
 opens the pop-up wallet in its own window (when the browser blocks the
 pop-up, as in-app browsers do, the panel asks you to open the page in your
 browser). Once
@@ -164,16 +164,16 @@ connected the main buttons read "Connect wallet" and open that list.
 Vanish then steps through three
 screens in the card: **Save your Phantom Key** (the 24 words in a numbered
 grid, Copy, Download and "I saved it"), **Check your key** (three of the
-words typed back; a wrong one sends nothing, and "Vanish *amount* GHOST"
+words typed back; a wrong one sends nothing, and "Vanish *amount* SPECTER"
 asks the connected wallet to approve the commit, then sends it with a thin
-waiting bar; turned down in the wallet, nothing is sent) and **Done** ("*amount* GHOST
+waiting bar; turned down in the wallet, nothing is sent) and **Done** ("*amount* SPECTER
 vanished"; Done drops the key). The key also leaves memory when you switch
 to Summon or close the page. Summon opens the pasted key once it holds 24
 words (or the digit form), or when you leave the box, shows what the key
 holds with Max, and pays only the connected wallet's address ("Connect
 wallet" with none connected). While the reveal goes out the card shows three steps that
 tick off as the app reaches them (Making your proof, Sending to the network,
-Confirming), then **Done** ("*amount* GHOST summoned", what is still in the
+Confirming), then **Done** ("*amount* SPECTER summoned", what is still in the
 key, or "This key is now empty."). Done, a tab switch or closing the page
 drops the key. Claim has no visible control in
 this layout; its code stays. The footer holds the experimental warning and
@@ -185,7 +185,7 @@ URL to use another node. The node must allow requests from the page's origin
 On load, while no endpoint is typed, the page asks
 `http://127.0.0.1:8545` once for its `rpc_modules` (no parameters, no
 cookie, nothing else). A node that lists the `ghost` module is used as is,
-and Network shows "Node in use: Your Ghost node"; nothing is set or stored.
+and Network shows "Node in use: Your Specter node"; nothing is set or stored.
 Anything else, or no answer within 1.5 seconds, and the page tries the
 two public test-network nodes listed in `webapp/src/rpc.mjs`
 (`PUBLIC_ENDPOINTS`), in order, Spark then the VM: a node is used only if its `eth_chainId` is 6777972
@@ -255,7 +255,7 @@ that send, and Done or a tab switch that drops the key).
 box and its plain errors, the amount checks, the reveal paid to the
 connected wallet's address, the three steps, Done with the rest or an empty
 key, Done or a tab switch that drops the key, and the Connect wallet list
-with the Ghost wallet as its one entry.
+with the Specter wallet as its one entry.
 
 To run the same flow against a real node, build ghost-node's `geth` at the
 pinned commit and point the real-node test at it:

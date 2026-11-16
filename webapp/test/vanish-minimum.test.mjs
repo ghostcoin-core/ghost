@@ -239,7 +239,7 @@ test("a Vanish below the minimum is refused with one plain line", async () => {
     const min = 4n * node.fee(node.tip() + 1);
     // 0.1057... GHOST, shown rounded up to 4 decimals.
     assert.equal(min, 105794399058355288n);
-    const LINE = "Vanish at least 0.1058 GHOST: a smaller coin could not pay the Summon fee later.";
+    const LINE = "Vanish at least 0.1058 SPECTER: a smaller coin could not pay the Summon fee later.";
 
     const submit = async (amount) => {
       page.$("vanish-error").textContent = "";

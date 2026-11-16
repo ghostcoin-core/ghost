@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verifiable build of the Ghost web app into webapp/dist.
+# Verifiable build of the Specter web app into webapp/dist.
 #
 #   1. checks that the pinned toolchain (the one CI uses) is installed, and
 #      installs the pinned nightly toolchain of the threaded module if it is
