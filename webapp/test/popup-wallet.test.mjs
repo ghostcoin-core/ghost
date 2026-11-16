@@ -156,7 +156,7 @@ test("replies from another origin or another window are ignored", async () => {
 
 test("the page opens the hosted wallet, and the wallet answers the hosted page only", async () => {
   assert.equal(POPUP_WALLET_ORIGIN, "https://ghost-wallet-nine.vercel.app");
-  assert.deepEqual(WEBAPP_ORIGINS, ["https://ghost-webapp-alpha.vercel.app"]);
+  assert.deepEqual(WEBAPP_ORIGINS, ["https://app.specter.cash", "https://ghost-webapp-alpha.vercel.app"]);
   assert.ok(Object.isFrozen(WEBAPP_ORIGINS));
 
   // With no origin given, the connector opens the hosted wallet and posts

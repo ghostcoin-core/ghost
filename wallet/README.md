@@ -64,7 +64,8 @@ another against the same four requests.
   that has not unlocked yet, once unlocked and before anything is signed.
 - **Origin checks both ways.** The wallet reads a message only from its
   opener on one of the web app origins in `src/config.mjs` (the hosted web
-  app, `https://ghost-webapp-alpha.vercel.app`), and answers that origin
+  app, `https://app.specter.cash`, and its first address
+  `https://ghost-webapp-alpha.vercel.app`), and answers that origin
   only; the web app (`webapp/src/popup-wallet.mjs`) reads a reply only from
   the wallet's origin (`https://ghost-wallet-nine.vercel.app`) and the
   window it opened. Anything else is ignored.

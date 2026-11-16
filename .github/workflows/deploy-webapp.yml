@@ -98,7 +98,7 @@ jobs:
       - name: Check the live site
         if: steps.head.outputs.current == 'true'
         env:
-          SITE: https://ghost-webapp-alpha.vercel.app
+          SITE: https://app.specter.cash
         run: |
           set -euo pipefail
           live="$(mktemp -d)"
