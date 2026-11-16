@@ -12,7 +12,7 @@ import { fromHex } from "./bytes.mjs";
 import { USER_REJECTED, WalletRejected, snapTransaction } from "./wallet-connect.mjs";
 
 // The wallet's origin, where it is hosted.
-export const POPUP_WALLET_ORIGIN = "https://ghost-wallet-nine.vercel.app";
+export const POPUP_WALLET_ORIGIN = "https://wallet.specter.cash";
 export const POPUP_WALLET = { id: "ghost-popup-wallet", name: "Specter wallet" };
 // The JSON-RPC code the wallet answers a request it does not know with.
 export const METHOD_NOT_FOUND = -32601;

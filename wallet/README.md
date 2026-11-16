@@ -67,7 +67,7 @@ another against the same four requests.
   app, `https://app.specter.cash`, and its first address
   `https://ghost-webapp-alpha.vercel.app`), and answers that origin
   only; the web app (`webapp/src/popup-wallet.mjs`) reads a reply only from
-  the wallet's origin (`https://ghost-wallet-nine.vercel.app`) and the
+  the wallet's origin (`https://wallet.specter.cash`) and the
   window it opened. Anything else is ignored.
 - **Strict refusal, before any screen.** An unknown method, a chain id not
   in `CHAIN_IDS` (the public test network the hosted web app runs on,

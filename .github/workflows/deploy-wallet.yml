@@ -92,7 +92,7 @@ jobs:
       # names, byte for byte, with the headers of wallet/headers.json.
       - name: Check the live wallet
         env:
-          WALLET_URL: https://ghost-wallet-nine.vercel.app
+          WALLET_URL: https://wallet.specter.cash
         run: |
           node -e '
             const { createHash } = require("node:crypto");
