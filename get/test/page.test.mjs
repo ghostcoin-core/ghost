@@ -41,9 +41,9 @@ test("detectSystem finds macOS, Linux and Windows from the user agent", () => {
 });
 
 test("the lines are the site's one-line installs", () => {
-  assert.equal(LINES.sh, "curl -fsSL https://get.ghostcoin.com | sh");
-  assert.equal(LINES.win, "irm https://get.ghostcoin.com/win | iex");
-  assert.match(LINES.cmd, /^curl -fsSL https:\/\/get\.ghostcoin\.com\/cmd -o (\S+\.cmd) && \1 && del \1$/);
+  assert.equal(LINES.sh, "curl -fsSL https://get.specter.cash | sh");
+  assert.equal(LINES.win, "irm https://get.specter.cash/win | iex");
+  assert.match(LINES.cmd, /^curl -fsSL https:\/\/get\.specter\.cash\/cmd -o (\S+\.cmd) && \1 && del \1$/);
   assert.deepEqual(
     SYSTEMS.map((s) => [s.id, LINES[s.script]]),
     [
@@ -252,7 +252,7 @@ test("a notice near the top says it is the public test network, with test coins 
 });
 
 test("under the install line, both systems' lines mine to the visitor's Ghost wallet", () => {
-  assert.equal(textOf("wallet-sh"), "curl -fsSL https://get.ghostcoin.com | GHOST_MINE_TO=0xYOUR_WALLET_ADDRESS sh");
+  assert.equal(textOf("wallet-sh"), "curl -fsSL https://get.specter.cash | GHOST_MINE_TO=0xYOUR_WALLET_ADDRESS sh");
   assert.equal(textOf("wallet-win"), `$env:GHOST_MINE_TO='0xYOUR_WALLET_ADDRESS'; ${LINES.win}`);
   assert.equal(textOf("wallet-sh"), LINES.sh.replace("| sh", "| GHOST_MINE_TO=0xYOUR_WALLET_ADDRESS sh"));
   assert.match(textOf("wallet-note"), /^Mines straight to your Ghost wallet, so the coins show up in the web app\./);

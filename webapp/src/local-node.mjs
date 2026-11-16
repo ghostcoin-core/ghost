@@ -12,13 +12,13 @@ export const PROBE_TIMEOUT_MS = 1500;
 export const PROBE_BODY = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "rpc_modules", params: [] });
 
 // The install site, linked from the Run a node block.
-export const INSTALL_SITE = "https://get.ghostcoin.com";
+export const INSTALL_SITE = "https://get.specter.cash";
 
 // The one pasted line for each system, shown as fixed text.
 export const INSTALL_LINES = {
-  macOS: "curl -fsSL https://get.ghostcoin.com/install.sh | bash",
-  Linux: "curl -fsSL https://get.ghostcoin.com/install.sh | bash",
-  Windows: "irm https://get.ghostcoin.com/install.ps1 | iex",
+  macOS: "curl -fsSL https://get.specter.cash/install.sh | bash",
+  Linux: "curl -fsSL https://get.specter.cash/install.sh | bash",
+  Windows: "irm https://get.specter.cash/install.ps1 | iex",
 };
 
 // The visitor's system from the browser's user agent: "macOS", "Windows" or

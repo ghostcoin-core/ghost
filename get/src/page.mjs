@@ -4,7 +4,7 @@
 // release carries into <html data-ready>; a system whose script is not
 // published shows as coming soon, with no line to copy.
 
-export const SITE = "https://get.ghostcoin.com";
+export const SITE = "https://get.specter.cash";
 
 // The one line per script, as the site serves it (vercel/config.json).
 export const LINES = {

@@ -1,4 +1,4 @@
-# get.ghostcoin.com
+# get.specter.cash
 
 The one-line Ghost node install and its Run a node page. A static site in
 the Vercel Build Output layout, like `webapp/`: plain ES modules, no
@@ -14,9 +14,9 @@ framework and no dependencies.
 The lines the page shows:
 
 ```text
-curl -fsSL https://get.ghostcoin.com | sh
-irm https://get.ghostcoin.com/win | iex
-curl -fsSL https://get.ghostcoin.com/cmd -o ghost-install.cmd && ghost-install.cmd && del ghost-install.cmd
+curl -fsSL https://get.specter.cash | sh
+irm https://get.specter.cash/win | iex
+curl -fsSL https://get.specter.cash/cmd -o ghost-install.cmd && ghost-install.cmd && del ghost-install.cmd
 ```
 
 The page finds the visitor's system from the user agent (Windows, macOS,
@@ -30,8 +30,8 @@ who use the Ghost web app, the same install mines straight to their Ghost
 wallet with `GHOST_MINE_TO` set to the wallet's address:
 
 ```text
-curl -fsSL https://get.ghostcoin.com | GHOST_MINE_TO=0xYOUR_WALLET_ADDRESS sh
-$env:GHOST_MINE_TO='0xYOUR_WALLET_ADDRESS'; irm https://get.ghostcoin.com/win | iex
+curl -fsSL https://get.specter.cash | GHOST_MINE_TO=0xYOUR_WALLET_ADDRESS sh
+$env:GHOST_MINE_TO='0xYOUR_WALLET_ADDRESS'; irm https://get.specter.cash/win | iex
 ```
 
 ## Look
