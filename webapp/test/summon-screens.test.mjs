@@ -356,15 +356,15 @@ test("the Summon tab starts with the paste box and a greyed Paste a key button",
   assert.ok(key, "the paste box is a textarea in the Summon panel");
   assert.match(key[0], /placeholder="Paste your Phantom Key"/);
   assert.match(element("summon-submit"), /^<button\b[^>]*class="primary[^"]*"[^>]*type="submit"[^>]*\bdisabled\b[^>]*>Paste a key</);
-  // The amount box, as Vanish's: 0.00, the ghost icon and GHOST inside it.
+  // The amount box, as Vanish's: 0.00 and SPECTER inside it, labelled.
   const area = element("summon-amount-area");
   assert.match(tag("summon-amount-area"), /\bhidden\b/);
   const box = /<label class="amount-box">[\s\S]*?<\/label>/.exec(area);
   assert.ok(box, "an amount box");
   assert.match(box[0], /<input id="summon-amount"[^>]*placeholder="0\.00"/);
-  assert.match(box[0], /<use href="#icon-ghost">/);
-  assert.match(box[0], /SPECTER\s*<\/span>/);
-  assert.match(area, /<p class="balance-line">\s*In this key: <span id="summon-in-key">—<\/span>\s*<button id="summon-max" class="link"[^>]*>Max</);
+  assert.match(box[0], /<span class="visually-hidden">Amount to summon \(SPECTER\)<\/span>/);
+  assert.match(box[0], /<span class="token">SPECTER<\/span>/);
+  assert.match(area, /<p class="balance-line">\s*In this key <span id="summon-in-key">—<\/span>\s*<button id="summon-max" class="max"[^>]*>Max</);
   // One error line under the fields.
   assert.match(tag("summon-error"), /class="error-line"/);
 });
@@ -400,9 +400,9 @@ test("the waiting screen: Summoning, a thin bar, three steps and keep this page 
   assert.doesNotMatch(stepOf, /Date|since|setTimeout|setInterval/);
 });
 
-test("the Done screen: the ghost icon, the amount summoned, the payout address and Done", () => {
+test("the Done screen: a Summoned line, the amount summoned, the payout address and Done", () => {
   const screen = element("summon-done");
-  assert.match(screen, /<use href="#icon-ghost">/);
+  assert.match(screen, /<p class="ok">Summoned<\/p>/);
   assert.ok(words(screen).includes("<value> SPECTER summoned"), words(screen));
   assert.ok(words(screen).includes("Sent to <value>."), words(screen));
   assert.doesNotMatch(screen, /your wallet/);
@@ -536,7 +536,7 @@ test("Connect wallet lists the Specter wallet only; connected, the button shows 
   assert.equal(page.$("wallet-open").hidden, false);
   assert.equal(page.$("wallet-address").textContent, address);
   assert.equal(page.$("wallet-balance").textContent, "5");
-  assert.equal(page.$("vanish-submit").textContent, "Vanish");
+  assert.equal(page.$("vanish-submit").textContent, "Vanish SPECTER");
   assert.equal(page.$("wallet-error").textContent, "");
 
   page.$("wallet-disconnect").fire("click");

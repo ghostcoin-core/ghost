@@ -1,89 +1,97 @@
-/* Instrument Sans (variable, latin subset) and IBM Plex Mono 400 and 600
-   (latin subset), served from this origin.
-   Licence: fonts/LICENSE.txt (SIL Open Font License 1.1). */
+/* Red Hat Display (500, 700, 800, 900) and Red Hat Mono (400, 500), latin
+   subset, served from this origin.
+   Licences: fonts/LICENSE-red-hat-display.txt and
+   fonts/LICENSE-red-hat-mono.txt (SIL Open Font License 1.1). */
 @font-face {
-  font-family: "Instrument Sans";
+  font-family: "Red Hat Display";
   font-style: normal;
-  font-weight: 400 700;
+  font-weight: 500;
   font-display: swap;
-  src: url("fonts/instrument-sans-latin-wght-normal.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: url("fonts/red-hat-display-latin-500-normal.woff2") format("woff2");
 }
 
 @font-face {
-  font-family: "IBM Plex Mono";
+  font-family: "Red Hat Display";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("fonts/red-hat-display-latin-700-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Red Hat Display";
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url("fonts/red-hat-display-latin-800-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Red Hat Display";
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url("fonts/red-hat-display-latin-900-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Red Hat Mono";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: url("fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: url("fonts/red-hat-mono-latin-400-normal.woff2") format("woff2");
 }
 
 @font-face {
-  font-family: "IBM Plex Mono";
+  font-family: "Red Hat Mono";
   font-style: normal;
-  font-weight: 600;
+  font-weight: 500;
   font-display: swap;
-  src: url("fonts/ibm-plex-mono-latin-600-normal.woff2") format("woff2");
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  src: url("fonts/red-hat-mono-latin-500-normal.woff2") format("woff2");
 }
 
-/* The light brand look: one light theme. */
+/* The Specter look: one light theme. The page is warm grey, the tiles are
+   white, the ink is near-black; the foil is the only colour and is used
+   sparingly (the card, small dots, the progress bar). */
 :root {
   color-scheme: light;
 
-  /* Page (Mist) and the header bar */
-  --bg: #F5F5F8;
-  --header: #FFFFFF;
-  --header-line: #E4E3EC;
+  --wall: #EDEBE6;
+  --paper: #FFFFFF;
+  --ink: #101013;
+  --body: #4A4A52;
+  --quiet: #6A6973;
+  --line: #D6D3CC;
+  --on-ink: #FFFFFF;
+  --card-black: #131316;
 
-  /* The card and the tab in front; the tab behind */
-  --surface: #FFFFFF;
-  --border: #E4E3EC;
-  --shadow: 0 12px 32px rgba(14, 13, 26, 0.06);
-  --surface-behind: #ECEBF2;
-  --border-behind: #E4E3EC;
-  --text-behind: #5F5D73;
+  --foil: linear-gradient(100deg, #FF7AD9, #B58CFF 18%, #7FB8FF 36%, #8CFFE0 54%, #FFF3A0 72%, #FF9A8C 88%, #FF7AD9);
 
-  /* Input boxes and the GHOST token chip */
-  --input: #F5F5F8;
-  --input-border: #E4E3EC;
-  --placeholder: #6E6C82;
-  --tint: #EEEAFF;
-  --token: #EEEAFF;
+  /* Works (green), warnings (amber) and errors (red), each with the light
+     fill it may sit on. */
+  --go: #0B7A4B;
+  --go-bg: #E0F2E9;
+  --wait: #8A5A00;
+  --wait-bg: #F6ECD4;
+  --wait-text: #4A3A12;
+  --danger: #B3261E;
+  --focus: #7B5CFF;
 
-  /* Text (Ink), accent and warnings */
-  --text: #0E0D1A;
-  --muted: #4A4860;
-  --quiet: #6E6C82;
-  --accent: #6B4CFF;
-  --danger: #C8264B;
-  --caution: #A15C00;
-
-  /* The main button, the wallet button and Summon's success fill */
-  --violet: #6B4CFF;
-  --violet-hover: #5A3BEE;
-  --on-violet: #FFFFFF;
-  --wallet-bg: #FFFFFF;
-  --wallet-border: #E4E3EC;
-  --wallet-text: #0E0D1A;
-  --mint: #4FF0C8;
-
-  --raised: #FFFFFF;
-  --border-strong: #C9C7D6;
-  --focus-ring: 0 0 0 3px rgba(107, 76, 255, 0.3);
-
-  --font: "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --radius: 18px;
-  --radius-small: 10px;
-  --card-width: 420px;
+  --font: "Red Hat Display", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "Red Hat Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --r-lg: 26px;
+  --r-md: 18px;
+  --r-btn: 14px;
+  --pad: clamp(16px, 3.6vw, 56px);
+  --tile: 520px;
+  --card-shadow: 0 30px 60px -26px rgba(16, 16, 19, 0.7);
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --speed: 200ms;
 
-  background: var(--bg);
-  color: var(--text);
+  background: var(--wall);
+  color: var(--ink);
   font-family: var(--font);
+  font-weight: 500;
   line-height: 1.45;
 }
 
@@ -102,8 +110,13 @@ body {
   min-height: 100%;
 }
 
+html {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
 body {
-  background: var(--bg);
+  background: var(--wall);
   display: flex;
   flex-direction: column;
   margin: 0;
@@ -113,12 +126,19 @@ body {
 
 h2,
 h3 {
-  font-size: 1rem;
-  font-weight: 600;
+  font-family: var(--font);
+  font-weight: 900;
+  letter-spacing: -0.045em;
   margin: 0 0 0.75rem;
 }
 
+h2 {
+  font-size: clamp(30px, 3vw, 38px);
+  line-height: 1.02;
+}
+
 h3 {
+  font-size: 1.3rem;
   margin-top: 1.25rem;
 }
 
@@ -138,37 +158,6 @@ a {
   text-decoration: none;
 }
 
-.sprite {
-  height: 0;
-  overflow: hidden;
-  position: absolute;
-  width: 0;
-}
-
-.icon {
-  flex: none;
-  height: 1.25em;
-  width: 1.25em;
-}
-
-/* The Specter mark at icon sizes: the card in one color (currentColor),
-   its ring as a hole. */
-.logo-body {
-  fill: currentColor;
-}
-
-.line {
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
-}
-
-.dot {
-  fill: currentColor;
-}
-
 .visually-hidden {
   clip: rect(0 0 0 0);
   height: 1px;
@@ -181,23 +170,23 @@ a {
 /* Controls */
 
 label {
-  color: var(--muted);
+  color: var(--body);
   display: block;
-  font-size: 0.875rem;
+  font-size: 0.9rem;
   margin: 0.75rem 0;
 }
 
 input,
 textarea {
-  background: var(--input);
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius-small);
-  color: var(--text);
+  background: var(--wall);
+  border: 0;
+  border-radius: var(--r-btn);
+  color: var(--ink);
   display: block;
   font: inherit;
   font-size: 1rem;
   margin-top: 0.35rem;
-  padding: 0.6rem 0.75rem;
+  padding: 0.7rem 0.85rem;
   width: 100%;
 }
 
@@ -207,32 +196,33 @@ textarea {
 
 input::placeholder,
 textarea::placeholder {
-  color: var(--placeholder);
+  color: var(--quiet);
   opacity: 1;
 }
 
 input:focus,
-textarea:focus,
-button:focus-visible,
-.tab-panel:focus-visible {
-  border-color: var(--accent);
-  box-shadow: var(--focus-ring);
+textarea:focus {
+  box-shadow: inset 0 0 0 2px var(--ink);
   outline: none;
 }
 
-button {
-  background: var(--raised);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-small);
-  color: var(--text);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.9rem;
-  padding: 0.5rem 0.85rem;
+button:focus-visible,
+a:focus-visible,
+.tab-panel:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
 }
 
-button:hover:not(:disabled) {
-  border-color: var(--border-strong);
+button {
+  background: none;
+  border: 0;
+  border-radius: var(--r-btn);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  font-size: 0.95rem;
+  padding: 0.55rem 0.9rem;
 }
 
 button:disabled {
@@ -240,17 +230,15 @@ button:disabled {
   opacity: 0.45;
 }
 
+/* The main button: solid ink, white text. */
 button.primary {
-  background: var(--violet);
-  border-color: transparent;
-  color: var(--on-violet);
-  font-size: 1.2rem;
-  font-weight: 700;
+  background: var(--ink);
+  color: var(--on-ink);
+  font-size: 1.05rem;
 }
 
-button.primary:hover:not(:disabled) {
-  background: var(--violet-hover);
-  border-color: transparent;
+button.big {
+  padding: 18px;
 }
 
 button.wide {
@@ -259,19 +247,19 @@ button.wide {
   width: 100%;
 }
 
-button.big {
-  padding: 0.8rem 1rem;
+/* The second button: an ink outline. */
+button.outline,
+button.secondary {
+  box-shadow: inset 0 0 0 2px var(--ink);
 }
 
+/* A text button: ink, underlined. */
 button.link {
-  background: none;
-  border: none;
-  color: var(--accent);
-  padding: 0.15rem 0.35rem;
-}
-
-button.link:hover:not(:disabled) {
-  text-decoration: underline;
+  border-bottom: 2px solid currentColor;
+  border-radius: 0;
+  color: var(--ink);
+  font-size: 0.9rem;
+  padding: 0 0 2px;
 }
 
 .row {
@@ -281,29 +269,67 @@ button.link:hover:not(:disabled) {
 }
 
 .note {
-  color: var(--muted);
-  font-size: 0.85rem;
+  color: var(--quiet);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
-/* Top bar */
+.note.center {
+  text-align: center;
+}
+
+.note:empty {
+  display: none;
+}
+
+/* Small mono capitals: labels, step lines, box heads. */
+.lab,
+.step,
+.box-head,
+.field-label,
+.ok {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.lab,
+.step,
+.field-label {
+  color: var(--quiet);
+}
+
+.step {
+  margin: 0 0 12px;
+}
+
+.lead {
+  color: var(--body);
+  font-size: 16.5px;
+  line-height: 1.5;
+  margin: 0 0 20px;
+}
+
+/* Top bar: the logo, Network, About and the wallet button. It sits above
+   the scrim, so its buttons stay usable while a panel is open. */
 
 .top {
   align-items: center;
-  background: var(--header);
-  border-bottom: 1px solid var(--header-line);
   display: flex;
-  gap: 1rem;
+  gap: 16px;
   justify-content: space-between;
-  padding: 1rem clamp(1rem, 4vw, 2rem);
+  padding: 16px var(--pad);
+  position: relative;
+  z-index: 25;
 }
 
 .brand {
   align-items: center;
   display: flex;
-  font-size: 1.2rem;
-  font-weight: 700;
-  gap: 0.5rem;
-  letter-spacing: 0.01em;
+  flex: none;
 }
 
 /* The full Specter logo, the mark and the wordmark, at its own ratio. */
@@ -313,223 +339,350 @@ button.link:hover:not(:disabled) {
   width: 7.63rem;
 }
 
-/* The launch notice under the header: one quiet line. */
-.launch-notice {
-  color: var(--muted);
-  font-size: 0.875rem;
-  margin: 0.75rem auto 0;
-  max-width: 40rem;
-  padding: 0 1rem;
-  text-align: center;
+.top-links {
+  align-items: center;
+  display: flex;
+  gap: clamp(10px, 2vw, 26px);
+}
+
+.top-link {
+  color: var(--body);
+  font-size: 14.5px;
+  font-weight: 500;
+  padding: 0.4rem 0;
+}
+
+.top-link:hover,
+.top-link[aria-expanded="true"] {
+  color: var(--ink);
+}
+
+#network-button.attention::after {
+  background: var(--danger);
+  border-radius: 50%;
+  content: "";
+  display: inline-block;
+  height: 0.45rem;
+  margin-left: 0.3rem;
+  vertical-align: middle;
+  width: 0.45rem;
 }
 
 .wallet-anchor {
   position: relative;
 }
 
+/* Not connected: a black button. Connected: a white pill with a green dot
+   and the short address. */
 .wallet-button {
   align-items: center;
-  background: var(--wallet-bg);
-  border: 1px solid var(--wallet-border);
-  border-radius: 999px;
-  color: var(--wallet-text);
+  background: var(--ink);
+  border-radius: 11px;
+  color: var(--on-ink);
   display: flex;
-  font-weight: 600;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
+  font-size: 14px;
+  font-weight: 800;
+  gap: 9px;
+  padding: 11px 18px;
 }
 
-.wallet-button:hover:not(:disabled),
-.wallet-button[aria-expanded="true"] {
-  border-color: var(--accent);
+body[data-wallet="on"] .wallet-button {
+  background: var(--paper);
+  border-radius: 999px;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 10px 15px;
+}
+
+.wallet-dot {
+  background: var(--go);
+  border-radius: 50%;
+  display: none;
+  flex: none;
+  height: 8px;
+  width: 8px;
+}
+
+body[data-wallet="on"] .wallet-dot {
+  display: inline-block;
 }
 
 #wallet-button-text {
-  font-family: var(--font);
   white-space: nowrap;
 }
 
-.popover {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  max-height: calc(100vh - 6rem);
-  overflow-y: auto;
-  padding: 1.1rem;
-  position: absolute;
-  right: 0;
-  top: calc(100% + 0.5rem);
-  width: min(360px, calc(100vw - 2rem));
-  z-index: 20;
-}
-
-/* The wallet list: one row per quantum-safe wallet the page can connect. */
-
-.popover h2 {
-  font-size: 1.05rem;
-  margin-top: 0;
-}
-
-.wallet-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.wallet-option {
-  align-items: center;
-  background: var(--input);
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius-small);
-  color: var(--text);
-  display: flex;
-  gap: 0.75rem;
-  padding: 0.75rem 0.9rem;
-  text-align: left;
-  width: 100%;
-}
-
-.wallet-option:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-
-.wallet-option .icon {
-  color: var(--accent);
-  flex: none;
-  height: 1.6em;
-  width: 1.6em;
-}
-
-.wallet-option-text {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-
-.wallet-option-name {
-  font-weight: 600;
-}
-
-.wallet-option-note {
-  color: var(--muted);
-  font-size: 0.8rem;
-}
-
-.field-label {
-  color: var(--muted);
-  font-size: 0.8rem;
-  margin-bottom: 0;
-}
-
-.balance-big {
+/* The launch notice under the header: one quiet line with a foil dot. */
+.launch-notice {
+  color: var(--quiet);
   font-family: var(--mono);
-  font-size: 1.25rem;
-  font-weight: 600;
-  margin-top: 0.15rem;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: -4px 0 0;
+  padding: 0 var(--pad);
+  text-align: center;
 }
 
-/* The card and its folder tabs */
+.launch-notice::before {
+  background: var(--foil);
+  border-radius: 50%;
+  content: "";
+  display: inline-block;
+  height: 7px;
+  margin-right: 9px;
+  vertical-align: 1px;
+  width: 7px;
+}
+
+/* The stage and the bearer card. Each face has its own transform so
+   browsers that ignore backface-visibility still stack the faces right;
+   .turned (set from the card's own matrix) hides the face pointing away. */
 
 main {
+  align-items: center;
   display: flex;
   flex: 1;
-  justify-content: center;
-  padding: clamp(1rem, 6vh, 4rem) 1rem 2rem;
+  flex-direction: column;
+  padding: clamp(24px, 4vh, 44px) var(--pad) 40px;
 }
 
-.folder {
-  max-width: var(--card-width);
+body[data-size="l"] main {
+  padding-top: clamp(20px, 3vh, 32px);
+}
+
+.stage {
+  margin-bottom: clamp(36px, 5vh, 52px);
+  perspective: 1500px;
+  position: relative;
+}
+
+body[data-size="l"] .stage {
+  margin-bottom: clamp(30px, 4.4vh, 44px);
+}
+
+/* The one shadow of the page: under the card. */
+.stage::after {
+  background: rgba(16, 16, 19, 0.3);
+  border-radius: 50%;
+  bottom: -30px;
+  content: "";
+  filter: blur(20px);
+  height: 34px;
+  left: 10%;
+  position: absolute;
+  right: 10%;
+  transform: translateX(calc(var(--ry, 0) * -1px));
+}
+
+body {
+  --cw: 280px;
+}
+
+body[data-size="m"] {
+  --cw: 380px;
+}
+
+body[data-size="l"] {
+  --cw: 480px;
+}
+
+.bearer {
+  aspect-ratio: 1.586;
+  position: relative;
+  transform: rotateX(calc(var(--rx, 5) * 1deg)) rotateY(calc(var(--ry, -10) * 1deg + var(--flip, 0deg)));
+  transform-style: preserve-3d;
+  width: min(var(--cw), calc(100vw - 2 * var(--pad)));
+}
+
+.face {
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  background: var(--card-black);
+  border-radius: 4.4% / 7%;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.3), var(--card-shadow);
+  inset: 0;
+  overflow: hidden;
+  position: absolute;
+  transform: rotateY(0deg) translateZ(1px);
+}
+
+.face.back {
+  transform: rotateY(180deg) translateZ(1px);
+}
+
+.bearer.turned .face:not(.back),
+.bearer:not(.turned) .face.back {
+  visibility: hidden;
+}
+
+.face svg {
+  display: block;
+  height: 100%;
+  inset: 0;
+  position: absolute;
   width: 100%;
 }
 
-.tabs {
-  display: flex;
-  gap: 0.25rem;
+.bearer.swap .front svg {
+  opacity: 0;
 }
 
-/* The tab behind sits lower, under the card's edge; the tab in front
-   covers the card's top border so the two join. */
-.tab {
-  background: var(--surface-behind);
-  border: 1px solid var(--border-behind);
-  border-bottom: none;
-  border-radius: var(--radius) var(--radius) 0 0;
-  color: var(--text-behind);
-  font-size: 1rem;
-  font-weight: 600;
-  margin-bottom: -1px;
-  padding: 0.7rem 1.4rem 0.6rem;
+.glare {
+  background: radial-gradient(circle at var(--gx, 30%) var(--gy, 20%), rgba(255, 255, 255, 0.3), transparent 46%);
+  inset: 0;
+  mix-blend-mode: screen;
+  pointer-events: none;
+  position: absolute;
+}
+
+.glint {
+  background: linear-gradient(105deg, transparent 32%, rgba(255, 122, 217, 0.28) 40%, rgba(181, 140, 255, 0.4) 45%, rgba(255, 255, 255, 0.75) 50%, rgba(140, 255, 224, 0.4) 55%, rgba(255, 243, 160, 0.25) 60%, transparent 68%) no-repeat;
+  background-position: 120% 0;
+  background-size: 260% 100%;
+  inset: 0;
+  mix-blend-mode: screen;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+/* The app tile: the Vanish/Summon switch on top, the screens below. */
+
+.folder {
+  background: var(--paper);
+  border-radius: var(--r-lg);
+  max-width: var(--tile);
+  padding: 14px 34px 34px;
   position: relative;
-  transform: translateY(5px);
-  z-index: 0;
-}
-
-.tab:hover:not(:disabled) {
-  border-color: var(--border-behind);
-  color: var(--muted);
-}
-
-.tab[aria-selected="true"] {
-  background: var(--surface);
-  border-color: var(--border);
-  color: var(--text);
-  transform: none;
-  z-index: 2;
-}
-
-.tab:focus-visible {
-  box-shadow: var(--focus-ring);
-}
-
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow);
-  padding: 1.25rem;
-  position: relative;
+  width: 100%;
   z-index: 1;
 }
 
-.card[data-tab="vanish"] {
-  border-top-left-radius: 0;
+.tabs {
+  background: var(--wall);
+  border-radius: 17px;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: 1fr 1fr;
+  margin: 0 -20px 30px;
+  padding: 5px;
+}
+
+/* Mid-flow the switch gives way to the step line. */
+body[data-screen="key"] .tabs,
+body[data-screen="check"] .tabs,
+body[data-screen="vanishing"] .tabs,
+body[data-screen="confirm"] .tabs,
+body[data-screen="summoning"] .tabs {
+  display: none;
+}
+
+body[data-screen="key"] .folder,
+body[data-screen="check"] .folder,
+body[data-screen="vanishing"] .folder,
+body[data-screen="confirm"] .folder,
+body[data-screen="summoning"] .folder {
+  padding-top: 30px;
+}
+
+.tab {
+  background: none;
+  border-radius: 13px;
+  color: var(--quiet);
+  font-size: 15.5px;
+  font-weight: 800;
+  padding: 12px;
+}
+
+.tab:hover:not([aria-selected="true"]) {
+  color: var(--ink);
+}
+
+.tab[aria-selected="true"] {
+  background: var(--ink);
+  color: var(--on-ink);
+}
+
+/* The screens of the tile. */
+.card {
+  background: var(--paper);
+  position: relative;
 }
 
 .tab-panel {
-  border-radius: var(--radius-small);
+  border-radius: 8px;
 }
 
-/* The Vanish amount box */
+/* The wells: light grey boxes with a label row on top. */
 
-.amount-box {
+.well {
+  background: var(--wall);
+  border-radius: var(--r-md);
+  margin-bottom: 12px;
+  padding: 14px 16px 14px 20px;
+}
+
+.well:focus-within {
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+.well-top {
   align-items: center;
-  background: var(--input);
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius);
   display: flex;
-  gap: 0.75rem;
-  margin: 0;
-  padding: 0.9rem 1rem;
+  gap: 12px;
+  justify-content: space-between;
+  min-height: 28px;
 }
 
-.amount-box:focus-within {
-  border-color: var(--accent);
-  box-shadow: var(--focus-ring);
+.balance-line {
+  align-items: center;
+  color: var(--quiet);
+  display: flex;
+  font-family: var(--mono);
+  font-size: 12px;
+  gap: 8px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.balance-line span {
+  color: var(--ink);
+}
+
+button.max {
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1.5px var(--ink);
+  color: var(--ink);
+  font-size: 12.5px;
+  margin-left: 4px;
+  padding: 5px 12px;
+}
+
+button.max:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--on-ink);
+}
+
+/* The amount: a big number, the unit beside it. */
+.amount-box {
+  align-items: baseline;
+  display: flex;
+  gap: 12px;
+  margin: 0;
 }
 
 .amount-box input {
   background: none;
-  border: none;
+  border: 0;
   box-shadow: none;
-  color: var(--text);
+  color: var(--ink);
   flex: 1;
-  font-family: var(--mono);
-  font-size: 2rem;
-  font-weight: 600;
+  font-family: var(--font);
+  font-size: 56px;
+  font-weight: 900;
+  letter-spacing: -0.045em;
+  line-height: 1.08;
   margin: 0;
   min-width: 0;
   padding: 0;
@@ -539,222 +692,257 @@ main {
   box-shadow: none;
 }
 
+.amount-box input::placeholder {
+  color: var(--quiet);
+}
+
 .token {
-  align-items: center;
-  background: var(--token);
-  border-radius: 999px;
-  color: var(--text);
-  display: flex;
+  color: var(--quiet);
   flex: none;
-  font-size: 0.95rem;
-  font-weight: 600;
-  gap: 0.4rem;
-  padding: 0.35rem 0.75rem 0.35rem 0.5rem;
-}
-
-.token .icon {
-  color: var(--accent);
-}
-
-.balance-line {
-  align-items: center;
-  color: var(--muted);
-  display: flex;
-  font-size: 0.875rem;
-  gap: 0.35rem;
-  justify-content: flex-end;
-  margin: 0.4rem 0 0;
-}
-
-/* Keys and checks */
-
-.key-panel,
-.check {
-  background: var(--input);
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius-small);
-  margin-top: 1rem;
-  padding: 0.9rem;
-}
-
-.secret {
   font-family: var(--mono);
-  font-size: 1.1rem;
-  letter-spacing: 0.04em;
-  user-select: all;
-  word-spacing: 0.4em;
+  font-size: 14px;
+  letter-spacing: 0.08em;
 }
 
-.blurred {
-  filter: blur(0.45em);
-  user-select: none;
+#vanish-form .well {
+  margin-bottom: 22px;
 }
 
-.groups {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
+/* The Phantom Key well of Summon. */
+.key-well {
+  padding-bottom: 12px;
 }
-
-.groups label {
-  flex: 1 1 6rem;
-  margin: 0.25rem 0;
-}
-
-.groups input {
-  font-family: var(--mono);
-}
-
-.groups input[aria-invalid="true"] {
-  border-color: var(--danger);
-}
-
-/* The Vanish screens: save the key, check it, the waiting bar, Done */
-
-.screen h2 {
-  font-size: 1.15rem;
-}
-
-.word-grid {
-  display: grid;
-  gap: 0.4rem 0.75rem;
-  grid-auto-flow: column;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-template-rows: repeat(8, auto);
-  list-style: none;
-  margin: 0.9rem 0;
-  padding: 0;
-}
-
-.word-grid li {
-  background: var(--input);
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius-small);
-  display: flex;
-  font-family: var(--mono);
-  font-size: 0.9rem;
-  gap: 0.4rem;
-  min-width: 0;
-  padding: 0.35rem 0.5rem;
-}
-
-.word-grid .n {
-  color: var(--muted);
-  flex: none;
-  min-width: 1.4em;
-  text-align: right;
-}
-
-.waiting {
-  padding: 1.5rem 0 0.5rem;
-  text-align: center;
-}
-
-.bar {
-  background: var(--input);
-  border-radius: 999px;
-  height: 3px;
-  overflow: hidden;
-}
-
-.bar span {
-  background: var(--violet);
-  border-radius: 999px;
-  display: block;
-  height: 100%;
-  width: 40%;
-}
-
-.waiting p {
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-.done {
-  text-align: center;
-}
-
-/* Summon's confirm screen: the amount and the address, then Confirm or Cancel */
-
-.confirm {
-  padding: 1rem 0 0.25rem;
-  text-align: center;
-}
-
-.confirm p {
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-.icon-done {
-  color: var(--accent);
-  display: block;
-  height: 3rem;
-  margin: 0.5rem auto 0.25rem;
-  width: 3rem;
-}
-
-/* Summon's success moment: the logo in ink on a mint fill. Mint is never
-   used as text on white. */
-#summon-done .icon-done {
-  background: var(--mint);
-  border-radius: var(--radius-small);
-  box-sizing: content-box;
-  color: var(--text);
-  padding: 0.6rem;
-}
-
-.error-line {
-  color: var(--danger);
-  font-size: 0.875rem;
-}
-
-/* The Summon screens: the paste box, the amount box, the three steps, Done */
 
 .key-box {
-  margin: 0 0 0.75rem;
+  margin: 0;
 }
 
 .key-box textarea {
-  border-radius: var(--radius);
+  background: none;
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--body);
   font-family: var(--mono);
-  font-size: 0.95rem;
-  margin: 0;
-  padding: 0.9rem 1rem;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 6px 0 0;
+  min-height: 4.5em;
+  padding: 0;
+  resize: none;
 }
 
-#summon-note {
-  color: var(--muted);
+.key-box textarea:focus {
+  box-shadow: none;
 }
 
-/* The payout field under the amount, and the Summon's privacy warnings */
+.key-ok {
+  align-items: center;
+  color: var(--go);
+  display: none;
+  font-family: var(--mono);
+  font-size: 12px;
+  gap: 8px;
+}
 
+.key-ok::before,
+.ok::before {
+  background: var(--go);
+  border-radius: 50%;
+  content: "";
+  display: inline-block;
+  flex: none;
+  height: 8px;
+  width: 8px;
+}
+
+body[data-screen="summon-coin"] .key-ok {
+  display: flex;
+}
+
+/* Pay to: a well of its own, the address editable in mono. */
 .payout-box {
-  display: block;
-  margin: 0.75rem 0 0;
+  align-items: center;
+  background: var(--wall);
+  border-radius: var(--r-md);
+  display: flex;
+  gap: 14px;
+  margin: 0 0 12px;
+  padding: 12px 16px 12px 20px;
+}
+
+.payout-box:focus-within {
+  box-shadow: inset 0 0 0 2px var(--ink);
 }
 
 .payout-box span {
-  color: var(--muted);
-  display: block;
-  font-size: 0.875rem;
-  margin-bottom: 0.3rem;
+  color: var(--quiet);
+  flex: none;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
 .payout-box input {
+  background: none;
+  box-shadow: none;
+  flex: 1;
   font-family: var(--mono);
-  font-size: 0.9rem;
+  font-size: 14px;
+  margin: 0;
+  min-width: 0;
+  padding: 4px 0;
+}
+
+.payout-box input:focus {
+  box-shadow: none;
+}
+
+/* Warnings: amber boxes. */
+
+.warn-box,
+.quantum-note {
+  background: var(--wait-bg);
+  border-radius: var(--r-md);
+  margin-bottom: 22px;
+  padding: 16px 18px;
+}
+
+.warn-box p:not(.box-head) {
+  color: var(--wait-text);
+  font-size: 14.5px;
+  line-height: 1.5;
   margin: 0;
 }
 
+.box-head {
+  color: var(--wait);
+  font-size: 11px;
+  margin: 0 0 6px;
+}
+
 .warning-line {
-  border-left: 3px solid var(--caution);
+  background: var(--wait-bg);
+  border-radius: 12px;
+  color: var(--wait-text);
   font-size: 0.875rem;
-  padding-left: 0.75rem;
+  line-height: 1.5;
+  margin: 0 0 12px;
+  padding: 10px 14px;
 }
 
 .warning-line:empty {
   display: none;
+}
+
+/* The 24 words: real text, read by screen readers and copied by Copy. The
+   card above the tile shows them to the eye, so the list itself is kept
+   off screen; the card is hidden from screen readers, so they read the
+   words once. */
+.word-grid {
+  clip: rect(0 0 0 0);
+  font-family: var(--mono);
+  height: 1px;
+  list-style: none;
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.word-grid li {
+  font-family: var(--mono);
+}
+
+.word-grid .n::after {
+  content: " ";
+}
+
+.pair {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto 1fr;
+  margin: 0;
+}
+
+.pair .outline {
+  font-size: 16.5px;
+  padding: 18px 26px;
+}
+
+/* The save check: three wells, one word each. */
+.groups {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, 1fr);
+  margin-bottom: 18px;
+}
+
+.groups label {
+  background: var(--wall);
+  border-radius: var(--r-md);
+  color: var(--quiet);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0.1em;
+  margin: 0;
+  padding: 12px 14px;
+  text-transform: uppercase;
+}
+
+.groups label:focus-within {
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+.groups input {
+  background: none;
+  font-family: var(--mono);
+  font-size: 18px;
+  letter-spacing: 0;
+  margin-top: 6px;
+  padding: 0;
+  text-transform: none;
+}
+
+.groups input:focus {
+  box-shadow: none;
+}
+
+.groups input[aria-invalid="true"] {
+  color: var(--danger);
+}
+
+.groups label:has(input[aria-invalid="true"]) {
+  box-shadow: inset 0 0 0 2px var(--danger);
+}
+
+.back-line {
+  margin: 0 0 22px;
+}
+
+/* Waiting: the foil bar. */
+
+.bar {
+  background: var(--wall);
+  border-radius: 7px;
+  height: 7px;
+  margin: 22px 0 26px;
+  overflow: hidden;
+}
+
+.bar span {
+  background: var(--foil);
+  background-size: 200% 100%;
+  border-radius: 7px;
+  display: block;
+  height: 100%;
+  width: 58%;
+}
+
+.waiting p {
+  color: var(--body);
 }
 
 .bar.steps span {
@@ -773,53 +961,110 @@ main {
   width: 100%;
 }
 
+/* Summon's three steps: a ring, a filled check when done, foil while now. */
 .step-list {
-  display: inline-block;
+  display: grid;
+  gap: 4px;
   list-style: none;
-  margin: 1rem 0 0.25rem;
+  margin: 0 0 4px;
   padding: 0;
-  text-align: left;
 }
 
 .step-list li {
   align-items: center;
-  color: var(--muted);
-  display: flex;
-  gap: 0.6rem;
-  margin: 0.4rem 0;
+  border-top: 1px solid var(--line);
+  color: var(--quiet);
+  display: grid;
+  font-size: 17px;
+  font-weight: 700;
+  gap: 12px;
+  grid-template-columns: 22px 1fr auto;
+  padding: 12px 0;
+}
+
+.step-list li:first-child {
+  border-top: 0;
 }
 
 .step-list li::before {
-  border: 1.5px solid var(--border-strong);
   border-radius: 50%;
-  color: var(--on-violet);
+  box-shadow: inset 0 0 0 2px var(--line);
   content: "";
-  display: inline-flex;
-  flex: none;
-  font-size: 0.7rem;
-  height: 1.1rem;
-  justify-content: center;
-  line-height: 1;
-  width: 1.1rem;
+  height: 18px;
+  width: 18px;
 }
 
+.step-list li::after {
+  color: var(--quiet);
+  content: "";
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.step-list li[data-state="done"],
 .step-list li[data-state="now"] {
-  color: var(--text);
-}
-
-.step-list li[data-state="now"]::before {
-  border-color: var(--accent);
-}
-
-.step-list li[data-state="done"] {
-  color: var(--text);
+  color: var(--ink);
 }
 
 .step-list li[data-state="done"]::before {
-  align-items: center;
-  background: var(--violet);
-  border-color: var(--violet);
+  background: var(--ink);
+  box-shadow: none;
+  color: var(--on-ink);
   content: "✓";
+  display: grid;
+  font-size: 11px;
+  place-items: center;
+}
+
+.step-list li[data-state="done"]::after {
+  color: var(--go);
+  content: "done";
+}
+
+.step-list li[data-state="now"]::before {
+  background: radial-gradient(circle, var(--paper) 4.5px, transparent 5px), var(--foil);
+  box-shadow: none;
+}
+
+.step-list li[data-state="now"]::after {
+  content: "now";
+}
+
+/* Done: a green line, the big result. */
+
+.ok {
+  align-items: center;
+  color: var(--go);
+  display: flex;
+  gap: 9px;
+  margin: 0 0 14px;
+}
+
+.done h2 {
+  font-size: clamp(34px, 3.4vw, 44px);
+}
+
+.confirm p {
+  color: var(--body);
+}
+
+.confirm .outline {
+  margin-top: 10px;
+}
+
+/* Lines that say how a step went. */
+
+.status {
+  color: var(--body);
+  font-size: 0.95rem;
+}
+
+.error-line {
+  color: var(--danger);
+  font-size: 0.9rem;
 }
 
 .status:empty,
@@ -829,27 +1074,19 @@ main {
   display: none;
 }
 
-.status {
-  font-size: 0.9rem;
-}
-
-.cover {
-  border-left: 3px solid var(--border-strong);
-  font-size: 0.9rem;
-  padding-left: 0.75rem;
-}
-
-.cover.warning {
-  border-left-color: var(--caution);
-}
-
 .activity {
   font-size: 0.875rem;
-  margin-top: 0.75rem;
 }
 
 #progress {
-  color: var(--accent);
+  color: var(--body);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+#error,
+.chain-status {
+  color: var(--danger);
 }
 
 /* Show wallet: the one secondary button, under the status line while the
@@ -859,79 +1096,236 @@ button.secondary {
   margin: 0.5rem auto 0;
 }
 
-#error,
-.chain-status {
-  color: var(--danger);
+/* Claim (kept in its hidden container) */
+
+.key-panel,
+.check {
+  background: var(--wall);
+  border-radius: var(--r-md);
+  margin-top: 1rem;
+  padding: 0.9rem;
 }
 
-/* Footer and its panels */
+.check input {
+  background: var(--paper);
+}
+
+.secret {
+  font-family: var(--mono);
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+  user-select: all;
+  word-spacing: 0.4em;
+}
+
+.blurred {
+  filter: blur(0.45em);
+  user-select: none;
+}
+
+/* Footer: one amber warning line. */
 
 .bottom {
-  align-items: center;
-  color: var(--muted);
-  display: flex;
-  flex-wrap: wrap;
-  font-size: 0.85rem;
-  gap: 0.25rem 1rem;
-  justify-content: center;
-  padding: 1rem;
+  padding: 10px var(--pad) 22px;
   text-align: center;
 }
 
 .bottom .warn {
-  color: var(--caution);
+  color: var(--quiet);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
   margin: 0;
 }
 
-.bottom .row {
-  margin: 0;
-}
-
-#network-button.attention::after {
-  background: var(--danger);
+.bottom .warn::before {
+  background: var(--wait);
   border-radius: 50%;
   content: "";
   display: inline-block;
-  height: 0.45rem;
-  margin-left: 0.3rem;
-  vertical-align: middle;
-  width: 0.45rem;
+  height: 7px;
+  margin-right: 9px;
+  vertical-align: 1px;
+  width: 7px;
 }
 
-.sheet {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  bottom: 1rem;
-  box-shadow: var(--shadow);
-  left: 50%;
-  max-height: calc(100vh - 2rem);
-  overflow-y: auto;
-  padding: 1.1rem;
+/* The panels: the wallet drops from its button, Network and About from the
+   top bar; on a phone each is a sheet from the bottom. */
+
+.scrim {
+  background: rgba(16, 16, 19, 0.32);
+  inset: 0;
   position: fixed;
-  transform: translateX(-50%);
-  width: min(var(--card-width), calc(100vw - 2rem));
+  z-index: 20;
+}
+
+.popover,
+.sheet {
+  background: var(--paper);
+  border-radius: var(--r-lg);
+  max-height: calc(100vh - 6rem);
+  overflow-y: auto;
+  padding: 24px;
+  width: min(420px, calc(100vw - 2 * var(--pad)));
   z-index: 30;
 }
 
+.popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 12px);
+}
+
+.sheet {
+  position: fixed;
+  right: var(--pad);
+  top: 74px;
+}
+
 .sheet-head {
-  align-items: center;
+  align-items: baseline;
   display: flex;
   justify-content: space-between;
+  margin-bottom: 18px;
 }
 
 .sheet-head h2 {
+  font-size: 26px;
   margin: 0;
 }
 
-/* The local node lines of the Network panel */
+.sheet p,
+.popover p {
+  color: var(--body);
+  font-size: 0.95rem;
+}
+
+.sheet .note,
+.popover .note {
+  color: var(--quiet);
+  font-size: 12px;
+}
+
+.sheet label {
+  font-size: 0.85rem;
+}
+
+.sheet input {
+  font-family: var(--mono);
+  font-size: 0.9rem;
+}
+
+.wallet-list {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+}
+
+.wallet-option {
+  align-items: center;
+  border-radius: var(--r-md);
+  box-shadow: inset 0 0 0 2px var(--ink);
+  display: grid;
+  gap: 16px;
+  grid-template-columns: auto 1fr auto;
+  padding: 16px 18px;
+  text-align: left;
+  width: 100%;
+}
+
+.wallet-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.wallet-option-name {
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.wallet-option-note {
+  color: var(--body);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.arrow {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+/* The small black card with its foil ring. */
+.mini-card {
+  aspect-ratio: 1.586;
+  background: var(--card-black);
+  border-radius: 6px;
+  display: block;
+  position: relative;
+  width: 52px;
+}
+
+.mini-card::after {
+  background: var(--foil);
+  border-radius: 50%;
+  content: "";
+  height: 18px;
+  margin-top: -9px;
+  -webkit-mask: radial-gradient(circle, transparent 6.5px, #000 7px);
+  mask: radial-gradient(circle, transparent 6.5px, #000 7px);
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  width: 18px;
+}
+
+.quantum-note {
+  background: var(--wall);
+  margin: 0;
+}
+
+.quantum-note .box-head {
+  align-items: center;
+  color: var(--ink);
+  display: flex;
+  gap: 8px;
+}
+
+.quantum-note .box-head::before {
+  background: var(--foil);
+  border-radius: 50%;
+  content: "";
+  height: 7px;
+  width: 7px;
+}
+
+.quantum-note .note {
+  color: var(--body);
+  font-family: var(--font);
+  font-size: 13.5px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.balance-big {
+  font-family: var(--mono);
+  font-size: 1.25rem;
+  font-weight: 500;
+  margin-top: 0.15rem;
+}
+
+.balance-big,
+#wallet-address {
+  color: var(--ink);
+}
 
 .node-in-use strong {
-  color: var(--accent);
+  color: var(--ink);
 }
 
 .local-node {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--line);
   margin-top: 0.75rem;
   padding-top: 0.5rem;
 }
@@ -943,136 +1337,248 @@ button.secondary {
 }
 
 .install-line code {
-  background: var(--surface-behind);
-  border-radius: 8px;
+  background: var(--wall);
+  border-radius: 10px;
+  color: var(--ink);
   flex: 1;
-  font-size: 0.85rem;
-  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+  padding: 0.5rem 0.7rem;
 }
 
 #local-node-site {
-  text-decoration: underline;
+  border-bottom: 2px solid currentColor;
+  color: var(--ink);
+  font-weight: 800;
 }
 
 /* Motion only where the user has not asked for less motion. */
 @media (prefers-reduced-motion: no-preference) {
+  .bearer {
+    transition:
+      transform 0.8s var(--ease),
+      width 0.6s var(--ease);
+  }
+
+  .bearer.live {
+    transition:
+      transform 0.08s linear,
+      width 0.6s var(--ease);
+  }
+
+  .bearer.still {
+    transition: none;
+  }
+
+  .face svg {
+    transition: opacity 0.16s;
+  }
+
+  .stage::after {
+    transition: opacity 0.4s;
+  }
+
+  body[data-screen="vanished"] .glint {
+    animation: glint 4.2s 0.7s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  }
+
   .tab {
     transition:
       background-color var(--speed) var(--ease),
-      color var(--speed) var(--ease),
-      transform var(--speed) var(--ease);
+      color var(--speed) var(--ease);
   }
 
-  button,
-  input,
-  textarea,
-  .amount-box {
-    transition:
-      background-color var(--speed) var(--ease),
-      border-color var(--speed) var(--ease),
-      box-shadow var(--speed) var(--ease);
+  button.primary,
+  .wallet-option {
+    transition: transform 0.15s;
   }
 
-  /* The coin fades out when it vanishes and fades in when it is summoned. */
-  #vanish-done:not([hidden]) .icon-done {
-    animation: coin-out 1.2s var(--ease) forwards;
-  }
-
-  #summon-done:not([hidden]) .icon-done {
-    animation: coin-in 1.2s var(--ease);
+  button.primary:hover:not(:disabled),
+  .wallet-option:hover {
+    transform: translateY(-2px);
   }
 
   .tab-panel:not([hidden]),
   .popover:not([hidden]),
   .sheet:not([hidden]) {
-    animation: rise var(--speed) var(--ease);
-  }
-
-  .sheet:not([hidden]) {
-    animation-name: rise-sheet;
+    animation: rise 0.25s ease-out;
   }
 
   .bar span {
-    animation: slide 1.2s var(--ease) infinite;
+    animation: run 2.4s linear infinite;
   }
 
   /* The Summon bar grows with the step the flow has reached. */
   .bar.steps span {
-    animation: none;
     transition: width var(--speed) var(--ease);
   }
 
-  @keyframes slide {
-    from {
-      transform: translateX(-100%);
-    }
-
+  @keyframes run {
     to {
-      transform: translateX(250%);
+      background-position: -200% 0;
     }
   }
 
   @keyframes rise {
     from {
       opacity: 0;
-      transform: translateY(6px);
+      transform: translateY(8px);
     }
   }
 
-  @keyframes rise-sheet {
-    from {
-      opacity: 0;
-      transform: translate(-50%, 8px);
-    }
-  }
-
-  @keyframes coin-out {
-    from {
+  @keyframes glint {
+    0% {
+      background-position: 120% 0;
       opacity: 1;
-      transform: none;
     }
 
-    to {
-      opacity: 0.3;
-      transform: translateY(-8px) scale(0.9);
+    45% {
+      background-position: -20% 0;
+      opacity: 1;
     }
-  }
 
-  @keyframes coin-in {
-    from {
+    46%,
+    100% {
+      background-position: -20% 0;
       opacity: 0;
-      transform: translateY(8px) scale(0.9);
     }
   }
 }
 
-@media (max-width: 480px) {
+@media (max-width: 600px) {
+  body {
+    --cw: 280px;
+  }
+
+  body[data-size="m"] {
+    --cw: 320px;
+  }
+
   .top {
-    padding: 0.75rem 1rem;
+    gap: 10px;
+    padding: 14px 16px;
+  }
+
+  .brand-logo {
+    height: 1.25rem;
+    width: 6.81rem;
+  }
+
+  .top-links {
+    gap: 12px;
+  }
+
+  .top-link {
+    font-size: 13px;
+  }
+
+  .wallet-button {
+    font-size: 13px;
+    padding: 9px 13px;
+  }
+
+  body[data-wallet="on"] .wallet-button {
+    font-size: 11.5px;
+    gap: 7px;
+    padding: 8px 11px;
+  }
+
+  .launch-notice {
+    font-size: 11px;
+    padding-left: 34px;
+    text-align: left;
+    text-indent: -16px;
+  }
+
+  main {
+    padding: 28px 16px 32px;
+  }
+
+  .stage {
+    margin-bottom: 40px;
+  }
+
+  .folder {
+    padding: 12px 20px 24px;
+  }
+
+  .tabs {
+    margin: 0 -10px 24px;
+  }
+
+  body[data-screen="key"] .folder,
+  body[data-screen="check"] .folder,
+  body[data-screen="vanishing"] .folder,
+  body[data-screen="confirm"] .folder,
+  body[data-screen="summoning"] .folder {
+    padding-top: 24px;
+  }
+
+  .amount-box input {
+    font-size: 46px;
+  }
+
+  .balance-line {
+    font-size: 11px;
+    gap: 6px;
+  }
+
+  .well {
+    padding-left: 16px;
+  }
+
+  h2 {
+    font-size: 30px;
+  }
+
+  .pair {
+    grid-template-columns: 1fr;
+  }
+
+  .pair .outline {
+    order: 2;
+    padding: 15px;
+  }
+
+  .groups {
+    grid-template-columns: 1fr;
+  }
+
+  .groups label {
+    align-items: center;
+    display: grid;
+    grid-template-columns: 80px 1fr;
+  }
+
+  .groups input {
+    margin-top: 0;
+  }
+
+  .bottom {
+    padding-left: 34px;
+    text-align: left;
+    text-indent: -16px;
   }
 
   .wallet-anchor {
     position: static;
   }
 
-  .popover {
-    left: 1rem;
-    right: 1rem;
-    top: 4rem;
+  .popover,
+  .sheet {
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    bottom: 0;
+    left: 0;
+    max-height: 85vh;
+    padding: 24px 20px 32px;
+    position: fixed;
+    right: 0;
+    top: auto;
     width: auto;
   }
+}
 
-  .card {
-    padding: 1rem;
-  }
-
-  .amount-box input {
-    font-size: 1.6rem;
-  }
-
-  .tab {
-    flex: 1;
-    padding-left: 0.75rem;
-    padding-right: 0.75rem;
+@media (max-width: 420px) {
+  .top-link {
+    font-size: 12.5px;
   }
 }

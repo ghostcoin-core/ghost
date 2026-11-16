@@ -1,8 +1,8 @@
-// The page's layout, read from index.html and style.css as text: the folder
-// tabs, the wallet button, the Vanish amount box, the Network and About
-// panels, Claim kept in a hidden container, the light brand colors as
-// CSS variables in one light theme, and the CSP. No browser and no module
-// build are needed.
+// The page's layout, read from index.html and style.css as text: the
+// Vanish/Summon switch, the bearer card, the wallet button, the Vanish
+// amount box, the Network and About panels, Claim kept in a hidden
+// container, the Specter colors as CSS variables in one light theme, and
+// the CSP. No browser and no module build are needed.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -103,9 +103,9 @@ test("the Vanish panel holds the amount box, the balance line and the main butto
   const box = /<label class="amount-box">[\s\S]*?<\/label>/.exec(panel);
   assert.ok(box, "an amount box");
   assert.ok(box[0].includes(amount), "the input is inside the box");
-  assert.match(box[0], /<use href="#icon-ghost">/, "the token icon is inside the box");
-  assert.match(box[0], /SPECTER\s*<\/span>/);
-  assert.match(panel, /Balance: <span id="vanish-balance">—<\/span>/);
+  assert.match(box[0], /<span class="visually-hidden">Amount \(SPECTER\)<\/span>/, "the input is labelled");
+  assert.match(box[0], /<span class="token">SPECTER<\/span>/);
+  assert.match(panel, /Balance <span id="vanish-balance">—<\/span>/);
   assert.ok(panel.indexOf('id="vanish-balance"') < panel.indexOf('id="vanish-max"'));
   assert.match(element("vanish-max"), />Max</);
   assert.match(element("vanish-submit"), /type="submit"[^>]*>Connect wallet</);
@@ -139,14 +139,16 @@ test("the Summon panel holds the paste box, the amount box, the confirm, waiting
   assert.ok(panel.indexOf('id="summon-form"') < panel.indexOf('id="summon-confirm"'));
   assert.ok(panel.indexOf('id="summon-confirm"') < panel.indexOf('id="summon-waiting"'));
   assert.equal(element("summon-confirm").match(/class="primary/g).length, 1);
-  assert.match(css, /\.confirm\s*\{/);
+  assert.match(css, /\.confirm p\s*\{/);
   // No payout address field and no reveal form of their own.
   assert.doesNotMatch(panel, /id="reveal-/);
 });
 
 test("the Connect wallet button top right opens a dialog listing the quantum-safe wallets", () => {
   assert.match(element("wallet-button"), /Connect wallet/);
-  assert.match(element("wallet-button"), /<use href="#icon-wallet">/);
+  // The connected look (a green dot, the short address) comes from the
+  // page's state, not from a second button.
+  assert.match(element("wallet-button"), /<span class="wallet-dot" aria-hidden="true"><\/span>/);
   assert.match(tag("wallet-button"), /aria-controls="wallet-panel"/);
   assert.match(tag("wallet-panel"), /\bhidden\b/);
   assert.match(tag("wallet-panel"), /role="dialog"/);
@@ -172,11 +174,13 @@ test("the Connect wallet button top right opens a dialog listing the quantum-saf
   assert.match(tag("wallet-open"), /\bhidden\b/);
   assert.match(element("wallet-refresh"), />Refresh</);
   assert.match(element("wallet-disconnect"), />Disconnect</);
-  // The brand top left, the wallet button after it.
+  // The brand top left, then Network, About and the wallet button.
   const top = /<header class="top">[\s\S]*?<\/header>/.exec(html);
   assert.ok(top, "a top bar");
   const brand = top[0].indexOf('<svg class="brand-logo"');
-  assert.ok(brand > 0 && brand < top[0].indexOf('id="wallet-button"'));
+  assert.ok(brand > 0 && brand < top[0].indexOf('id="network-button"'));
+  assert.ok(top[0].indexOf('id="network-button"') < top[0].indexOf('id="about-button"'));
+  assert.ok(top[0].indexOf('id="about-button"') < top[0].indexOf('id="wallet-button"'));
   assert.match(top[0], /<svg class="brand-logo"[^>]*role="img" aria-label="Specter"/);
   assert.ok(top[0].includes('id="wallet-panel"'));
   assert.match(css, /\.wallet-option\s*\{/);
@@ -209,17 +213,23 @@ test("the page has no create or restore wallet flow and holds no seed", () => {
   }
 });
 
-test("the network settings and privacy wording sit in Network and About panels from the footer", () => {
+test("the network settings and privacy wording sit in Network and About panels from the top bar", () => {
   const network = element("network-panel");
   assert.match(tag("network-panel"), /\bhidden\b/);
   for (const id of ["network-form", "endpoint", "commit-entry", "chain-status"]) assert.ok(network.includes(`id="${id}"`), id);
   const about = element("about-panel");
   assert.match(tag("about-panel"), /\bhidden\b/);
   assert.match(about, /No key or wallet seed is stored/);
+  const top = /<header class="top">[\s\S]*?<\/header>/.exec(html)[0];
+  assert.match(tag("network-button"), /aria-controls="network-panel"/);
+  assert.match(tag("about-button"), /aria-controls="about-panel"/);
+  assert.ok(top.includes('id="network-button"') && top.includes('id="about-button"'));
+  // Each panel closes with its own button, and a phone shows it as a sheet.
+  for (const id of ["wallet-panel", "network-panel", "about-panel"]) {
+    assert.match(element(id), new RegExp(`data-close="${id}"`), id);
+  }
+  // The footer: one short warning line.
   const footer = /<footer\b[\s\S]*?<\/footer>/.exec(html)[0];
-  assert.match(footer, /aria-controls="network-panel"/);
-  assert.match(footer, /aria-controls="about-panel"/);
-  // One short warning line.
   const warn = [...footer.matchAll(/<p class="warn">([^<]*)<\/p>/g)];
   assert.equal(warn.length, 1);
   assert.match(warn[0][1], /Experimental/);
@@ -236,11 +246,37 @@ test("Claim stays in the page inside a hidden container", () => {
   assert.equal(html.split('id="claim-start"').length, 2);
 });
 
-test("the icons are inline SVG with no namespace attribute", () => {
-  assert.match(html, /<symbol id="icon-ghost"/);
-  assert.match(html, /<symbol id="icon-wallet"/);
+test("the logo and the bearer card are inline SVG with no namespace attribute and no image", () => {
+  assert.match(html, /<svg class="brand-logo"/);
+  assert.match(tag("bearer-front"), /^<svg\b/);
+  assert.match(tag("bearer-back"), /^<svg\b/);
   assert.doesNotMatch(html, /xmlns/);
-  assert.doesNotMatch(html, /<img\b/i);
+  assert.doesNotMatch(html, /<img\b|<canvas\b/i);
+});
+
+test("the bearer card is decoration: hidden from screen readers, outside the tile, drawn by its own module", () => {
+  const stage = /<div class="stage" aria-hidden="true">[\s\S]*?<div id="bearer"/.exec(html);
+  assert.ok(stage, "the card sits in an aria-hidden stage");
+  assert.ok(html.indexOf('class="stage"') < html.indexOf('class="folder"'), "above the tile");
+  assert.ok(!element("card").includes('id="bearer"'), "not inside the tile");
+  assert.match(html, /<script type="module" src="src\/bearer-card\.mjs"><\/script>/);
+  const card = readFileSync(new URL("../src/bearer-card.mjs", import.meta.url), "utf8");
+  // It reads the page and changes nothing app.mjs owns: no value, hidden
+  // flag or text of an element app.mjs uses is set from it.
+  const source = readFileSync(new URL("../src/app.mjs", import.meta.url), "utf8");
+  const used = new Set([...source.matchAll(/\$\("([\w-]+)"\)/g)].map((m) => m[1]));
+  for (const m of card.matchAll(/\$\("([\w-]+)"\)\.(value|hidden|textContent|disabled)\s*=(?!=)/g)) {
+    assert.ok(!used.has(m[1]), `bearer-card.mjs sets ${m[1]}.${m[2]}`);
+  }
+  // Nothing is stored and nothing is fetched.
+  for (const word of ["localStorage", "sessionStorage", "indexedDB", "document.cookie", "fetch(", "XMLHttpRequest", "toDataURL", "toBlob"]) {
+    assert.ok(!card.includes(word), word);
+  }
+  // Words go in as text, never as markup.
+  assert.match(card, /slot\.textContent = value/);
+  const templates = [...card.matchAll(/innerHTML = `([\s\S]*?)`;/g)].map((m) => m[1]);
+  assert.ok(templates.length >= 3, "the three faces");
+  for (const t of templates) assert.doesNotMatch(t, /\$\{\s*(words|w|amount|label)\b/);
 });
 
 test("the CSP stays default-src 'none' and adds font-src 'self'", () => {
@@ -266,44 +302,47 @@ test("neither the page nor the style names an external URL", () => {
   assert.doesNotMatch(html, /\sstyle="/i, "no inline style");
 });
 
-test("the light brand colors are CSS variables of one light theme", () => {
+test("the Specter colors are CSS variables of one light theme", () => {
   const root = /:root\s*\{([^}]*)\}/.exec(css);
   assert.ok(root, "a :root block");
   const vars = Object.fromEntries([...root[1].matchAll(/(--[\w-]+):\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
-  assert.equal(vars["--bg"].toUpperCase(), "#F5F5F8");
-  for (const name of ["--surface", "--surface-behind", "--violet", "--text", "--muted", "--shadow", "--font", "--mono", "--ease"]) {
+  assert.equal(vars["--wall"].toUpperCase(), "#EDEBE6");
+  for (const name of ["--paper", "--ink", "--body", "--quiet", "--foil", "--go", "--wait", "--danger", "--font", "--mono", "--ease"]) {
     assert.ok(vars[name], `${name} is set`);
   }
-  assert.match(vars["--font"], /^"Instrument Sans", system-ui/);
-  assert.match(vars["--mono"], /^"IBM Plex Mono", ui-monospace/);
+  assert.match(vars["--font"], /^"Red Hat Display", system-ui/);
+  assert.match(vars["--mono"], /^"Red Hat Mono", ui-monospace/);
   assert.match(root[1], /color-scheme:\s*light;/);
   assert.equal(css.match(/:root\b/g).length, 1, "one theme");
   assert.doesNotMatch(css, /color-scheme:\s*[^;]*dark/);
   // No second theme behind a color-scheme media query.
   assert.doesNotMatch(css, /prefers-color-[s]cheme/);
-  // The inactive tab is darker than the card it sits behind.
-  const shade = (hex) => parseInt(hex.slice(1, 3), 16) + parseInt(hex.slice(3, 5), 16) + parseInt(hex.slice(5, 7), 16);
-  assert.ok(shade(vars["--surface-behind"]) < shade(vars["--surface"]));
-  assert.match(css, /\.tab\s*\{[^}]*background:\s*var\(--surface-behind\)/);
-  assert.match(css, /\.tab\[aria-selected="true"\]\s*\{[^}]*background:\s*var\(--surface\)/);
-  assert.match(css, /\.card\s*\{[^}]*background:\s*var\(--surface\)/);
+  // The page is the warm grey, the tile white, the selected switch ink.
+  assert.match(css, /\nbody\s*\{[^}]*background:\s*var\(--wall\)/);
+  assert.match(css, /\.folder\s*\{[^}]*background:\s*var\(--paper\)/);
+  assert.match(css, /\.tab\[aria-selected="true"\]\s*\{[^}]*background:\s*var\(--ink\)/);
 });
 
-test("motion turns off under reduced motion; the card's soft shadow stays", () => {
+test("motion turns off under reduced motion; the shadow under the card stays", () => {
   const at = css.indexOf("@media (prefers-reduced-motion: no-preference)");
   assert.notEqual(at, -1);
   const outside = css.slice(0, at);
   assert.doesNotMatch(outside, /\b(transition|animation)\s*:/);
-  assert.doesNotMatch(css, /var\(--glow\)/);
-  assert.match(outside, /\.card\s*\{[^}]*box-shadow:\s*var\(--shadow\)/);
-  assert.match(css.slice(at), /transition/);
+  assert.match(outside, /\.stage::after\s*\{[^}]*filter:\s*blur/);
+  assert.match(css.slice(at), /\.bearer\s*\{[^}]*transition/);
+  // The card turns its own faces: each face its own transform, and the
+  // face pointing away hidden from the card's matrix.
+  assert.match(css, /\.face\s*\{[^}]*translateZ\(1px\)/);
+  assert.match(css, /\.face\.back\s*\{[^}]*rotateY\(180deg\) translateZ\(1px\)/);
+  assert.match(css, /\.bearer\.turned \.face:not\(\.back\),\s*\.bearer:not\(\.turned\) \.face\.back\s*\{[^}]*visibility:\s*hidden/);
 });
 
 test("the page fits a phone's width", () => {
   assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1">/);
-  assert.match(css, /--card-width:\s*420px/);
-  assert.match(css, /\.folder\s*\{[^}]*max-width:\s*var\(--card-width\);[^}]*width:\s*100%/);
+  assert.match(css, /--tile:\s*520px/);
+  assert.match(css, /\.folder\s*\{[^}]*max-width:\s*var\(--tile\);[^}]*width:\s*100%/);
+  assert.match(css, /\.bearer\s*\{[^}]*width:\s*min\(var\(--cw\), calc\(100vw - 2 \* var\(--pad\)\)\)/);
   assert.match(css, /box-sizing:\s*border-box/);
   assert.match(css, /overflow-x:\s*hidden/);
-  assert.match(css, /@media \(max-width: 480px\)/);
+  assert.match(css, /@media \(max-width: 600px\)/);
 });

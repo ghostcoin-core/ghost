@@ -564,7 +564,7 @@ function renderWallet(w) {
   const known = connected && w.balance !== null;
   $("vanish-balance").textContent = known ? `${formatGhost(w.balance)} SPECTER` : "—";
   $("vanish-max").disabled = !known;
-  $("vanish-submit").textContent = connected ? "Vanish" : "Connect wallet";
+  $("vanish-submit").textContent = connected ? "Vanish SPECTER" : "Connect wallet";
 }
 
 // An address as the wallet button shows it: 0x3a…91c.
@@ -639,7 +639,16 @@ function renderVanish(v, approving, progress = null) {
   $("vanish-after").hidden = screen !== "after";
 
   const amount = v ? formatGhost(v.amount) : "";
-  for (const id of ["vanish-key-amount", "vanish-send-amount", "vanish-done-amount"]) $(id).textContent = amount;
+  for (const id of [
+    "vanish-key-amount",
+    "vanish-send-amount",
+    "vanish-done-amount",
+    "vanish-keystep-amount",
+    "vanish-checkstep-amount",
+    "vanish-waitstep-amount",
+  ]) {
+    $(id).textContent = amount;
+  }
   if (v && v.stage === "check") checkInputs($("vanish-check-groups"), v.groups, v.wrong);
   else clearCheck($("vanish-check-groups"));
   $("vanish-waiting-text").textContent =
