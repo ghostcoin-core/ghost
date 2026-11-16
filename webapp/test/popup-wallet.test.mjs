@@ -155,7 +155,7 @@ test("replies from another origin or another window are ignored", async () => {
 });
 
 test("the page opens the hosted wallet, and the wallet answers the hosted page only", async () => {
-  assert.equal(POPUP_WALLET_ORIGIN, "https://ghost-wallet-nine.vercel.app");
+  assert.equal(POPUP_WALLET_ORIGIN, "https://wallet.specter.cash");
   assert.deepEqual(WEBAPP_ORIGINS, ["https://app.specter.cash", "https://ghost-webapp-alpha.vercel.app"]);
   assert.ok(Object.isFrozen(WEBAPP_ORIGINS));
 
@@ -169,7 +169,7 @@ test("the page opens the hosted wallet, and the wallet answers the hosted page o
   };
   const c = popupConnector({ win: page, pollMs: 5 });
   const connecting = c.connect();
-  assert.deepEqual(page.opened.map((o) => o.url), ["https://ghost-wallet-nine.vercel.app/"]);
+  assert.deepEqual(page.opened.map((o) => o.url), ["https://wallet.specter.cash/"]);
   // A ready message from another origin is not the wallet's; the hosted one is.
   page.deliver({ data: { ready: true }, origin: "https://wallet.example", source: popup });
   await settle();

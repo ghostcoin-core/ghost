@@ -36,7 +36,7 @@ The design, the node methods it calls and its limits are in
   Ghost accounts are quantum-safe: their key is ML-DSA-44, and every commit
   is a quantum-safe account transaction (type 0x52). The one wallet listed
   is the Ghost pop-up wallet (`wallet/`, with its own README): a site on its
-  own origin, `https://ghost-wallet-nine.vercel.app`, that keeps the
+  own origin, `https://wallet.specter.cash`, that keeps the
   account key, opened in a pop-up and asked over `postMessage`
   (`src/popup-wallet.mjs`) for its two requests, `ghost_getAccount` and
   `ghost_signTransaction`. The page posts only to the wallet's origin and
