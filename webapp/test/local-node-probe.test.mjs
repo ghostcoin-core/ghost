@@ -137,10 +137,10 @@ test("the system is macOS, Linux or Windows from the user agent, Linux by defaul
 
 test("the three install lines are fixed one-line commands from the install site", () => {
   assert.deepEqual(Object.keys(INSTALL_LINES).sort(), ["Linux", "Windows", "macOS"]);
-  assert.equal(INSTALL_SITE, "https://get.ghostcoin.com");
-  assert.equal(INSTALL_LINES.macOS, "curl -fsSL https://get.ghostcoin.com/install.sh | bash");
-  assert.equal(INSTALL_LINES.Linux, "curl -fsSL https://get.ghostcoin.com/install.sh | bash");
-  assert.equal(INSTALL_LINES.Windows, "irm https://get.ghostcoin.com/install.ps1 | iex");
+  assert.equal(INSTALL_SITE, "https://get.specter.cash");
+  assert.equal(INSTALL_LINES.macOS, "curl -fsSL https://get.specter.cash/install.sh | bash");
+  assert.equal(INSTALL_LINES.Linux, "curl -fsSL https://get.specter.cash/install.sh | bash");
+  assert.equal(INSTALL_LINES.Windows, "irm https://get.specter.cash/install.ps1 | iex");
   for (const line of Object.values(INSTALL_LINES)) assert.doesNotMatch(line, /\n/);
 });
 
@@ -349,7 +349,7 @@ test("the Network panel holds the node in use line and the Run a node block, bot
   assert.equal([...block.matchAll(/<button\b/g)].length, 1, "one button");
   assert.match(element("local-node-copy"), />Copy</);
   assert.match(tags.get("local-node-site"), /rel="noopener noreferrer"/);
-  assert.match(element("local-node-site"), />get\.ghostcoin\.com</);
+  assert.match(element("local-node-site"), />get\.specter\.cash</);
   // Nowhere else on the page.
   assert.equal(html.split("Run a node").length, 2);
 });
@@ -392,7 +392,7 @@ test("no node: the Network panel shows Run a node, the visitor's line with its C
     assert.equal($("node-in-use").hidden, true);
     assert.equal($("local-node-line").textContent, INSTALL_LINES[system]);
     assert.equal($("local-node-system").textContent, system);
-    assert.equal($("local-node-site").href, "https://get.ghostcoin.com");
+    assert.equal($("local-node-site").href, "https://get.specter.cash");
     $("local-node-copy").fire("click");
     await settle();
     await settle();

@@ -114,7 +114,8 @@ fi
 # website, its organisation's code and release downloads, and its container
 # registry. None of them may be needed to recover a coin.
 project_hosts=(
-  ghostcoin.com www.ghostcoin.com
+  specter.cash www.specter.cash get.specter.cash
+  ghostcoin.com www.ghostcoin.com get.ghostcoin.com
   github.com api.github.com codeload.github.com objects.githubusercontent.com
   raw.githubusercontent.com release-assets.githubusercontent.com ghcr.io
 )

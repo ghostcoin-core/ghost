@@ -390,11 +390,11 @@ base client and this build pins no chain id to compare with.
   the public test nodes (below), and Network shows
   the Run a node block: one sentence, the install line for the visitor's
   system in a `code` element with one Copy button, and a link to
-  `https://get.ghostcoin.com` (`rel="noopener noreferrer"`). The system is
+  `https://get.specter.cash` (`rel="noopener noreferrer"`). The system is
   read from the user agent: Windows, macOS (a Mac, not an iPhone or iPad),
   otherwise Linux. The lines are fixed text:
-  - macOS and Linux: `curl -fsSL https://get.ghostcoin.com/install.sh | bash`
-  - Windows (PowerShell): `irm https://get.ghostcoin.com/install.ps1 | iex`
+  - macOS and Linux: `curl -fsSL https://get.specter.cash/install.sh | bash`
+  - Windows (PowerShell): `irm https://get.specter.cash/install.ps1 | iex`
 
 A failed look shows nothing else: no error line, no message on the console
 from the page, no retry, no polling and no reconnect button; the page looks

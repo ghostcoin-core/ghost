@@ -229,7 +229,7 @@ test("the build reads no branch and no raw file host", () => {
   const urls = [...source.matchAll(/https:\/\/[^\s"'`]+/g)].map((m) => m[0]);
   for (const url of urls) {
     assert.ok(
-      url === RELEASE_URL || url.startsWith("https://get.ghostcoin.com"),
+      url === RELEASE_URL || url.startsWith("https://get.specter.cash"),
       `build.mjs names ${url}`,
     );
   }

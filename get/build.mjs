@@ -1,9 +1,9 @@
-// Builds get.ghostcoin.com into get/dist: the Run a node page and the three
+// Builds get.specter.cash into get/dist: the Run a node page and the three
 // install scripts, taken from the latest signed release of
 // ghostcoin-core/ghost-node and checked against get/release-key.pub.
 //
-//   dist/install.sh  the Mac and Linux script (curl -fsSL https://get.ghostcoin.com | sh)
-//   dist/win         the PowerShell script (irm https://get.ghostcoin.com/win | iex)
+//   dist/install.sh  the Mac and Linux script (curl -fsSL https://get.specter.cash | sh)
+//   dist/win         the PowerShell script (irm https://get.specter.cash/win | iex)
 //   dist/cmd         the CMD script
 //   dist/favicon.svg the pixel-ghost logo's small cut, copied from get/favicon.svg
 //   dist/fonts/      the self-hosted fonts, copied from get/fonts
@@ -32,14 +32,14 @@ export const RELEASE_URL = "https://github.com/ghostcoin-core/ghost-node/release
 // Served when install.ps1 is not in the release. It downloads and runs
 // nothing. It throws rather than calling exit, which would close the
 // PowerShell window `irm | iex` runs in; the throw still fails the command.
-export const WIN_STUB = `Write-Host 'The Ghost installer for Windows is not published yet. See https://get.ghostcoin.com'
+export const WIN_STUB = `Write-Host 'The Ghost installer for Windows is not published yet. See https://get.specter.cash'
 throw 'The Ghost installer for Windows is not published yet.'
 `;
 
 // Served when install.cmd is not in the release. It downloads and runs nothing.
 export const CMD_STUB =
   "@echo off\r\n" +
-  "echo The Ghost installer for Windows is not published yet. See https://get.ghostcoin.com\r\n" +
+  "echo The Ghost installer for Windows is not published yet. See https://get.specter.cash\r\n" +
   "exit /b 1\r\n";
 
 // Each script of the release, the path the site serves it at, and the word

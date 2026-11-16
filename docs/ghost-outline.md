@@ -56,7 +56,7 @@ Directions examined and set aside on 2026-10-17, with reasons in [decision 0002]
 - **Dependencies** are pinned to specific versions, licence-checked and updated deliberately.
 
 ## Names
-- **Chain and coin:** Ghost and GHOST, with ghostcoin.com as the single home.
+- **Chain and coin:** Specter (formerly Ghost), with specter.cash as the single home.
 - **Protocol actions:** Commit and Reveal.
 - **App labels:** "Vanish" and "Summon," for the coin only.
 

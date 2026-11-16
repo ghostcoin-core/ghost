@@ -196,7 +196,7 @@ difficulty checks and receipt checks as any endpoint's. When none answers,
 the page stays on the default endpoint. In both cases Network shows a
 **Run a node** block: the one-line install for your system (macOS, Linux
 or Windows, from the browser's user agent) with a Copy button, and a link
-to get.ghostcoin.com. The node found stays for the page load; if a public
+to get.specter.cash. The node found stays for the page load; if a public
 node later stops answering, the next request that fails moves the page to
 the next public node in the list that answers (one pass, no polling). Every
 request gives up after 30 seconds, so a request held by the browser (as
