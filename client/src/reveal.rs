@@ -35,6 +35,12 @@
 //! note the reveal binds is the note the tree stores, unpadded. The 156-byte
 //! remainder note of the version 1 reveal is no longer made. Every builder
 //! refuses what the prover refuses.
+//!
+//! The reveal also binds the remainder's 16-byte lookup tag,
+//! `remainder_tag` ([`crate::lookup::lookup_tag`] of the remainder's number
+//! under its holder's note key, decision 0004). The node files the remainder
+//! under it in the coin lookup index, so the holder finds its change coin by
+//! a private lookup like any committed coin.
 
 use core::fmt;
 
@@ -47,6 +53,7 @@ use rand_core::CryptoRng;
 
 use crate::commit::{Amount, Commitment, Marker, Rule, Salt};
 use crate::key::PhantomKey;
+use crate::lookup::lookup_tag;
 use crate::note::{encrypt_note, Capsule, NoteContents, NOTE_BYTES};
 use crate::wipe::wipe;
 
@@ -320,6 +327,9 @@ fn build<R: CryptoRng + ?Sized>(
         out: out.to_bytes(),
         fee: terms.fee.to_bytes(),
         remainder_note,
+        // The remainder's lookup tag under its holder's note key, so the
+        // holder finds the remainder by a private lookup (decision 0004).
+        remainder_tag: lookup_tag(&holder.note_key(), number),
     };
     let mut opening = SaltedCoinOpening {
         s: *input.secret().as_bytes(),

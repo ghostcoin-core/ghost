@@ -5,11 +5,11 @@
 // Gas of the ordinary reveal the app sends (type 0x50, version 0x0002; spec
 // 10, sections 4.1 and 10.3), the node's GhostRevealGas:
 // BYTE_GAS * ORD_ENVELOPE_BYTES + BASE_TX_GAS + VERIFY_GAS_ORD
-// = 16 * 1,311,291 + 21,000 + 370,000 = 21,371,656. (Version 1's 21,090,372
+// = 16 * 1,311,307 + 21,000 + 370,000 = 21,371,912. (Version 1's 21,090,372
 // was 16 * 1,311,067 + 21,000 + 92,300; the data reveal keeps that figure.)
 export const BYTE_GAS = 16n;
 export const BASE_TX_GAS = 21_000n;
-export const ORD_ENVELOPE_BYTES = 1_311_291n;
+export const ORD_ENVELOPE_BYTES = 1_311_307n;
 export const VERIFY_GAS_ORD = 370_000n;
 export const G_PRIV = BYTE_GAS * ORD_ENVELOPE_BYTES + BASE_TX_GAS + VERIFY_GAS_ORD;
 // Blocks for which one fee is in force.

@@ -80,6 +80,7 @@ fn scale_reveal_proving_time_and_peak_memory() {
         out: amount_word(600_000),
         fee: amount_word(21),
         remainder_note: [0x33; NOTE_V3_BYTES],
+        remainder_tag: [0x5a; REMAINDER_TAG_BYTES],
     };
 
     let start = Instant::now();

@@ -29,7 +29,7 @@
 //!   tags and restore over leaves given with their positions;
 //! - the private transaction envelope of the ordinary reveal (spec 07,
 //!   section 3, as spec 10, section 4.1 sets it: type `0x50`, version
-//!   `0x0002`, the 380-byte remainder note, 1,311,291 bytes), proved and
+//!   `0x0002`, the 380-byte remainder note, 1,311,307 bytes), proved and
 //!   verified as statement S1 version 2, and its decoding and verification,
 //!   which the test's stand-in node uses. The version 1 envelope, with its
 //!   156-byte note, is neither built nor read;
@@ -116,11 +116,14 @@ const _: () = assert!(PROOF_FIELD_BYTES == ghost_proofs::PROOF_FIELD_BYTES);
 /// The payload fields before the proof: version, chain identifier, marker,
 /// root, remainder, recipient, amount out and fee.
 const HEAD_BYTES: usize = 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32;
+/// Length of the remainder's lookup tag, the last field of the envelope
+/// (decision 0004).
+pub const REMAINDER_TAG_BYTES: usize = ghost_proofs::REMAINDER_TAG_BYTES;
 /// Length of the envelope: the type byte and the payload, which ends with the
-/// 380-byte remainder note (note version 3) the version 2 reveal binds
-/// (spec 10, section 4.1).
-pub const ENVELOPE_BYTES: usize = 1 + HEAD_BYTES + PROOF_FIELD_BYTES + NOTE_BYTES;
-const _: () = assert!(ENVELOPE_BYTES == 1_311_291);
+/// 380-byte remainder note (note version 3) and the remainder's 16-byte
+/// lookup tag the version 2 reveal binds (spec 10, section 4.1).
+pub const ENVELOPE_BYTES: usize = 1 + HEAD_BYTES + PROOF_FIELD_BYTES + NOTE_BYTES + REMAINDER_TAG_BYTES;
+const _: () = assert!(ENVELOPE_BYTES == 1_311_307);
 
 /// The commit payload, the only one the app makes: the version `0x0003`, `F`,
 /// the coin's salt, the 380-byte note and the key's lookup tag of number 0,
@@ -387,7 +390,8 @@ fn prefix_roots(leaves: &[[u8; 32]], from: usize, to: usize, z: &[[u8; 32]]) -> 
 /// The envelope of the ordinary reveal (spec 07, section 3, with spec 10,
 /// section 4.1): type `0x50`, version `0x0002`, chain identifier, marker,
 /// root, remainder, recipient, amount out, fee, the proof zero-padded to
-/// [`PROOF_FIELD_BYTES`], then the 380-byte remainder note.
+/// [`PROOF_FIELD_BYTES`], then the 380-byte remainder note and the 16-byte
+/// remainder tag.
 fn encode_envelope(chain_id: u64, tx: &CoinRevealV2, proof: &Proof) -> Result<Vec<u8>, String> {
     let bytes = proof.as_bytes();
     if bytes.len() > PROOF_FIELD_BYTES {
@@ -406,6 +410,7 @@ fn encode_envelope(chain_id: u64, tx: &CoinRevealV2, proof: &Proof) -> Result<Ve
     out.extend_from_slice(bytes);
     out.resize(1 + HEAD_BYTES + PROOF_FIELD_BYTES, 0);
     out.extend_from_slice(&tx.remainder_note);
+    out.extend_from_slice(&tx.remainder_tag);
     debug_assert_eq!(out.len(), ENVELOPE_BYTES);
     Ok(out)
 }
@@ -435,16 +440,29 @@ fn decode_envelope<'a>(chain_id: u64, envelope: &'a [u8]) -> Result<(CoinRevealV
     amount(fee)?;
     let field = tx.take(PROOF_FIELD_BYTES)?;
     let remainder_note = tx.array()?;
+    let remainder_tag: [u8; REMAINDER_TAG_BYTES] = tx.array()?;
     tx.end()?;
-    Ok((CoinRevealV2 { root, marker, remainder, remainder_note, recipient, out, fee }, field))
+    if remainder_tag == [0; REMAINDER_TAG_BYTES] {
+        return Err(String::from("the remainder's lookup tag is zero"));
+    }
+    Ok((CoinRevealV2 { root, marker, remainder, remainder_note, recipient, out, fee, remainder_tag }, field))
 }
 
 /// The output of a decoded envelope: transaction hash (32), marker (32),
 /// root (32), remainder (32), recipient (20), amount out (32), fee (32),
-/// remainder note (380).
+/// remainder note (380), remainder tag (16).
 fn decoded_out(envelope: &[u8], tx: &CoinRevealV2) -> Vec<u8> {
     let mut result = keccak256(envelope).to_vec();
-    for field in [&tx.marker[..], &tx.root, &tx.remainder, &tx.recipient, &tx.out, &tx.fee, &tx.remainder_note] {
+    for field in [
+        &tx.marker[..],
+        &tx.root,
+        &tx.remainder,
+        &tx.recipient,
+        &tx.out,
+        &tx.fee,
+        &tx.remainder_note,
+        &tx.remainder_tag,
+    ] {
         result.extend_from_slice(field);
     }
     result
@@ -1553,7 +1571,7 @@ mod guard {
     pub const ORDINARY_ENVELOPE_BYTES: usize = ENVELOPE_BYTES;
     /// The envelope of a policy reveal (spec 10, section 5.1).
     pub const POLICY_ENVELOPE_BYTES: usize = 1 + 350 + PROOF_FIELD_BYTES + NOTE_BYTES;
-    const _: () = assert!(ORDINARY_ENVELOPE_BYTES == 1_311_291);
+    const _: () = assert!(ORDINARY_ENVELOPE_BYTES == 1_311_307);
     const _: () = assert!(POLICY_ENVELOPE_BYTES == 1_311_451);
 
     /// The warning flags [`ghost_guard_check`] and [`ghost_guard_restore`]
@@ -2117,7 +2135,7 @@ mod poseidon2_reveal {
 
     /// The public fields of a reveal, in the order both calls write and read
     /// them: root, marker, remainder (32 each), recipient (20), amount out
-    /// and fee (32 each), the remainder note (380).
+    /// and fee (32 each), the remainder note (380), the remainder tag (16).
     fn read_reveal(input: &mut Input) -> Result<CoinRevealV2, String> {
         Ok(CoinRevealV2 {
             root: input.array()?,
@@ -2127,11 +2145,21 @@ mod poseidon2_reveal {
             out: input.array()?,
             fee: input.array()?,
             remainder_note: input.array()?,
+            remainder_tag: input.array()?,
         })
     }
 
     fn push_reveal(out: &mut Vec<u8>, tx: &CoinRevealV2) {
-        for field in [&tx.root[..], &tx.marker, &tx.remainder, &tx.recipient, &tx.out, &tx.fee, &tx.remainder_note] {
+        for field in [
+            &tx.root[..],
+            &tx.marker,
+            &tx.remainder,
+            &tx.recipient,
+            &tx.out,
+            &tx.fee,
+            &tx.remainder_note,
+            &tx.remainder_tag,
+        ] {
             out.extend_from_slice(field);
         }
     }
@@ -2145,7 +2173,7 @@ mod poseidon2_reveal {
     /// tag and action salt (32 each), the override secret (32); the
     /// remainder: `s`, `r`, `b` (32 each), salt (16), amount word (32); the
     /// remainder's rule (32); root (32), recipient (20), amount out (32), fee
-    /// (32), the remainder note (380); the leaves of the tree under the root
+    /// (32), the remainder note (380), the remainder tag (16); the leaves of the tree under the root
     /// (count, 32 each, from position 0), from which the coin's path is
     /// read; zero-knowledge randomness (32).
     ///
@@ -2196,6 +2224,7 @@ mod poseidon2_reveal {
                 out: input.array()?,
                 fee: input.array()?,
                 remainder_note: input.array()?,
+                remainder_tag: input.array()?,
             };
             let leaves = input.records::<32>()?;
             let zk: [u8; 32] = input.array()?;
@@ -2213,7 +2242,7 @@ mod poseidon2_reveal {
             wipe(&mut remainder.salt);
             let (tx, proof) = proved.map_err(|e| e.to_string())?;
 
-            let mut out = Vec::with_capacity(32 * 5 + 20 + NOTE_BYTES + proof.as_bytes().len());
+            let mut out = Vec::with_capacity(32 * 5 + 20 + NOTE_BYTES + 16 + proof.as_bytes().len());
             push_reveal(&mut out, &tx);
             out.extend_from_slice(proof.as_bytes());
             Ok(out)
@@ -2458,6 +2487,7 @@ mod test_depth {
                 recipient,
                 out: out.to_bytes(),
                 fee: fee.to_bytes(),
+                remainder_tag: ghost_client::lookup::lookup_tag(&holder.note_key(), next),
             };
             let proof = Proof::from_bytes(stub(&params, &reveal).to_vec());
             let envelope = encode_envelope(chain_id, &reveal, &proof)?;

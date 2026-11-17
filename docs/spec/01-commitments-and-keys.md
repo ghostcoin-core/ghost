@@ -969,9 +969,12 @@ difference is listed here for the founder's review.
    note in the commit payload and, as `remainder_tag`, in the coin reveal
    binding of [spec 02](02-proof-statements.md), section 7 (offset 415) and the
    private transaction payload of [spec 07](07-private-transaction.md),
-   section 3 (offset 1,311,066). Neither chapter carries the field yet; until
-   they do, the tag's place in those layouts is the record's, and section 9
-   above follows it.
+   section 3 (offset 1,311,066). Those are the version 1 layouts, which a
+   version 2 node no longer accepts. The ordinary reveal that replaced them
+   carries the field: [spec 10](10-private-reveal-policies.md), section 4.1
+   puts it after the 380-byte note at the end of the payload and section 4.2
+   binds it at offset 607, after `remainder_note`. Section 9 above follows
+   it.
 10. **Restore by buckets.** [Spec 05](05-trees-and-headers.md), section 8
     still describes the bucket read of the superseded bucket path among the
     allowed reads. This document no longer restores by it (section 8).

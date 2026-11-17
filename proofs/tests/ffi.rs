@@ -150,13 +150,13 @@ fn the_header_agrees_with_the_crate() {
         ("GHOST_PROOFS_PROOF_FIELD_BYTES", PROOF_FIELD_BYTES as i64),
     ];
     assert_eq!(defines, BTreeMap::from(expected));
-    assert_eq!((ROOT_KEY_BYTES, ROOT_BINDING_BYTES, REVEAL_PUBLIC_BYTES, PUBLIC_TX_BYTES), (124, 11, 639, 84));
+    assert_eq!((ROOT_KEY_BYTES, ROOT_BINDING_BYTES, REVEAL_PUBLIC_BYTES, PUBLIC_TX_BYTES), (124, 11, 655, 84));
     assert_eq!(PROOF_FIELD_BYTES, 1_310_720);
     assert!(HEADER.contains("int32_t ghost_verify_bundle_root(const uint8_t *key, size_t key_len,"));
     assert!(HEADER.contains("int32_t ghost_verify_public_root(const uint8_t *key, size_t key_len,"));
     assert_eq!((CHAIN_PARAMS_BYTES, COIN_REVEAL_BYTES, PROOF_MAX_BYTES), (42, 368, 2_097_152));
-    assert_eq!(COIN_REVEAL_V2_BYTES, 32 + 32 + 32 + 380 + 20 + 32 + 32);
-    assert_eq!(COIN_REVEAL_V2_BYTES, 560);
+    assert_eq!(COIN_REVEAL_V2_BYTES, 32 + 32 + 32 + 380 + 20 + 32 + 32 + 16);
+    assert_eq!(COIN_REVEAL_V2_BYTES, 576);
     assert!(HEADER.contains("#ifndef GHOST_PROOFS_H"));
     assert!(HEADER.contains("#include <stdint.h>"));
     assert!(HEADER.contains("#include <stddef.h>"));
@@ -379,7 +379,7 @@ fn params_v2() -> ChainParams {
 
 /// The version 2 statement fields as (name, offset, width), in the
 /// documented order: no rule, the 380-byte note.
-const STATEMENT_V2_FIELDS: [(&str, usize, usize); 7] = [
+const STATEMENT_V2_FIELDS: [(&str, usize, usize); 8] = [
     ("root", 0, 32),
     ("marker", 32, 32),
     ("remainder", 64, 32),
@@ -387,6 +387,7 @@ const STATEMENT_V2_FIELDS: [(&str, usize, usize); 7] = [
     ("recipient", 476, 20),
     ("out", 496, 32),
     ("fee", 528, 32),
+    ("remainder_tag", 560, 16),
 ];
 
 /// One honest version 2 reveal of a coin with a rule, spent through its
@@ -429,6 +430,7 @@ fn fixture_v2() -> &'static Fixture {
             out: amount_word(600_000),
             fee: amount_word(21),
             remainder_note: [0x33; NOTE_V3_BYTES],
+        remainder_tag: [0x5a; REMAINDER_TAG_BYTES],
         };
         let remainder = SaltedCoinRemainder {
             s: [1; 32],
@@ -475,6 +477,7 @@ fn the_v2_layout_is_the_documented_one() {
         recipient: [5; 20],
         out: [6; 32],
         fee: [7; 32],
+        remainder_tag: [8; REMAINDER_TAG_BYTES],
     };
     let bytes = coin_reveal_v2_to_bytes(&tx);
     let mut end = 0;

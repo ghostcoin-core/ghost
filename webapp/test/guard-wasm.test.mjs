@@ -387,7 +387,7 @@ test("the normal spend needs the guard secret, keeps the remainder under the cho
 
   const built = spend({ remainder: { stopRoot: STOP_ROOT, room: ROOM } });
   const { envelope } = built;
-  assert.equal(envelope.length, 1_311_291);
+  assert.equal(envelope.length, 1_311_307);
   assert.equal(envelope[0], 0x50);
   assert.deepEqual([...envelope.subarray(1, 3)], [0x00, 0x02]);
   assert.ok(equalBytes(built.marker, coin.marker));
@@ -397,7 +397,7 @@ test("the normal spend needs the guard secret, keeps the remainder under the cho
 
   // Included: the remainder, a Guard coin under a rotated rule, is restored.
   tree.markers.push(built.marker);
-  push(built.remainder.commitment, envelope.subarray(envelope.length - NOTE_BYTES), null);
+  push(built.remainder.commitment, envelope.subarray(envelope.length - 16 - NOTE_BYTES, envelope.length - 16), null);
   const after = restore(RESCUE);
   const remainder = after.find((c) => c.number === 1n);
   assert.equal(remainder.rule, "guard");
@@ -444,11 +444,11 @@ test("a transfer hands the coin to the receiver's own Guard rule, and refuses a 
   assert.throws(() => transfer({ ...coin.guard, room: ROOM }), /a new Guard coin would reuse an action salt/);
 
   const built = transfer({ ...their.guard, room: ROOM });
-  assert.equal(built.envelope.length, 1_311_291);
+  assert.equal(built.envelope.length, 1_311_307);
   assert.equal(built.remainder.number, 0n, "number 0 of the new key");
   assert.equal(built.remainder.amount, coin.amount - PAID - FEE);
   tree.markers.push(built.marker);
-  push(built.remainder.commitment, built.envelope.subarray(built.envelope.length - NOTE_BYTES), null);
+  push(built.remainder.commitment, built.envelope.subarray(built.envelope.length - 16 - NOTE_BYTES, built.envelope.length - 16), null);
 
   // The new key's words find it under the receiver's rule, not the giver's.
   const found = restore(holder);

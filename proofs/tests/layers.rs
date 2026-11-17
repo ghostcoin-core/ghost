@@ -673,6 +673,7 @@ mod reveal_fixture {
             ("recipient", hex(&tx.recipient)),
             ("out", hex(&tx.out)),
             ("fee", hex(&tx.fee)),
+            ("remainder_tag", hex(&tx.remainder_tag)),
         ] {
             out.push_str(&format!("{name} {value}\n"));
         }
@@ -718,6 +719,7 @@ mod reveal_fixture {
                 recipient: array(take("recipient")?)?,
                 out: array(take("out")?)?,
                 fee: array(take("fee")?)?,
+                remainder_tag: array(take("remainder_tag")?)?,
             },
             proof: Proof::from_bytes(proof),
         };
@@ -777,6 +779,7 @@ mod reveal_fixture {
             out: amount_word(600_000),
             fee: amount_word(21),
             remainder_note: [0x33; NOTE_V3_BYTES],
+        remainder_tag: [0x5a; REMAINDER_TAG_BYTES],
         };
         prove_coin_reveal_v2_scale_shaped(
             params,

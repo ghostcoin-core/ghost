@@ -87,6 +87,7 @@ fn load_testnet2() -> (ChainParams, CoinRevealV2, Proof) {
         recipient: array(take("recipient")),
         out: array(take("out")),
         fee: array(take("fee")),
+        remainder_tag: array(take("remainder_tag")),
     };
     (params, tx, Proof::from_bytes(proof))
 }

@@ -2117,8 +2117,12 @@ difference is listed here for the founder's review.
    the commit payload and, as `remainder_tag`, in the coin reveal binding of
    [spec 02](02-proof-statements.md), section 7 (offset 415) and the private
    transaction payload of [spec 07](07-private-transaction.md), section 3
-   (offset 1,311,066). Neither layout carries it yet; until it does, no
-   remainder can carry its tag, and the record's offsets are the ones to use.
+   (offset 1,311,066). Those are the version 1 layouts, which a version 2
+   node no longer accepts. The ordinary reveal that replaced them carries
+   it: [spec 10](10-private-reveal-policies.md), section 4.1 puts it after
+   the 380-byte note at the end of the payload and section 4.2 binds it at
+   offset 607. The node files the remainder under it in the coin lookup
+   index and refuses a zero tag.
 10. **Seal vectors of the 23-item header.** [Spec 08](08-randomx-seal.md),
     section 11 now computes its seal vectors over the 23-item header of
     decision 0004 (the node's genesis and block one vectors with their

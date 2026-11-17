@@ -109,7 +109,7 @@ pub use binding::{
     ACTION_LAYOUT, Binding, COIN_REVEAL_LAYOUT, COIN_REVEAL_V2_LAYOUT, ChainParams, DATA_REVEAL_LAYOUT, HOLD_LAYOUT,
     LayoutField, POLICY_REVEAL_LAYOUT, PREIMAGE_LAYOUT, PROTOCOL_VERSION_1, PROTOCOL_VERSION_2, PURPOSE_ACTION,
     PURPOSE_HOLD, PURPOSE_POLICY_SPEND, PURPOSE_PREIMAGE, PURPOSE_REVEAL, PURPOSE_REVOKE, PURPOSE_SPEND,
-    STATEMENT_COIN_REVEAL, STATEMENT_DATA_REVEAL, STATEMENT_HOLD, STATEMENT_KNOW_ACTION, STATEMENT_KNOW_PREIMAGE,
+    REMAINDER_TAG_BYTES, STATEMENT_COIN_REVEAL, STATEMENT_DATA_REVEAL, STATEMENT_HOLD, STATEMENT_KNOW_ACTION, STATEMENT_KNOW_PREIMAGE,
     STATEMENT_POLICY_REVEAL, STATEMENT_VERSION_1, STATEMENT_VERSION_2,
 };
 pub use data::{
@@ -212,6 +212,9 @@ pub enum ProofError {
     /// A version 2 coin reveal through the override with a secret that does
     /// not hash to the rule's `override_hash`.
     WrongOverrideSecret,
+    /// A version 2 coin reveal whose `remainder_tag` is zero: the node keeps
+    /// the zero tag out of the coin lookup index and refuses the reveal.
+    ZeroRemainderTag,
     /// The low leaf of a proof of holding's absence witness, folded with its
     /// siblings along its position, does not give the context's
     /// `marker_set_root`, or its position is not below 2^40.
@@ -286,6 +289,7 @@ impl fmt::Display for ProofError {
             Self::OverrideSwitchNotBit => f.write_str("the override switch is neither 0 nor 1"),
             Self::OverrideNotSet => f.write_str("the rule has no override"),
             Self::WrongOverrideSecret => f.write_str("the override secret does not match the rule"),
+            Self::ZeroRemainderTag => f.write_str("the remainder's lookup tag is zero"),
             Self::NotInMarkerSet => f.write_str("the low leaf of the absence witness is not under the marker-set root"),
             Self::NotThePreimage => f.write_str("the private value does not hash to the public one"),
             Self::CalldataTooLong => f.write_str("action calldata over 1,024 bytes"),

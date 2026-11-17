@@ -33,7 +33,7 @@ pinned inputs below, and compares with what the document states:
      9.3, 10.4, 11, 12, 15 and 17);
  10. the two window fee examples of section 10.3 and the comparisons after
      them;
- 11. the properties RP-1 to RP-30, and every RP-n cited;
+ 11. the properties RP-1 to RP-31, and every RP-n cited;
  12. every formula of section 19.
 
 When the repository's benchmark record (`docs/benchmarks/reveal-parameters.md`)
@@ -145,13 +145,16 @@ CAPSULE = (("version", 1), ("policy_address", 20), ("policy_codehash", 32), ("ov
 CAPSULE_BYTES = sum(w for _, w in CAPSULE)
 NOTE_PLAINTEXT = NOTE_V2_PLAINTEXT + CAPSULE_BYTES
 NOTE_BYTES = NOTE_NONCE + NOTE_PLAINTEXT + NOTE_TAG
+# The remainder's lookup tag after the ordinary reveal's note (decision 0004).
+REMAINDER_TAG_BYTES = 16
 MAX_PARAMS_BYTES = dict(CAPSULE)["params"]
 
 # Payload fields, in order. "proof" and "note" take the proof field and the
 # note widths; "calldata" takes ACTION_CALLDATA_MAX.
 ACTION_CALLDATA_MAX = 1_024
 ORD_PAYLOAD = (("version", 2), ("chain_id", 8), ("marker", 32), ("root", 32), ("remainder", 32),
-               ("recipient", 20), ("out", 32), ("fee", 32), ("proof", None), ("note", None))
+               ("recipient", 20), ("out", 32), ("fee", 32), ("proof", None), ("note", None),
+               ("remainder_tag", REMAINDER_TAG_BYTES))
 POLICY_PAYLOAD = (("version", 2), ("chain_id", 8), ("marker", 32), ("root", 32),
                   ("remainder", 32), ("out", 32), ("fee", 32), ("policy_address", 20),
                   ("policy_codehash", 32), ("params_hash", 32), ("action_tag", 32),
@@ -166,7 +169,7 @@ HEADER = (("chain_id", 8), ("version", 2), ("domain", 32), ("statement", 1),
           ("statement_version", 1))
 ORD_BINDING = HEADER + (("type", 2), ("purpose", 1), ("root", 32), ("marker", 32),
                         ("remainder", 32), ("recipient", 20), ("out", 32), ("fee", 32),
-                        ("remainder_note", NOTE_BYTES))
+                        ("remainder_note", NOTE_BYTES), ("remainder_tag", REMAINDER_TAG_BYTES))
 POLICY_BINDING = HEADER + (("type", 2), ("purpose", 1), ("root", 32), ("marker", 32),
                            ("remainder", 32), ("out", 32), ("fee", 32), ("policy_address", 20),
                            ("policy_codehash", 32), ("params_hash", 32), ("action_tag", 32),
@@ -220,7 +223,7 @@ FORMULAS = ("NOTE_BYTES", "ORD_PAYLOAD", "POLICY_PAYLOAD", "ACTION_PAYLOAD", "or
             "policy binding", "action binding", "permutations", "trace width", "capsule",
             "G_PRIV", "G_POLICY", "G_ACTION", "G_DATA")
 
-PROPERTY_COUNT = 30
+PROPERTY_COUNT = 31
 HEADING_RE = re.compile(r"^## (\d+)\. (.+)$")
 SUBHEADING_RE = re.compile(r"^### (\d+\.\d+) (.+)$")
 PROPERTY_RE = re.compile(r"^- \*\*RP-(\d+)\. (.+?)\*\*")
@@ -516,7 +519,7 @@ def expected():
     ord_payload = payload(ORD_PAYLOAD, PROOF_FIELD_BYTES)
     policy_payload = payload(POLICY_PAYLOAD, PROOF_FIELD_BYTES)
     action_payload = payload(ACTION_PAYLOAD, action_proof)
-    data_payload = payload(ORD_PAYLOAD[:-1], PROOF_FIELD_BYTES) + DATA_PAYLOAD_NOTE
+    data_payload = payload(ORD_PAYLOAD[:-2], PROOF_FIELD_BYTES) + DATA_PAYLOAD_NOTE
     slot_words = 8
     e = {
         "CAPSULE_BYTES": CAPSULE_BYTES, "NOTE_PLAINTEXT": NOTE_PLAINTEXT,

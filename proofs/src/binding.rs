@@ -93,10 +93,14 @@ pub const COIN_REVEAL_LAYOUT: [LayoutField; 15] = [
     field("remainder_note", 259, 156),
 ];
 
+/// Length of the remainder's lookup tag, `remainder_tag` (decision 0004).
+pub const REMAINDER_TAG_BYTES: usize = 16;
+
 /// The coin reveal binding of the ordinary class, S1 version 2 (spec 10,
 /// section 4.2): the fields of [`COIN_REVEAL_LAYOUT`] without `rule`, with
-/// the 380-byte note. 607 bytes; neither rule is a field.
-pub const COIN_REVEAL_V2_LAYOUT: [LayoutField; 14] = [
+/// the 380-byte note and then the remainder's 16-byte lookup tag. 623 bytes;
+/// neither rule is a field.
+pub const COIN_REVEAL_V2_LAYOUT: [LayoutField; 15] = [
     field("chain_id", 0, 8),
     field("version", 8, 2),
     field("domain", 10, 32),
@@ -111,6 +115,7 @@ pub const COIN_REVEAL_V2_LAYOUT: [LayoutField; 14] = [
     field("out", 163, 32),
     field("fee", 195, 32),
     field("remainder_note", 227, NOTE_V3_BYTES),
+    field("remainder_tag", 227 + NOTE_V3_BYTES, REMAINDER_TAG_BYTES),
 ];
 
 /// The policy reveal binding of the policy class, S4 (spec 10, section 5.1):
@@ -385,16 +390,18 @@ mod tests {
         }
     }
 
-    /// Spec 10, section 4.2: 607 bytes, 636 with the tag, five permutations,
-    /// and no `rule` field.
+    /// Spec 10, section 4.2: 623 bytes, 652 with the tag, five permutations,
+    /// no `rule` field, and `remainder_tag` after `remainder_note`.
     #[test]
     fn the_version_2_coin_reveal_binding_has_no_rule() {
         let b = Binding::CoinRevealV2;
-        assert_eq!((b.fields_len(), b.input_len(), b.permutations()), (607, 636, 5));
+        assert_eq!((b.fields_len(), b.input_len(), b.permutations()), (623, 652, 5));
         assert!(b.layout().iter().all(|f| f.name != "rule"));
-        let v1: alloc::vec::Vec<_> = COIN_REVEAL_LAYOUT.iter().map(|f| f.name).filter(|&n| n != "rule").collect();
+        let mut v1: alloc::vec::Vec<_> = COIN_REVEAL_LAYOUT.iter().map(|f| f.name).filter(|&n| n != "rule").collect();
+        v1.push("remainder_tag");
         let v2: alloc::vec::Vec<_> = b.layout().iter().map(|f| f.name).collect();
         assert_eq!(v1, v2);
+        assert_eq!((b.offset("remainder_tag"), REMAINDER_TAG_BYTES), (607, 16));
     }
 
     /// Spec 10, section 5.1: 767 bytes, 798 with the 31-byte tag, six

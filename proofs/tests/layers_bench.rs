@@ -170,6 +170,7 @@ fn reveal_inputs(i: u8) -> (SaltedCoinOpening, SaltedCoinRemainder, CoinRevealV2
         out: amount_word(600_000),
         fee: amount_word(fee),
         remainder_note: [0x33; NOTE_V3_BYTES],
+        remainder_tag: [0x5a; REMAINDER_TAG_BYTES],
     };
     let mut zk = [0x6c; 32];
     zk[0] = i;

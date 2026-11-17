@@ -782,6 +782,7 @@ fn the_words_alone_make_a_policy_spend_and_nothing_else() {
         out: amount(PAID).to_bytes(),
         fee: amount(FEE).to_bytes(),
         remainder_note: [0; NOTE_BYTES],
+        remainder_tag: [1; 16],
     };
     let params = guard_chain().ordinary_params();
     let plain = prove_coin_reveal_v2(&params, &opening, &InputRule::plain(), &remainder, &[0; 32], &request, [0; 32]);

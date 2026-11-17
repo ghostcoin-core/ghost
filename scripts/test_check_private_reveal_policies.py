@@ -43,12 +43,12 @@ NOTE = (
     ('rule = K("ghost/reveal-policy/v2",', 'rule = K("ghost/reveal-policy/v3",', "rule tag is"),
 )
 PAYLOADS = (
-    ("The payload is 1,311,290 bytes", "The payload is 1,311,289 bytes",
-     "section 4.1: payload is 1311289"),
-    ("+ 32 + 1,310,720 + 380 = 1,311,290", "+ 32 + 1,310,720 + 156 = 1,311,290",
+    ("The payload is 1,311,306 bytes", "The payload is 1,311,305 bytes",
+     "section 4.1: payload is 1311305"),
+    ("+ 32 + 1,310,720 + 380 + 16 = 1,311,306", "+ 32 + 1,310,720 + 156 + 16 = 1,311,306",
      "section 4.1: payload terms"),
-    ("ENVELOPE_BYTES = 1,311,291", "ENVELOPE_BYTES = 1,311,290",
-     "section 4.1: ENVELOPE_BYTES is 1311290"),
+    ("ENVELOPE_BYTES = 1,311,307", "ENVELOPE_BYTES = 1,311,306",
+     "section 4.1: ENVELOPE_BYTES is 1311306"),
     ("| 170 | 20 | `policy_address` | The frozen policy |",
      "| 170 | 32 | `policy_address` | The frozen policy |",
      "field 'policy_address' is 32 bytes, expected 20"),
@@ -62,14 +62,14 @@ PAYLOADS = (
      "field 'calldata' is 512 bytes, expected 1024"),
 )
 BINDINGS = (
-    ("Total: 607 bytes after the tag", "Total: 606 bytes after the tag",
-     "section 4.2 binding: bytes after the tag is 606"),
-    ("636 with the 29-byte tag", "636 with the 28-byte tag", "tag bytes is 28"),
+    ("Total: 623 bytes after the tag", "Total: 622 bytes after the tag",
+     "section 4.2 binding: bytes after the tag is 622"),
+    ("652 with the 29-byte tag", "652 with the 28-byte tag", "tag bytes is 28"),
     ("29-byte tag, five Keccak", "29-byte tag, four Keccak",
      "section 4.2 binding: permutations is 'four'"),
     ("(four today)", "(three today)", "version 1 binding permutations"),
-    ("and the 32-byte digest: 639 bytes", "and the 32-byte digest: 640 bytes",
-     "public values is 640"),
+    ("and the 32-byte digest: 655 bytes", "and the 32-byte digest: 656 bytes",
+     "public values is 656"),
     ("| 195 | 32 | `fee` | Amount word |", "| 195 | 20 | `fee` | Amount word |",
      "field 'fee' is 20 bytes, expected 32"),
     ("| 43 | 1 | `statement_version` | `0x02` |", "| 43 | 1 | `statement_version` | `0x01` |",
@@ -174,8 +174,8 @@ VERIFICATION = (
     ("`BYTE_GAS = 16`", "`BYTE_GAS = 8`", "section 10.1: BYTE_GAS is 8"),
 )
 GAS = (
-    ("| `G_PRIV` | 21,371,656 |", "| `G_PRIV` | 21,371,657 |",
-     "constant G_PRIV is 21371657, recomputed 21371656"),
+    ("| `G_PRIV` | 21,371,912 |", "| `G_PRIV` | 21,371,913 |",
+     "constant G_PRIV is 21371913, recomputed 21371912"),
     ("| `G_POLICY` | 21,604,216 |", "| `G_POLICY` | 21,604,215 |",
      "constant G_POLICY is 21604215, recomputed 21604216"),
     ("| `G_ACTION` | 15,905,968 |", "| `G_ACTION` | 15,905,967 |",
@@ -187,7 +187,7 @@ GAS = (
      "constant SLOT_OPEN_GAS is 140000"),
     ("| `ACTION_STATE_GAS` | 15,000 |", "| `ACTION_STATE_GAS` | 10,000 |",
      "constant ACTION_STATE_GAS is 10000"),
-    ("| `ORD_ENVELOPE_BYTES` | 1,311,291 |", "| `ORD_ENVELOPE_BYTES` | 1,311,067 |",
+    ("| `ORD_ENVELOPE_BYTES` | 1,311,307 |", "| `ORD_ENVELOPE_BYTES` | 1,311,067 |",
      "constant ORD_ENVELOPE_BYTES is 1311067"),
     ("`G_ACTION` 15,905,968;", "`G_ACTION` 15,905,969;", "section 1: gas"),
     ("92,300 = 21,090,372`", "92,300 = 21,090,373`", "section 10.5: G_DATA is 21090373"),
@@ -212,7 +212,7 @@ FEES = (
     ("price = 1,125,050,001", "price = 1,125,050,000", "section 10.3: price is 1125050000"),
     ("[window-genesis-policy]", "[window-genesis-other]",
      "no worked example [window-genesis-policy]"),
-    ("rises by 348,104,420,929,412 wei", "rises by 348,104,420,929,413 wei",
+    ("rises by 348,421,235,009,694 wei", "rises by 348,421,235,009,695 wei",
      "section 10.3: fee rise is"),
     ("version 1's\n26,100,495,343,659,410", "version 1's\n26,100,495,343,659,411",
      "section 10.3: version 1 fee is"),
@@ -251,8 +251,8 @@ PROPERTIES = (
 FORMULAS = (
     ("+ 15,000 + 250,000 = 15,905,968", "+ 15,000 + 250,000 = 15,905,969",
      "section 19: G_ACTION: '15,905,969' is 15905969"),
-    ("16*1,311,291 + 21,000 + 370,000 = 21,371,656", "16*1,311,291 + 21,000 + 360,000 = 21,371,656",
-     "section 19: G_PRIV: '16*1,311,291 + 21,000 + 360,000' is"),
+    ("16*1,311,307 + 21,000 + 370,000 = 21,371,912", "16*1,311,307 + 21,000 + 360,000 = 21,371,912",
+     "section 19: G_PRIV: '16*1,311,307 + 21,000 + 360,000' is"),
     ("+ 440,000 + 160,000 = 21,604,216", "+ 440,000 + 160,000 = 21,604,217",
      "section 19: G_POLICY"),
     ("1+20+32+32+32+32+1+64+10", "1+20+32+32+32+32+1+64+11", "section 19: capsule"),
@@ -260,7 +260,7 @@ FORMULAS = (
     ("+ 1,310,720 + 380 = 1,311,450", "+ 1,310,720 + 380 = 1,311,451",
      "section 19: POLICY_PAYLOAD"),
     ("+1,024 + 948,224 = 949,372", "+1,024 + 947,283 = 949,372", "section 19: ACTION_PAYLOAD"),
-    ("+32+20+32+32+380 = 607", "+32+20+32+32+156 = 607", "section 19: ordinary binding"),
+    ("+32+20+32+32+380+16 = 623", "+32+20+32+32+156+16 = 623", "section 19: ordinary binding"),
     ("+32+32+32+32+380 = 767", "+32+32+32+32+380 = 768", "section 19: policy binding"),
     ("+8+32 = 273", "+8+32 = 274", "section 19: action binding"),
     ("2,633 + 1,088 + 1 + carried", "2,633 + 1,088 + 2 + carried", "section 19: trace width"),
@@ -268,7 +268,7 @@ FORMULAS = (
      "section 19: G_DATA"),
     ("floor((767+31)/136) + 1 = 6", "ceil((767+31)/136) = 6", "is not floor(binding"),
     ("floor((273+24)/136) + 1 = 3", "floor((273+23)/136) + 1 = 3", "is not floor(binding"),
-    ("floor((607+29)/136) + 1 = 5", "floor((607+29)/136) + 1 = 4", "section 19: permutations"),
+    ("floor((623+29)/136) + 1 = 5", "floor((623+29)/136) + 1 = 4", "section 19: permutations"),
     ("G_DATA           = 16*1,311,067 + 21,000 + 92,300 = 21,090,372\n", "",
      "section 19 lacks the formulas ['G_DATA']"),
     ("NOTE_BYTES       = 12", "NOTE_SIZE        = 12", "unknown formula 'NOTE_SIZE'"),
@@ -317,7 +317,7 @@ class CheckerTest(unittest.TestCase):
     def test_damaged_file_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "10.md"
-            path.write_text(self.damaged("| `G_PRIV` | 21,371,656 |", "| `G_PRIV` | 21,111,600 |"),
+            path.write_text(self.damaged("| `G_PRIV` | 21,371,912 |", "| `G_PRIV` | 21,111,600 |"),
                             encoding="utf-8")
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
@@ -420,7 +420,7 @@ class CheckerTest(unittest.TestCase):
         self.assertEqual(printed, checker.constants())
         # The RP-24 gas of each type, as section 10.3 and 10.5 state it.
         self.assertEqual({k: printed[k] for k in checker.RP24},
-                         {"G_PRIV": 21_371_656, "G_POLICY": 21_604_216, "G_ACTION": 15_905_968,
+                         {"G_PRIV": 21_371_912, "G_POLICY": 21_604_216, "G_ACTION": 15_905_968,
                           "G_DATA": 21_090_372})
         table = checker.Checker(self.text)
         table.run()
@@ -479,10 +479,10 @@ class CheckerTest(unittest.TestCase):
         self.patched(VERIFY={"ordinary": 380_000, "policy": 450_000, "action": 440_000,
                              "preimage": 440_000})
         errors = checker.check_text(self.text)
-        for fragment in ("constant G_PRIV is 21371656, recomputed 21381656",
+        for fragment in ("constant G_PRIV is 21371912, recomputed 21381912",
                          "constant G_POLICY is 21604216, recomputed 21614216",
                          "constant G_ACTION is 15905968, recomputed 15915968",
-                         "example window-genesis-ordinary: g is 21371656",
+                         "example window-genesis-ordinary: g is 21371912",
                          "example window-genesis-policy: g is 21604216",
                          "section 19: G_PRIV"):
             self.assertTrue(any(fragment in e for e in errors), (fragment, errors))
@@ -517,14 +517,14 @@ class CheckerTest(unittest.TestCase):
         self.assertEqual(checker.permutations(0), 1)
         self.assertEqual(checker.permutations(135), 1)
         self.assertEqual(checker.permutations(136), 2)
-        self.assertEqual(checker.permutations(636), 5)
+        self.assertEqual(checker.permutations(652), 5)
         self.assertEqual(checker.permutations(798), 6)
         self.assertEqual(checker.permutations(297), 3)
         self.assertEqual(checker.tag_bytes("ghost/coin-reveal-binding/v2"), 29)
 
     def test_evaluate(self):
         self.assertEqual(checker.evaluate("ceil(947,283 / 1,024) * 1,024"), 948_224)
-        self.assertEqual(checker.evaluate("floor((607+29)/136) + 1"), 5)
+        self.assertEqual(checker.evaluate("floor((623+29)/136) + 1"), 5)
         self.assertEqual(checker.evaluate("16 * 1,311,291 + 21,000 + 110,000"), 21_111_656)
         self.assertIsNone(checker.evaluate("1 / 3"))
         self.assertIsNone(checker.evaluate("__import__('os')"))
@@ -541,8 +541,8 @@ class CheckerTest(unittest.TestCase):
         e = checker.expected()
         self.assertEqual((e["NOTE_BYTES"], e["CAPSULE_BYTES"]), (380, 224))
         self.assertEqual((e["ORD_ENVELOPE_BYTES"], e["POLICY_ENVELOPE_BYTES"],
-                          e["ACTION_ENVELOPE_BYTES"]), (1_311_291, 1_311_451, 949_373))
-        self.assertEqual(e["binding"], {"ordinary": 607, "policy": 767, "action": 273,
+                          e["ACTION_ENVELOPE_BYTES"]), (1_311_307, 1_311_451, 949_373))
+        self.assertEqual(e["binding"], {"ordinary": 623, "policy": 767, "action": 273,
                                         "preimage": 161})
         self.assertEqual((e["ORD_PERMS"], e["POLICY_PERMS"], e["ACTION_PERMS"],
                           e["PREIMAGE_PERMS"]), (47, 47, 4, 3))

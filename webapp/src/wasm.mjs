@@ -112,10 +112,13 @@ export const NOTE_BYTES = 380;
 // The note slot of the version 1 reveal and of the data reveal.
 export const REVEAL_NOTE_BYTES = 156;
 // The ordinary reveal's envelope (lib.rs, ENVELOPE_BYTES; spec 10, section
-// 4.1): type 0x50, version 0x0002, the 380-byte remainder note at its end.
+// 4.1): type 0x50, version 0x0002, the 380-byte remainder note and then the
+// remainder's 16-byte lookup tag at its end.
 export const REVEAL_TYPE = 0x50;
 export const REVEAL_VERSION = Object.freeze([0x00, 0x02]);
-export const REVEAL_ENVELOPE_BYTES = 1_311_291;
+export const REVEAL_ENVELOPE_BYTES = 1_311_307;
+// The remainder's lookup tag a reveal binds (decision 0004).
+export const REMAINDER_TAG_BYTES = 16;
 // A leaf with its note.
 export const LEAF_RECORD_BYTES = 32 + NOTE_BYTES;
 // A note's lookup tag: the first bytes of its nonce.
@@ -213,7 +216,8 @@ function writeReveal(input, r) {
     .bytes(r.recipient, 20)
     .bytes(r.out, 32)
     .bytes(r.fee, 32)
-    .bytes(r.remainderNote, NOTE_BYTES);
+    .bytes(r.remainderNote, NOTE_BYTES)
+    .bytes(r.remainderTag, REMAINDER_TAG_BYTES);
 }
 
 function readReveal(out) {
@@ -225,6 +229,7 @@ function readReveal(out) {
     out: out.take(32),
     fee: out.take(32),
     remainderNote: out.take(NOTE_BYTES),
+    remainderTag: out.take(REMAINDER_TAG_BYTES),
   };
 }
 
@@ -433,6 +438,8 @@ export class Ghost {
       fee: fromWord(out.take(32)),
       // The 380-byte remainder note, as the tree stores it.
       note: out.take(NOTE_BYTES),
+      // The remainder's lookup tag, never zero.
+      remainderTag: out.take(REMAINDER_TAG_BYTES),
     };
   }
 
@@ -443,7 +450,8 @@ export class Ghost {
   // policyCodehash, paramsHash, overrideHash, actionTag, actionSalt },
   // overrideSecret }; `remainder`: { s, r, b, salt, amount }; `remainderRule`
   // (32 bytes, the empty rule unless given); `root`, `recipient`, `out`,
-  // `fee`, `remainderNote` (380 bytes); `leaves`: the tree under the root (32
+  // `fee`, `remainderNote` (380 bytes), `remainderTag` (16 bytes, not zero);
+  // `leaves`: the tree under the root (32
   // bytes each, flat or a list); `zk`: 32 random bytes. Amounts are passed
   // as words for the module to check, so it refuses what the native prover
   // refuses. Returns the reveal's public fields and the proof.
@@ -461,6 +469,7 @@ export class Ghost {
     input.bytes(rem.s, 32).bytes(rem.r, 32).bytes(rem.b, 32).bytes(rem.salt, SALT_BYTES).bytes(word(rem.amount));
     input.bytes(a.remainderRule ?? new Uint8Array(32), 32);
     input.bytes(a.root, 32).bytes(a.recipient, 20).bytes(word(a.out)).bytes(word(a.fee)).bytes(a.remainderNote, NOTE_BYTES);
+    input.bytes(a.remainderTag, REMAINDER_TAG_BYTES);
     input.records(Array.isArray(a.leaves) ? concat(a.leaves) : a.leaves, 32).bytes(a.zk, 32);
     const out = new Output(this.call("ghost_poseidon2_reveal_prove", input.build()));
     return { reveal: readReveal(out), proof: out.rest() };

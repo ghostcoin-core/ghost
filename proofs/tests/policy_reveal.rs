@@ -365,6 +365,7 @@ fn the_honest_proof_verifies_and_fits() {
         recipient: [0x11; 20],
         out: tx.out,
         fee: tx.fee,
+        remainder_tag: [0x5a; REMAINDER_TAG_BYTES],
     };
     assert!(verify_coin_reveal_v2(&params(), &ordinary, proof).is_err());
 }

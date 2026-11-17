@@ -13,7 +13,7 @@ import { startFakeNode } from "./fake-node.mjs";
 export const GHOST = 10n ** 18n;
 // Spec 10, section 10, vector window-genesis-ordinary: the fee of a version 2
 // ordinary reveal at a base fee of 1 gwei.
-export const SPEC_FEE = 26_448_599_764_588_822n;
+export const SPEC_FEE = 26_448_916_578_669_104n;
 export const RECIPIENT = "0x2222222222222222222222222222222222222222";
 export const ENDPOINT_METHODS = new Set([
   "eth_chainId",
