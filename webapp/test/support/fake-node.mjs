@@ -9,7 +9,7 @@
 // tree account as address, the topic K("ghost/commit-receipt/v1") and the
 // tree index, position, leaf, value, the 380-byte note and the commit's salt;
 // a reveal is the ordinary reveal of spec 10, section 4 (type 0x50, version
-// 0x0002, 1,311,291 bytes), and its log has K("ghost/reveal-receipt/v1"), the
+// 0x0002, 1,311,307 bytes), and its log has K("ghost/reveal-receipt/v1"), the
 // node's one reveal topic for both reveal versions, and the marker as topics
 // and the tree index, position, remainder, the 380-byte remainder note the
 // reveal binds, recipient and amount out (472 bytes: the length is what tells
@@ -52,10 +52,10 @@ export const NOTE_BYTES = 380;
 export const REVEAL_NOTE_BYTES = 156;
 // The ordinary reveal the stand-in takes (spec 10, sections 4.1 and 10.3):
 // type 0x50, version 0x0002, its envelope's length and its gas, g_priv =
-// 16 * 1,311,291 + 21,000 + 370,000.
+// 16 * 1,311,307 + 21,000 + 370,000.
 export const REVEAL_TYPE = 0x50;
 export const REVEAL_VERSION = Object.freeze([0x00, 0x02]);
-export const REVEAL_ENVELOPE_BYTES = 1_311_291;
+export const REVEAL_ENVELOPE_BYTES = 1_311_307;
 export const REVEAL_GAS = 16n * BigInt(REVEAL_ENVELOPE_BYTES) + 21_000n + 370_000n;
 const GWEI = 1_000_000_000n;
 // Spec 05, vector empty-data-tree: no data commitment is ever made here.

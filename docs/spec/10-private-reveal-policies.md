@@ -48,7 +48,7 @@ no circuit and no contract. The build tickets of section 18 do.
 | Escrow slots | Public, native, per spent coin. Only the slot's own policy moves them, through six native functions | Section 7 |
 | Policy action | Type `0x54`. No account. Paid from the slot. Authorised by a proof of the action key | Section 8 |
 | Notes | 380 bytes for every commitment: today's 128-byte plaintext plus a 224-byte capsule | Section 3 |
-| Gas | `G_PRIV` 21,371,656; `G_POLICY` 21,604,216; `G_ACTION` 15,905,968; the data reveal keeps 21,090,372 | **Proposed** (section 10) |
+| Gas | `G_PRIV` 21,371,912; `G_POLICY` 21,604,216; `G_ACTION` 15,905,968; the data reveal keeps 21,090,372 | **Proposed** (section 10) |
 | Pool | Actions share the reveal pool's peer budgets and check slots, have their own count and byte caps, reserve their `(marker, nonce)` only after the proof verifies | Draft version 4; section 11 |
 | Ghost Guard | Policy with empty parameters; override secret for the normal spend; stop card for the cancel; 72 hour and 8,640 block hold before release | Draft version 4; section 12 |
 | Not promised | A majority of miners that also holds the words can censor a cancel. A policy coin handed over as words alone stays under the giver's stop key | Section 12 |
@@ -166,14 +166,23 @@ genesis, and the test networks restart from a new genesis at the change.
 
 ### 4.1 Payload
 
-Spec 07, section 3 is unchanged except for three points: `version` is
-`0x0002`, `note` is `NOTE_BYTES = 380`, and the binding is the one in section
-4.2. The payload is 1,311,290 bytes and the envelope 1,311,291 bytes:
+Spec 07, section 3 is unchanged except for four points: `version` is
+`0x0002`, `note` is `NOTE_BYTES = 380`, the payload ends with
+`remainder_tag`, the remainder's 16-byte lookup tag after the note (decision
+0004), and the binding is the one in section 4.2.
+The payload is 1,311,306 bytes and the envelope 1,311,307 bytes:
 
 ```text
-PAYLOAD_BYTES  = 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32 + 1,310,720 + 380 = 1,311,290
-ENVELOPE_BYTES = 1,311,291
+PAYLOAD_BYTES  = 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32 + 1,310,720 + 380 + 16 = 1,311,306
+ENVELOPE_BYTES = 1,311,307
 ```
+
+`remainder_tag` is never zero: a node refuses a reveal whose tag is 16 zero
+bytes, the coin lookup index's sentinel, as it refuses a zero tag in a
+commit. A wallet writes the lookup tag of the remainder's commitment number
+under its holder's note key (spec 01, section 7), so the holder finds its
+change coin by a private lookup like any committed coin. The node puts the
+remainder into the coin lookup index under this tag (spec 05, section 6).
 
 Every ordinary transaction has this size, whether it spends a plain coin or
 uses the override.
@@ -181,7 +190,8 @@ uses the override.
 ### 4.2 Binding
 
 `binding = K("ghost/coin-reveal-binding/v2", fields)`. The fields are those
-of spec 02, section 7 with the `rule` field removed and the note widened:
+of spec 02, section 7 with the `rule` field removed, the note widened, and
+`remainder_tag` after the note (decision 0004):
 
 | Offset | Width | Field | Value |
 |---|---|---|---|
@@ -199,10 +209,12 @@ of spec 02, section 7 with the `rule` field removed and the note widened:
 | 163 | 32 | `out` | Amount word |
 | 195 | 32 | `fee` | Amount word |
 | 227 | 380 | `remainder_note` | The remainder's encrypted note |
+| 607 | 16 | `remainder_tag` | The remainder's lookup tag, never zero |
 
-Total: 607 bytes after the tag, 636 with the 29-byte tag, five Keccak
-permutations (four today). The public values of the proof are these 607 bytes
-and the 32-byte digest: 639 bytes. The node computes the digest itself and
+Total: 623 bytes after the tag, 652 with the 29-byte tag, five Keccak
+permutations (four today). The public values of the proof are these 623 bytes
+and the 32-byte digest: 655 bytes. The tag is bound for the reason the note
+is bound: a relay that changed it would hide the remainder from a lookup. The node computes the digest itself and
 never takes one from a sender (spec 02, PS-6). Neither rule is a public value
 or a binding field.
 
@@ -991,7 +1003,7 @@ of this section is recomputed from the formulas here with the new
 | Name | Value | Meaning |
 |---|---|---|
 | `NOTE_BYTES` | 380 | Encrypted note, every commitment (section 3.2) |
-| `ORD_ENVELOPE_BYTES` | 1,311,291 | Ordinary reveal (section 4.1) |
+| `ORD_ENVELOPE_BYTES` | 1,311,307 | Ordinary reveal (section 4.1) |
 | `POLICY_ENVELOPE_BYTES` | 1,311,451 | Policy reveal (section 5.1) |
 | `ACTION_ENVELOPE_BYTES` | 949,373 | Policy action (section 8.1) |
 | `VERIFY_GAS_ORD` | 370,000 | Section 10.2 |
@@ -1000,7 +1012,7 @@ of this section is recomputed from the formulas here with the new
 | `SLOT_OPEN_GAS` | 160,000 | Eight new storage words (section 7.1) |
 | `ACTION_STATE_GAS` | 15,000 | Three storage word updates at 5,000: nonce, remaining, debits |
 | `ACTION_CALL_GAS` | 250,000 | Cap on the policy call |
-| `G_PRIV` | 21,371,656 | `16 * 1,311,291 + 21,000 + 370,000` |
+| `G_PRIV` | 21,371,912 | `16 * 1,311,307 + 21,000 + 370,000` |
 | `G_POLICY` | 21,604,216 | `16 * 1,311,451 + 21,000 + 440,000 + 160,000` |
 | `G_ACTION` | 15,905,968 | `16 * 949,373 + 21,000 + 430,000 + 15,000 + 250,000` |
 | `FEE_WINDOW`, `FEE_STEPS`, `TIP_DIVISOR` | 4, 1, 10 | Unchanged (spec 07) |
@@ -1015,10 +1027,10 @@ Worked values at the genesis base fee of 1 gwei (`b_ref = 1,000,000,000`,
 
 ```text
 [window-genesis-ordinary]
-g = 21371656
-base_part = 24044181604171656
-tip = 2404418160417166
-fee = 26448599764588822
+g = 21371912
+base_part = 24044469616971912
+tip = 2404446961697192
+fee = 26448916578669104
 cover_limit = 1237555001
 
 [window-genesis-policy]
@@ -1029,7 +1041,7 @@ fee = 26736405555644638
 cover_limit = 1237555001
 ```
 
-The ordinary fee rises by 348,104,420,929,412 wei over version 1's
+The ordinary fee rises by 348,421,235,009,694 wei over version 1's
 26,100,495,343,659,410 (about 1.3 percent). The lowest `debit` of an action at the same base fee is
 `G_ACTION * 1,000,000,000 = 15,905,968,000,000,000` wei, about 0.0159 GHOST.
 
@@ -1444,16 +1456,16 @@ integers only.
 
 ```text
 NOTE_BYTES       = 12 + (128 + 224) + 16 = 380
-ORD_PAYLOAD      = 2+8+32+32+32+20+32+32 + 1,310,720 + 380 = 1,311,290
+ORD_PAYLOAD      = 2+8+32+32+32+20+32+32 + 1,310,720 + 380 + 16 = 1,311,306
 POLICY_PAYLOAD   = 2+8+32+32+32+32+32+20+32+32+32+32+32 + 1,310,720 + 380 = 1,311,450
 ACTION_PAYLOAD   = 2+8+32+8+32+32+8+2+1,024 + 948,224 = 949,372
-ordinary binding = 8+2+32+1+1+2+1+32+32+32+20+32+32+380 = 607
+ordinary binding = 8+2+32+1+1+2+1+32+32+32+20+32+32+380+16 = 623
 policy binding   = 8+2+32+1+1+2+1+32+32+32+32+32+20+32+32+32+32+32+380 = 767
 action binding   = 8+2+32+1+1+1+20+32+8+32+32+32+32+8+32 = 273
-permutations     = floor((607+29)/136) + 1 = 5;  floor((767+31)/136) + 1 = 6;  floor((273+24)/136) + 1 = 3
+permutations     = floor((623+29)/136) + 1 = 5;  floor((767+31)/136) + 1 = 6;  floor((273+24)/136) + 1 = 3
 trace width      = 2,633 + 1,088 + 1 + carried columns
 capsule          = 1+20+32+32+32+32+1+64+10 = 224
-G_PRIV           = 16*1,311,291 + 21,000 + 370,000 = 21,371,656
+G_PRIV           = 16*1,311,307 + 21,000 + 370,000 = 21,371,912
 G_POLICY         = 16*1,311,451 + 21,000 + 440,000 + 160,000 = 21,604,216
 G_ACTION         = 16*949,373 + 21,000 + 430,000 + 15,000 + 250,000 = 15,905,968
 G_DATA           = 16*1,311,067 + 21,000 + 92,300 = 21,090,372

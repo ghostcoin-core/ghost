@@ -27,7 +27,8 @@
 //!
 //! **Version 2 statement**, [`COIN_REVEAL_V2_BYTES`] bytes: `root` (32),
 //! `marker` (32), `remainder` (32), `remainder_note` ([`NOTE_V3_BYTES`]),
-//! `recipient` (20), `out` (32), `fee` (32), in that order.
+//! `recipient` (20), `out` (32), `fee` (32), `remainder_tag` (16), in that
+//! order.
 //!
 //! **Proof**, 1 to [`PROOF_MAX_BYTES`] bytes: one serialized proof, which may
 //! be followed by zero bytes, so a zero-padded proof field can be passed as it
@@ -61,7 +62,7 @@
 //! `chain_id` (8), `protocol_version` (2), `statement_version` (1), then the
 //! items in block order, each its public values one byte a value. A bundle's
 //! item is a version 2 coin reveal's public values, [`REVEAL_PUBLIC_BYTES`]
-//! bytes (its 607 binding fields and its 32-byte digest, spec 10, section
+//! bytes (its 623 binding fields and its 32-byte digest, spec 10, section
 //! 4.2); a public transaction's is its account, key identity and transaction
 //! hash, [`PUBLIC_TX_BYTES`] bytes.
 //!
@@ -87,7 +88,7 @@ use crate::mldsa::{ACCOUNT_BYTES, KEY_ID_BYTES, TX_HASH_BYTES};
 use crate::scale::ScaleConfig;
 use crate::{
     COIN_REVEAL_V2_LAYOUT, ChainParams, CoinReveal, CoinRevealV2, NOTE_BYTES, NOTE_V3_BYTES, PROOF_FIELD_BYTES, Proof,
-    ProofError, stark, verify_coin_reveal_v2, verify_salted_coin_reveal,
+    ProofError, REMAINDER_TAG_BYTES, stark, verify_coin_reveal_v2, verify_salted_coin_reveal,
 };
 
 /// The proof verifies against the statement and the chain parameters.
@@ -106,8 +107,8 @@ pub const CHAIN_PARAMS_BYTES: usize = 8 + 2 + 32;
 /// Length of the coin reveal statement.
 pub const COIN_REVEAL_BYTES: usize = 32 + 32 + 32 + NOTE_BYTES + 20 + 32 + 32 + 32;
 /// Length of the version 2 coin reveal statement: no `rule`, the 380-byte
-/// note.
-pub const COIN_REVEAL_V2_BYTES: usize = 32 + 32 + 32 + NOTE_V3_BYTES + 20 + 32 + 32;
+/// note, and the remainder's 16-byte lookup tag last.
+pub const COIN_REVEAL_V2_BYTES: usize = 32 + 32 + 32 + NOTE_V3_BYTES + 20 + 32 + 32 + REMAINDER_TAG_BYTES;
 /// The longest proof buffer accepted, 2 MiB: room above a coin reveal proof
 /// (about 1.19 MB) and a bound on what one call reads.
 pub const PROOF_MAX_BYTES: usize = 2 * 1024 * 1024;
@@ -170,7 +171,7 @@ pub fn coin_reveal_from_bytes(bytes: &[u8; COIN_REVEAL_BYTES]) -> CoinReveal {
 /// The version 2 coin reveal statement in the layout of the C interface.
 pub fn coin_reveal_v2_to_bytes(tx: &CoinRevealV2) -> [u8; COIN_REVEAL_V2_BYTES] {
     let mut out = [0u8; COIN_REVEAL_V2_BYTES];
-    let fields: [&[u8]; 7] = [
+    let fields: [&[u8]; 8] = [
         &tx.root,
         &tx.marker,
         &tx.remainder,
@@ -178,6 +179,7 @@ pub fn coin_reveal_v2_to_bytes(tx: &CoinRevealV2) -> [u8; COIN_REVEAL_V2_BYTES] 
         &tx.recipient,
         &tx.out,
         &tx.fee,
+        &tx.remainder_tag,
     ];
     let mut at = 0;
     for field in fields {
@@ -198,6 +200,7 @@ pub fn coin_reveal_v2_from_bytes(bytes: &[u8; COIN_REVEAL_V2_BYTES]) -> CoinReve
         recipient: r.take(),
         out: r.take(),
         fee: r.take(),
+        remainder_tag: r.take(),
     }
 }
 

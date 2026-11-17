@@ -16,7 +16,8 @@
 //! - **O6.** The remainder fingerprint `F'` takes a free private rule, the
 //!   prover's choice: the input's rule, a rotated rule or the empty rule.
 //! - **O7.** The binding is the one of section 4.2: `ghost/coin-reveal-binding/v2`
-//!   over 607 bytes, the 380-byte note and no `rule` field.
+//!   over 623 bytes, the 380-byte note, the 16-byte `remainder_tag` and no
+//!   `rule` field.
 //!
 //! Neither rule, the switch, the override secret nor any rule field is a
 //! public value. A plain-coin proof and an override proof are proofs of one
@@ -57,7 +58,8 @@ use crate::amount::{
     AMOUNT_HIGH_BYTES, AMOUNT_LIMBS, CARRIES, amount_is_valid, conservation_carries, guessed_carries, limb,
 };
 use crate::binding::{
-    Binding, ChainParams, FieldWriter, PURPOSE_SPEND, STATEMENT_COIN_REVEAL, STATEMENT_VERSION_2, digest,
+    Binding, ChainParams, FieldWriter, PURPOSE_SPEND, REMAINDER_TAG_BYTES, STATEMENT_COIN_REVEAL, STATEMENT_VERSION_2,
+    digest,
 };
 use crate::hash::{
     COIN_V2, EMPTY_RULE, POLICY_ADDRESS_BYTES, SALT_BYTES, TAG_COIN_COMMITMENT, TAG_COIN_FINGERPRINT_V2,
@@ -197,6 +199,10 @@ pub struct CoinRevealV2Request {
     pub out: [u8; 32],
     pub fee: [u8; 32],
     pub remainder_note: [u8; NOTE_V3_BYTES],
+    /// The remainder's lookup tag (decision 0004), never zero. The binding
+    /// carries it so a relay cannot change it and hide the remainder from a
+    /// lookup.
+    pub remainder_tag: [u8; REMAINDER_TAG_BYTES],
 }
 
 /// The public fields of a version 2 coin reveal: everything the node reads
@@ -210,6 +216,8 @@ pub struct CoinRevealV2 {
     pub recipient: [u8; 20],
     pub out: [u8; 32],
     pub fee: [u8; 32],
+    /// The remainder's 16-byte lookup tag, never zero (decision 0004).
+    pub remainder_tag: [u8; REMAINDER_TAG_BYTES],
 }
 
 /// The private side of a version 2 reveal.
@@ -236,6 +244,7 @@ fn fields(params: &ChainParams, tx: &CoinRevealV2) -> Vec<u8> {
     .put("out", &tx.out)
     .put("fee", &tx.fee)
     .put("remainder_note", &tx.remainder_note)
+    .put("remainder_tag", &tx.remainder_tag)
     .finish()
 }
 
@@ -245,7 +254,7 @@ pub fn coin_reveal_v2_binding(params: &ChainParams, tx: &CoinRevealV2) -> [u8; 3
     digest(Binding::CoinRevealV2, &fields(params, tx))
 }
 
-/// The public values of the proof, one byte each: the 607 binding field
+/// The public values of the proof, one byte each: the 623 binding field
 /// bytes, then the 32-byte digest. What the verifier builds; exposed, hidden,
 /// so tests can compare the public values of two reveals.
 #[doc(hidden)]
@@ -493,6 +502,9 @@ fn checked_reveal(
     request: &CoinRevealV2Request,
 ) -> Result<(CoinRevealV2, [u8; CARRIES]), ProofError> {
     let input_rule = input.checked_rule()?;
+    if request.remainder_tag == [0; REMAINDER_TAG_BYTES] {
+        return Err(ProofError::ZeroRemainderTag);
+    }
     if ![&opening.v, &remainder.v, &request.out, &request.fee].into_iter().all(amount_is_valid) {
         return Err(ProofError::AmountOutOfRange);
     }
@@ -516,6 +528,7 @@ fn checked_reveal(
         recipient: request.recipient,
         out: request.out,
         fee: request.fee,
+        remainder_tag: request.remainder_tag,
     };
     Ok((tx, carries))
 }
@@ -685,6 +698,7 @@ mod tests {
             out: amount_word(600_000),
             fee: amount_word(21),
             remainder_note: [6; NOTE_V3_BYTES],
+            remainder_tag: [7; REMAINDER_TAG_BYTES],
         }
     }
 
@@ -700,6 +714,7 @@ mod tests {
             recipient: request.recipient,
             out: request.out,
             fee: request.fee,
+            remainder_tag: request.remainder_tag,
         }
     }
 
@@ -722,13 +737,13 @@ mod tests {
     }
 
     /// Spec 10, section 4.4: 47 permutations, 168 carried columns, 3,890
-    /// columns, 2,048 rows, 639 public values; the budget's widest trace.
+    /// columns, 2,048 rows, 655 public values; the budget's widest trace.
     #[test]
     fn the_trace_has_the_spec_shape() {
         let s = schedule();
         assert_eq!(s.expand().len(), 47);
         assert_eq!(s.carried, 168);
-        assert_eq!(s.num_public, 607 + 32);
+        assert_eq!(s.num_public, 623 + 32);
         let air = Statement::CoinRevealV2.air();
         assert_eq!(air.height(), 2048);
         assert_eq!(BaseAir::<F>::width(&air), 3890);

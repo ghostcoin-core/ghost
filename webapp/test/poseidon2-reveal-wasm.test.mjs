@@ -50,6 +50,7 @@ const LEAVES = [fill(32, 0x71), fill(32, 0x72), commitment(COIN, EMPTY_RULE), fi
 const ROOT = ghost.treeRoots(concat(LEAVES)).root;
 const RECIPIENT = fill(20, 0x99);
 const NOTE = fill(NOTE_BYTES, 0x33);
+const TAG = fill(16, 0x5a);
 
 const request = (overrides = {}) => ({
   chainId: CHAIN_ID,
@@ -63,6 +64,7 @@ const request = (overrides = {}) => ({
   out: OUT,
   fee: FEE,
   remainderNote: NOTE,
+  remainderTag: TAG,
   leaves: LEAVES,
   ...overrides,
 });
@@ -105,6 +107,7 @@ test("the worker proves a reveal with the Poseidon2 parameters and it verifies",
   assert.equal(fromWord(REVEAL.out), OUT);
   assert.equal(fromWord(REVEAL.fee), FEE);
   assert.ok(equalBytes(REVEAL.remainderNote, NOTE), "note");
+  assert.ok(equalBytes(REVEAL.remainderTag, TAG), "remainder tag");
 
   // A real proof of the Poseidon2 configuration: within the modeled bound,
   // and larger than the proof field a transaction carries today.
@@ -143,6 +146,9 @@ test("the proof is bound to the public fields and the chain constants", () => {
   const note = NOTE.slice();
   note[NOTE_BYTES - 1] ^= 1;
   assert.throws(() => verify({ ...REVEAL, remainderNote: note }, PROOF), /proof rejected|malformed proof/);
+  const tag = TAG.slice();
+  tag[15] ^= 1;
+  assert.throws(() => verify({ ...REVEAL, remainderTag: tag }, PROOF), /proof rejected|malformed proof/);
   assert.throws(() => verify(REVEAL, PROOF, { domain: fill(32, 0x12) }), /proof rejected|malformed proof/);
   assert.throws(() => verify(REVEAL, PROOF, { chainId: CHAIN_ID + 1n }), /proof rejected|malformed proof/);
   // An amount above 2^96 - 1 is refused before the proof is looked at, as

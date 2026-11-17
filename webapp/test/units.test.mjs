@@ -23,33 +23,33 @@ import {
 import { keyStatus, normalKey, pickGroups, wrongWords } from "../src/flow.mjs";
 
 // The app sends version 2 ordinary reveals, so its fee is spec 10's: the
-// window rule of spec 07, section 4, with G_PRIV = 21,371,656, the node's
+// window rule of spec 07, section 4, with G_PRIV = 21,371,912, the node's
 // GhostRevealGas. Spec 07's own worked examples are version 1's (G_PRIV
 // 21,090,372), which spec 10, section 10, compares against.
-const GENESIS_FEE = 26_448_599_764_588_822n;
-const NEXT_FEE = 29_093_459_738_696_822n;
+const GENESIS_FEE = 26_448_916_578_669_104n;
+const NEXT_FEE = 29_093_808_234_185_104n;
 
 test("window fees match spec 10, section 10 (spec 07's window rule at the version 2 gas)", () => {
-  assert.equal(G_PRIV, 21_371_656n, "G_PRIV, ghost-node's GhostRevealGas");
-  assert.equal(G_PRIV, 16n * 1_311_291n + 21_000n + 370_000n);
+  assert.equal(G_PRIV, 21_371_912n, "G_PRIV, ghost-node's GhostRevealGas");
+  assert.equal(G_PRIV, 16n * 1_311_307n + 21_000n + 370_000n);
   // [window-genesis-ordinary]
   assert.equal(windowPrice(1_000_000_000n), 1_125_050_001n);
   assert.deepEqual(feeForPrice(1_125_050_001n), {
-    basePart: 24_044_181_604_171_656n,
-    tip: 2_404_418_160_417_166n,
+    basePart: 24_044_469_616_971_912n,
+    tip: 2_404_446_961_697_192n,
     fee: GENESIS_FEE,
   });
   assert.equal(coverLimit(GENESIS_FEE), 1_237_555_001n);
   // Spec 07's [window-next] at the version 2 gas.
   assert.equal(windowPrice(1_100_000_000n), 1_237_555_001n);
   assert.deepEqual(feeForPrice(1_237_555_001n), {
-    basePart: 26_448_599_762_451_656n,
-    tip: 2_644_859_976_245_166n,
+    basePart: 26_448_916_576_531_912n,
+    tip: 2_644_891_657_653_192n,
     fee: NEXT_FEE,
   });
   assert.equal(coverLimit(NEXT_FEE), 1_361_310_501n);
-  // Spec 10's ordinary fee is version 1's plus 348,104,420,929,412 wei.
-  assert.equal(GENESIS_FEE - 26_100_495_343_659_410n, 348_104_420_929_412n);
+  // Spec 10's ordinary fee is version 1's plus 348,421,235,009,694 wei.
+  assert.equal(GENESIS_FEE - 26_100_495_343_659_410n, 348_421_235_009_694n);
 });
 
 test("the window price is one growth step above b_ref", () => {
@@ -65,7 +65,7 @@ test("the window fee is the node's: GhostRevealGas times U1, plus a tenth rounde
   const nodeWindowFee = (bRef) => {
     let u = bRef;
     for (let j = 0; j < 1; j += 1) u = u + u / 8n + u / 20000n + 1n;
-    const base = 21_371_656n * u;
+    const base = 21_371_912n * u;
     return base + (base + 9n) / 10n;
   };
   for (const bRef of [0n, 1n, 7n, 8n, 875n, 1_000_000_000n, 123_456_789_012n]) {
@@ -73,7 +73,7 @@ test("the window fee is the node's: GhostRevealGas times U1, plus a tenth rounde
   }
   // At b_ref 7 wei the window price is 8 wei.
   assert.equal(windowPrice(7n), 8n);
-  assert.equal(feeForPrice(8n).fee, 188_070_573n);
+  assert.equal(feeForPrice(8n).fee, 188_072_826n);
 });
 
 // A half-full header: its child's base fee equals its own.

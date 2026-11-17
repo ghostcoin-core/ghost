@@ -24,7 +24,7 @@ The script runs proofs/tests/bundle_security.rs with `--nocapture`, which prints
 
 | Proof (measured: the shapes of the built circuits, as the estimator takes them) | Proofs in the bundle | Log blowup, queries, grinding on queries and batching | Tables | Degree bits | FRI rounds | Constraints | Largest constraint degree | Quotient chunks | Batched functions |
 |---|---|---|---|---|---|---|---|---|---|
-| leaf, a reveal (measured) | 3,500 | 3, 96, 16 and 16 | 1 | 12 | 12 | 5,882 | 3 | 8 | 7,940 |
+| leaf, a reveal (measured) | 3,500 | 3, 96, 16 and 16 | 1 | 12 | 12 | 5,898 | 3 | 8 | 7,940 |
 | batch (measured) | 110 | 3, 96, 16 and 16 | 5 | 24 | 24 | 890 | 4 | 8 | 2,685 |
 | root (measured) | 1 | 3, 96, 16 and 16 | 5 | 24 | 24 | 1,154 | 4 | 8 | 3,905 |
 | shrink (measured) | 1 | 5, 56, 16 and 16 | 5 | 19 | 19 | 866 | 4 | 8 | 2,483 |

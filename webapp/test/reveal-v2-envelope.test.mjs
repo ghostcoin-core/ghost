@@ -1,5 +1,5 @@
 // The ordinary reveal at version 2 (spec 10, section 4): the wallet's reveal
-// is type 0x50, version 0x0002, an envelope of exactly 1,311,291 bytes that
+// is type 0x50, version 0x0002, an envelope of exactly 1,311,307 bytes that
 // ends with a 380-byte remainder note (note version 3, the empty rule's
 // capsule), proved as statement S1 version 2 and checked by its verifier
 // (the module's ghost_decode_envelope runs verify_coin_reveal_v2). No
@@ -25,14 +25,16 @@ const GHOST = 10n ** 18n;
 const RECIPIENT = "0x2222222222222222222222222222222222222222";
 // Spec 10, section 4.1: the version 2 envelope, and the version 1 one it
 // replaces.
-const V2_ENVELOPE_BYTES = 1 + 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32 + 1_310_720 + 380;
+const V2_ENVELOPE_BYTES = 1 + 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32 + 1_310_720 + 380 + 16;
 const V1_ENVELOPE_BYTES = 1 + 2 + 8 + 32 + 32 + 32 + 20 + 32 + 32 + 1_310_720 + 156;
 // Where the remainder note starts in the envelope.
-const NOTE_AT = V2_ENVELOPE_BYTES - 380;
+const NOTE_AT = V2_ENVELOPE_BYTES - 16 - 380;
+// Where the remainder's lookup tag starts: the envelope's last 16 bytes.
+const TAG_AT = V2_ENVELOPE_BYTES - 16;
 // Spec 10, section 10.3, [window-genesis-ordinary]: g_priv and the fee at a
 // base fee of 1 gwei.
-const SPEC_G_PRIV = 21_371_656n;
-const SPEC_FEE = 26_448_599_764_588_822n;
+const SPEC_G_PRIV = 21_371_912n;
+const SPEC_FEE = 26_448_916_578_669_104n;
 // The policy guardRestore names rules against: any test value will do, as
 // no coin here has a rule.
 const POLICY = { address: new Uint8Array(20).fill(0x47), codehash: new Uint8Array(32).fill(0x5a) };
@@ -70,19 +72,34 @@ function sentEnvelopes(node) {
 
 // The checks every envelope of the wallet passes: its type, version and
 // length, the version 2 verifier through the module's decoding, the
-// 380-byte note at its end, and the refusal of any change to it.
+// 380-byte note and the remainder's 16-byte lookup tag at its end, and the
+// refusal of any change to either.
 function checkEnvelope(node, envelope) {
   assert.equal(envelope.length, V2_ENVELOPE_BYTES, "the version 2 length of spec 10, section 4.1");
-  assert.equal(envelope.length, 1_311_291);
+  assert.equal(envelope.length, 1_311_307);
   assert.notEqual(envelope.length, V1_ENVELOPE_BYTES, "not the version 1 length");
   assert.equal(envelope[0], 0x50, "type 0x50");
   assert.deepEqual([...envelope.subarray(1, 3)], [0x00, 0x02], "version 0x0002");
   const where = { chainId: node.chainId, domain: node.blocks[0].hash };
   const decoded = ghost.decodeEnvelope({ ...where, envelope });
   assert.equal(toHex(decoded.txHash), toHex(keccak256(envelope)));
-  // The remainder note is the envelope's last 380 bytes, whole.
+  // The remainder note is the 380 bytes before the tag, whole.
   assert.equal(decoded.note.length, 380);
-  assert.equal(toHex(decoded.note), toHex(envelope.subarray(NOTE_AT)));
+  assert.equal(toHex(decoded.note), toHex(envelope.subarray(NOTE_AT, TAG_AT)));
+  // The remainder's lookup tag is the envelope's last 16 bytes, never zero.
+  assert.equal(decoded.remainderTag.length, 16);
+  assert.equal(toHex(decoded.remainderTag), toHex(envelope.subarray(TAG_AT)));
+  assert.ok(decoded.remainderTag.some((b) => b !== 0), "the remainder tag is not zero");
+  // The proof binds the tag: a changed tag does not verify, a zero one is
+  // refused before the proof is read.
+  for (const at of [0, 15]) {
+    const changed = envelope.slice();
+    changed[TAG_AT + at] ^= 1;
+    assert.throws(() => ghost.decodeEnvelope({ ...where, envelope: changed }), /the proof does not verify/, `tag byte ${at}`);
+  }
+  const zeroTag = envelope.slice();
+  zeroTag.fill(0, TAG_AT);
+  assert.throws(() => ghost.decodeEnvelope({ ...where, envelope: zeroTag }), /lookup tag is zero/);
   // A note version 3 with its capsule encrypted, not a 156-byte note
   // zero-padded: its last 224 bytes are not all zero.
   assert.ok(decoded.note.subarray(156).some((b) => b !== 0), "the note's capsule part is not zero padding");
@@ -103,7 +120,7 @@ function checkEnvelope(node, envelope) {
   return decoded;
 }
 
-test("the module's envelope is the version 2 one: 0x50, 0x0002, 1,311,291 bytes; version 1 is refused", () => {
+test("the module's envelope is the version 2 one: 0x50, 0x0002, 1,311,307 bytes; version 1 is refused", () => {
   const { envelopeBytes, commitPayloadBytes } = ghost.constants();
   assert.equal(envelopeBytes, V2_ENVELOPE_BYTES);
   assert.equal(commitPayloadBytes, 446);
@@ -120,6 +137,8 @@ test("the module's envelope is the version 2 one: 0x50, 0x0002, 1,311,291 bytes;
     bytes[0] = 0x50;
     bytes.set(version, 1);
     bytes.set([0, 0, 0, 0, 0, 0, 0, 7], 3);
+    // A remainder tag that is not zero, so the proof is what is checked.
+    bytes[length - 1] = 0x01;
     return bytes;
   };
   // A version 1 envelope, of either length, is not taken.
@@ -137,15 +156,18 @@ test("the module's envelope is the version 2 one: 0x50, 0x0002, 1,311,291 bytes;
   assert.throws(() => decode(envelope(V2_ENVELOPE_BYTES, [0x00, 0x02])), /the proof does not verify/);
   const other = envelope(V2_ENVELOPE_BYTES, [0x00, 0x02]);
   other[10] = 8;
-  assert.throws(() => decode(other), /wrong chain identifier/);
+  assert.throws(() => decode(other), /wrong chain identifier/);  // A zero remainder tag is refused at decoding.
+  const zeroTag = envelope(V2_ENVELOPE_BYTES, [0x00, 0x02]);
+  zeroTag[V2_ENVELOPE_BYTES - 1] = 0;
+  assert.throws(() => decode(zeroTag), /lookup tag is zero/);
 });
 
 test("the version 2 fee: g_priv of spec 10, section 10.3", () => {
   assert.equal(G_PRIV, SPEC_G_PRIV);
-  assert.equal(G_PRIV, 16n * 1_311_291n + 21_000n + 370_000n);
+  assert.equal(G_PRIV, 16n * 1_311_307n + 21_000n + 370_000n);
   const genesis = feeForPrice(windowPrice(1_000_000_000n));
-  assert.equal(genesis.basePart, 24_044_181_604_171_656n);
-  assert.equal(genesis.tip, 2_404_418_160_417_166n);
+  assert.equal(genesis.basePart, 24_044_469_616_971_912n);
+  assert.equal(genesis.tip, 2_404_446_961_697_192n);
   assert.equal(genesis.fee, SPEC_FEE);
   assert.equal(FEE_WINDOW, 4);
 });

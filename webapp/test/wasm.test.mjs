@@ -386,10 +386,10 @@ test("the tree-state rule takes a settled candidate at or above the leaf's block
 
 test("a malformed envelope is refused before any proof work", () => {
   const { envelopeBytes } = ghost.constants();
-  // The version 2 reveal, with its 380-byte remainder note: the node's
-  // GhostRevealEnvelopeSize.
-  assert.equal(envelopeBytes, 1 + 190 + 1_310_720 + 380);
-  assert.equal(envelopeBytes, 1_311_291);
+  // The version 2 reveal, with its 380-byte remainder note and 16-byte
+  // remainder tag: the node's GhostRevealEnvelopeSize.
+  assert.equal(envelopeBytes, 1 + 190 + 1_310_720 + 380 + 16);
+  assert.equal(envelopeBytes, 1_311_307);
   const domain = new Uint8Array(32);
   assert.throws(() => ghost.decodeEnvelope({ chainId: 7n, domain, envelope: new Uint8Array(100) }), /expected size/);
   const envelope = new Uint8Array(envelopeBytes);

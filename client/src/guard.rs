@@ -797,6 +797,7 @@ fn override_spend<R: CryptoRng + ?Sized>(
         out: out.to_bytes(),
         fee: terms.fee.to_bytes(),
         remainder_note: remainder.note,
+        remainder_tag: lookup_tag(&holder.note_key(), number),
     };
     let proved = prove_coin_reveal_v2(
         &chain.ordinary_params(),

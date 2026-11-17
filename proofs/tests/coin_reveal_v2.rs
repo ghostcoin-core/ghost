@@ -115,6 +115,7 @@ fn request(coin_rule: &[u8; 32]) -> CoinRevealV2Request {
         out: amount_word(600_000),
         fee: amount_word(21),
         remainder_note: [0x33; NOTE_V3_BYTES],
+        remainder_tag: [0x5a; REMAINDER_TAG_BYTES],
     }
 }
 
@@ -131,6 +132,7 @@ fn expected_tx(coin_rule: &[u8; 32], remainder_rule: &[u8; 32]) -> CoinRevealV2 
         recipient: req.recipient,
         out: req.out,
         fee: req.fee,
+        remainder_tag: req.remainder_tag,
     }
 }
 
@@ -214,16 +216,17 @@ fn bound() -> usize {
 // ---------------------------------------------------------------------------
 // Known answers.
 
-/// Spec 10, section 4.2: 607 bytes of fields, 636 with the 29-byte tag, five
-/// permutations, 639 public values; the digest is the tagged hash of the
-/// fields in the table's order, with `statement_version` 2 and no rule.
+/// Spec 10, section 4.2: 623 bytes of fields, 652 with the 29-byte tag, five
+/// permutations, 655 public values; the digest is the tagged hash of the
+/// fields in the table's order, with `statement_version` 2, no rule, and the
+/// remainder's lookup tag last.
 #[test]
 fn the_binding_is_the_known_answer() {
     let b = Binding::CoinRevealV2;
     assert_eq!(b.tag(), "ghost/coin-reveal-binding/v2");
     assert_eq!(TAG_COIN_REVEAL_BINDING_V2, b.tag());
     assert_eq!(tag_bytes(b.tag()).len(), 29);
-    assert_eq!((b.fields_len(), b.input_len(), b.permutations()), (607, 636, 5));
+    assert_eq!((b.fields_len(), b.input_len(), b.permutations()), (623, 652, 5));
     assert_eq!(NOTE_V3_BYTES, 380);
     let names: Vec<&str> = b.layout().iter().map(|f| f.name).collect();
     assert_eq!(
@@ -242,7 +245,8 @@ fn the_binding_is_the_known_answer() {
             "recipient",
             "out",
             "fee",
-            "remainder_note"
+            "remainder_note",
+            "remainder_tag"
         ]
     );
     assert_eq!(COIN_REVEAL_V2_LAYOUT, b.layout());
@@ -255,6 +259,7 @@ fn the_binding_is_the_known_answer() {
         recipient: [0x25; 20],
         out: amount_word(600_000),
         fee: amount_word(21),
+        remainder_tag: [0x26; REMAINDER_TAG_BYTES],
     };
     let p = params();
     let independent = tagged(
@@ -274,16 +279,18 @@ fn the_binding_is_the_known_answer() {
             &tx.out,
             &tx.fee,
             &tx.remainder_note,
+            &tx.remainder_tag,
         ],
     );
     assert_eq!(coin_reveal_v2_binding(&p, &tx), independent);
     let public = coin_reveal_v2_public_values(&p, &tx);
-    assert_eq!(public.len(), 639);
-    assert_eq!(&public[607..], &independent[..]);
+    assert_eq!(public.len(), 655);
+    assert_eq!(&public[623..], &independent[..]);
     assert_eq!(public[42..47], [STATEMENT_COIN_REVEAL, STATEMENT_VERSION_2, 0x02, 0x01, PURPOSE_SPEND]);
     assert_eq!(&public[227..607], &tx.remainder_note[..]);
+    assert_eq!(&public[607..623], &tx.remainder_tag[..]);
     // A version 1 binding over the same transaction is another digest.
-    assert_ne!(independent, tagged("ghost/coin-reveal-binding/v1", &[&public[..607]]));
+    assert_ne!(independent, tagged("ghost/coin-reveal-binding/v1", &[&public[..623]]));
 }
 
 /// Spec 10, sections 3.1 and 4.4: the rule and override hashes, the 47
@@ -479,7 +486,7 @@ fn the_remainder_rule_changes_no_public_value() {
         // The remainder holds the chosen rule.
         assert_eq!(tx, &expected_tx(&rule, remainder_rule));
         let public = coin_reveal_v2_public_values(&params(), tx);
-        assert_eq!(public.len(), 639);
+        assert_eq!(public.len(), 655);
         assert_eq!(without_remainder(tx), reference);
         for r in [&rule, &rotated] {
             assert!(!holds(&published(tx), r), "a public value holds a rule");
@@ -488,4 +495,47 @@ fn the_remainder_rule_changes_no_public_value() {
     // The remainders differ, as their rules do.
     assert_ne!(reveals[0].1.remainder, reveals[1].1.remainder);
     assert_ne!(reveals[1].1.remainder, reveals[2].1.remainder);
+}
+
+/// Decision 0004: the reveal binds the remainder's lookup tag. The honest
+/// proof carries the requested tag; the same proof with any other tag, a
+/// zero tag included, is rejected; and the honest prover refuses a zero tag.
+#[test]
+fn the_remainder_tag_is_bound_and_never_zero() {
+    let _guard = one_at_a_time();
+    let (tx, proof) = honest_plain();
+    assert_eq!(tx.remainder_tag, request(&EMPTY_RULE).remainder_tag);
+    assert_ne!(tx.remainder_tag, [0; REMAINDER_TAG_BYTES]);
+    for changed in [{
+        let mut t = tx.remainder_tag;
+        t[0] ^= 1;
+        t
+    }, {
+        let mut t = tx.remainder_tag;
+        t[REMAINDER_TAG_BYTES - 1] ^= 0x80;
+        t
+    }, [0; REMAINDER_TAG_BYTES]]
+    {
+        let other = CoinRevealV2 {
+            remainder_tag: changed,
+            ..tx.clone()
+        };
+        assert_ne!(coin_reveal_v2_binding(&params(), &other), coin_reveal_v2_binding(&params(), tx));
+        assert_eq!(verify_coin_reveal_v2(&params(), &other, proof), Err(ProofError::Rejected));
+    }
+
+    let zero = CoinRevealV2Request {
+        remainder_tag: [0; REMAINDER_TAG_BYTES],
+        ..request(&EMPTY_RULE)
+    };
+    let refused = prove_coin_reveal_v2(
+        &params(),
+        &opening(),
+        &InputRule::plain(),
+        &remainder(),
+        &EMPTY_RULE,
+        &zero,
+        zk(3),
+    );
+    assert_eq!(refused.err(), Some(ProofError::ZeroRemainderTag));
 }

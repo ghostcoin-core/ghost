@@ -307,7 +307,7 @@ test("the normal spend opens the override with this wallet's guard secret and ke
   assert.equal(summary.remainderRule, "guard");
   assert.equal(ui.keyAsks.at(-1).kind, "guardSpend");
   const envelope = fromHex(reply.result.envelope);
-  assert.equal(envelope.length, 1_311_291);
+  assert.equal(envelope.length, 1_311_307);
   assert.equal(envelope[0], 0x50);
   assert.deepEqual([...envelope.slice(1, 3)], [0x00, 0x02]);
   assert.equal(reply.result.remainder.number, "0x1");
@@ -316,7 +316,7 @@ test("the normal spend opens the override with this wallet's guard secret and ke
 
   // Included: the commit is spent and the remainder is the key's Guard coin.
   tree.markers.push(fromHex(reply.result.marker));
-  push(fromHex(reply.result.remainder.commitment), envelope.slice(envelope.length - NOTE_BYTES), null);
+  push(fromHex(reply.result.remainder.commitment), envelope.slice(envelope.length - 16 - NOTE_BYTES, envelope.length - 16), null);
   const coins = restore(state.key);
   assert.deepEqual(
     coins.map((c) => [c.number, c.rule, c.spent]),
