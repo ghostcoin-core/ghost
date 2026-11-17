@@ -424,12 +424,14 @@ fn a_guard_commit_holds_the_rule_and_its_capsule() {
     assert_ne!(capsule.action_salt(), &[0; 32]);
     let rule = GuardRule::from_capsule(&policy, &capsule).unwrap();
     assert!(rule == s.committed_rule);
-    // The commit's data carries the fingerprint, the salt and the note.
+    // The commit's data carries the fingerprint, the salt, the note and the
+    // lookup tag of number 0.
     let mut rng = StdRng::seed_from_u64(1);
     let again = guard_commit(&owner, CHAIN_ID, amount(COMMITTED), &s.committed_rule, &ROOM, &mut rng).unwrap();
     assert_eq!(&again.data[2..34], again.commit.fingerprint.as_bytes());
     assert_eq!(&again.data[34..50], again.commit.salt.as_bytes());
-    assert_eq!(&again.data[50..], &again.note[..]);
+    assert_eq!(&again.data[50..430], &again.note[..]);
+    assert_eq!(&again.data[430..], &ghost_client::lookup::key_lookup_tag(&owner, 0)[..]);
     assert_eq!(
         again.commit.commitment,
         owner.coin_commit_with_rule(0, amount(COMMITTED), rule.rule(), again.commit.salt).commitment

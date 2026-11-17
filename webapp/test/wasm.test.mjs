@@ -53,16 +53,33 @@ const BLOCK_ONE = {
   coinTreeRoot: "0x142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5",
   dataTreeRoot: "0xdfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a",
   dataMarkerRoot: "0xf121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f",
+  // Decision 0004's lookup fields, as ghost-node's 23-item block one vector
+  // (core/types/header_ghost_test.go, vectorBlockOneRLP) sets them.
+  coinLookupRoot: `0x${"55".repeat(32)}`,
+  dataLookupRoot: `0x${"66".repeat(32)}`,
+  coinMarkerRoot: `0x${"77".repeat(32)}`,
+  lookupDigest: `0x${"88".repeat(32)}`,
 };
-const BLOCK_ONE_HASH = "0x81ca961404b518ee3ded78ebee1c4e23eba18b7c86515b6471e970cfed8538f4";
+// The hash of ghost-node's 23-item vectorBlockOneRLP.
+const BLOCK_ONE_HASH = "0x68eb471fe6875c480f46165f4648587fe54382aeac9e4ef6d92dbb6e2bd45cc4";
+// Spec 05's hash of the same header in the 19 items before the lookup fields.
+const SPEC_05_BLOCK_ONE_HASH = "0x81ca961404b518ee3ded78ebee1c4e23eba18b7c86515b6471e970cfed8538f4";
 
-test("a header's RLP and hash match spec 05, section 11", () => {
+test("a header's RLP and hash match ghost-node's 23-item vector of spec 05's block one", () => {
   const { rlp, values } = readHeader(BLOCK_ONE);
   assert.equal(values.number, 1n);
   assert.equal(values.baseFeePerGas, 875_000_000n);
-  assert.match(toHex(rlp), /^0xf90264a0039d14f5/);
-  assert.match(toHex(rlp), /84342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f$/);
+  assert.match(toHex(rlp), /^0xf902e8a0039d14f5/);
+  assert.match(
+    toHex(rlp),
+    new RegExp(
+      "84342770c0a0142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5a0dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237aa0f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f" +
+        ["55", "66", "77", "88"].map((b) => `a0${b.repeat(32)}`).join("") +
+        "$",
+    ),
+  );
   assert.equal(toHex(ghost.keccak256(rlp)), BLOCK_ONE_HASH);
+  assert.notEqual(BLOCK_ONE_HASH, SPEC_05_BLOCK_ONE_HASH);
   // Any changed field changes the hash: a coin root, a base fee.
   const otherRoot = { ...BLOCK_ONE, coinTreeRoot: BLOCK_ONE.coinTreeRoot.replace(/5$/, "4") };
   assert.notEqual(toHex(ghost.keccak256(readHeader(otherRoot).rlp)), BLOCK_ONE_HASH);
@@ -93,34 +110,59 @@ const GENESIS = {
   coinTreeRoot: "0x8e66512042388a7863d500c4f96861466ae48b9d64ea1e10ec382c31aa61b5a8",
   dataTreeRoot: "0x3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03",
   dataMarkerRoot: "0x0ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3",
+  // The lookup fields every Ghost genesis carries (ghost-node,
+  // core/types/header_ghost_test.go, genesisLookup).
+  coinLookupRoot: "0x994a8bc5ba72f53f4449d4981c3ea8294d504b148afa58abec873819b143554b",
+  dataLookupRoot: "0xc0ad355e8462fbe6093fa0ac37c0afc450b36cbe679bb7de3050a9a1b2cddece",
+  coinMarkerRoot: "0x84e7c602ab3870f46bf300eff5581ae88029f7c58afb3758a652e0129e9e85cc",
+  lookupDigest: "0x9217af84b49597c35c570275e095d6a0245cab03c6f0126ce995acaa5023cd7b",
 };
-const GENESIS_HASH = "0x039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4";
+// The hash of ghost-node's 23-item vectorGenesisRLP.
+const GENESIS_HASH = "0xd264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3d";
+// Spec 05's hash of the genesis example in the 19 items before the lookup
+// fields: the format the node and this page refuse now.
+const SPEC_05_GENESIS_HASH = "0x039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4";
+const LOOKUP_FIELDS = ["coinLookupRoot", "dataLookupRoot", "coinMarkerRoot", "lookupDigest"];
 
-test("the header RLP has 19 items with dataMarkerRoot as field 18", () => {
-  assert.equal(HEADER_FIELDS.length, 19);
+test("the header RLP has 23 items: dataMarkerRoot as field 18, then the four lookup fields", () => {
+  assert.equal(HEADER_FIELDS.length, 23);
   assert.deepEqual(HEADER_FIELDS[18], ["dataMarkerRoot", "fixed", 32]);
   assert.equal(HEADER_FIELDS[17][0], "dataTreeRoot");
+  assert.deepEqual(
+    HEADER_FIELDS.slice(19),
+    LOOKUP_FIELDS.map((name) => [name, "fixed", 32]),
+  );
 
-  // The last item of the RLP is the 32-byte marker root.
+  // The last item of the RLP is the 32-byte lookup digest; each lookup field
+  // is in the hash.
   const { rlp, values } = readHeader(BLOCK_ONE);
   assert.equal(toHex(values.dataMarkerRoot), BLOCK_ONE.dataMarkerRoot);
-  assert.equal(toHex(rlp.slice(-33)), `0xa0${BLOCK_ONE.dataMarkerRoot.slice(2)}`);
-  const otherMarkers = { ...BLOCK_ONE, dataMarkerRoot: BLOCK_ONE.dataMarkerRoot.replace(/f$/, "e") };
-  assert.notEqual(toHex(ghost.keccak256(readHeader(otherMarkers).rlp)), BLOCK_ONE_HASH, "the marker root is in the hash");
-  assert.throws(() => readHeader({ ...BLOCK_ONE, dataMarkerRoot: undefined }), /no dataMarkerRoot/);
-  assert.throws(() => readHeader({ ...BLOCK_ONE, dataMarkerRoot: BLOCK_ONE.dataMarkerRoot.slice(0, -2) }), /expected 32 bytes/);
+  assert.equal(toHex(rlp.slice(-33)), `0xa0${BLOCK_ONE.lookupDigest.slice(2)}`);
+  for (const name of ["dataMarkerRoot", ...LOOKUP_FIELDS]) {
+    const changed = { ...BLOCK_ONE, [name]: `${BLOCK_ONE[name].slice(0, -1)}0` };
+    assert.notEqual(toHex(ghost.keccak256(readHeader(changed).rlp)), BLOCK_ONE_HASH, `${name} is in the hash`);
+    assert.throws(() => readHeader({ ...BLOCK_ONE, [name]: undefined }), new RegExp(`no ${name}`));
+    assert.throws(() => readHeader({ ...BLOCK_ONE, [name]: BLOCK_ONE[name].slice(0, -2) }), /expected 32 bytes/);
+  }
 
-  // The client library's header chain starts from the 19-item genesis and
-  // refuses it with 18 items (no marker root) or 20.
+  // A node on the old code serves no lookup fields: its header is refused.
+  const old = Object.fromEntries(Object.entries(BLOCK_ONE).filter(([name]) => !LOOKUP_FIELDS.includes(name)));
+  assert.throws(() => readHeader(old), /the header has no coinLookupRoot/);
+
+  // The client library's header chain starts from the 23-item genesis and
+  // refuses the 19 items before the lookup fields (spec 05's genesis
+  // example, whose own hash it is), 22 items or 24.
   const params = { ...TEST_CHAIN_PARAMS, startDifficulty: 0x1000000 };
   const genesis = readHeader(GENESIS).rlp;
   assert.equal(toHex(ghost.keccak256(genesis)), GENESIS_HASH);
   assert.equal(toHex(ghost.chainStart({ params, start: { header: genesis } })), GENESIS_HASH);
   const payload = genesis.slice(3);
-  const eighteen = rlpList([payload.slice(0, -33)]);
-  const twenty = rlpList([payload, rlpString(new Uint8Array(32))]);
-  for (const header of [eighteen, twenty]) {
-    assert.throws(() => ghost.chainStart({ params, start: { header } }), /the header does not have 19 fields/);
+  const nineteen = rlpList([payload.slice(0, -4 * 33)]);
+  assert.equal(toHex(ghost.keccak256(nineteen)), SPEC_05_GENESIS_HASH);
+  const twentyTwo = rlpList([payload.slice(0, -33)]);
+  const twentyFour = rlpList([payload, rlpString(new Uint8Array(32))]);
+  for (const header of [nineteen, twentyTwo, twentyFour]) {
+    assert.throws(() => ghost.chainStart({ params, start: { header } }), /the header does not have 23 fields/);
   }
 });
 
@@ -161,7 +203,7 @@ test("a version 1 commit is refused", () => {
   // The module itself refuses version 1, whatever the JavaScript side passes.
   const input = concat([Uint8Array.of(1), u64(7n), word(amount), random(32), text(VECTOR_KEY)]);
   assert.throws(() => ghost.call("ghost_commit", input), /unknown commit version/);
-  assert.equal(ghost.constants().commitPayloadBytes, 430);
+  assert.equal(ghost.constants().commitPayloadBytes, 446);
   assert.equal(Object.keys(ghost.constants()).length, 2, "no version 1 payload length");
 
   const commit = ghost.commit({ chainId: 7n, amount, seed: random(32), key: VECTOR_KEY });
@@ -230,9 +272,9 @@ test("a commit is of data version 3 by default, its note 380 bytes, its salt fre
   const a = ghost.commit({ chainId: 7n, amount: 10n ** 18n, seed: seed(), key: VECTOR_KEY });
   const b = ghost.commit({ chainId: 7n, amount: 10n ** 18n, seed: seed(), key: VECTOR_KEY });
   assert.equal(a.payload.length, ghost.constants().commitPayloadBytes);
-  assert.equal(a.payload.length, 430);
+  assert.equal(a.payload.length, 446);
   assert.equal(toHex(a.payload.slice(0, 2)), "0x0003");
-  assert.equal(a.payload.slice(50).length, 380);
+  assert.equal(a.payload.slice(50, 430).length, 380);
   assert.notEqual(toHex(a.payload.slice(34, 50)), toHex(b.payload.slice(34, 50)), "a fresh salt");
   assert.notEqual(toHex(a.commitment), toHex(b.commitment), "so a fresh commitment from the same key");
   assert.notEqual(toHex(a.marker), toHex(b.marker));
@@ -244,7 +286,7 @@ test("restore finds the committed coin from its note and passes over others", ()
   const commit = ghost.commit({ chainId, amount: 10n ** 18n, seed: random(32), key: VECTOR_KEY });
   const salt = commit.payload.slice(34, 50);
   const stranger = new Uint8Array(32 + 380).fill(3);
-  const records = new Uint8Array([...stranger, ...commit.commitment, ...commit.payload.slice(50)]);
+  const records = new Uint8Array([...stranger, ...commit.commitment, ...commit.payload.slice(50, 430)]);
   const salts = [null, salt];
   let found = ghost.restore({ chainId, key: VECTOR_KEY, records, salts, markers: new Uint8Array(0) });
   assert.equal(found.length, 1);
@@ -265,7 +307,7 @@ test("restore reports the coin tree it was asked about and refuses nothing it co
   const commit = ghost.commit({ chainId, amount: 10n ** 18n, seed: random(32), key: VECTOR_KEY });
   const salt = commit.payload.slice(34, 50);
   const stranger = new Uint8Array(32 + 380).fill(3);
-  const records = new Uint8Array([...stranger, ...commit.commitment, ...commit.payload.slice(50)]);
+  const records = new Uint8Array([...stranger, ...commit.commitment, ...commit.payload.slice(50, 430)]);
   const ask = (more) => ghost.restore({ chainId, key: VECTOR_KEY, records, salts: [null, salt], markers: new Uint8Array(0), ...more });
   // Not named, the tree is tree 0.
   let found = ask({});

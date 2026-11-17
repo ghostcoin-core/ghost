@@ -65,7 +65,7 @@ test("a new key is 24 words", () => {
   // The key commits and restores the same whether it was typed as words or
   // as digits.
   const commit = ghost.commit({ chainId: 7n, amount: GHOST, seed: random(32), key: WORDS });
-  const records = concat([commit.commitment, commit.payload.slice(50)]);
+  const records = concat([commit.commitment, commit.payload.slice(50, 430)]);
   for (const typed of [WORDS, DIGITS]) {
     const found = ghost.restore({ chainId: 7n, key: typed, records, markers: new Uint8Array(0) });
     assert.equal(found.length, 1, typed === WORDS ? "as words" : "as digits");
@@ -188,7 +188,7 @@ test("a coin of a words key restores from its words or its digit view", async ()
   // In the module: a coin committed under the example key's digit view
   // restores under its words, with its salt.
   const made = ghost.commit({ chainId: 7n, amount: GHOST, seed: random(32), key: DIGITS });
-  const found = ghost.restore({ chainId: 7n, key: WORDS, records: concat([made.commitment, made.payload.slice(50)]), markers: new Uint8Array(0) });
+  const found = ghost.restore({ chainId: 7n, key: WORDS, records: concat([made.commitment, made.payload.slice(50, 430)]), markers: new Uint8Array(0) });
   assert.equal(found.length, 1);
   assert.equal(toHex(found[0].salt), toHex(made.payload.slice(34, 50)));
   assert.equal(toHex(found[0].commitment), toHex(made.commitment));

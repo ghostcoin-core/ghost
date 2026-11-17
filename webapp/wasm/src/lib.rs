@@ -22,7 +22,8 @@
 //!   before anything is derived from it;
 //! - the commit payload sent to the commit entry address: version `0x0003`,
 //!   with a fresh per-coin salt in the clear beside `F` and the 380-byte note
-//!   of note version 3, its capsule the empty rule's (430 bytes);
+//!   of note version 3, its capsule the empty rule's, then the key's 16-byte
+//!   lookup tag of number 0 (decision 0004; 446 bytes);
 //! - restore and the reveal over the salt the node serves beside each leaf,
 //!   and restore by note buckets: the bucket bits of a tree, the key's lookup
 //!   tags and restore over leaves given with their positions;
@@ -122,10 +123,10 @@ pub const ENVELOPE_BYTES: usize = 1 + HEAD_BYTES + PROOF_FIELD_BYTES + NOTE_BYTE
 const _: () = assert!(ENVELOPE_BYTES == 1_311_291);
 
 /// The commit payload, the only one the app makes: the version `0x0003`, `F`,
-/// the coin's salt and the 380-byte note, 430 bytes (the node's
-/// `ghostpriv.SaltedCommitDataSize`).
+/// the coin's salt, the 380-byte note and the key's lookup tag of number 0,
+/// 446 bytes (the node's `ghostpriv.SaltedCommitDataSize`).
 pub const SALTED_COMMIT_PAYLOAD_BYTES: usize = SALTED_COMMIT_DATA_BYTES;
-const _: () = assert!(SALTED_COMMIT_PAYLOAD_BYTES == 430);
+const _: () = assert!(SALTED_COMMIT_PAYLOAD_BYTES == 446);
 const _: () = assert!(SALTED_COMMIT_FORMAT_VERSION[1] == 3);
 const _: () = assert!(NOTE_BYTES == 380 && NOTE_BYTES == ghost_proofs::NOTE_V3_BYTES);
 /// A salt beside a leaf, as an input carries it: 1 if the leaf has one, else
@@ -536,8 +537,8 @@ pub extern "C" fn ghost_key_digits(ptr: *const u8, len: usize) -> u32 {
 /// one; any other is refused), chain identifier (8), amount word (32), seed
 /// (32), key text. Output: `C` (32), marker (32), then the commit payload:
 /// `0x0003`, `F`, a fresh salt drawn from the seed's generator and the
-/// 380-byte note of number 0, which carries that salt and the empty capsule
-/// (430 bytes).
+/// 380-byte note of number 0, which carries that salt and the empty capsule,
+/// then the key's lookup tag of number 0 (446 bytes).
 #[unsafe(no_mangle)]
 pub extern "C" fn ghost_commit(ptr: *const u8, len: usize) -> u32 {
     run(ptr, len, |input| {
@@ -564,7 +565,7 @@ pub extern "C" fn ghost_commit(ptr: *const u8, len: usize) -> u32 {
         let mut out = Vec::with_capacity(64 + SALTED_COMMIT_PAYLOAD_BYTES);
         out.extend_from_slice(commit.commitment.as_bytes());
         out.extend_from_slice(commit.marker.as_bytes());
-        out.extend_from_slice(&salted_commit_data(&commit.fingerprint, &salt, &note));
+        out.extend_from_slice(&salted_commit_data(&commit.fingerprint, &salt, &note, &ghost_client::lookup::lookup_tag(&key.note_key(), 0)));
         Ok(out)
     })
 }
@@ -1745,7 +1746,7 @@ mod guard {
     /// amount word (32), the tree room (8 + 8), seed (32), the key text.
     /// Refuses as the client library does (a tree within the hold of full)
     /// and a commit with no stop root or of zero wei. Output: `C` (32),
-    /// marker (32), the rule (32), then the commit payload (430).
+    /// marker (32), the rule (32), then the commit payload (446).
     #[unsafe(no_mangle)]
     pub extern "C" fn ghost_guard_commit(ptr: *const u8, len: usize) -> u32 {
         run(ptr, len, |input| {

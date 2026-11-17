@@ -9,7 +9,8 @@
 // rewards fund it; no elliptic-curve key or keystore is used. The Phantom
 // Keys are 24 words and the save checks are answered with words. The test
 // then reads the chain itself: the commit transaction's type and sender, its
-// 430 bytes of version 0x0003 with the coin's salt and its 380-byte note, its
+// 446 bytes of version 0x0003 with the coin's salt, its 380-byte note and
+// the key's 16-byte lookup tag (decision 0004), its
 // leaf, the salt and the note the node serves back beside it, the reveal's
 // marker, the version 2 reveal log (spec 10, section 4) with the remainder's
 // leaf and its whole 380-byte note, the same note read back from the tree,
@@ -34,6 +35,7 @@ import test from "node:test";
 
 import { concat, fromHex, toHex, toQuantity } from "../../src/bytes.mjs";
 import { DEFAULT_COMMIT_ENTRY, createFlow } from "../../src/flow.mjs";
+import { HEADER_FIELDS, readHeader } from "../../src/header.mjs";
 import { startBlockPacer } from "../support/block-pacer.mjs";
 import { TEST_WALLET_ADDRESS, loadModule, nodeProver, testConnector } from "../support/env.mjs";
 
@@ -359,6 +361,19 @@ if (!GETH) {
       // Test funds come only from block rewards, to the wallet's account.
       await waitFor("the wallet's funds", async () => (await balance(node.miner)) >= 2n * GHOST);
 
+      // The node's headers are the 23 items of decision 0004: the page
+      // re-encodes one from the node's JSON and gets the node's own hash, and
+      // refuses the header without its lookup fields.
+      const latestHeader = await rpc("eth_getBlockByNumber", ["latest", false]);
+      const { values, rlp } = readHeader(latestHeader);
+      assert.equal(HEADER_FIELDS.length, 23);
+      assert.equal(toHex(ghost.keccak256(rlp)), latestHeader.hash, "the page's header hash is the node's");
+      for (const name of ["coinLookupRoot", "dataLookupRoot", "coinMarkerRoot", "lookupDigest"]) {
+        assert.equal(values[name].length, 32, `the node serves ${name}`);
+      }
+      const { [HEADER_FIELDS[22][0]]: _digest, ...withoutDigest } = latestHeader;
+      assert.throws(() => readHeader(withoutDigest), /the header has no lookupDigest/);
+
       // --- The wallet: connected, as the page connects the Ghost Snap ---
       assert.equal(await flow.walletConnect(testConnector()), TEST_WALLET_ADDRESS);
       assert.ok(flow.state.wallet.balance >= 2n * GHOST, "the wallet shows the account's balance");
@@ -373,9 +388,9 @@ if (!GETH) {
       assert.equal(flow.state.vanish.stage, "done");
 
       // On chain: a transaction to the commit entry address of 1 GHOST whose
-      // data is the 430 bytes of a salted commit (ghostpriv
-      // SaltedCommitDataSize), version 0x0003, F, the salt and the 380-byte
-      // note, and a new leaf C = K(tag, COIN_V2, F, v).
+      // data is the 446 bytes of a salted commit (ghostpriv
+      // SaltedCommitDataSize), version 0x0003, F, the salt, the 380-byte
+      // note and the key's lookup tag, and a new leaf C = K(tag, COIN_V2, F, v).
       const commitTx = await rpc("eth_getTransactionByHash", [sent.txHash]);
       assert.equal(commitTx.type, "0x52", "a quantum-safe account transaction");
       // The sender is derived from the key: the wallet's nonce moved.
@@ -383,11 +398,14 @@ if (!GETH) {
       assert.equal(String(commitTx.to).toLowerCase(), DEFAULT_COMMIT_ENTRY);
       assert.equal(BigInt(commitTx.value), GHOST);
       const data = fromHex(commitTx.input);
-      assert.equal(data.length, 430);
+      assert.equal(data.length, 446);
       assert.equal(toHex(data.slice(0, 2)), "0x0003");
       const salt = data.slice(34, 34 + SALT_BYTES);
-      const note = data.slice(34 + SALT_BYTES);
+      const note = data.slice(34 + SALT_BYTES, 34 + SALT_BYTES + 380);
       assert.equal(note.length, 380, "note version 3");
+      const lookupTag = data.slice(34 + SALT_BYTES + 380);
+      assert.equal(lookupTag.length, 16, "the 16-byte lookup tag after the note");
+      assert.ok(lookupTag.some((b) => b !== 0), "a lookup tag the node takes: never zero");
       const commitReceipt = await rpc("eth_getTransactionReceipt", [sent.txHash]);
       assert.equal(commitReceipt.status, "0x1");
       // Sent as soon as the wallet had it, Done in the block that holds it.

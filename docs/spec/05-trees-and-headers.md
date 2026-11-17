@@ -2119,11 +2119,10 @@ difference is listed here for the founder's review.
    transaction payload of [spec 07](07-private-transaction.md), section 3
    (offset 1,311,066). Neither layout carries it yet; until it does, no
    remainder can carry its tag, and the record's offsets are the ones to use.
-10. **Seal vectors of the 19-item header.** [Spec 08](08-randomx-seal.md),
-    section 4 now names the 23 fields its seal hash covers, but its seal
-    vectors are still computed over the 19-item header of before decision
-    0004, and the node's genesis derivation still writes 19 items. Their
-    vectors change with the node ticket.
+10. **Seal vectors of the 23-item header.** [Spec 08](08-randomx-seal.md),
+    section 11 now computes its seal vectors over the 23-item header of
+    decision 0004 (the node's genesis and block one vectors with their
+    lookup fields), and the node's genesis derivation writes 23 items.
 
 ## 14. Questions for the founder
 

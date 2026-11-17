@@ -67,9 +67,8 @@
 //!
 //! The roots both read are header fields 16, 19, 21 and 22 (`coinTreeRoot`,
 //! `coinLookupRoot`, `coinMarkerRoot`, `lookupDigest`) of decision 0004's
-//! 23-item header. The client's header decoder ([`crate::seal`]) reads the
-//! 19-item header, so the fields are read by the caller's
-//! [`ReadHeaderRoots`] until it reads the 23-item one. They are always read
+//! 23-item header, which the client's header decoder ([`crate::seal`])
+//! takes; the caller's [`ReadHeaderRoots`] reads them. They are always read
 //! from the bytes of a header the proof checked, never taken from a server
 //! beside it.
 

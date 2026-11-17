@@ -1,8 +1,10 @@
 // A block header as the endpoint returns it, re-encoded so its hash can be
-// recomputed: the RLP list of the 19 fields of spec 05, section 10 (fields
-// 0 to 14 of the base header, the base fee, coinTreeRoot, dataTreeRoot,
-// dataMarkerRoot),
-// whose keccak256 is the block hash. The worker's header chain adopts a
+// recomputed: the RLP list of the 23 fields of spec 05, section 10, and
+// decision 0004 (fields 0 to 14 of the base header, the base fee,
+// coinTreeRoot, dataTreeRoot, dataMarkerRoot, then the lookup fields
+// coinLookupRoot, dataLookupRoot, coinMarkerRoot and lookupDigest), whose
+// keccak256 is the block hash. A header without the four lookup fields (the
+// 19 items of the chain before decision 0004) is refused. The worker's header chain adopts a
 // header only when that hash is the one the endpoint returned and its
 // difficulty and proof-of-work seal check (lib.rs, ghost_chain_add).
 //
@@ -10,21 +12,6 @@
 // each one starts) and the page's store of the headers it checked.
 
 import { concat, fromHex, quantity } from "./bytes.mjs";
-
-// The public test network's pinned start, made by scripts/make-pin.mjs
-// against a public node (see NETWORKS).
-const PIN_6777972 = {
-  hash: "0x7f93c093f256db86e01013df0505a162bec1bbc9d292ae109582d0add1ef03a7",
-  height: 39936,
-  totalWork: "540486799",
-  keyBlocks: [
-    [0, "0xdfe4271fd12d302e15c68e381ade8076207f70d3778eebd69604566fb6979436"],
-    [8192, "0xfbd8fdcd94d3d6131f4b893ff5300deb1f11d6d836d6dce000ece32ce9ad4bb1"],
-    [16384, "0x3c2ffe5ca39538c5db901f2a229d3dd207588f6c970eec0c391b2f39a82415f4"],
-    [24576, "0xc2710815c9bfcde3559c9a0346c257acf72c66f5aac1ad741b4cff507c286f70"],
-    [32768, "0x5e8e3de174986a39047db78e9babd3a76c20988a53d1edfab66980cd230fbd7c"],
-  ],
-};
 
 // The networks of this build, keyed by chain identifier (a decimal string).
 // An entry holds:
@@ -44,7 +31,7 @@ const PIN_6777972 = {
 // rests on. With a pin, that includes its `totalWork`: it is taken as given,
 // never checked, and every header after the pin adds its difficulty to it,
 // so a wrong value moves which of two competing chains the page calls the
-// heavier. Headers below the pin are not authenticated. The pin here is
+// heavier. Headers below the pin are not authenticated. A pin is
 // made by scripts/make-pin.mjs, which walks the node's headers from genesis
 // to the pin (each hash, parent link and difficulty) and checks the other
 // public nodes agree; each deploy also serves a fresh one as pin.json next to
@@ -57,13 +44,15 @@ const PIN_6777972 = {
 export const NETWORKS = Object.freeze({
   // The public test network (ghost-node params/ghost/testnet.go): chain id
   // 6777972, the 30-second launch preset with its own start and minimum
-  // difficulty. Its pin is the fallback when the deploy's pin.json is missing
-  // or older (scripts/make-pin.mjs makes both).
+  // difficulty. Its genesis is the one with the lookup fields of decision
+  // 0004, so the chain before them is not this network. No pin is built in:
+  // the page checks the chain from genesis unless the deploy's pin.json
+  // (scripts/make-pin.mjs) gives a newer start.
   "6777972": Object.freeze({
     params: Object.freeze({ blockTime: 30, halfLife: 3600, startDifficulty: 16384, minDifficulty: 4096, futureDrift: 30 }),
     genesisTimestamp: 1793124000,
-    genesisHash: "0xdfe4271fd12d302e15c68e381ade8076207f70d3778eebd69604566fb6979436",
-    pin: Object.freeze(PIN_6777972),
+    genesisHash: "0x1beeb3088d741bdde1f5285fec7fea05b2d598237657e37741099d3e82867176",
+    pin: null,
   }),
 });
 
@@ -152,6 +141,10 @@ export const HEADER_FIELDS = [
   ["coinTreeRoot", "fixed", 32],
   ["dataTreeRoot", "fixed", 32],
   ["dataMarkerRoot", "fixed", 32],
+  ["coinLookupRoot", "fixed", 32],
+  ["dataLookupRoot", "fixed", 32],
+  ["coinMarkerRoot", "fixed", 32],
+  ["lookupDigest", "fixed", 32],
 ];
 
 // The big-endian bytes of an integer, with no leading zero byte; zero is empty.

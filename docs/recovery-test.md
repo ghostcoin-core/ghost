@@ -89,8 +89,8 @@ The script no longer skips any case: every case runs on every run, and
 default (an override must match the node built): the script hands
 it to the test, the devices are told it (createFlow's `treeLeaves`), and the
 rollover case sends enough strangers' commits of 1 wei to fill coin tree 0,
-each the 430 bytes of commit data version `0x0003` the pinned node takes
-(`F`, a salt and a random 380-byte note).
+each the 446 bytes of commit data version `0x0003` the pinned node takes
+(`F`, a salt, a random 380-byte note and a lookup tag).
 The node refuses a send over its per-connection budget of 80 signature
 verifications a second ([spec 09](spec/09-quantum-safe-accounts.md), RPC
 budget), so the test sends these filler commits at most 60 at a time,

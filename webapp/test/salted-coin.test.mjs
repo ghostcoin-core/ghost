@@ -1,4 +1,4 @@
-// The per-coin salt: the commit the app sends is version 0x0003, 430 bytes,
+// The per-coin salt: the commit the app sends is version 0x0003, 446 bytes,
 // a fresh salt in the clear beside F and the 380-byte note after it; the node
 // keeps it with the leaf and serves it as `salt`; the app reads it with the leaf and hands it to
 // restore, which finds each coin with its salt and refuses a coin whose salt
@@ -10,7 +10,7 @@ import test from "node:test";
 import { concat, toHex } from "../src/bytes.mjs";
 import { COMMIT_DATA_BYTES, DEFAULT_COMMIT_ENTRY, createFlow, fetchTree } from "../src/flow.mjs";
 import { loadModule, nodeProver, openTestWallet } from "./support/env.mjs";
-import { COMMIT_DATA_ERROR, startFakeNode } from "./support/fake-node.mjs";
+import { COMMIT_DATA_ERROR, COMMIT_LOOKUP_TAG_ERROR, startFakeNode } from "./support/fake-node.mjs";
 
 const ghost = await loadModule();
 const GHOST = 10n ** 18n;
@@ -19,19 +19,24 @@ const random = (n) => crypto.getRandomValues(new Uint8Array(n));
 const KEY =
   "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth various";
 
-test("the commit is 430 bytes of version 3", async () => {
-  // The module: version 0x0003, F, the salt, the 380-byte note.
+test("the commit is 446 bytes of version 3", async () => {
+  // The module: version 0x0003, F, the salt, the 380-byte note, the key's
+  // lookup tag.
   const a = ghost.commit({ chainId: 7n, amount: GHOST, seed: random(32), key: KEY });
   const b = ghost.commit({ chainId: 7n, amount: GHOST, seed: random(32), key: KEY });
-  assert.equal(COMMIT_DATA_BYTES, 430);
+  assert.equal(COMMIT_DATA_BYTES, 446);
   for (const commit of [a, b]) {
-    assert.equal(commit.payload.length, 430);
+    assert.equal(commit.payload.length, 446);
     assert.equal(toHex(commit.payload.slice(0, 2)), "0x0003");
-    assert.equal(commit.payload.slice(50).length, 380);
+    assert.equal(commit.payload.slice(50, 430).length, 380);
     assert.equal(toHex(ghost.coinCommitment(commit.payload.slice(2, 34), GHOST, 2)), toHex(commit.commitment));
   }
   assert.notEqual(toHex(a.payload.slice(34, 50)), toHex(b.payload.slice(34, 50)), "each coin its own salt");
   assert.notEqual(toHex(a.commitment), toHex(b.commitment), "so one guess at a key checks one leaf");
+  // The lookup tag comes from the key and the coin's number alone: the same
+  // for both commits of number 0, and never zero.
+  assert.equal(toHex(a.payload.slice(430)), toHex(b.payload.slice(430)));
+  assert.notEqual(toHex(a.payload.slice(430)), toHex(new Uint8Array(16)));
 
   // The app: the worker draws the salt from its secure random source, and
   // the commit the wallet signs is that payload; the stand-in keeps the salt
@@ -47,13 +52,13 @@ test("the commit is 430 bytes of version 3", async () => {
     assert.equal(sent.ok, true);
     assert.equal(node.accountTxs.length, 1);
     const data = node.accountTxs[0].data;
-    assert.equal(data.length, 430);
+    assert.equal(data.length, 446);
     assert.equal(toHex(data.slice(0, 2)), "0x0003");
     const leaf = node.leaves.at(-1);
     assert.equal(leaf.note.length, 380);
     assert.equal(toHex(leaf.commitment), toHex(ghost.coinCommitment(data.slice(2, 34), GHOST, 2)));
     assert.equal(toHex(leaf.salt), toHex(data.slice(34, 50)));
-    assert.equal(toHex(leaf.note), toHex(data.slice(50)));
+    assert.equal(toHex(leaf.note), toHex(data.slice(50, 430)));
     // The note carries the same salt, and opens with the key.
     const found = ghost.restore({ chainId: node.chainId, key, records: concat([leaf.commitment, leaf.note]), markers: new Uint8Array(0) });
     assert.equal(toHex(found[0].salt), toHex(data.slice(34, 50)));
@@ -66,12 +71,14 @@ test("the commit is 430 bytes of version 3", async () => {
         params: [{ from: "0x1111111111111111111111111111111111111111", to: DEFAULT_COMMIT_ENTRY, value: "0x1", data: toHex(bytes) }],
       });
     // A note of any other length than 380 bytes, the 206-byte commit of
-    // version 0x0002 with its 156-byte note among them, and any other
-    // version are refused.
+    // version 0x0002 with its 156-byte note and the 430 bytes without a
+    // lookup tag among them, and any other version are refused; so is a
+    // zero lookup tag.
     const oldLayout = concat([Uint8Array.of(0, 2), data.slice(2, 50), data.slice(50, 50 + 156)]);
     assert.equal(oldLayout.length, 206);
     for (const bytes of [
-      data.slice(0, 429),
+      data.slice(0, 445),
+      data.slice(0, 430),
       concat([data, Uint8Array.of(0)]),
       concat([Uint8Array.of(0, 2), data.slice(2)]),
       concat([Uint8Array.of(0, 1), data.slice(2)]),
@@ -79,6 +86,8 @@ test("the commit is 430 bytes of version 3", async () => {
     ]) {
       await assert.rejects(send(bytes), (err) => err.message === `${COMMIT_DATA_ERROR}: ${bytes.length} bytes`);
     }
+    const zeroTag = concat([data.slice(0, 430), new Uint8Array(16)]);
+    await assert.rejects(send(zeroTag), (err) => err.message === COMMIT_LOOKUP_TAG_ERROR);
   } finally {
     prover.terminate();
     await node.close();
@@ -89,7 +98,7 @@ test("restore reads the salt beside the leaf", async () => {
   const chainId = 7n;
   const commit = ghost.commit({ chainId, amount: GHOST, seed: random(32), key: KEY });
   const salt = commit.payload.slice(34, 50);
-  const note = commit.payload.slice(50);
+  const note = commit.payload.slice(50, 430);
   const stranger = new Uint8Array(32 + 380).fill(3);
   const records = concat([stranger, commit.commitment, note]);
   const restore = (salts) => ghost.restore({ chainId, key: KEY, records, salts, markers: new Uint8Array(0) });

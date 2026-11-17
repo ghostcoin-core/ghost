@@ -62,6 +62,16 @@ const GWEI = 1_000_000_000n;
 const EMPTY_DATA_ROOT = "0x3d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03";
 // Spec 05, vector marker-set-empty: no data marker is ever spent here.
 const EMPTY_DATA_MARKER_ROOT = "0x0ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3";
+// The four lookup fields of decision 0004 (header fields 19 to 22) as every
+// Ghost genesis carries them (ghost-node core/types/header_ghost_test.go,
+// genesisLookup). The fake node keeps no lookup trees, so every block
+// serves these; nothing in the app reads them yet.
+const GENESIS_LOOKUP_FIELDS = Object.freeze({
+  coinLookupRoot: "0x994a8bc5ba72f53f4449d4981c3ea8294d504b148afa58abec873819b143554b",
+  dataLookupRoot: "0xc0ad355e8462fbe6093fa0ac37c0afc450b36cbe679bb7de3050a9a1b2cddece",
+  coinMarkerRoot: "0x84e7c602ab3870f46bf300eff5581ae88029f7c58afb3758a652e0129e9e85cc",
+  lookupDigest: "0x9217af84b49597c35c570275e095d6a0245cab03c6f0126ce995acaa5023cd7b",
+});
 // Spec 05, section 10: the hash of the empty list.
 const EMPTY_LIST_HASH = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347";
 // The internal network's test constants (spec 06, section 4.2, with
@@ -77,14 +87,18 @@ export const TEST_CHAIN_PARAMS = Object.freeze({
 });
 export const FAKE_CHAIN_ID = 7_777_001n;
 // The commit data the node takes (ghost-node core/ghostpriv/commit.go):
-// version 0x0003, F, the coin's salt and the 380-byte note (430 bytes,
-// SaltedCommitDataSize), and the node's words for anything else, which it
-// follows with the length (`: N bytes`). A commit with a note of any other
-// length, the 206-byte commit of version 0x0002 among them, is refused.
+// version 0x0003, F, the coin's salt, the 380-byte note and the 16-byte
+// lookup tag (446 bytes, SaltedCommitDataSize), and the node's words for
+// anything else, which it follows with the length (`: N bytes`). A commit
+// with a note of any other length, the 206-byte commit of version 0x0002 and
+// the 430 bytes without a lookup tag among them, is refused, and so is an
+// all-zero tag.
 export const SALT_BYTES = 16;
 export const SALTED_COMMIT_VERSION = Uint8Array.of(0x00, 0x03);
-export const SALTED_COMMIT_DATA_BYTES = 2 + 32 + SALT_BYTES + NOTE_BYTES;
-export const COMMIT_DATA_ERROR = "commit data is not 430 bytes of version 3";
+export const LOOKUP_TAG_BYTES = 16;
+export const SALTED_COMMIT_DATA_BYTES = 2 + 32 + SALT_BYTES + NOTE_BYTES + LOOKUP_TAG_BYTES;
+export const COMMIT_DATA_ERROR = "commit data is not 446 bytes of version 3";
+export const COMMIT_LOOKUP_TAG_ERROR = "commit lookup tag is zero";
 // A reveal's 156-byte remainder note as the tree stores it: zero-padded to
 // the 380 bytes of every note.
 export function padRevealNote(note) {
@@ -130,11 +144,13 @@ function invalid(index, reason) {
 }
 
 // The header RLP of spec 05, section 10, written apart from the app's: the
-// 19 fields in order, as the base client's JSON-RPC names them.
+// 23 fields in order (with the lookup fields of decision 0004), as the base
+// client's JSON-RPC names them.
 const HEADER_ORDER = [
   "parentHash", "sha3Uncles", "miner", "stateRoot", "transactionsRoot", "receiptsRoot", "logsBloom",
   "difficulty", "number", "gasLimit", "gasUsed", "timestamp", "extraData", "mixHash", "nonce",
   "baseFeePerGas", "coinTreeRoot", "dataTreeRoot", "dataMarkerRoot",
+  "coinLookupRoot", "dataLookupRoot", "coinMarkerRoot", "lookupDigest",
 ];
 const HEADER_INTS = new Set(["difficulty", "number", "gasLimit", "gasUsed", "timestamp", "baseFeePerGas"]);
 
@@ -425,6 +441,7 @@ export async function startFakeNode({
       coinTreeRoot: toHex(coinTreeRoot),
       dataTreeRoot: EMPTY_DATA_ROOT,
       dataMarkerRoot: EMPTY_DATA_MARKER_ROOT,
+      ...GENESIS_LOOKUP_FIELDS,
     };
   }
 
@@ -591,7 +608,8 @@ export async function startFakeNode({
     if (v < 1n || v >= 1n << 96n) throw new Error("commit amount out of range");
     const fingerprint = payload.slice(2, 34);
     if (fingerprint.every((b) => b === 0)) throw new Error("all-zero fingerprint");
-    const note = payload.slice(34 + SALT_BYTES);
+    const note = payload.slice(34 + SALT_BYTES, 34 + SALT_BYTES + NOTE_BYTES);
+    if (payload.slice(34 + SALT_BYTES + NOTE_BYTES).every((b) => b === 0)) throw new Error(COMMIT_LOOKUP_TAG_ERROR);
     const result = appendCommit(fingerprint, v, note, salt, { pooled: pool.on, txHash });
     commits.push({ ...result, value: v });
     return result.hash;

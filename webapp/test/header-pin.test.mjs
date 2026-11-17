@@ -1,8 +1,9 @@
 // The pinned start of the public test network: scripts/make-pin.mjs takes a
 // pin from a node's headers (each hash, parent link and difficulty, from
-// genesis) and checks the other nodes agree; this build ships one for
-// 6777972, and the deploy serves a fresher one as pin.json, which the page
-// takes when it is newer (header.mjs, withServedPin and loadNetworks). From a
+// genesis) and checks the other nodes agree; a build may ship one (this one
+// ships none for 6777972, whose chain starts at its new genesis), and the
+// deploy serves a fresher one as pin.json, which the page takes when it is
+// newer (header.mjs, withServedPin and loadNetworks). From a
 // pin the page seal-checks only the headers after it, and when it is far
 // behind it says how many it has checked.
 
@@ -204,23 +205,17 @@ test("the Vanish card says how many headers are checked, in fixed words", () => 
 
 // --- This build's pin and the served one ---
 
-test("this build pins the public test network, and the page asks for the pin's block, not genesis", async () => {
+test("this build starts the public test network at its genesis with the lookup fields, and refuses the chain before them", async () => {
   const net = NETWORKS["6777972"];
-  const { pin } = net;
-  assert.ok(pin, "6777972 has a pinned start");
-  assert.match(pin.hash, /^0x[0-9a-f]{64}$/);
-  assert.ok(Number.isSafeInteger(pin.height) && pin.height >= 39936);
-  assert.match(pin.totalWork, /^[1-9][0-9]*$/);
-  assert.deepEqual(
-    pin.keyBlocks.map(([h]) => h),
-    Array.from({ length: Math.ceil(pin.height / EPOCH_BLOCKS) }, (_, i) => i * EPOCH_BLOCKS),
-    "every key block below the pin",
-  );
-  assert.equal(pin.keyBlocks[0][1], net.genesisHash);
-  assert.equal(withServedPin(NETWORKS, { chainId: "6777972", ...pin }), NETWORKS, "the shipped pin is well formed");
+  // The genesis of ghost-node's TestNetGenesis with the four lookup fields
+  // of decision 0004; no pin is built in until that chain is public, so the
+  // page checks from genesis unless the deploy serves a pin.json.
+  assert.equal(net.genesisHash, "0x1beeb3088d741bdde1f5285fec7fea05b2d598237657e37741099d3e82867176");
+  assert.equal(net.pin, null);
 
-  // A stand-in serving network 6777972: the page's first header request is
-  // the pin's block (which the stand-in does not have), never genesis.
+  // A stand-in serving network 6777972 from another genesis (as a node on
+  // the old chain does): the page asks for block 0, finds it is not this
+  // build's start and refuses the chain.
   const ghost = await loadModule();
   const node = await startFakeNode({ ghost, commitEntry: DEFAULT_COMMIT_ENTRY, chainId: 6777972n });
   const prover = nodeProver();
@@ -229,12 +224,12 @@ test("this build pins the public test network, and the page asks for the pin's b
     await openTestWallet(flow, node);
     const key = await flow.vanishStart("1");
     const from = node.requests.length;
-    await assert.rejects(flow.summonOpen(key), new RegExp(`the endpoint has no block ${pin.height}`));
+    await assert.rejects(flow.summonOpen(key), /its block 0 is not the start this build pins for network 6777972/);
     const asked = node.requests
       .slice(from)
       .filter((r) => r.method === "eth_getBlockByNumber")
       .map((r) => r.params[0]);
-    assert.deepEqual(asked, [`0x${pin.height.toString(16)}`]);
+    assert.deepEqual(asked, ["0x0"]);
   } finally {
     prover.terminate();
     await node.close();
@@ -242,18 +237,47 @@ test("this build pins the public test network, and the page asks for the pin's b
 });
 
 test("a served pin is taken only when well formed and newer than the build's", async () => {
-  const base = NETWORKS["6777972"];
+  // This build has no pin for 6777972: any well-formed served pin is newer.
+  const fromGenesis = NETWORKS["6777972"];
+  assert.equal(fromGenesis.pin, null);
+  const unpinned = withServedPin(NETWORKS, {
+    chainId: "6777972",
+    hash: toHex(new Uint8Array(32).fill(7)),
+    height: 3,
+    totalWork: "99",
+    keyBlocks: [[0, fromGenesis.genesisHash]],
+  });
+  assert.equal(unpinned["6777972"].pin.height, 3);
+
+  // Against a table that holds a pin, as a build with one does.
+  const PINNED = Object.freeze({
+    "6777972": Object.freeze({
+      ...fromGenesis,
+      pin: Object.freeze({
+        hash: toHex(new Uint8Array(32).fill(5)),
+        height: 39936,
+        totalWork: "540486799",
+        keyBlocks: Object.freeze(
+          Array.from({ length: Math.ceil(39936 / EPOCH_BLOCKS) }, (_, i) => [
+            i * EPOCH_BLOCKS,
+            i === 0 ? fromGenesis.genesisHash : toHex(new Uint8Array(32).fill(0x40 + i)),
+          ]),
+        ),
+      }),
+    }),
+  });
+  const base = PINNED["6777972"];
   const height = base.pin.height + 2 * EPOCH_BLOCKS + 5;
   const keyBlocks = Array.from({ length: Math.ceil(height / EPOCH_BLOCKS) }, (_, i) => [
     i * EPOCH_BLOCKS,
     i === 0 ? base.genesisHash : toHex(new Uint8Array(32).fill(i)),
   ]);
   const good = { chainId: "6777972", hash: toHex(new Uint8Array(32).fill(9)), height, totalWork: "123456789012", keyBlocks };
-  const taken = withServedPin(NETWORKS, good);
-  assert.notEqual(taken, NETWORKS);
+  const taken = withServedPin(PINNED, good);
+  assert.notEqual(taken, PINNED);
   assert.equal(taken["6777972"].pin.height, height);
   assert.equal(taken["6777972"].genesisHash, base.genesisHash);
-  assert.equal(NETWORKS["6777972"].pin.height, base.pin.height, "the build's table is left as it is");
+  assert.equal(PINNED["6777972"].pin.height, base.pin.height, "the table is left as it is");
 
   const refused = {
     "older": { ...good, height: base.pin.height - 1, keyBlocks: keyBlocks.slice(0, Math.ceil((base.pin.height - 1) / EPOCH_BLOCKS)) },
@@ -268,19 +292,20 @@ test("a served pin is taken only when well formed and newer than the build's", a
     "not an object": "pin",
     "nothing": null,
   };
-  for (const [what, served] of Object.entries(refused)) assert.equal(withServedPin(NETWORKS, served), NETWORKS, what);
+  for (const [what, served] of Object.entries(refused)) assert.equal(withServedPin(PINNED, served), PINNED, what);
 
   const respond = (status, body) => async () => new Response(body, { status });
-  assert.equal((await loadNetworks({ fetch: respond(200, JSON.stringify(good)) }))["6777972"].pin.height, height);
-  assert.equal(await loadNetworks({ fetch: respond(404, "") }), NETWORKS, "no pin.json");
-  assert.equal(await loadNetworks({ fetch: respond(200, "not json") }), NETWORKS, "a malformed one");
+  assert.equal((await loadNetworks({ networks: PINNED, fetch: respond(200, JSON.stringify(good)) }))["6777972"].pin.height, height);
+  assert.equal(await loadNetworks({ networks: PINNED, fetch: respond(404, "") }), PINNED, "no pin.json");
+  assert.equal(await loadNetworks({ networks: PINNED, fetch: respond(200, "not json") }), PINNED, "a malformed one");
   assert.equal(
     await loadNetworks({
+      networks: PINNED,
       fetch: async () => {
         throw new Error("offline");
       },
     }),
-    NETWORKS,
+    PINNED,
     "a failed fetch",
   );
 });

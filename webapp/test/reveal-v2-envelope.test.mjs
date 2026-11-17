@@ -106,7 +106,7 @@ function checkEnvelope(node, envelope) {
 test("the module's envelope is the version 2 one: 0x50, 0x0002, 1,311,291 bytes; version 1 is refused", () => {
   const { envelopeBytes, commitPayloadBytes } = ghost.constants();
   assert.equal(envelopeBytes, V2_ENVELOPE_BYTES);
-  assert.equal(commitPayloadBytes, 430);
+  assert.equal(commitPayloadBytes, 446);
   // The page's own copies of the constants agree with the module.
   assert.equal(wasmConstants.REVEAL_ENVELOPE_BYTES, envelopeBytes);
   assert.equal(wasmConstants.REVEAL_TYPE, 0x50);

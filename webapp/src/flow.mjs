@@ -25,9 +25,10 @@
 // A new Phantom Key is 24 words, the client library's default: a 256-bit
 // secret, so it stays strong even against a quantum search. Its coin's
 // commit is data format 0x0003: a fresh per-coin salt in the clear beside `F`
-// and the 380-byte note of note version 3, whose capsule is the empty rule's
-// (430 bytes); the node serves that salt beside the leaf, the app hands it
-// to restore, and the reveal and the claim pass the coin's salt to the
+// and the 380-byte note of note version 3, whose capsule is the empty rule's,
+// then the key's 16-byte lookup tag of number 0 (446 bytes); the node keeps
+// the tag in its lookup index and serves the salt beside the leaf, the app
+// hands it to restore, and the reveal and the claim pass the coin's salt to the
 // prover. A key is only ever words or their 21 digit groups: the digit keys
 // of twelve or twenty-four groups are refused.
 //
@@ -107,9 +108,10 @@ const REVEAL_NOTE_BYTES = 156;
 const SALT_BYTES = 16;
 // The data format of the commit the app sends.
 export const COMMIT_DATA_VERSION = Uint8Array.of(0x00, 0x03);
-// The commit the app sends: version 0x0003, F, the salt and the note (the
-// node's ghostpriv.SaltedCommitDataSize), 430 bytes.
-export const COMMIT_DATA_BYTES = 2 + 32 + SALT_BYTES + NOTE_BYTES;
+// The commit the app sends: version 0x0003, F, the salt, the note and the
+// key's lookup tag (the node's ghostpriv.SaltedCommitDataSize), 446 bytes.
+const COMMIT_LOOKUP_TAG_BYTES = 16;
+export const COMMIT_DATA_BYTES = 2 + 32 + SALT_BYTES + NOTE_BYTES + COMMIT_LOOKUP_TAG_BYTES;
 // Words the user re-types before a new key is used, out of its 24.
 export const SAVE_CHECK_GROUPS = 3;
 export const KEY_WORDS = 24;
@@ -2611,7 +2613,7 @@ export function createFlow({
         const sentAfter = Number(quantity(await rpc.call("eth_blockNumber")));
         // Version 0x0003: the worker draws the coin's salt from its secure
         // random source and the payload carries it beside F, then the
-        // 380-byte note (430 bytes).
+        // 380-byte note and the key's lookup tag (446 bytes).
         const commit = await prover.request("commit", { chainId, amount: v.amount, key: v.key });
         const version = commit.payload.subarray(0, 2);
         if (commit.payload.length !== COMMIT_DATA_BYTES || version[0] !== COMMIT_DATA_VERSION[0] || version[1] !== COMMIT_DATA_VERSION[1]) {

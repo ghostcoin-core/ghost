@@ -113,7 +113,7 @@ const verify = (envelope) => ghost.accountTxVerify({ chainId: CHAIN_ID, genesis:
 
 // A plain coin of another key, so the Guard coins are not alone.
 const stranger = ghost.commit({ chainId: CHAIN_ID, amount: 5_000n, seed: new Uint8Array(32).fill(0x21), key: ghost.newKey(new Uint8Array(32).fill(0x22)) });
-push(stranger.commitment, stranger.payload.slice(50), stranger.payload.slice(34, 50));
+push(stranger.commitment, stranger.payload.slice(50, 430), stranger.payload.slice(34, 50));
 
 const owner = setUp();
 // What the scenario learns: the owner's Phantom Key, the wallet's words.
@@ -145,19 +145,19 @@ test("a Guard commit takes the stop root typed from the stop card, shows a new P
   assert.ok(calls.indexOf("ghost_guard_commit") < calls.indexOf("ghost_wallet_sign_rescue_key"), "built before it is signed");
 
   // The signed transaction is the commit: to the commit entry, the amount as
-  // value, the 430-byte Guard payload as data.
+  // value, the 446-byte Guard payload as data.
   const tx = verify(result.envelope);
   assert.equal(toHex(tx.to), COMMIT_ENTRY);
   assert.equal(tx.value, COMMITTED);
   assert.equal(toHex(tx.sender), result.sender);
-  assert.equal(tx.data.length, 430);
+  assert.equal(tx.data.length, 446);
   assert.deepEqual([...tx.data.slice(0, 2)], [0x00, 0x03]);
   assert.equal(toHex(ghost.coinCommitment(tx.data.slice(2, 34), COMMITTED, 2)), result.commitment);
 
   // Included, its leaf is a Guard coin of the shown key.
   state.key = ui.key.join(" ");
   state.walletWords = owner.words();
-  state.commitPosition = push(fromHex(result.commitment), tx.data.slice(50), tx.data.slice(34, 50));
+  state.commitPosition = push(fromHex(result.commitment), tx.data.slice(50, 430), tx.data.slice(34, 50));
   const [coin] = restore(state.key);
   assert.equal(coin.rule, "guard");
   assert.equal(coin.amount, COMMITTED);
@@ -181,7 +181,7 @@ test("a Guard commit takes the stop root typed from the stop card, shows a new P
       chainId: CHAIN_ID,
       policy: POLICY,
       key: ghost.newKey(new Uint8Array(32).fill(0x23)),
-      records: concat([made.commitment, made.payload.slice(50)]),
+      records: concat([made.commitment, made.payload.slice(50, 430)]),
       salts: [made.payload.slice(34, 50)],
       markers: new Uint8Array(0),
     });
@@ -199,7 +199,7 @@ test("a Guard commit warns of a slot not above the action cost, and is refused b
   assert.equal(small.error, undefined, small.error?.message);
   assert.deepEqual(ui.approvals.at(-1).warnings, [WARN_HANDED_OVER, WARN_SLOT_TOO_SMALL]);
   assert.deepEqual(ui.keyWarnings, [WARN_HANDED_OVER, WARN_SLOT_TOO_SMALL]);
-  assert.equal(ui.approvals.at(-1).actionCost, "0.000000000046757904");
+  assert.equal(ui.approvals.at(-1).actionCost, "0.000000000047717904");
   // A base fee of zero: the cost cannot be checked, and the wallet says so.
   const unknown = await ask(guardCommit({ baseFee: "0x0" }, 2));
   assert.equal(unknown.error, undefined, unknown.error?.message);
@@ -454,7 +454,7 @@ test("a restore from the words lists a Guard coin, and from the new key's words 
   typed.key = rescueKey;
   const rescued = await ask({ id: 31, method: "ghost_guardRestore", params: { chainId: "0x76aae9", treeIndex: "0x0", ...treeParams() } });
   assert.equal(rescued.error, undefined, rescued.error?.message);
-  assert.deepEqual(ui.coins, [{ number: "0", amount: "0.000000999806442192", position, spent: false, rule: "guard", warnings: [WARN_HANDED_OVER] }]);
+  assert.deepEqual(ui.coins, [{ number: "0", amount: "0.000000999804522192", position, spent: false, rule: "guard", warnings: [WARN_HANDED_OVER] }]);
   assert.equal(BigInt(rescued.result.coins[0].amount), settled);
   assert.equal(rescued.result.coins[0].marker, toHex(cancelled.newCoin.marker));
 
@@ -538,7 +538,7 @@ test("the Guard policy is the wallet's own: an app cannot name one, and a coin o
     seed: new Uint8Array(32).fill(0x29),
     key,
   });
-  push(made.commitment, made.payload.slice(50), made.payload.slice(34, 50));
+  push(made.commitment, made.payload.slice(50, 430), made.payload.slice(34, 50));
   typed.key = key;
   const listed = await ask({ id: 60, method: "ghost_guardRestore", params: { chainId: "0x76aae9", treeIndex: "0x0", ...treeParams() } });
   assert.deepEqual(listed.result.coins.map((c) => c.rule), ["other"]);

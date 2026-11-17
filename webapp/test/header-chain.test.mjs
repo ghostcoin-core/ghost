@@ -97,6 +97,10 @@ function draft(number, parentHash, { timestamp = GENESIS_TIME + 30 * number, dif
     coinTreeRoot: zeros(32),
     dataTreeRoot: zeros(32),
     dataMarkerRoot: zeros(32),
+    coinLookupRoot: zeros(32),
+    dataLookupRoot: zeros(32),
+    coinMarkerRoot: zeros(32),
+    lookupDigest: zeros(32),
   });
   return rlp;
 }
