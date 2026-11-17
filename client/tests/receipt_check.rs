@@ -316,6 +316,10 @@ fn header(receipts_root: &[u8; 32]) -> Vec<u8> {
         rlp_bytes(&[0x06; 32]),
         rlp_bytes(&[0x07; 32]),
         rlp_bytes(&[0x08; 32]),
+        rlp_bytes(&[0x09; 32]),
+        rlp_bytes(&[0x0a; 32]),
+        rlp_bytes(&[0x0b; 32]),
+        rlp_bytes(&[0x0c; 32]),
     ])
 }
 

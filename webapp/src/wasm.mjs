@@ -121,7 +121,7 @@ export const LEAF_RECORD_BYTES = 32 + NOTE_BYTES;
 // A note's lookup tag: the first bytes of its nonce.
 export const LOOKUP_TAG_BYTES = 3;
 // The commitment version: 2, salted, the only one. Its commit payload is of
-// data format 0x0003, 430 bytes.
+// data format 0x0003, 446 bytes.
 export const COMMIT_VERSION = 2;
 
 // The salt record of `salt`, a 16-byte salt or null.
@@ -290,7 +290,8 @@ export class Ghost {
   }
 
   // The commit of a key's first coin: a salted (version 2) coin, its payload
-  // 0x0003, F, a fresh salt from `seed` and the 380-byte note, 430 bytes. A
+  // 0x0003, F, a fresh salt from `seed`, the 380-byte note and the key's
+  // lookup tag of number 0, 446 bytes. A
   // `version` other than 2 is refused.
   commit({ chainId, amount, seed, key, version }) {
     if (version !== undefined && version !== COMMIT_VERSION) throw new Error("unknown commit version");
@@ -689,7 +690,7 @@ export class Ghost {
   // A Guard commit of `amount` to number 0 of `key`. The guard secret is
   // derived from the wallet seed's words `walletWords` (a string or its
   // bytes) and `guardIndex`; `stopRoot` is the stop card's 32 bytes (null is
-  // refused). Returns `C`, the marker, the rule and the 430-byte payload.
+  // refused). Returns `C`, the marker, the rule and the 446-byte payload.
   guardCommit({ chainId, policy, walletWords, guardIndex = 0, stopRoot: root, amount, room, seed, key }) {
     const input = guardPolicy(new Input().u64(chainId), policy).textOrBytes(walletWords).u32(guardIndex);
     stopRoot(input, root).bytes(word(amount));

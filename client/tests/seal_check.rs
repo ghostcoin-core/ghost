@@ -74,19 +74,25 @@ fn rlp_list(fields: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-/// Spec 05, section 11: `header-genesis-example` and its hash.
-const GENESIS_RLP: &str = "f90281a00000000000000000000000000000000000000000000000000000000000000000a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347940000000000000000000000000000000000000000a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000808401c9c38080846b3703f0a0000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26fa00000000000000000000000000000000000000000000000000000000000000000880000000000000000843b9aca00a08e66512042388a7863d500c4f96861466ae48b9d64ea1e10ec382c31aa61b5a8a03d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03a00ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3";
-const GENESIS_HASH: &str = "039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4";
-/// Spec 05, section 11: the hash of `header-block-one-example`.
-const BLOCK_ONE_HASH: &str = "81ca961404b518ee3ded78ebee1c4e23eba18b7c86515b6471e970cfed8538f4";
+/// Spec 05, section 11: `header-genesis-example` in the 23-item layout of
+/// decision 0004, with the lookup fields every Ghost genesis carries, and its
+/// hash (the node's `vectorGenesisRLP`, core/types/header_ghost_test.go).
+const GENESIS_RLP: &str = "f90305a00000000000000000000000000000000000000000000000000000000000000000a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347940000000000000000000000000000000000000000a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b90100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008401000000808401c9c38080846b3703f0a0000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26fa00000000000000000000000000000000000000000000000000000000000000000880000000000000000843b9aca00a08e66512042388a7863d500c4f96861466ae48b9d64ea1e10ec382c31aa61b5a8a03d5cea4ec4750f6e39c05a6464043afed27b95090a4d93a304d88204e9a3fe03a00ef484d17824d5fefb2533c70af81a3267af1169dd091395ad7607762aeee0a3a0994a8bc5ba72f53f4449d4981c3ea8294d504b148afa58abec873819b143554ba0c0ad355e8462fbe6093fa0ac37c0afc450b36cbe679bb7de3050a9a1b2cddecea084e7c602ab3870f46bf300eff5581ae88029f7c58afb3758a652e0129e9e85cca09217af84b49597c35c570275e095d6a0245cab03c6f0126ce995acaa5023cd7b";
+const GENESIS_HASH: &str = "d264783ad6bc9ecb24f05d9b7bff1a20c78daad504f755751f07e19d5ec1bf3d";
+/// The parent hash of `header-block-one-example`: spec 05's 19-item genesis.
+const BLOCK_ONE_PARENT: &str = "039d14f59db29e2e76c8ed76f90b70de42e48f8a67dba060b363501af50e3ba4";
+/// The hash of `header-block-one-example` in the 23-item layout (the node's
+/// `vectorBlockOneRLP`).
+const BLOCK_ONE_HASH: &str = "68eb471fe6875c480f46165f4648587fe54382aeac9e4ef6d92dbb6e2bd45cc4";
 
 /// Spec 05's `header-block-one-example` fields, with the given difficulty,
-/// mix digest and nonce.
+/// mix digest and nonce, and the node's block-one lookup items (fields 19 to
+/// 22).
 fn block_one(difficulty: u64, mix: [u8; 32], nonce: u64) -> Vec<Vec<u8>> {
     let mut coinbase = vec![0u8; 20];
     coinbase[18..].copy_from_slice(&[0x04, 0xd2]);
     vec![
-        unhex(GENESIS_HASH),
+        unhex(BLOCK_ONE_PARENT),
         unhex("1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"),
         coinbase,
         vec![0x11; 32],
@@ -105,20 +111,25 @@ fn block_one(difficulty: u64, mix: [u8; 32], nonce: u64) -> Vec<Vec<u8>> {
         unhex("142c6bdf0882396330f9942ddd49df5d860b05a5218dad1ce6ef8e69238b6ec5"),
         unhex("dfc2bf39581c30d2cf1f025586af2f821524daa2e496fea9f950731202f3237a"),
         unhex("f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f"),
+        vec![0x55; 32],
+        vec![0x66; 32],
+        vec![0x77; 32],
+        vec![0x88; 32],
     ]
 }
 
 const COIN_TREE_ROOT: usize = 16;
 const DATA_MARKER_ROOT: usize = 18;
+const LOOKUP_DIGEST: usize = 22;
 
 /// The test difficulty of the sealed example: one hash in 256 passes.
 const SEALED_DIFFICULTY: u64 = 256;
 /// A nonce that seals `block_one` at that difficulty with a zero mix digest
 /// under the genesis example's hash as the key (found by searching up from
-/// zero; the first one is 109).
-const SEALED_NONCE: u64 = 109;
+/// zero; the first one is 1317).
+const SEALED_NONCE: u64 = 1317;
 /// The RandomX output for that header.
-const SEALED_OUTPUT: &str = "00a57fd17fd62cf6f7a40cf476c4618bd37dab9ae2017442d48d1b1fe6e6d9d7";
+const SEALED_OUTPUT: &str = "008cbee737a1766e290673fdb72b748c5bb1781cbbabbdadccb6b4d7878795e8";
 
 fn sealed_header() -> Vec<u8> {
     rlp_list(&block_one(SEALED_DIFFICULTY, [0; 32], SEALED_NONCE))
@@ -204,7 +215,7 @@ fn seal_hash_covers_every_field_but_the_seal_fields() {
 
     // Every other field changes it.
     let base = block_one(16_777_216, [0; 32], 0);
-    for index in (0..19).filter(|&i| i != 13 && i != 14) {
+    for index in (0..23).filter(|&i| i != 13 && i != 14) {
         let mut fields = base.clone();
         // One bit, kept canonical: the block number 1 becomes 3, not 0.
         match fields[index].as_mut_slice() {
@@ -221,10 +232,10 @@ fn seal_hash_covers_every_field_but_the_seal_fields() {
     assert_eq!(input[32..], [1, 2, 3, 4, 5, 6, 7, 8]);
 }
 
-/// The seal hash of spec 05's `header-block-one-example`.
-const SEAL_HASH_BLOCK_ONE: &str = "1b5f20c1bc9d0cf05025a7e74451c1bd6015c400bc5743742ccdcd90ef4a64dd";
+/// The seal hash of `header-block-one-example` in the 23-item layout.
+const SEAL_HASH_BLOCK_ONE: &str = "e82d40972dc881f323f3735e753179ff94ba8a506ec569c928432776fa95978d";
 /// The seal hash of the sealed example.
-const SEALED_SEAL_HASH: &str = "e4a9a151ec8247dbacf2f023ccf401fdfb6cb70e0e2a9094d4699e0da5a7362a";
+const SEALED_SEAL_HASH: &str = "cffeca90fc5cb2d050d8f494b33682b03ff33686722947f628d30279a9ecba3d";
 
 #[test]
 fn sealed_header_is_valid() {
@@ -269,21 +280,41 @@ fn th6_one_bit_of_the_data_marker_root() {
     assert!(!check_seal(&header, &difficulty(), &key));
 }
 
-/// Spec 05's block one example decodes with 19 items, the last one its
-/// 32-byte `dataMarkerRoot`; that item one byte short or long does not.
+/// TH-6 for the lookup fields: one bit of each of fields 19 to 22 changed
+/// on a valid sealed header changes the seal hash and fails the seal check.
 #[test]
-fn a_nineteen_field_header_decodes_with_the_data_marker_root_last() {
+fn th6_one_bit_of_each_lookup_field() {
+    let _one = one_cache();
+    let key = genesis_key();
+    for index in 19..=LOOKUP_DIGEST {
+        let mut fields = block_one(SEALED_DIFFICULTY, [0; 32], SEALED_NONCE);
+        fields[index][5] ^= 0x10;
+        let header = rlp_list(&fields);
+        assert_ne!(hex(&seal_hash(&header).unwrap()), SEALED_SEAL_HASH, "field {index}");
+        assert_eq!(verify_seal(&header, &difficulty(), &key), Err(SealError::AboveTarget), "field {index}");
+    }
+}
+
+/// Spec 05's block one example in the 23-item layout decodes, its last item
+/// the 32-byte `lookupDigest`; that item one byte short, long or empty does
+/// not.
+#[test]
+fn a_twenty_three_field_header_decodes_with_the_lookup_digest_last() {
     let fields = block_one(16_777_216, [0x44; 32], 0x0102030405060708);
-    assert_eq!(fields.len(), 19);
-    assert_eq!(fields.len() - 1, DATA_MARKER_ROOT);
+    assert_eq!(fields.len(), 23);
+    assert_eq!(fields.len() - 1, LOOKUP_DIGEST);
     let example = rlp_list(&fields);
     let decoded = header_fields(&example).unwrap();
     assert_eq!(hex(&decoded.hash), BLOCK_ONE_HASH);
-    assert_eq!(hex(&decoded.parent_hash), GENESIS_HASH);
+    assert_eq!(hex(&decoded.parent_hash), BLOCK_ONE_PARENT);
     assert_eq!((decoded.number, decoded.timestamp), (1, 1_798_767_630));
-    // The header's bytes end with the 32-byte marker root.
+    // The four lookup items follow the data marker root.
     let mut tail = vec![0xa0];
     tail.extend(unhex("f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f"));
+    for byte in [0x55, 0x66, 0x77, 0x88] {
+        tail.push(0xa0);
+        tail.extend([byte; 32]);
+    }
     assert!(example.ends_with(&tail));
     assert!(seal_hash(&example).is_ok());
 
@@ -292,29 +323,45 @@ fn a_nineteen_field_header_decodes_with_the_data_marker_root_last() {
     assert_eq!(genesis.number, 0);
 
     let mut short = fields.clone();
-    short[DATA_MARKER_ROOT].pop();
+    short[LOOKUP_DIGEST].pop();
     assert_eq!(header_fields(&rlp_list(&short)), Err(HeaderError::FieldSize));
     assert_eq!(seal_hash(&rlp_list(&short)), Err(SealError::Header(HeaderError::FieldSize)));
     let mut long = fields.clone();
-    long[DATA_MARKER_ROOT].push(0);
+    long[LOOKUP_DIGEST].push(0);
     assert_eq!(header_fields(&rlp_list(&long)), Err(HeaderError::FieldSize));
     let mut empty = fields;
-    empty[DATA_MARKER_ROOT].clear();
+    empty[LOOKUP_DIGEST].clear();
     assert_eq!(header_fields(&rlp_list(&empty)), Err(HeaderError::FieldSize));
 }
 
-/// A header of 18 items (the layout before `dataMarkerRoot`) and one of 20
-/// are refused for their item count, by every entry point.
+/// The 19-item header of spec 05 (the tree roots without the lookup
+/// fields), its own genesis example included, a 22-item one and a 24-item
+/// one are refused for their item count, by every entry point.
 #[test]
-fn eighteen_and_twenty_item_headers_are_refused() {
+fn nineteen_twenty_two_and_twenty_four_item_headers_are_refused() {
     let _one = one_cache();
     let fields = block_one(SEALED_DIFFICULTY, [0; 32], SEALED_NONCE);
-    let mut eighteen = fields.clone();
-    eighteen.pop();
-    let mut twenty = fields;
-    twenty.push(unhex("f121b372119409a7d6fda684a14ab815c7ef9a07ba48f50ff59ea5fc62d36e4f"));
+    let nineteen = fields[..19].to_vec();
+    let mut twenty_two = fields.clone();
+    twenty_two.pop();
+    let mut twenty_four = fields;
+    twenty_four.push(vec![0x99; 32]);
+    // Spec 05's 19-item genesis example: the old format, with its stated hash.
+    let old_genesis = unhex(GENESIS_RLP);
+    let old_genesis = {
+        let body = &old_genesis[3..old_genesis.len() - 4 * 33];
+        let mut out = vec![0xf9, 0x02, 0x81];
+        out.extend_from_slice(body);
+        out
+    };
+    assert_eq!(hex(&keccak(&old_genesis)), BLOCK_ONE_PARENT);
     let key = genesis_key();
-    for (count, header) in [(18, rlp_list(&eighteen)), (20, rlp_list(&twenty))] {
+    for (count, header) in [
+        (19, rlp_list(&nineteen)),
+        (19, old_genesis),
+        (22, rlp_list(&twenty_two)),
+        (24, rlp_list(&twenty_four)),
+    ] {
         let refused = SealError::Header(HeaderError::ItemCount);
         assert_eq!(header_fields(&header), Err(HeaderError::ItemCount), "{count} items");
         assert_eq!(seal_hash(&header), Err(refused), "{count} items");
@@ -322,7 +369,7 @@ fn eighteen_and_twenty_item_headers_are_refused() {
         assert_eq!(verify_seal(&header, &difficulty(), &key), Err(refused), "{count} items");
         assert!(!check_seal(&header, &difficulty(), &key), "{count} items");
     }
-    assert_eq!(SealError::Header(HeaderError::ItemCount).to_string(), "the header does not have 19 fields");
+    assert_eq!(SealError::Header(HeaderError::ItemCount).to_string(), "the header does not have 23 fields");
 }
 
 /// The seal checked with another key block's hash fails.

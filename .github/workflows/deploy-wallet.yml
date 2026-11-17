@@ -48,6 +48,13 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target wasm32-unknown-unknown
           rustup default "$RUST_TOOLCHAIN"
           rustc --version
+      # The wallet builds commits and checks headers in this build's formats,
+      # so it goes out only while the public test network runs this build's
+      # chain: make-pin.mjs fails unless a public node's block 0 is this
+      # build's genesis and its headers re-encode to their hashes, as the web
+      # app's deploy requires. A format change then ships with the node.
+      - name: Check the public test network runs this build's chain
+        run: node webapp/scripts/make-pin.mjs --out "$RUNNER_TEMP/pin.json"
       # The WebAssembly module, built exactly as the web app's deploy builds it.
       - name: Build the WebAssembly module
         run: webapp/build.sh

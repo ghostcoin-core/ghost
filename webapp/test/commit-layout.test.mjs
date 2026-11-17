@@ -1,10 +1,14 @@
 // The commit payload against the node's layouts (ghost-node
 // core/ghostpriv/commit.go). The app sends data format 0x0003, the only one:
 // version 0x0003 (2 bytes), F (32), the coin's salt (16), the 380-byte note
-// of note version 3 (spec 10, section 3.2), 430 bytes (SaltedCommitDataSize).
+// of note version 3 (spec 10, section 3.2), then the key's 16-byte lookup
+// tag of number 0 (decision 0004), 446 bytes (SaltedCommitDataSize). The
+// 430 bytes without the tag are what the node refuses since the lookup trees.
 
 import assert from "node:assert/strict";
 import test from "node:test";
+
+import { readFileSync } from "node:fs";
 
 import { concat, fromHex, toHex } from "../src/bytes.mjs";
 import { COMMIT_DATA_BYTES as APP_COMMIT_DATA_BYTES, COMMIT_DATA_VERSION, DEFAULT_COMMIT_ENTRY } from "../src/flow.mjs";
@@ -20,21 +24,28 @@ const CHAIN_ID = 7n;
 const AMOUNT = 10n ** 18n;
 const SEED = fromHex(`0x${"09".repeat(32)}`, 32);
 
+// Decision 0004's lookup tag of number 0 of that key: the first 16 bytes of
+// S("ghost/note-lookup/v1", k_note, 0), as its vector block states it.
+const DECISION_0004 = readFileSync(new URL("../../docs/decisions/0004-lookup-formats.md", import.meta.url), "utf8");
+const TAG_OF_NUMBER_0 = /\[lookup-tag-index-0\][^[]*?\ntag = ([0-9a-f]{32})\n/.exec(DECISION_0004)[1];
+
 const makeCommit = () => ghost.commit({ chainId: CHAIN_ID, amount: AMOUNT, seed: Uint8Array.from(SEED), key: KEY });
 
-test("the module's commit payload is version 3: version, F, salt and a 380-byte note, 430 bytes", () => {
+test("the module's commit payload is version 3: version, F, salt, a 380-byte note and the lookup tag, 446 bytes", () => {
   const commit = makeCommit();
-  assert.equal(ghost.constants().commitPayloadBytes, 430);
-  assert.equal(APP_COMMIT_DATA_BYTES, 430, "the size the flow checks before it sends");
+  assert.equal(ghost.constants().commitPayloadBytes, 446);
+  assert.equal(APP_COMMIT_DATA_BYTES, 446, "the size the flow checks before it sends");
   assert.equal(toHex(COMMIT_DATA_VERSION), "0x0003", "the version the flow checks before it sends");
-  assert.equal(commit.payload.length, 430);
+  assert.equal(commit.payload.length, 446);
   assert.equal(toHex(commit.payload.slice(0, 2)), "0x0003");
   const fingerprint = commit.payload.slice(2, 34);
   const salt = commit.payload.slice(34, 50);
-  const note = commit.payload.slice(50);
+  const note = commit.payload.slice(50, 430);
   assert.equal(note.length, 380);
   assert.equal(NOTE_BYTES, 380);
   assert.equal(LEAF_RECORD_BYTES, 32 + 380);
+  // After the note, the key's lookup tag of number 0: decision 0004's vector.
+  assert.equal(toHex(commit.payload.slice(430)), `0x${TAG_OF_NUMBER_0}`);
   assert.notEqual(toHex(salt), toHex(new Uint8Array(16)), "a salt drawn from the seed");
   // The empty-rule capsule is encrypted with the rest: nothing of the note
   // is left in the clear, its last 224 bytes no more than the rest.
@@ -53,7 +64,7 @@ test("the module's commit payload is version 3: version, F, salt and a 380-byte 
 
 test("the note opens with the key at its chain only", () => {
   const commit = makeCommit();
-  const records = concat([commit.commitment, commit.payload.slice(50)]);
+  const records = concat([commit.commitment, commit.payload.slice(50, 430)]);
   const found = ghost.restore({ chainId: CHAIN_ID, key: KEY, records, markers: new Uint8Array(0) });
   assert.equal(found.length, 1);
   assert.equal(found[0].number, 0n);
@@ -77,7 +88,7 @@ test("a note cut to the 156 bytes of the old layout is not read", () => {
 });
 
 test("the stand-in reads the same layout", () => {
-  assert.equal(SALTED_COMMIT_DATA_BYTES, 430);
+  assert.equal(SALTED_COMMIT_DATA_BYTES, 446);
   assert.equal(toHex(SALTED_COMMIT_VERSION), "0x0003");
 });
 

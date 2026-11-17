@@ -166,7 +166,7 @@ test("Vanish through a wallet speaking 0x hex: the wallet approves, the page sen
     assert.equal(params.to, DEFAULT_COMMIT_ENTRY);
     assert.equal(params.value, "0xde0b6b3a7640000");
     assert.equal(params.nonce, "0x0");
-    assert.equal(params.data.length, 2 + 2 * 430, "the 430 bytes of a version 3 commit");
+    assert.equal(params.data.length, 2 + 2 * 446, "the 446 bytes of a version 3 commit");
     assert.ok(params.data.startsWith("0x0003"), "data version 0x0003");
     // Only the wallet's two requests were ever asked of it.
     assert.deepEqual(

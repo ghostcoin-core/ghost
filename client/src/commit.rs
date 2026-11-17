@@ -31,6 +31,7 @@ use crate::hash::{
     TAG_CONTENT_FINGERPRINT, TAG_DATA_COMMITMENT, TAG_DATA_FINGERPRINT_V2, TAG_DATA_MARKER_V2,
 };
 use crate::key::PhantomKey;
+use crate::lookup::{LookupTag, LOOKUP_TAG_BYTES};
 use crate::note::NOTE_BYTES;
 use crate::wipe::wipe;
 
@@ -373,20 +374,24 @@ pub fn salted_data_marker(r: &RevealSecret, b: &Blinding, salt: &Salt) -> Marker
 pub const SALTED_COMMIT_FORMAT_VERSION: [u8; 2] = [0x00, 0x03];
 
 /// Length of a salted commit's data: format version (2), fingerprint (32),
-/// salt (16), note (380).
+/// salt (16), note (380), lookup tag (16).
 pub const SALTED_COMMIT_DATA_BYTES: usize =
-    SALTED_COMMIT_FORMAT_VERSION.len() + 32 + SALT_BYTES + NOTE_BYTES;
+    SALTED_COMMIT_FORMAT_VERSION.len() + 32 + SALT_BYTES + NOTE_BYTES + LOOKUP_TAG_BYTES;
 
-const _: () = assert!(SALTED_COMMIT_DATA_BYTES == 430);
+const _: () = assert!(SALTED_COMMIT_DATA_BYTES == 446);
 
 /// The data of a salted commit, coin or data alike:
-/// `SALTED_COMMIT_FORMAT_VERSION || F || salt || note`, the note 380 bytes
-/// whatever the rule. The salt travels in the clear beside `F`, so the node
-/// can store it beside the leaf.
+/// `SALTED_COMMIT_FORMAT_VERSION || F || salt || note || lookup tag`, the
+/// note 380 bytes whatever the rule. The salt travels in the clear beside
+/// `F`, so the node can store it beside the leaf; the lookup tag
+/// ([`lookup_tag`](crate::lookup::lookup_tag) of the key's commitment
+/// number) goes into the tree's lookup index with the leaf (decision 0004).
+/// The node refuses an all-zero tag, so `tag` must come from the key.
 pub fn salted_commit_data(
     fingerprint: &Fingerprint,
     salt: &Salt,
     note: &[u8; NOTE_BYTES],
+    tag: &LookupTag,
 ) -> [u8; SALTED_COMMIT_DATA_BYTES] {
     let mut out = [0u8; SALTED_COMMIT_DATA_BYTES];
     let (version, rest) = out.split_at_mut(SALTED_COMMIT_FORMAT_VERSION.len());
@@ -395,7 +400,9 @@ pub fn salted_commit_data(
     f.copy_from_slice(fingerprint.as_bytes());
     let (s, rest) = rest.split_at_mut(SALT_BYTES);
     s.copy_from_slice(salt.as_bytes());
-    rest.copy_from_slice(note);
+    let (n, rest) = rest.split_at_mut(NOTE_BYTES);
+    n.copy_from_slice(note);
+    rest.copy_from_slice(tag);
     out
 }
 

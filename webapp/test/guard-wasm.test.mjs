@@ -57,7 +57,7 @@ const push = (commitment, note, salt) => {
   return tree.records.length - 1;
 };
 // A commit's leaf: `C` and the payload's note, its salt beside it.
-const pushCommit = ({ commitment, payload }) => push(commitment, payload.slice(50), payload.slice(34, 50));
+const pushCommit = ({ commitment, payload }) => push(commitment, payload.slice(50, 430), payload.slice(34, 50));
 const restore = (key) => ghost.guardRestore({ chainId: CHAIN_ID, policy: POLICY, key, records: records(), salts: tree.salts, markers: concat(tree.markers) });
 
 const commitOf = (overrides = {}) =>
@@ -80,8 +80,9 @@ const COMMIT = commitOf();
 const COMMIT_POSITION = pushCommit(COMMIT);
 
 test("a Guard commit carries its rule in the fingerprint and its capsule in the note, and restore finds a Guard coin", () => {
-  // The 430-byte payload of format 0x0003: F, the salt, the 380-byte note.
-  assert.equal(COMMIT.payload.length, 430);
+  // The 446-byte payload of format 0x0003: F, the salt, the 380-byte note,
+  // the key's lookup tag.
+  assert.equal(COMMIT.payload.length, 446);
   assert.deepEqual([...COMMIT.payload.slice(0, 2)], [0x00, 0x03]);
   const fingerprint = COMMIT.payload.slice(2, 34);
   assert.ok(equalBytes(ghost.coinCommitment(fingerprint, COMMITTED, 2), COMMIT.commitment), "C is the node's");
@@ -130,7 +131,7 @@ test("the guard secret comes from the wallet seed and the stop root from the sto
         chainId: CHAIN_ID,
         policy: POLICY,
         key,
-        records: concat([made.commitment, made.payload.slice(50)]),
+        records: concat([made.commitment, made.payload.slice(50, 430)]),
         salts: [made.payload.slice(34, 50)],
         markers: new Uint8Array(0),
       })
@@ -416,7 +417,7 @@ test("a transfer hands the coin to the receiver's own Guard rule, and refuses a 
     chainId: CHAIN_ID,
     policy: POLICY,
     key: receiverKey,
-    records: concat([theirs.commitment, theirs.payload.slice(50)]),
+    records: concat([theirs.commitment, theirs.payload.slice(50, 430)]),
     salts: [theirs.payload.slice(34, 50)],
     markers: new Uint8Array(0),
   });

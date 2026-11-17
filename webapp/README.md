@@ -222,8 +222,8 @@ built once by its webapp-wasm job, named by `GHOST_WEBAPP_WASM` and
 
 The last three cover the words key (new keys, typed keys, a swapped word
 refused, an old 12- or 24-group key refused, a coin restoring from its words
-or its digit view) and the salted coin (the 430-byte commit of version
-`0x0003` with its 380-byte note, the salt read back beside the leaf, a
+or its digit view) and the salted coin (the 446-byte commit of version
+`0x0003` with its 380-byte note and the key's lookup tag, the salt read back beside the leaf, a
 salted coin revealed and claimed).
 
 `webapp/test/header-chain.test.mjs` checks the page's header chain: chains
@@ -267,8 +267,8 @@ GHOST_NODE_GETH="$(webapp/scripts/build-node.sh)" \
 
 It needs `git`, Go and a C compiler for the node, and prints
 `SKIP: GHOST_NODE_GETH is not set` when the variable is unset. The pinned
-commit (`webapp/test/e2e/NODE_COMMIT`) takes the salted 430-byte commit of
-version `0x0003`, stores every note as 380 bytes (a reveal's 156-byte
+commit (`webapp/test/e2e/NODE_COMMIT`) takes the salted 446-byte commit of
+version `0x0003` with its lookup tag, serves 23-item headers, stores every note as 380 bytes (a reveal's 156-byte
 remainder note zero-padded) and serves each leaf's salt and note back.
 
 To prove recovery with every project-run host blocked (an independent node

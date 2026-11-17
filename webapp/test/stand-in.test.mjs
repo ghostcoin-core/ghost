@@ -1,10 +1,11 @@
 // The node stand-in refuses the commits the real node refuses: not to the
-// commit entry address, data not 430 bytes of version 0x0003 (the 206-byte
-// commit of version 0x0002 with its 156-byte note and the 190-byte commit of
-// version 0x0001 among it), in the node's words (`commit data is not 430
-// bytes of version 3: N bytes`). It accepts the salted 430-byte payload the
-// app sends, whose note is 380 bytes, keeps its salt with its leaf and serves
-// it as `salt`; a refusal adds no leaf.
+// commit entry address, data not 446 bytes of version 0x0003 (the 206-byte
+// commit of version 0x0002 with its 156-byte note, the 190-byte commit of
+// version 0x0001 and the 430 bytes without a lookup tag among it), in the
+// node's words (`commit data is not 446 bytes of version 3: N bytes`), and an
+// all-zero lookup tag. It accepts the salted 446-byte payload the app sends,
+// whose note is 380 bytes and lookup tag 16, keeps its salt with its leaf and
+// serves it as `salt`; a refusal adds no leaf.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -12,7 +13,7 @@ import test from "node:test";
 import { concat, fromHex, toHex, toQuantity, word } from "../src/bytes.mjs";
 import { DEFAULT_COMMIT_ENTRY, coinRecord, receiptBytes } from "../src/flow.mjs";
 import { loadModule } from "./support/env.mjs";
-import { COIN_TREE_ACCOUNT, COMMIT_DATA_ERROR, HEAD_MOVED_ERROR, startFakeNode } from "./support/fake-node.mjs";
+import { COIN_TREE_ACCOUNT, COMMIT_DATA_ERROR, COMMIT_LOOKUP_TAG_ERROR, HEAD_MOVED_ERROR, startFakeNode } from "./support/fake-node.mjs";
 
 const ACCOUNT = "0x1111111111111111111111111111111111111111";
 const GHOST = 10n ** 18n;
@@ -22,11 +23,13 @@ const note = Uint8Array.from({ length: 380 }, (_, i) => i & 0xff);
 // The 156-byte note of the layouts before note version 3.
 const oldNote = note.slice(0, 156);
 const salt = Uint8Array.from({ length: 16 }, (_, i) => 0x10 + i);
-// A version 3 payload: F, the salt and the 380-byte note.
-const salted = toHex(concat([Uint8Array.of(0x00, 0x03), fingerprint, salt, note]));
+// A synthetic lookup tag: the stand-in keeps no lookup index.
+const tag = Uint8Array.from({ length: 16 }, (_, i) => 0xc0 + i);
+// A version 3 payload: F, the salt, the 380-byte note and the lookup tag.
+const salted = toHex(concat([Uint8Array.of(0x00, 0x03), fingerprint, salt, note, tag]));
 // Another version 3 payload of the same F under another salt.
 const otherSalt = Uint8Array.from({ length: 16 }, (_, i) => 0x30 + i);
-const salted2 = toHex(concat([Uint8Array.of(0x00, 0x03), fingerprint, otherSalt, note]));
+const salted2 = toHex(concat([Uint8Array.of(0x00, 0x03), fingerprint, otherSalt, note, tag]));
 // The 206-byte commit of version 0x0002, with its 156-byte note.
 const version2 = toHex(concat([Uint8Array.of(0x00, 0x02), fingerprint, salt, oldNote]));
 // The 190-byte commit of version 0x0001, made before the salt.
@@ -50,8 +53,8 @@ const dataError = (err) => err.message === COMMIT_DATA_ERROR || err.message.star
 
 test("the stand-in's refusal is the node's words, with the length", () =>
   withNode(async (_node, wallet) => {
-    assert.equal(COMMIT_DATA_ERROR, "commit data is not 430 bytes of version 3");
-    await assert.rejects(send(wallet, { data: toHex(new Uint8Array(429)) }), (err) => err.message === `${COMMIT_DATA_ERROR}: 429 bytes`);
+    assert.equal(COMMIT_DATA_ERROR, "commit data is not 446 bytes of version 3");
+    await assert.rejects(send(wallet, { data: toHex(new Uint8Array(445)) }), (err) => err.message === `${COMMIT_DATA_ERROR}: 445 bytes`);
   }));
 
 test("the stand-in refuses the 206-byte commit of version 0x0002 and its 156-byte note", () =>
@@ -62,8 +65,8 @@ test("the stand-in refuses the 206-byte commit of version 0x0002 and its 156-byt
     // under version 2.
     const short = concat([Uint8Array.of(0x00, 0x03), fingerprint, salt, oldNote]);
     await assert.rejects(send(wallet, { data: toHex(short) }), (err) => err.message === `${COMMIT_DATA_ERROR}: 206 bytes`);
-    const mislabelled = concat([Uint8Array.of(0x00, 0x02), fingerprint, salt, note]);
-    await assert.rejects(send(wallet, { data: toHex(mislabelled) }), (err) => err.message === `${COMMIT_DATA_ERROR}: 430 bytes`);
+    const mislabelled = concat([Uint8Array.of(0x00, 0x02), fingerprint, salt, note, tag]);
+    await assert.rejects(send(wallet, { data: toHex(mislabelled) }), (err) => err.message === `${COMMIT_DATA_ERROR}: 446 bytes`);
     assert.equal(node.leaves.length, 0, "no leaf");
     assert.equal(node.commits.length, 0);
   }));
@@ -83,23 +86,24 @@ test("the stand-in refuses the 190-byte commit of version 0x0001", () =>
     await assert.rejects(send(wallet, { data: unsalted }), (err) => err.message === `${COMMIT_DATA_ERROR}: 190 bytes`);
     assert.equal(node.leaves.length, 0, "no leaf");
     assert.equal(node.commits.length, 0);
-    // The same F with a salt and a 380-byte note, as version 3, is taken.
+    // The same F with a salt, a 380-byte note and a lookup tag, as version
+    // 3, is taken.
     await send(wallet, { data: salted });
     assert.equal(node.leaves.length, 1);
   }));
 
 test("the stand-in refuses a wrong version and a wrong length", () =>
   withNode(async (node, wallet) => {
-    // 414 bytes (no salt) of any version, 430 bytes of any version but 3.
+    // 414 bytes (no salt) of any version, 446 bytes of any version but 3.
     for (const version of [[0x00, 0x01], [0x00, 0x03], [0x01, 0x00], [0x00, 0x00], [0x01, 0x01]]) {
       await assert.rejects(send(wallet, { data: toHex(concat([Uint8Array.from(version), fingerprint, note])) }), dataError);
     }
     for (const version of [[0x00, 0x01], [0x00, 0x02], [0x03, 0x00], [0x00, 0x04], [0x01, 0x03]]) {
-      await assert.rejects(send(wallet, { data: toHex(concat([Uint8Array.from(version), fingerprint, salt, note])) }), dataError);
+      await assert.rejects(send(wallet, { data: toHex(concat([Uint8Array.from(version), fingerprint, salt, note, tag])) }), dataError);
     }
-    const rightSalted = fromHex(salted, 430);
+    const rightSalted = fromHex(salted, 446);
     await assert.rejects(send(wallet, { data: toHex(concat([rightSalted, Uint8Array.of(0)])) }), dataError);
-    await assert.rejects(send(wallet, { data: toHex(rightSalted.slice(0, 429)) }), dataError);
+    await assert.rejects(send(wallet, { data: toHex(rightSalted.slice(0, 445)) }), dataError);
     await assert.rejects(send(wallet, { data: "0x" }), dataError);
     await assert.rejects(send(wallet, { data: null }), dataError);
     await assert.rejects(send(wallet, { data: `${salted}0` }), dataError, "not whole bytes of hex");
@@ -107,12 +111,23 @@ test("the stand-in refuses a wrong version and a wrong length", () =>
     assert.equal(node.commits.length, 0);
   }));
 
-test("the stand-in accepts the 430-byte commit of version 0x0003 and keeps its salt with the leaf", () =>
+test("the stand-in refuses the 430 bytes without a lookup tag and an all-zero tag", () =>
+  withNode(async (node, wallet) => {
+    const untagged = fromHex(salted, 446).slice(0, 430);
+    await assert.rejects(send(wallet, { data: toHex(untagged) }), (err) => err.message === `${COMMIT_DATA_ERROR}: 430 bytes`);
+    const zeroTag = concat([untagged, new Uint8Array(16)]);
+    await assert.rejects(send(wallet, { data: toHex(zeroTag) }), (err) => err.message === COMMIT_LOOKUP_TAG_ERROR);
+    assert.equal(node.leaves.length, 0, "no leaf");
+    assert.equal(node.commits.length, 0);
+  }));
+
+test("the stand-in accepts the 446-byte commit of version 0x0003 and keeps its salt with the leaf", () =>
   withNode(async (node, wallet) => {
     await send(wallet, { data: salted });
     assert.equal(node.commits.length, 1);
     assert.equal(node.leaves.length, 1);
-    // C = K(tag, COIN_V2, F, v), the note after the salt, the salt kept.
+    // C = K(tag, COIN_V2, F, v), the note after the salt (the lookup tag
+    // not in it), the salt kept.
     const ghost = await loadModule();
     assert.equal(toHex(node.leaves[0].commitment), toHex(ghost.coinCommitment(fingerprint, GHOST, 2)));
     assert.equal(toHex(node.leaves[0].note), toHex(note));

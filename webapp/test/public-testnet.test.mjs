@@ -1,19 +1,21 @@
 // The public test network, the one the one-line installer joins: this
 // build's entry for it (header.mjs, NETWORKS) and its real chain.
 //
-// The entry's params are the network's own in ghost-node at 853ca88786fe
+// The entry's params are the network's own in ghost-node at fb6c80227362
 // (params/ghost/testnet.go, TestNetParams: the 30-second launch preset of
 // consensus/ghostrules with its own start and minimum difficulty), and its
-// genesis is TestNetGenesis there. The fixture holds blocks 0 to 24 as
-// eth_getBlockByNumber (full transactions off) returned them, recorded
-// once from a build-26-853ca88786fe node synced from the network's seeds.
+// genesis is TestNetGenesis there, whose header carries the four lookup
+// fields of decision 0004. The fixture holds blocks 0 to 24 of that chain as
+// eth_getBlockByNumber (full transactions off) returned them, recorded once
+// from two release nodes built at fb6c80227362 and started on the network's
+// genesis, peered only with each other (no discovery, no seeds) and mining:
+// 23-item headers with real RandomX seals at the network's constants.
 //
 // The recorded headers are fed through the module's header chain at the
 // entry's params, and through the flow itself with this build's entry
-// started from genesis (the recorded blocks lie below the build's pin) and a
-// stand-in endpoint that serves the fixture: the start is genesis, every
-// hash recomputes, every difficulty and RandomX seal checks,
-// and the page adopts the chain to its tip. A header altered after the fact
+// started from genesis and a stand-in endpoint that serves the fixture: the
+// start is genesis, every hash recomputes, every difficulty and RandomX seal
+// checks, and the page adopts the chain to its tip. A header altered after the fact
 // is refused.
 
 import assert from "node:assert/strict";
@@ -30,15 +32,16 @@ import { buildModuleIfMissing, loadModule, nodeProver, wasmPath } from "./suppor
 buildModuleIfMissing(wasmPath);
 
 const CHAIN_ID = 6_777_972;
-const GENESIS_HASH = "0xdfe4271fd12d302e15c68e381ade8076207f70d3778eebd69604566fb6979436";
+const GENESIS_HASH = "0x1beeb3088d741bdde1f5285fec7fea05b2d598237657e37741099d3e82867176";
 const GENESIS_TIMESTAMP = 1_793_124_000;
-// ghost-node at 853ca88786fe: ghostrules.Launch30s() for the block time,
+// ghost-node at fb6c80227362: ghostrules.Launch30s() for the block time,
 // half-life and drift; TestNetStartDifficulty (2^14) and TestNetMinDifficulty
 // (2^12).
 const GHOST_NODE_PARAMS = { blockTime: 30, halfLife: 3600, startDifficulty: 16384, minDifficulty: 4096, futureDrift: 30 };
 
 // This build's entry with its chain started at genesis, as the recorded
-// blocks need.
+// blocks need (this build has no pin for the network, so this is the entry
+// itself).
 const FROM_GENESIS = Object.freeze({ [String(CHAIN_ID)]: Object.freeze({ ...networkOf(NETWORKS, CHAIN_ID), pin: null }) });
 const BLOCKS = JSON.parse(readFileSync(new URL("./fixtures/public-testnet-headers.json", import.meta.url), "utf8"));
 const TIP = BLOCKS.length - 1;
@@ -52,17 +55,25 @@ test("this build lists the public test network: chain id, genesis and the chain 
   assert.deepEqual({ ...entry.params }, GHOST_NODE_PARAMS);
   assert.equal(entry.genesisTimestamp, GENESIS_TIMESTAMP);
   assert.equal(entry.genesisHash, GENESIS_HASH);
-  assert.ok(entry.pin && entry.pin.height > BLOCKS.length, "the chain is checked from a pin above the recorded blocks");
+  assert.equal(entry.pin, null, "the chain is checked from its genesis until a deploy serves a pin");
   assert.ok(Object.isFrozen(NETWORKS));
 });
 
-test("the fixture is the network's chain from its genesis", () => {
+test("the fixture is the network's chain from its genesis, in 23-item headers", () => {
   assert.ok(TIP >= 20, "blocks 0 to 20 at least");
   BLOCKS.forEach((block, n) => assert.equal(Number(BigInt(block.number)), n));
   assert.equal(BLOCKS[0].hash, GENESIS_HASH);
   assert.equal(Number(BigInt(BLOCKS[0].timestamp)), GENESIS_TIMESTAMP);
   assert.equal(BigInt(BLOCKS[0].difficulty), BigInt(GHOST_NODE_PARAMS.startDifficulty));
   for (let n = 1; n <= TIP; n += 1) assert.equal(BLOCKS[n].parentHash, BLOCKS[n - 1].hash);
+  for (const block of BLOCKS) {
+    for (const name of ["coinLookupRoot", "dataLookupRoot", "coinMarkerRoot", "lookupDigest"]) {
+      assert.match(block[name], /^0x[0-9a-f]{64}$/, `block ${block.number} has ${name}`);
+    }
+  }
+  // Without the lookup fields, a recorded header is refused.
+  const { lookupDigest: _digest, ...old } = BLOCKS[1];
+  assert.throws(() => readHeader(old), /the header has no lookupDigest/);
 });
 
 test("the module's header chain at the entry's params adopts the recorded headers from genesis", async () => {
@@ -125,7 +136,7 @@ function flowOn(blocks) {
   return { flow, prover, saves };
 }
 
-test("the page adopts the public test network's real chain from the pinned genesis", async () => {
+test("the page adopts the public test network's chain from its genesis", async () => {
   const { flow, prover, saves } = flowOn(BLOCKS);
   try {
     const { key } = await prover.request("newKey");

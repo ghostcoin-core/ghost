@@ -87,6 +87,7 @@ use rand_core::CryptoRng;
 use crate::account::{AccountTx, WalletSeed};
 use crate::commit::{salted_commit_data, Amount, CoinCommit, Commitment, Marker, Rule, Salt, SALTED_COMMIT_DATA_BYTES};
 use crate::hash;
+use crate::lookup::lookup_tag;
 use crate::key::PhantomKey;
 use crate::note::{encrypt_note, Capsule, NoteContents, NOTE_BYTES, POLICY_ADDRESS_BYTES, TAG_POLICY_PARAMS};
 use crate::restore::{restore_coins, FoundCoin, RestoreError, Restored, TreeLeaf, MAX_TREE_LEAVES};
@@ -555,7 +556,8 @@ pub struct GuardCommit {
     pub rule: GuardRule,
     /// The 380-byte note with the rule's capsule.
     pub note: [u8; NOTE_BYTES],
-    /// The commit's data: format version, `F`, salt and note.
+    /// The commit's data: format version, `F`, salt, note and the lookup tag
+    /// of number 0.
     pub data: [u8; SALTED_COMMIT_DATA_BYTES],
 }
 
@@ -580,7 +582,7 @@ pub fn guard_commit<R: CryptoRng + ?Sized>(
         commit,
         amount,
         rule: *rule,
-        data: salted_commit_data(&commit.fingerprint, &salt, &note),
+        data: salted_commit_data(&commit.fingerprint, &salt, &note, &lookup_tag(&key.note_key(), 0)),
         note,
     })
 }

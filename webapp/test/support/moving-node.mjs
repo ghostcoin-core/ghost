@@ -150,6 +150,10 @@ export function movingNode({
       coinTreeRoot: toHex(rootOf(leaves.length)),
       dataTreeRoot: toHex(sha256("data")),
       dataMarkerRoot: toHex(sha256("data markers")),
+      coinLookupRoot: toHex(sha256("coin lookup")),
+      dataLookupRoot: toHex(sha256("data lookup")),
+      coinMarkerRoot: toHex(sha256("coin markers")),
+      lookupDigest: toHex(sha256("lookup digest", String(number))),
     };
     json.hash = toHex(ghost.keccak256(readHeader(json).rlp));
     const block = { number, json, leafCount: leaves.length, receipts: txReceipts.map((r) => ({ ...r, blockHash: json.hash })) };

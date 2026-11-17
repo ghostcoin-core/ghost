@@ -91,7 +91,7 @@ impl Draft {
         rlp_list(&self.fields())
     }
 
-    /// The header's 19 items, `dataMarkerRoot` last.
+    /// The header's 23 items, `lookupDigest` last.
     fn fields(&self) -> Vec<Vec<u8>> {
         let mut coinbase = vec![0u8; 20];
         coinbase[19] = self.branch;
@@ -115,6 +115,10 @@ impl Draft {
             vec![0x44; 32],
             vec![0x55; 32],
             vec![0x66; 32],
+            vec![0x77; 32],
+            vec![0x88; 32],
+            vec![0x99; 32],
+            vec![0xaa; 32],
         ]
     }
 
@@ -427,38 +431,43 @@ fn missing_key_block_is_refused() {
     assert_eq!(HeaderChain::from_genesis(&pin.rlp(), TEST_CHAIN).err(), Some(StartError::NotGenesis));
 }
 
-/// The chain reads headers of 19 items, `dataMarkerRoot` last, and refuses
-/// a header of 18 items (the layout without `dataMarkerRoot`), whether
-/// offered as a start, checked in full or read back from the store.
+/// The chain reads headers of 23 items, `lookupDigest` last, and refuses
+/// a header of 19 items (the layout before the lookup fields), 22 or 24,
+/// whether offered as a start, checked in full or read back from the store.
 #[test]
-fn chain_accepts_nineteen_field_headers_and_refuses_eighteen() {
+fn chain_accepts_twenty_three_field_headers_and_refuses_nineteen() {
     let _one = one_chain();
-    let eighteen = |draft: &Draft| {
-        let mut fields = draft.fields();
-        assert_eq!(fields.len(), 19);
-        fields.pop();
-        rlp_list(&fields)
+    let cut = |draft: &Draft, count: usize| {
+        let fields = draft.fields();
+        assert_eq!(fields.len(), 23);
+        rlp_list(&fields[..count])
     };
-    assert_eq!(
-        HeaderChain::from_genesis(&eighteen(&genesis()), TEST_CHAIN).err(),
-        Some(StartError::Header(HeaderError::ItemCount))
-    );
+    for count in [19, 22] {
+        assert_eq!(
+            HeaderChain::from_genesis(&cut(&genesis(), count), TEST_CHAIN).err(),
+            Some(StartError::Header(HeaderError::ItemCount)),
+            "{count} items"
+        );
+    }
 
     let mut chain = genesis_chain();
     let one = genesis().child(30);
-    assert_eq!(chain.add_header(&eighteen(&one), LATER), Err(ChainError::Header(HeaderError::ItemCount)));
-    assert_eq!(chain.add_saved_header(&eighteen(&one), LATER), Err(ChainError::Header(HeaderError::ItemCount)));
-    let mut twenty = one.fields();
-    twenty.push(vec![0x66; 32]);
-    assert_eq!(chain.add_header(&rlp_list(&twenty), LATER), Err(ChainError::Header(HeaderError::ItemCount)));
+    for count in [19, 22] {
+        assert_eq!(chain.add_header(&cut(&one, count), LATER), Err(ChainError::Header(HeaderError::ItemCount)));
+        assert_eq!(chain.add_saved_header(&cut(&one, count), LATER), Err(ChainError::Header(HeaderError::ItemCount)));
+    }
+    let mut twenty_four = one.fields();
+    twenty_four.push(vec![0xbb; 32]);
+    assert_eq!(chain.add_header(&rlp_list(&twenty_four), LATER), Err(ChainError::Header(HeaderError::ItemCount)));
     assert_eq!(chain.best_hash(), chain.start_hash());
 
     assert_eq!(add(&mut chain, &one), Ok(Added::Extended));
     assert_eq!(chain.best_hash(), one.hash());
     assert_eq!(chain.header(&one.hash()), Some(one.rlp().as_slice()));
-    // The child links to the 19-item header's hash, `dataMarkerRoot` included.
+    // The child links to the 23-item header's hash, the lookup fields included.
     let two = one.child(30);
     assert_eq!(two.parent, keccak(&rlp_list(&one.fields())));
+    assert_ne!(two.parent, keccak(&rlp_list(&one.fields()[..19])));
     assert_eq!(add(&mut chain, &two), Ok(Added::Extended));
     assert_eq!(chain.best_height(), 2);
 }

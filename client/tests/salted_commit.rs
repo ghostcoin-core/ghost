@@ -1,14 +1,16 @@
 //! Salted (version 2) commits: the fingerprint, commitment and marker under a
 //! salt, checked against the vectors of spec 01, section 14 and the proofs
 //! crate's own hashes; a fresh salt from the caller's generator for every new
-//! commit; and the 430-byte data of a salted commit, version `0x0003` with
-//! the 380-byte note of note version 3.
+//! commit; and the 446-byte data of a salted commit, version `0x0003` with
+//! the 380-byte note of note version 3 and the 16-byte lookup tag of
+//! decision 0004 after it.
 
 use ghost_client::{
     check_data_commit_value, salted_commit_data, Amount, Capsule, Content, Fingerprint, NoteContents, PhantomKey,
     Rule, Salt, CommitError, COIN_V2, DATA_RESERVE_WEI, DATA_V2, NOTE_BYTES, SALTED_COMMIT_DATA_BYTES,
     SALTED_COMMIT_FORMAT_VERSION, SALT_BYTES,
 };
+use ghost_client::lookup::key_lookup_tag;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -239,8 +241,8 @@ fn new_commit_draws_a_fresh_salt_each_time() {
 }
 
 #[test]
-fn salted_commit_data_is_430_bytes_of_version_3() {
-    assert_eq!(SALTED_COMMIT_DATA_BYTES, 430);
+fn salted_commit_data_is_446_bytes_of_version_3_with_the_lookup_tag() {
+    assert_eq!(SALTED_COMMIT_DATA_BYTES, 446);
     assert_eq!(SALTED_COMMIT_FORMAT_VERSION, [0x00, 0x03]);
     assert_eq!(NOTE_BYTES, 380);
 
@@ -255,13 +257,16 @@ fn salted_commit_data_is_430_bytes_of_version_3() {
     let note =
         ghost_client::encrypt_note(&key.note_key(), 1234, &commit.commitment, &contents, &Capsule::empty(), &mut rng);
 
-    let data = salted_commit_data(&commit.fingerprint, &salt, &note);
-    assert_eq!(data.len(), 430);
+    let tag = key_lookup_tag(&key, 0);
+    assert_ne!(tag, [0u8; 16], "the node refuses a zero tag");
+    let data = salted_commit_data(&commit.fingerprint, &salt, &note, &tag);
+    assert_eq!(data.len(), 446);
     assert_eq!(&data[..2], &[0x00, 0x03]);
     assert_eq!(&data[2..34], commit.fingerprint.as_bytes());
     assert_eq!(&data[34..50], salt.as_bytes());
-    assert_eq!(&data[50..], &note[..]);
-    assert_eq!(50 + NOTE_BYTES, 430);
+    assert_eq!(&data[50..430], &note[..]);
+    assert_eq!(&data[430..], &tag[..]);
+    assert_eq!(50 + NOTE_BYTES + 16, 446);
 
     let (read, capsule) =
         ghost_client::decrypt_note_with_capsule(&key.note_key(), 1234, &commit.commitment, &note).unwrap();
@@ -291,20 +296,25 @@ fn salted_commit_data_is_430_bytes_of_version_3() {
         &mut rng,
     );
     assert_eq!(data_note.len(), note.len());
-    let data = salted_commit_data(&data_commit.fingerprint, &data_salt, &data_note);
-    assert_eq!(data.len(), 430);
+    let data = salted_commit_data(&data_commit.fingerprint, &data_salt, &data_note, &tag);
+    assert_eq!(data.len(), 446);
     assert_eq!(&data[..2], &SALTED_COMMIT_FORMAT_VERSION);
     assert_eq!(&data[2..34], data_commit.fingerprint.as_bytes());
     assert_eq!(&data[34..50], data_salt.as_bytes());
-    assert_eq!(&data[50..], &data_note[..]);
+    assert_eq!(&data[50..430], &data_note[..]);
+    assert_eq!(&data[430..], &tag[..]);
     let read = ghost_client::decrypt_note(&key.note_key(), 1234, &data_commit.commitment, &data_note).unwrap();
     assert_eq!(read.type_tag, DATA_V2);
     assert_eq!(read.content_length, 18);
 
     // Every field lands in its place: change one input, only its bytes move.
     let other_f = Fingerprint::from_bytes([0xff; 32]);
-    let changed = salted_commit_data(&other_f, &data_salt, &data_note);
+    let changed = salted_commit_data(&other_f, &data_salt, &data_note, &tag);
     assert_eq!(&changed[..2], &data[..2]);
     assert_eq!(&changed[2..34], &[0xff; 32]);
     assert_eq!(&changed[34..], &data[34..]);
+    let other_tag = key_lookup_tag(&key, 1);
+    let retagged = salted_commit_data(&data_commit.fingerprint, &data_salt, &data_note, &other_tag);
+    assert_eq!(&retagged[..430], &data[..430]);
+    assert_eq!(&retagged[430..], &other_tag[..]);
 }

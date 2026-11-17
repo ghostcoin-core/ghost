@@ -9,12 +9,10 @@
 //! rule requires difficulty 1, so any nonce seals it and a branch's work above
 //! a fork is its number of blocks. The tail is 6 headers, not the design's 64.
 //!
-//! The client's header decoder reads the 19-item header, so the four roots of
-//! decision 0004's fields 16, 19, 21 and 22 ride in stand-in fields of the
-//! test header: the coin tree root in field 16, its own place, and
-//! `coinLookupRoot`, `coinMarkerRoot` and `lookupDigest` in fields 3, 4 and
-//! 5. The test's reader reads them from the header's bytes, as the wallet's
-//! reader of the 23-item header will. Every root is built here, apart from
+//! The test headers are decision 0004's 23-item headers, with the four roots
+//! the wallet reads in their own fields: `coinTreeRoot` in field 16, and
+//! `coinLookupRoot`, `coinMarkerRoot` and `lookupDigest` in fields 19, 21
+//! and 22. The test's reader reads them from the header's bytes. Every root is built here, apart from
 //! the trees under test: the lookup index and marker set from the library's
 //! tree builders, the coin tree level by level over the proofs crate's hash.
 //!
@@ -150,15 +148,15 @@ fn rlp_items(bytes: &[u8]) -> Option<Vec<&[u8]>> {
 /// bytes.
 fn read_roots(header: &[u8]) -> Option<HeaderRoots> {
     let items = rlp_items(header)?;
-    if items.len() != 19 {
+    if items.len() != 23 {
         return None;
     }
     let field = |index: usize| <[u8; 32]>::try_from(items[index]).ok();
     Some(HeaderRoots {
         coin_tree_root: field(16)?,
-        coin_lookup_root: field(3)?,
-        coin_marker_root: field(4)?,
-        lookup_digest: field(5)?,
+        coin_lookup_root: field(19)?,
+        coin_marker_root: field(21)?,
+        lookup_digest: field(22)?,
     })
 }
 
@@ -185,9 +183,9 @@ impl Draft {
             self.parent.to_vec(),
             vec![0x1d; 32],
             coinbase,
-            self.roots.coin_lookup_root.to_vec(),
-            self.roots.coin_marker_root.to_vec(),
-            self.roots.lookup_digest.to_vec(),
+            vec![0x11; 32],
+            vec![0x22; 32],
+            vec![0x33; 32],
             vec![0; 256],
             int(self.difficulty),
             int(self.number),
@@ -201,6 +199,10 @@ impl Draft {
             self.roots.coin_tree_root.to_vec(),
             vec![0x55; 32],
             vec![0x66; 32],
+            self.roots.coin_lookup_root.to_vec(),
+            vec![0x77; 32],
+            self.roots.coin_marker_root.to_vec(),
+            self.roots.lookup_digest.to_vec(),
         ])
     }
 
