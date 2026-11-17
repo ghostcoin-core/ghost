@@ -55,6 +55,13 @@
 //!   the lookup hints, then the fetches for the highest number found),
 //!   against a lookup source the caller implements (stage 2 design, "Wallet
 //!   restore volume").
+//! - [`restore_checks`]: the checks of those answers before use, against a
+//!   snapshot header that must be one of the wallet's checked tail headers:
+//!   the note decrypts and recomputes its leaf, the coin, marker-set and
+//!   lookup witnesses reach the snapshot's roots, and the bulk lists of the
+//!   later blocks match their lookup digests; then the decision (the current
+//!   commitment, a second session after a spent marker, or "never made a
+//!   commitment" with an absence witness), against any restore server.
 //! - [`receipts`]: a block's receipts checked against its header's
 //!   `receiptsRoot`, and the coin tree's leaves, notes and spent markers
 //!   checked against the records in them (spec 05, section 8, item 5).
@@ -116,6 +123,7 @@ pub mod note_tag;
 pub mod randomx;
 pub mod receipts;
 pub mod restore;
+pub mod restore_checks;
 pub mod restore_requests;
 pub mod reveal;
 pub mod seal;
@@ -168,6 +176,10 @@ pub use restore::{
     Current, DiscardReason, DiscardedNote, Followed, FoundCoin, HeaderRoots, KeepUp, KeepUpAnswer, KeepUpError,
     KeepUpStatus, MarkerStatus, ReadHeaderRoots, RestoreError, Restored, SpentAt, TreeLeaf, TreeRoot, MAX_TREE_LEAVES,
     REORG_WINDOW,
+};
+pub use restore_checks::{
+    check_anchor, check_anchor_on, check_continued, check_session, continue_requests, restore_with_checks, Anchor,
+    CheckError, CheckedRestore, CurrentCoin, Decision, NextFrom, NextLeaf,
 };
 pub use reveal::{
     claim_to_new_key, full_reveal, partial_reveal, prove_reveal, reveal_params, BuiltReveal, OwnedCoin,
